@@ -28,7 +28,7 @@ export async function transcribeChunks(
   const limit = pLimit(3);
 
   const results = await Promise.all(
-    chunkPaths.map((chunkPath, index) =>
+    chunkPaths.map((chunkPath) =>
       limit(async () => {
         const response = await client.audio.transcriptions.create({
           file: createReadStream(chunkPath),
