@@ -3,7 +3,7 @@ import path from "node:path";
 import { checkFfmpeg } from "../utils/ffmpeg.js";
 
 const SUPPORTED_EXTENSIONS = new Set([
-  ".mp3", ".wav", ".m4a", ".ogg", ".webm", ".flac",
+  ".mp3", ".wav", ".m4a", ".ogg", ".webm", ".flac", ".qta",
 ]);
 
 export async function validateInput(filePath: string): Promise<void> {

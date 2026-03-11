@@ -29,9 +29,16 @@ export async function runPipeline(options: PipelineOptions): Promise<string> {
   const outputPath = options.outputPath ?? defaultOutputPath(inputPath);
   const verbose = config.verbose;
 
-  // 1. Validate
+  // 1. Validate and get duration early (before file access might change)
   let spinner = log(verbose, "Validating input...");
   await validateInput(inputPath);
+  let durationMinutes: number;
+  try {
+    const duration = await getAudioDuration(inputPath);
+    durationMinutes = Math.round(duration / 60);
+  } catch {
+    durationMinutes = 0; // fallback if duration can't be determined
+  }
   spinner?.succeed("Input validated");
 
   // 2. Chunk
@@ -68,8 +75,6 @@ export async function runPipeline(options: PipelineOptions): Promise<string> {
 
   // 6. Write
   spinner = log(verbose, "Writing output...");
-  const duration = await getAudioDuration(inputPath);
-  const durationMinutes = Math.round(duration / 60);
   const date = new Date().toISOString().split("T")[0];
   const source = path.basename(inputPath);
 
