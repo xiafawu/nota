@@ -31,4 +31,29 @@ describe("buildMarkdown", () => {
     expect(md).toContain("Hello everyone");
     expect(md).toContain("## Full Transcript");
   });
+
+  it("includes speaker labels in transcript when present", () => {
+    const summary: MeetingSummary = {
+      narrative: "A productive meeting.",
+      keyTopics: ["**Budget** — discussed allocations"],
+      decisions: ["Increase Q3 budget"],
+      actionItems: ["[ ] Submit report — assigned to Speaker 1"],
+    };
+    const segments: TranscriptSegment[] = [
+      { start: 0, end: 10, text: "Hello everyone", speaker: "Speaker 1" },
+      { start: 10, end: 20, text: "Let's begin", speaker: "Speaker 2" },
+      { start: 20, end: 30, text: "Sounds good" },  // no speaker
+    ];
+    const md = buildMarkdown({
+      summary,
+      segments,
+      date: "2026-03-10",
+      duration: 30,
+      source: "meeting.mp3",
+    });
+
+    expect(md).toContain("[00:00] **Speaker 1:** Hello everyone");
+    expect(md).toContain("[00:10] **Speaker 2:** Let's begin");
+    expect(md).toContain("[00:20] Sounds good");
+  });
 });

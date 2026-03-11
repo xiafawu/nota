@@ -19,7 +19,13 @@ export function buildMarkdown(input: WriteInput): string {
   const decisionLines = summary.decisions.map((d) => `- ${d}`).join("\n");
   const actionLines = summary.actionItems.map((a) => `- ${a}`).join("\n");
   const transcriptLines = segments
-    .map((seg) => `${formatTimestamp(seg.start)} ${seg.text}`)
+    .map((seg) => {
+      const timestamp = formatTimestamp(seg.start);
+      if (seg.speaker) {
+        return `${timestamp} **${seg.speaker}:** ${seg.text}`;
+      }
+      return `${timestamp} ${seg.text}`;
+    })
     .join("\n");
 
   return `# Meeting Summary
