@@ -1,4 +1,4 @@
-import Anthropic from "@anthropic-ai/sdk";
+import OpenAI from "openai";
 import { shouldChunkTranscript, splitTranscriptIntoSections } from "../utils/tokens.js";
 
 export interface MeetingSummary {
@@ -117,20 +117,20 @@ export function parseSummaryResponse(response: string): MeetingSummary {
   return sections;
 }
 
-async function callClaude(
-  client: Anthropic,
+async function callGPT(
+  client: OpenAI,
   model: string,
   prompt: string
 ): Promise<string> {
-  const message = await client.messages.create({
+  const response = await client.chat.completions.create({
     model,
     max_tokens: 4096,
     messages: [{ role: "user", content: prompt }],
   });
 
-  const block = message.content[0];
-  if (block.type !== "text") throw new Error("Unexpected response type");
-  return block.text;
+  const content = response.choices[0]?.message?.content;
+  if (!content) throw new Error("Empty response from GPT");
+  return content;
 }
 
 export async function summarizeTranscript(
@@ -138,11 +138,11 @@ export async function summarizeTranscript(
   apiKey: string,
   model: string
 ): Promise<MeetingSummary> {
-  const client = new Anthropic({ apiKey });
+  const client = new OpenAI({ apiKey });
 
   if (!shouldChunkTranscript(transcript)) {
     const prompt = buildSummaryPrompt(transcript);
-    const response = await callClaude(client, model, prompt);
+    const response = await callGPT(client, model, prompt);
     return parseSummaryResponse(response);
   }
 
@@ -152,11 +152,11 @@ export async function summarizeTranscript(
 
   for (const section of sections) {
     const prompt = buildSummaryPrompt(section);
-    const response = await callClaude(client, model, prompt);
+    const response = await callGPT(client, model, prompt);
     sectionSummaries.push(response);
   }
 
   const rollupPrompt = buildRollupPrompt(sectionSummaries);
-  const finalResponse = await callClaude(client, model, rollupPrompt);
+  const finalResponse = await callGPT(client, model, rollupPrompt);
   return parseSummaryResponse(finalResponse);
 }

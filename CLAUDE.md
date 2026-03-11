@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-MeetingSum is a TypeScript CLI tool that transcribes audio files using OpenAI Whisper and summarizes them using Claude. It outputs structured markdown with narrative summary, key topics, decisions, and action items.
+MeetingSum is a TypeScript CLI tool that transcribes audio files using OpenAI Whisper and summarizes them using GPT-4o. It outputs structured markdown with narrative summary, key topics, decisions, and action items. Only requires a single OpenAI API key.
 
 ## Build & Run Commands
 
@@ -20,7 +20,7 @@ MeetingSum is a TypeScript CLI tool that transcribes audio files using OpenAI Wh
 Linear pipeline: `Audio → Validate → Chunk → Transcribe → Merge → Summarize → Write`
 
 - **src/index.ts** — CLI entry point (commander). Parses args, calls orchestrator.
-- **src/config.ts** — Loads API keys from env vars (`OPENAI_API_KEY`, `ANTHROPIC_API_KEY`), merges CLI options.
+- **src/config.ts** — Loads API key from env var (`OPENAI_API_KEY`), merges CLI options.
 - **src/constants.ts** — Shared constants: `SEGMENT_DURATION`, `OVERLAP_DURATION`, `CHUNK_THRESHOLD_BYTES`.
 - **src/orchestrator.ts** — Runs pipeline stages in sequence, handles verbose progress output via ora spinners.
 - **src/pipeline/** — One module per pipeline stage. Each exports a single primary function:
@@ -28,7 +28,7 @@ Linear pipeline: `Audio → Validate → Chunk → Transcribe → Merge → Summ
   - `chunk.ts` — splits audio >20MB into ~10min segments with 30s overlap via ffmpeg
   - `transcribe.ts` — parallel Whisper API calls (max 3 concurrent via p-limit)
   - `merge.ts` — concatenates transcripts, deduplicates overlap regions by timestamp filtering
-  - `summarize.ts` — sends transcript to Claude; for >100k tokens, does section-by-section then roll-up
+  - `summarize.ts` — sends transcript to GPT-4o; for >100k tokens, does section-by-section then roll-up
   - `write.ts` — generates markdown output file
 - **src/utils/** — Shared helpers: ffmpeg wrapper (`ffmpeg.ts`), token estimation (`tokens.ts`).
 
@@ -45,4 +45,4 @@ Linear pipeline: `Audio → Validate → Chunk → Transcribe → Merge → Summ
 
 - `ffmpeg` and `ffprobe` must be installed and in PATH
 - Node.js 18+
-- Environment variables: `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`
+- Environment variable: `OPENAI_API_KEY`

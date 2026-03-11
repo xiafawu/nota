@@ -21,7 +21,6 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@anthropic-ai/sdk": "^0.78.0",
     "commander": "^14.0.3",
     "openai": "^6.27.0",
     "ora": "^8.2.0",

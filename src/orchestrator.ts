@@ -58,11 +58,11 @@ export async function runPipeline(options: PipelineOptions): Promise<string> {
   spinner?.succeed("Transcripts merged");
 
   // 5. Summarize
-  spinner = log(verbose, "Summarizing with Claude...");
+  spinner = log(verbose, "Summarizing with GPT-4o...");
   const summary = await summarizeTranscript(
     merged.text,
-    config.anthropicApiKey,
-    config.claudeModel
+    config.openaiApiKey,
+    config.summaryModel
   );
   spinner?.succeed("Summary generated");
 

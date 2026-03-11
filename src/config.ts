@@ -7,8 +7,7 @@ export interface CLIOptions {
 
 export interface AppConfig {
   openaiApiKey: string;
-  anthropicApiKey: string;
-  claudeModel: string;
+  summaryModel: string;
   language?: string;
   verbose: boolean;
 }
@@ -21,17 +20,9 @@ export function loadConfig(options: CLIOptions): AppConfig {
     );
   }
 
-  const anthropicApiKey = process.env.ANTHROPIC_API_KEY;
-  if (!anthropicApiKey) {
-    throw new Error(
-      "ANTHROPIC_API_KEY environment variable is required. Get one at https://console.anthropic.com/"
-    );
-  }
-
   return {
     openaiApiKey,
-    anthropicApiKey,
-    claudeModel: options.model ?? "claude-sonnet-4-20250514",
+    summaryModel: options.model ?? "gpt-4o",
     language: options.language,
     verbose: options.verbose ?? false,
   };

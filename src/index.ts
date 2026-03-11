@@ -13,7 +13,7 @@ program
   .argument("<audio-file>", "Path to audio file (.mp3, .wav, .m4a, etc.)")
   .option("-o, --output <path>", "Output file path (default: <input>.summary.md)")
   .option("-l, --language <lang>", "Audio language hint for Whisper")
-  .option("-m, --model <model>", "Claude model to use", "claude-sonnet-4-20250514")
+  .option("-m, --model <model>", "GPT model to use for summarization", "gpt-4o")
   .option("-v, --verbose", "Show progress for each pipeline stage")
   .action(async (audioFile: string, options) => {
     try {
