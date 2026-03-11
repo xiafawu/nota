@@ -1,6 +1,10 @@
 import { access } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import path from "node:path";
 import { checkFfmpeg } from "../utils/ffmpeg.js";
+
+const execFileAsync = promisify(execFile);
 
 const SUPPORTED_EXTENSIONS = new Set([
   ".mp3", ".wav", ".m4a", ".ogg", ".webm", ".flac", ".qta",
@@ -24,4 +28,31 @@ export async function validateInput(filePath: string): Promise<void> {
 
   // Check ffmpeg
   await checkFfmpeg();
+}
+
+export async function checkPython(): Promise<void> {
+  try {
+    await execFileAsync("python3", ["--version"]);
+  } catch {
+    throw new Error(
+      "python3 is not installed or not in PATH. Required for speaker diarization."
+    );
+  }
+
+  try {
+    await execFileAsync("python3", ["-c", "import pyannote.audio"]);
+  } catch {
+    throw new Error(
+      "pyannote.audio is not installed. Run: pip install pyannote.audio torch"
+    );
+  }
+}
+
+export function checkHuggingFaceToken(): void {
+  if (!process.env.HUGGINGFACE_TOKEN) {
+    throw new Error(
+      "HUGGINGFACE_TOKEN environment variable is required for speaker diarization. " +
+      "Get one at https://huggingface.co/settings/tokens"
+    );
+  }
 }
