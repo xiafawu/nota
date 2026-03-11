@@ -15,9 +15,10 @@ program
   .option("-l, --language <lang>", "Audio language hint for Whisper")
   .option("-m, --model <model>", "GPT model to use for summarization", "gpt-4o")
   .option("-v, --verbose", "Show progress for each pipeline stage")
+  .option("--no-diarize", "Skip speaker identification")
   .action(async (audioFile: string, options) => {
     try {
-      const config = loadConfig(options);
+      const config = loadConfig({ ...options, diarize: options.diarize });
       const outputPath = await runPipeline({
         inputPath: audioFile,
         outputPath: options.output,

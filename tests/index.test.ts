@@ -13,6 +13,13 @@ describe("CLI", () => {
     expect(output).toContain("--verbose");
   });
 
+  it("shows --no-diarize in help", () => {
+    const output = execFileSync("npx", ["tsx", "src/index.ts", "--help"], {
+      encoding: "utf-8",
+    });
+    expect(output).toContain("--no-diarize");
+  });
+
   it("shows version with --version flag", () => {
     const output = execFileSync("npx", ["tsx", "src/index.ts", "--version"], {
       encoding: "utf-8",
