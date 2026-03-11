@@ -40,7 +40,7 @@ export async function checkPython(): Promise<void> {
   }
 
   try {
-    await execFileAsync("python3", ["-c", "import pyannote.audio"]);
+    await execFileAsync("python3", ["-c", "import importlib.util; exit(0 if importlib.util.find_spec('pyannote.audio') else 1)"]);
   } catch {
     throw new Error(
       "pyannote.audio is not installed. Run: pip install pyannote.audio torch"
