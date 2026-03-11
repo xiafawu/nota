@@ -11,6 +11,10 @@ def main():
         sys.exit(1)
 
     audio_path = sys.argv[1]
+    if not os.path.isfile(audio_path):
+        print(f"Audio file not found: {audio_path}", file=sys.stderr)
+        sys.exit(1)
+
     token = os.environ.get("HUGGINGFACE_TOKEN")
     if not token:
         print("HUGGINGFACE_TOKEN environment variable is required", file=sys.stderr)
@@ -22,12 +26,20 @@ def main():
         print("pyannote.audio is not installed. Run: pip install pyannote.audio torch", file=sys.stderr)
         sys.exit(1)
 
-    pipeline = Pipeline.from_pretrained(
-        "pyannote/speaker-diarization-3.1",
-        use_auth_token=token,
-    )
+    try:
+        pipeline = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization-3.1",
+            token=token,
+        )
+    except Exception as e:
+        print(f"Failed to load diarization model: {e}", file=sys.stderr)
+        sys.exit(1)
 
-    diarization = pipeline(audio_path)
+    try:
+        diarization = pipeline(audio_path)
+    except Exception as e:
+        print(f"Diarization failed: {e}", file=sys.stderr)
+        sys.exit(1)
 
     segments = []
     for turn, _, speaker in diarization.itertracks(yield_label=True):
