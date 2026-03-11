@@ -15,6 +15,28 @@ describe("mergeTranscriptions", () => {
     expect(result.text).toBe("Hello world");
   });
 
+  it("preserves extra properties on segments through merge", () => {
+    const overlap = 30;
+    const input: TranscriptionResult[] = [
+      {
+        segments: [
+          { start: 0, end: 300, text: "First part", speaker: "Speaker 1" } as any,
+        ],
+        text: "First part",
+      },
+      {
+        segments: [
+          { start: 0, end: 30, text: "overlap" },
+          { start: 30, end: 300, text: "Second part", speaker: "Speaker 2" } as any,
+        ],
+        text: "overlap Second part",
+      },
+    ];
+    const result = mergeTranscriptions(input, overlap);
+    expect((result.segments[0] as any).speaker).toBe("Speaker 1");
+    expect((result.segments[1] as any).speaker).toBe("Speaker 2");
+  });
+
   it("merges two transcriptions, drops overlap, and offsets timestamps", () => {
     const overlap = 30; // matches OVERLAP_DURATION
     const input: TranscriptionResult[] = [

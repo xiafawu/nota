@@ -24,9 +24,9 @@ export function mergeTranscriptions(
       const nonOverlap = segments.filter((seg) => seg.start >= overlapSeconds);
       for (const seg of nonOverlap) {
         merged.push({
+          ...seg,
           start: seg.start - overlapSeconds + timeOffset,
           end: seg.end - overlapSeconds + timeOffset,
-          text: seg.text,
         });
       }
       timeOffset += SEGMENT_DURATION;
