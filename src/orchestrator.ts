@@ -2,7 +2,8 @@ import path from "node:path";
 import ora from "ora";
 import type { AppConfig } from "./config.js";
 import { OVERLAP_DURATION } from "./constants.js";
-import { validateInput } from "./pipeline/validate.js";
+import { validateInput, checkPython, checkHuggingFaceToken } from "./pipeline/validate.js";
+import { runDiarization, alignSpeakers } from "./pipeline/diarize.js";
 import { chunkAudio } from "./pipeline/chunk.js";
 import { transcribeChunks } from "./pipeline/transcribe.js";
 import { mergeTranscriptions } from "./pipeline/merge.js";
@@ -41,6 +42,14 @@ export async function runPipeline(options: PipelineOptions): Promise<string> {
   }
   spinner?.succeed("Input validated");
 
+  // 1b. Validate diarization requirements
+  if (config.diarize) {
+    spinner = log(verbose, "Checking diarization requirements...");
+    await checkPython();
+    checkHuggingFaceToken();
+    spinner?.succeed("Diarization requirements met");
+  }
+
   // 2. Chunk
   spinner = log(verbose, "Checking if chunking is needed...");
   const chunks = await chunkAudio(inputPath);
@@ -50,19 +59,32 @@ export async function runPipeline(options: PipelineOptions): Promise<string> {
       : `Split into ${chunks.length} chunks`
   );
 
-  // 3. Transcribe
-  spinner = log(verbose, `Transcribing ${chunks.length} chunk(s)...`);
-  const transcriptions = await transcribeChunks(
-    chunks,
-    config.openaiApiKey,
-    config.language
+  // 3. Transcribe (and diarize in parallel if enabled)
+  spinner = log(verbose, config.diarize
+    ? `Transcribing ${chunks.length} chunk(s) and diarizing speakers...`
+    : `Transcribing ${chunks.length} chunk(s)...`
   );
-  spinner?.succeed("Transcription complete");
+
+  const [transcriptions, diarization] = await Promise.all([
+    transcribeChunks(chunks, config.openaiApiKey, config.language),
+    config.diarize ? runDiarization(inputPath) : Promise.resolve(null),
+  ]);
+  spinner?.succeed(config.diarize
+    ? "Transcription and diarization complete"
+    : "Transcription complete"
+  );
 
   // 4. Merge
   spinner = log(verbose, "Merging transcripts...");
-  const merged = mergeTranscriptions(transcriptions, OVERLAP_DURATION);
+  let merged = mergeTranscriptions(transcriptions, OVERLAP_DURATION);
   spinner?.succeed("Transcripts merged");
+
+  // 4b. Align speakers
+  if (diarization) {
+    spinner = log(verbose, "Aligning speaker labels...");
+    merged = { ...merged, segments: alignSpeakers(merged.segments, diarization) };
+    spinner?.succeed("Speaker labels aligned");
+  }
 
   // 5. Summarize
   spinner = log(verbose, "Summarizing with GPT-4o...");
