@@ -29,6 +29,7 @@ Linear pipeline: `Audio → Validate → Chunk → Transcribe → Merge → Summ
   - `transcribe.ts` — parallel Whisper API calls (max 3 concurrent via p-limit)
   - `merge.ts` — concatenates transcripts, deduplicates overlap regions by timestamp filtering
   - `summarize.ts` — sends transcript to GPT-4o; for >100k tokens, does section-by-section then roll-up
+  - `diarize.ts` — calls Python pyannote script, aligns speaker labels with transcript segments
   - `write.ts` — generates markdown output file
 - **src/utils/** — Shared helpers: ffmpeg wrapper (`ffmpeg.ts`), token estimation (`tokens.ts`).
 
@@ -40,9 +41,15 @@ Linear pipeline: `Audio → Validate → Chunk → Transcribe → Merge → Summ
 - Long transcripts (>100k tokens) are summarized in sections then rolled up
 - Output saved as markdown file next to input by default
 - ESM-only project (`"type": "module"` in package.json)
+- Speaker diarization via pyannote.audio (Python subprocess), enabled by default
+- Diarization runs on full audio file in parallel with chunked transcription
+- Speaker labels aligned with Whisper segments by maximum time overlap
+- `--no-diarize` flag to skip when Python/pyannote not available
 
 ## External Requirements
 
 - `ffmpeg` and `ffprobe` must be installed and in PATH
 - Node.js 18+
 - Environment variable: `OPENAI_API_KEY`
+- Python 3.8+ with `pyannote.audio` and `torch` (for speaker diarization)
+- Environment variable: `HUGGINGFACE_TOKEN` (for speaker diarization)
