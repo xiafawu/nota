@@ -91,7 +91,8 @@ export async function runPipeline(options: PipelineOptions): Promise<string> {
   const summary = await summarizeTranscript(
     merged.text,
     config.openaiApiKey,
-    config.summaryModel
+    config.summaryModel,
+    diarization ? merged.segments : undefined
   );
   spinner?.succeed("Summary generated");
 
