@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { shouldChunkTranscript, splitTranscriptIntoSections } from "../utils/tokens.js";
+import type { TranscriptSegment } from "./transcribe.js";
 
 export interface MeetingSummary {
   narrative: string;
@@ -8,13 +9,24 @@ export interface MeetingSummary {
   actionItems: string[];
 }
 
-export function buildSummaryPrompt(transcript: string): string {
+export function buildSpeakerLabeledTranscript(
+  segments: TranscriptSegment[]
+): string {
+  return segments
+    .map((seg) => {
+      const prefix = seg.speaker ? `${seg.speaker}: ` : "";
+      return `${prefix}${seg.text}`;
+    })
+    .join("\n");
+}
+
+export function buildSummaryPrompt(transcript: string, hasSpeakers: boolean = false): string {
   return `You are an expert meeting summarizer. Analyze the following meeting transcript and produce a structured summary.
 
 ## Transcript
 
 ${transcript}
-
+${hasSpeakers ? "\nNote: The transcript includes speaker labels (Speaker 1, Speaker 2, etc.). Use these to attribute decisions, action items, and key points to specific speakers.\n" : ""}
 ## Instructions
 
 Produce the following sections in your response. Use exactly these headers:
@@ -136,22 +148,27 @@ async function callGPT(
 export async function summarizeTranscript(
   transcript: string,
   apiKey: string,
-  model: string
+  model: string,
+  segments?: TranscriptSegment[]
 ): Promise<MeetingSummary> {
   const client = new OpenAI({ apiKey });
 
-  if (!shouldChunkTranscript(transcript)) {
-    const prompt = buildSummaryPrompt(transcript);
+  const textToSummarize = segments
+    ? buildSpeakerLabeledTranscript(segments)
+    : transcript;
+
+  if (!shouldChunkTranscript(textToSummarize)) {
+    const prompt = buildSummaryPrompt(textToSummarize, !!segments);
     const response = await callGPT(client, model, prompt);
     return parseSummaryResponse(response);
   }
 
   // Long transcript: section-by-section then roll up
-  const sections = splitTranscriptIntoSections(transcript);
+  const sections = splitTranscriptIntoSections(textToSummarize);
   const sectionSummaries: string[] = [];
 
   for (const section of sections) {
-    const prompt = buildSummaryPrompt(section);
+    const prompt = buildSummaryPrompt(section, !!segments);
     const response = await callGPT(client, model, prompt);
     sectionSummaries.push(response);
   }
