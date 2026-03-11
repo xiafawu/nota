@@ -29,4 +29,16 @@ describe("loadConfig", () => {
     const config = loadConfig({ model: "gpt-4o-mini" });
     expect(config.summaryModel).toBe("gpt-4o-mini");
   });
+
+  it("defaults diarize to true", () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    const config = loadConfig({});
+    expect(config.diarize).toBe(true);
+  });
+
+  it("respects diarize false override", () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    const config = loadConfig({ diarize: false });
+    expect(config.diarize).toBe(false);
+  });
 });

@@ -3,6 +3,7 @@ export interface CLIOptions {
   language?: string;
   model?: string;
   verbose?: boolean;
+  diarize?: boolean;
 }
 
 export interface AppConfig {
@@ -10,6 +11,7 @@ export interface AppConfig {
   summaryModel: string;
   language?: string;
   verbose: boolean;
+  diarize: boolean;
 }
 
 export function loadConfig(options: CLIOptions): AppConfig {
@@ -25,5 +27,6 @@ export function loadConfig(options: CLIOptions): AppConfig {
     summaryModel: options.model ?? "gpt-4o",
     language: options.language,
     verbose: options.verbose ?? false,
+    diarize: options.diarize ?? true,
   };
 }
