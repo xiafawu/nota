@@ -882,7 +882,7 @@ struct ContentView: View {
 
         Text(model.displayPath)
           .font(.caption)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(.primary.opacity(0.75))
           .lineLimit(4)
           .multilineTextAlignment(.center)
           .padding(.horizontal, 4)
@@ -898,13 +898,14 @@ struct ContentView: View {
       .toggleStyle(.switch)
       .controlSize(.small)
       .disabled(model.isRunning)
-      .padding(.top, 8)
-      .padding(.bottom, 4)
+      .padding(.top, 12)
+      .padding(.bottom, 8)
     }
-    .padding(28)
+    .padding(.horizontal, 22)
+    .padding(.vertical, 28)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .dropTargetGlass(isTargeted: model.isDropTargeted)
-    .padding(14)
+    .padding(18)
     .onDrop(of: [UTType.fileURL.identifier], isTargeted: $model.isDropTargeted) { providers in
       guard let provider = providers.first else {
         return false
