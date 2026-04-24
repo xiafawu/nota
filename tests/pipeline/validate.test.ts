@@ -18,6 +18,16 @@ describe("validateInput", () => {
       await unlink(path);
     }
   });
+
+  it("lists common Apple audio formats as supported", async () => {
+    const { SUPPORTED_AUDIO_EXTENSIONS } = await import("../../src/constants.js");
+
+    expect(SUPPORTED_AUDIO_EXTENSIONS).toContain(".m4a");
+    expect(SUPPORTED_AUDIO_EXTENSIONS).toContain(".aac");
+    expect(SUPPORTED_AUDIO_EXTENSIONS).toContain(".caf");
+    expect(SUPPORTED_AUDIO_EXTENSIONS).toContain(".aiff");
+    expect(SUPPORTED_AUDIO_EXTENSIONS).toContain(".qta");
+  });
 });
 
 describe("checkPython", () => {

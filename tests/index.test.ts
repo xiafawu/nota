@@ -6,7 +6,7 @@ describe("CLI", () => {
     const output = execFileSync("npx", ["tsx", "src/index.ts", "--help"], {
       encoding: "utf-8",
     });
-    expect(output).toContain("meetingsum");
+    expect(output).toContain("nota");
     expect(output).toContain("--output");
     expect(output).toContain("--language");
     expect(output).toContain("--model");

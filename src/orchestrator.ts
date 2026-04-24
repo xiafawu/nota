@@ -78,7 +78,7 @@ async function runAssemblyAIPipeline(
     const spinner0 = log(verbose, "Converting audio for speaker identification...");
     localAudioPath = path.join(
       tmpdir(),
-      `meetingsum-local-${Date.now()}.wav`
+      `nota-local-${Date.now()}.wav`
     );
     await execFileAsync("ffmpeg", [
       "-y", "-i", inputPath, "-ar", "16000", "-ac", "1", localAudioPath,

@@ -15,8 +15,8 @@ function parsePositiveInteger(value: string): number {
 }
 
 program
-  .name("meetingsum")
-  .description("Transcribe and summarize meeting audio files")
+  .name("nota")
+  .description("Transcribe, diarize, and summarize audio files")
   .version("1.0.0")
   .argument("<audio-file>", "Path to audio file (.mp3, .wav, .m4a, etc.)")
   .option("-o, --output <path>", "Output file path (default: <input>.summary.md)")

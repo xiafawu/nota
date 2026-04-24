@@ -4,13 +4,24 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-MeetingSum is a TypeScript CLI tool that transcribes and diarizes audio files using AssemblyAI (default) or OpenAI Whisper, then summarizes with GPT-4o. It outputs structured markdown with narrative summary, key topics, decisions, and action items.
+Nota is a TypeScript CLI tool that transcribes and diarizes audio files using AssemblyAI (default) or OpenAI Whisper, then summarizes with GPT-4o. It outputs structured markdown with narrative summary, key topics, decisions, and action items.
+
+## Naming
+
+- Canonical product name: **Nota**
+- Canonical CLI command: `nota`
+- Canonical share handler: `scripts/nota-share.sh`
+- Default share output folder: `~/Documents/Nota`
+- Persistent speaker profiles: `~/.nota/speakers.json`
+- Legacy `meetingsum` names are compatibility aliases only. Keep `scripts/meetingsum-share.sh`, the `meetingsum` bin alias, `MEETINGSUM_*` env fallbacks, and `~/.meetingsum/speakers.json` fallback unless intentionally doing a breaking cleanup.
+- The repository path is still `/Users/xiafawu/Developer/MeetingSum` for now. Treat that as a filesystem location, not the product name.
+- `docs/superpowers/` contains historical implementation plans/specs from the old name. Do not use those files as the source of truth for current branding.
 
 ## Build & Run Commands
 
-- `npm run dev -- <audio-file>` — run in development mode via tsx
+- `npm run dev -- <audio-file>` — run Nota in development mode via tsx
+- `npm start -- <audio-file>` — run compiled Nota after `npm run build`
 - `npm run build` — compile TypeScript to `dist/`
-- `npm start -- <audio-file>` — run compiled version
 - `npm test` — run all tests (vitest)
 - `npm run test:watch` — run tests in watch mode
 - `npx vitest run tests/pipeline/validate.test.ts` — run a single test file
@@ -51,10 +62,11 @@ Two pipeline paths controlled by `--provider`:
 
 ## Key Design Decisions
 
+- Nota is the primary name; MeetingSum references exist only for backward compatibility during the rename.
 - AssemblyAI as default provider: transcription + diarization in one API call ($0.15/hr)
 - Whisper retained as fallback via `--provider whisper`
 - `.qta` files auto-converted to `.m4a` via ffmpeg before AssemblyAI upload
-- Optional `--identify` stores speaker voiceprints in `~/.meetingsum/speakers.json`
+- Optional `--identify` stores speaker voiceprints in `~/.nota/speakers.json`; existing `~/.meetingsum/speakers.json` profiles are still read as a fallback
 - Long transcripts (>100k tokens) are summarized in sections then rolled up
 - Output saved as markdown file next to input by default
 - ESM-only project (`"type": "module"` in package.json)

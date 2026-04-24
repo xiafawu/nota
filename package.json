@@ -1,10 +1,11 @@
 {
-  "name": "meetingsum",
+  "name": "nota",
   "version": "1.0.0",
-  "description": "",
+  "description": "Transcribe, diarize, and summarize audio into structured notes.",
   "main": "index.js",
   "type": "module",
   "bin": {
+    "nota": "dist/index.js",
     "meetingsum": "dist/index.js"
   },
   "directories": {

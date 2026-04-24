@@ -15,7 +15,8 @@ const __dirname = path.dirname(__filename);
 const SCRIPT_PATH = path.resolve(__dirname, "../../scripts/embeddings.py");
 const PYTHON_BIN = process.env.PYTHON_BIN ?? "python3";
 
-const SPEAKERS_DIR = path.join(homedir(), ".meetingsum");
+const SPEAKERS_DIR = path.join(homedir(), ".nota");
+const LEGACY_SPEAKERS_FILE = path.join(homedir(), ".meetingsum", "speakers.json");
 const SPEAKERS_FILE = path.join(SPEAKERS_DIR, "speakers.json");
 const SIMILARITY_THRESHOLD = 0.70;
 
@@ -50,7 +51,12 @@ export async function loadProfiles(): Promise<SpeakerStore> {
     const data = await readFile(SPEAKERS_FILE, "utf-8");
     return JSON.parse(data);
   } catch {
-    return { version: 1, speakers: {} };
+    try {
+      const legacyData = await readFile(LEGACY_SPEAKERS_FILE, "utf-8");
+      return JSON.parse(legacyData);
+    } catch {
+      return { version: 1, speakers: {} };
+    }
   }
 }
 
@@ -98,7 +104,7 @@ async function convertForEmbedding(inputPath: string): Promise<string | null> {
 
   const tmpPath = path.join(
     tmpdir(),
-    `meetingsum-emb-${Date.now()}${Math.random().toString(36).slice(2)}.wav`
+    `nota-emb-${Date.now()}${Math.random().toString(36).slice(2)}.wav`
   );
   await execFileAsync("ffmpeg", [
     "-y", "-i", inputPath,

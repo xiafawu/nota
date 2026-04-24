@@ -23,7 +23,7 @@ describe("buildMarkdown", () => {
       source: "standup.mp3",
     });
 
-    expect(md).toContain("# Meeting Summary");
+    expect(md).toContain("# Nota Summary");
     expect(md).toContain("**Date:** 2026-03-10");
     expect(md).toContain("**Duration:** 47 minutes");
     expect(md).toContain("A productive meeting.");

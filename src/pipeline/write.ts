@@ -28,7 +28,7 @@ export function buildMarkdown(input: WriteInput): string {
     })
     .join("\n");
 
-  return `# Meeting Summary
+  return `# Nota Summary
 
 **Date:** ${date}
 **Duration:** ${duration} minutes

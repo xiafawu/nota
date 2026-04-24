@@ -13,6 +13,6 @@ export async function chunkAudio(filePath: string): Promise<string[]> {
     return [filePath];
   }
 
-  const tempDir = await mkdtemp(path.join(tmpdir(), "meetingsum-"));
+  const tempDir = await mkdtemp(path.join(tmpdir(), "nota-"));
   return splitAudio(filePath, tempDir, SEGMENT_DURATION, OVERLAP_DURATION);
 }

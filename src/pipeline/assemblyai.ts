@@ -13,7 +13,7 @@ const QTA_EXTENSIONS = new Set([".qta"]);
 async function convertToM4a(inputPath: string): Promise<string> {
   const tmpPath = path.join(
     tmpdir(),
-    `meetingsum-${Date.now()}${Math.random().toString(36).slice(2)}.m4a`
+    `nota-${Date.now()}${Math.random().toString(36).slice(2)}.m4a`
   );
   await execFileAsync("ffmpeg", [
     "-y",

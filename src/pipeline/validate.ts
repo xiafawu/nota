@@ -3,12 +3,11 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
 import { checkFfmpeg } from "../utils/ffmpeg.js";
+import { SUPPORTED_AUDIO_EXTENSIONS } from "../constants.js";
 
 const execFileAsync = promisify(execFile);
 
-const SUPPORTED_EXTENSIONS = new Set([
-  ".mp3", ".wav", ".m4a", ".ogg", ".webm", ".flac", ".qta",
-]);
+const SUPPORTED_EXTENSIONS: ReadonlySet<string> = new Set(SUPPORTED_AUDIO_EXTENSIONS);
 
 export async function validateInput(filePath: string): Promise<void> {
   // Check file exists
@@ -22,7 +21,7 @@ export async function validateInput(filePath: string): Promise<void> {
   const ext = path.extname(filePath).toLowerCase();
   if (!SUPPORTED_EXTENSIONS.has(ext)) {
     throw new Error(
-      `Unsupported audio format: ${ext}. Supported: ${[...SUPPORTED_EXTENSIONS].join(", ")}`
+      `Unsupported audio format: ${ext}. Supported: ${SUPPORTED_AUDIO_EXTENSIONS.join(", ")}`
     );
   }
 
