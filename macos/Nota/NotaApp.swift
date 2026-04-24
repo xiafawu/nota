@@ -723,6 +723,30 @@ extension View {
   fileprivate func liquidGlassButton() -> some View {
     modifier(LiquidGlassButtonModifier())
   }
+
+  fileprivate func dropTargetGlass(isTargeted: Bool) -> some View {
+    modifier(DropTargetGlassModifier(isTargeted: isTargeted))
+  }
+}
+
+private struct DropTargetGlassModifier: ViewModifier {
+  let isTargeted: Bool
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+  func body(content: Content) -> some View {
+    if reduceTransparency {
+      content
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .overlay(
+          RoundedRectangle(cornerRadius: 20)
+            .strokeBorder(isTargeted ? Color.accentColor : Color.secondary.opacity(0.2), lineWidth: isTargeted ? 2 : 1)
+        )
+    } else if isTargeted {
+      content.glassEffect(.regular.tint(.accentColor), in: RoundedRectangle(cornerRadius: 20))
+    } else {
+      content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 20))
+    }
+  }
 }
 
 struct ContentView: View {
@@ -737,29 +761,24 @@ struct ContentView: View {
         .navigationSplitViewColumnWidth(min: 460, ideal: 640)
     }
     .toolbar {
-      ToolbarItemGroup(placement: .primaryAction) {
-        GlassEffectContainer(spacing: 8) {
-          Button {
-            model.chooseFile()
-          } label: {
-            Label("Open", systemImage: "folder")
-          }
-          .liquidGlass(.regular, in: .capsule)
-          .disabled(model.isRunning)
-
-          Button {
-            model.transcribe()
-          } label: {
-            Label("Transcribe", systemImage: "waveform")
-          }
-          .liquidGlass(.regular, in: .capsule)
-          .disabled(model.selectedURL == nil || model.isRunning)
-
-          Toggle("Remember speakers", isOn: $model.identifySpeakers)
-            .toggleStyle(.checkbox)
-            .liquidGlass(.regular, in: .capsule)
-            .disabled(model.isRunning)
+      ToolbarItemGroup(placement: .navigation) {
+        Button {
+          model.chooseFile()
+        } label: {
+          Label("Open", systemImage: "folder")
         }
+        .help("Open audio file")
+        .liquidGlassButton()
+        .disabled(model.isRunning)
+
+        Button {
+          model.transcribe()
+        } label: {
+          Label("Transcribe", systemImage: "waveform")
+        }
+        .help("Transcribe current audio")
+        .liquidGlassButton()
+        .disabled(model.selectedURL == nil || model.isRunning)
       }
 
       ToolbarItemGroup(placement: .status) {
@@ -780,6 +799,53 @@ struct ContentView: View {
           .transition(.opacity.combined(with: .scale))
         }
       }
+
+      ToolbarItemGroup(placement: .primaryAction) {
+        Menu {
+          Button {
+            model.copyRichText()
+          } label: {
+            Label("Copy Rich Text", systemImage: "doc.on.clipboard")
+          }
+          Button {
+            model.copyMarkdown()
+          } label: {
+            Label("Copy Markdown", systemImage: "chevron.left.forwardslash.chevron.right")
+          }
+        } label: {
+          Label("Copy", systemImage: "doc.on.doc")
+        }
+        .help("Copy transcript")
+        .liquidGlassButton()
+        .disabled(model.markdown.isEmpty)
+
+        Menu {
+          Button {
+            model.exportRichText()
+          } label: {
+            Label("Export Rich Text...", systemImage: "textformat")
+          }
+          Button {
+            model.exportMarkdown()
+          } label: {
+            Label("Export Markdown...", systemImage: "number")
+          }
+        } label: {
+          Label("Export", systemImage: "square.and.arrow.down")
+        }
+        .help("Export transcript to file")
+        .liquidGlassButton()
+        .disabled(model.markdown.isEmpty)
+
+        Button {
+          model.revealOutput()
+        } label: {
+          Label("Reveal", systemImage: "finder")
+        }
+        .help("Reveal output in Finder")
+        .liquidGlassButton()
+        .disabled(model.lastOutputURL == nil)
+      }
     }
     .animation(.easeInOut(duration: 0.2), value: model.isRunning)
     .containerBackground(.regularMaterial, for: .window)
@@ -794,30 +860,42 @@ struct ContentView: View {
         .foregroundStyle(model.isDropTargeted ? Color.accentColor : Color.secondary)
         .symbolEffect(.pulse, isActive: model.isRunning)
 
-      VStack(spacing: 8) {
+      VStack(spacing: 10) {
         Text(model.displayName)
           .font(.title3)
           .fontWeight(.semibold)
+          .foregroundStyle(.primary)
           .lineLimit(3)
           .multilineTextAlignment(.center)
 
         Text(model.displayPath)
-          .font(.footnote)
+          .font(.caption)
           .monospaced()
           .foregroundStyle(.secondary)
           .lineLimit(4)
           .multilineTextAlignment(.center)
-          .padding(.horizontal, 8)
+          .padding(.horizontal, 10)
+          .padding(.vertical, 4)
+          .background(
+            Capsule().fill(Color.secondary.opacity(0.08))
+          )
       }
 
       Spacer()
+
+      Toggle(isOn: $model.identifySpeakers) {
+        Label("Remember speakers", systemImage: "person.wave.2")
+          .labelStyle(.titleAndIcon)
+          .font(.callout)
+      }
+      .toggleStyle(.switch)
+      .controlSize(.small)
+      .disabled(model.isRunning)
+      .padding(.horizontal, 4)
     }
     .padding(20)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .liquidGlass(
-      model.isDropTargeted ? .regular.tint(.accentColor) : .regular,
-      in: RoundedRectangle(cornerRadius: 20)
-    )
+    .dropTargetGlass(isTargeted: model.isDropTargeted)
     .padding(14)
     .onDrop(of: [UTType.fileURL.identifier], isTargeted: $model.isDropTargeted) { providers in
       guard let provider = providers.first else {
@@ -846,9 +924,10 @@ struct ContentView: View {
 
   private var resultPane: some View {
     VStack(spacing: 0) {
-      HStack(spacing: 10) {
+      HStack(spacing: 12) {
         Text("Transcript")
           .font(.headline)
+          .foregroundStyle(.primary)
 
         Picker("View", selection: $model.resultViewMode) {
           ForEach(ResultViewMode.allCases) { mode in
@@ -857,58 +936,13 @@ struct ContentView: View {
         }
         .pickerStyle(.segmented)
         .labelsHidden()
-        .frame(width: 210)
+        .frame(width: 180)
         .disabled(model.markdown.isEmpty)
 
         Spacer()
-
-        GlassEffectContainer(spacing: 8) {
-          Menu {
-            Button {
-              model.copyRichText()
-            } label: {
-              Label("Copy Rich Text", systemImage: "doc.on.clipboard")
-            }
-
-            Button {
-              model.copyMarkdown()
-            } label: {
-              Label("Copy Markdown", systemImage: "chevron.left.forwardslash.chevron.right")
-            }
-          } label: {
-            Label("Copy", systemImage: "doc.on.doc")
-          }
-          .liquidGlassButton()
-          .disabled(model.markdown.isEmpty)
-
-          Menu {
-            Button {
-              model.exportRichText()
-            } label: {
-              Label("Export Rich Text...", systemImage: "textformat")
-            }
-
-            Button {
-              model.exportMarkdown()
-            } label: {
-              Label("Export Markdown...", systemImage: "number")
-            }
-          } label: {
-            Label("Export", systemImage: "square.and.arrow.down")
-          }
-          .liquidGlassButton()
-          .disabled(model.markdown.isEmpty)
-
-          Button {
-            model.revealOutput()
-          } label: {
-            Label("Reveal in Finder", systemImage: "finder")
-          }
-          .liquidGlassButton()
-          .disabled(model.lastOutputURL == nil)
-        }
       }
-      .padding(12)
+      .padding(.horizontal, 16)
+      .padding(.vertical, 10)
 
       Divider()
 
