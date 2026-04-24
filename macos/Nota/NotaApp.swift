@@ -875,7 +875,7 @@ struct ContentView: View {
         TextEditor(text: $model.markdown)
           .font(.system(.body, design: .monospaced))
           .scrollContentBackground(.hidden)
-          .scrollEdgeEffect(.hard, for: .top)
+          .scrollEdgeEffectStyle(.hard, for: .top)
       }
     }
   }
