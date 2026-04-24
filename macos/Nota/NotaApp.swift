@@ -759,6 +759,7 @@ struct ContentView: View {
     } detail: {
       resultPane
         .navigationSplitViewColumnWidth(min: 460, ideal: 640)
+        .background(.thinMaterial)
     }
     .toolbar {
       ToolbarItemGroup(placement: .navigation) {
@@ -882,7 +883,8 @@ struct ContentView: View {
 
         Text(model.displayPath)
           .font(.caption)
-          .foregroundStyle(.primary.opacity(0.75))
+          .fontWeight(.medium)
+          .foregroundStyle(.primary.opacity(0.85))
           .lineLimit(4)
           .multilineTextAlignment(.center)
           .padding(.horizontal, 4)
@@ -898,8 +900,8 @@ struct ContentView: View {
       .toggleStyle(.switch)
       .controlSize(.small)
       .disabled(model.isRunning)
-      .padding(.top, 12)
-      .padding(.bottom, 8)
+      .padding(.top, 16)
+      .padding(.bottom, 12)
     }
     .padding(.horizontal, 22)
     .padding(.vertical, 28)
