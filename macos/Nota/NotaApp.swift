@@ -742,9 +742,9 @@ private struct DropTargetGlassModifier: ViewModifier {
             .strokeBorder(isTargeted ? Color.accentColor : Color.secondary.opacity(0.2), lineWidth: isTargeted ? 2 : 1)
         )
     } else if isTargeted {
-      content.glassEffect(.regular.tint(.accentColor), in: RoundedRectangle(cornerRadius: 20))
+      content.glassEffect(.clear.tint(.accentColor), in: RoundedRectangle(cornerRadius: 20))
     } else {
-      content.glassEffect(.regular, in: RoundedRectangle(cornerRadius: 20))
+      content.glassEffect(.clear, in: RoundedRectangle(cornerRadius: 20))
     }
   }
 }
@@ -864,33 +864,28 @@ struct ContentView: View {
   }
 
   private var dropPane: some View {
-    VStack(spacing: 16) {
+    VStack(spacing: 18) {
       Spacer()
 
       Image(systemName: model.isRunning ? "waveform" : "tray.and.arrow.down")
-        .font(.system(size: 56, weight: .medium))
-        .foregroundStyle(model.isDropTargeted ? Color.accentColor : Color.primary.opacity(0.8))
+        .font(.system(size: 60, weight: .semibold))
+        .foregroundStyle(model.isDropTargeted ? Color.accentColor : Color.primary.opacity(0.85))
         .symbolEffect(.pulse, isActive: model.isRunning)
 
-      VStack(spacing: 12) {
+      VStack(spacing: 10) {
         Text(model.displayName)
           .font(.title2)
-          .fontWeight(.semibold)
+          .fontWeight(.bold)
           .foregroundStyle(.primary)
           .lineLimit(3)
           .multilineTextAlignment(.center)
 
         Text(model.displayPath)
-          .font(.footnote)
-          .monospaced()
-          .foregroundStyle(.primary.opacity(0.7))
+          .font(.caption)
+          .foregroundStyle(.secondary)
           .lineLimit(4)
           .multilineTextAlignment(.center)
-          .padding(.horizontal, 12)
-          .padding(.vertical, 6)
-          .background(
-            Capsule().fill(Color.primary.opacity(0.06))
-          )
+          .padding(.horizontal, 4)
       }
 
       Spacer()
@@ -903,10 +898,10 @@ struct ContentView: View {
       .toggleStyle(.switch)
       .controlSize(.small)
       .disabled(model.isRunning)
-      .padding(.top, 12)
-      .padding(.horizontal, 4)
+      .padding(.top, 8)
+      .padding(.bottom, 4)
     }
-    .padding(24)
+    .padding(28)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .dropTargetGlass(isTargeted: model.isDropTargeted)
     .padding(14)
