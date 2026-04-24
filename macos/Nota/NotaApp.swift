@@ -661,8 +661,7 @@ struct RichTextViewer: NSViewRepresentable {
     let scrollView = NSScrollView()
     scrollView.hasVerticalScroller = true
     scrollView.hasHorizontalScroller = false
-    scrollView.drawsBackground = true
-    scrollView.backgroundColor = .textBackgroundColor
+    scrollView.drawsBackground = false
 
     let textView = NSTextView()
     textView.isEditable = false
@@ -736,6 +735,7 @@ struct ContentView: View {
           .frame(maxWidth: 280, alignment: .trailing)
       }
     }
+    .containerBackground(.regularMaterial, for: .window)
   }
 
   private var dropPane: some View {
@@ -860,6 +860,7 @@ struct ContentView: View {
 
       if model.resultViewMode == .richText {
         RichTextViewer(attributedString: model.richText)
+          .scrollEdgeEffect(.hard, for: .top)
       } else {
         TextEditor(text: $model.markdown)
           .font(.system(.body, design: .monospaced))
