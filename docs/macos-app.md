@@ -1,5 +1,7 @@
 # Nota macOS App
 
+**Requires macOS 26 (Tahoe) or later and Xcode 26+**
+
 The local macOS app is a lightweight SwiftUI shell around the existing Nota CLI pipeline.
 
 ## Build
