@@ -19,6 +19,10 @@ const SPEAKERS_DIR = path.join(homedir(), ".nota");
 const LEGACY_SPEAKERS_FILE = path.join(homedir(), ".meetingsum", "speakers.json");
 const SPEAKERS_FILE = path.join(SPEAKERS_DIR, "speakers.json");
 const SIMILARITY_THRESHOLD = 0.70;
+// Diarizers occasionally split one real speaker into multiple labels with
+// near-identical voiceprints; collapse pairs at or above this cosine before
+// matching so we don't enroll the same person twice.
+export const MERGE_THRESHOLD = 0.85;
 
 const QTA_EXTENSIONS = new Set([".qta"]);
 
@@ -65,6 +69,96 @@ export async function saveProfiles(store: SpeakerStore): Promise<void> {
   await writeFile(SPEAKERS_FILE, JSON.stringify(store, null, 2), "utf-8");
 }
 
+/**
+ * Cluster diarizer labels whose embeddings are near-duplicates so a single
+ * real speaker is not enrolled twice. Uses single-linkage agglomerative
+ * clustering on pairwise cosine: any pair >= `threshold` joins clusters,
+ * which means transitive chains (A~B, B~C) collapse even if A~C is below
+ * threshold. Earliest label in iteration order becomes the cluster's canonical
+ * id; the canonical embedding is the mean of cluster members,
+ * L2-renormalized so cosine comparisons against profiles stay well-scaled.
+ */
+export function clusterLabels(
+  embeddings: Record<string, number[]>,
+  threshold: number = MERGE_THRESHOLD
+): {
+  canonicalOf: Record<string, string>;
+  merged: Record<string, number[]>;
+} {
+  const labels = Object.keys(embeddings);
+  const canonicalOf: Record<string, string> = {};
+  const merged: Record<string, number[]> = {};
+
+  if (labels.length === 0) return { canonicalOf, merged };
+
+  // Union-find over label indices keeps single-linkage transitive merging
+  // simple without recursive set operations.
+  const parent = labels.map((_, i) => i);
+  const find = (i: number): number => {
+    while (parent[i] !== i) {
+      parent[i] = parent[parent[i]];
+      i = parent[i];
+    }
+    return i;
+  };
+  const union = (i: number, j: number) => {
+    const ri = find(i);
+    const rj = find(j);
+    if (ri === rj) return;
+    // Keep the earlier index as the root so canonical = earliest occurrence.
+    if (ri < rj) parent[rj] = ri;
+    else parent[ri] = rj;
+  };
+
+  for (let i = 0; i < labels.length; i++) {
+    for (let j = i + 1; j < labels.length; j++) {
+      const sim = cosineSimilarity(embeddings[labels[i]], embeddings[labels[j]]);
+      if (sim >= threshold) union(i, j);
+    }
+  }
+
+  // Group label indices by cluster root.
+  const groups: Record<number, number[]> = {};
+  for (let i = 0; i < labels.length; i++) {
+    const root = find(i);
+    if (!groups[root]) groups[root] = [];
+    groups[root].push(i);
+  }
+
+  for (const rootKey of Object.keys(groups)) {
+    const indices = groups[Number(rootKey)];
+    // Earliest label by original iteration order is the canonical id.
+    indices.sort((a, b) => a - b);
+    const canonical = labels[indices[0]];
+
+    // Average member embeddings dimension-wise.
+    const dim = embeddings[canonical].length;
+    const mean = new Array<number>(dim).fill(0);
+    for (const idx of indices) {
+      const vec = embeddings[labels[idx]];
+      for (let d = 0; d < dim; d++) mean[d] += vec[d];
+    }
+    for (let d = 0; d < dim; d++) mean[d] /= indices.length;
+
+    // L2-renormalize so subsequent cosine comparisons are not biased by
+    // averaging-induced shrinkage. Zero-norm vectors are passed through
+    // unchanged (cosineSimilarity already handles them safely).
+    let norm = 0;
+    for (let d = 0; d < dim; d++) norm += mean[d] * mean[d];
+    norm = Math.sqrt(norm);
+    if (norm > 0) {
+      for (let d = 0; d < dim; d++) mean[d] /= norm;
+    }
+
+    merged[canonical] = mean;
+    for (const idx of indices) {
+      canonicalOf[labels[idx]] = canonical;
+    }
+  }
+
+  return { canonicalOf, merged };
+}
+
 export function matchSpeakers(
   embeddings: Record<string, number[]>,
   profiles: SpeakerStore
@@ -74,12 +168,16 @@ export function matchSpeakers(
 
   if (profileEntries.length === 0) return matches;
 
+  // Collapse near-duplicate diarizer labels first so one real speaker can
+  // only claim a profile name once.
+  const { merged } = clusterLabels(embeddings, MERGE_THRESHOLD);
+
   // Track which profile names have been claimed to avoid duplicates
   const claimed = new Set<string>();
 
   // Sort by best match first so higher-confidence matches claim names first
   const candidates: { label: string; name: string; score: number }[] = [];
-  for (const [label, embedding] of Object.entries(embeddings)) {
+  for (const [label, embedding] of Object.entries(merged)) {
     for (const [name, profile] of profileEntries) {
       const score = cosineSimilarity(embedding, profile.embedding);
       if (score >= SIMILARITY_THRESHOLD) {
@@ -240,13 +338,15 @@ export async function promptForSpeakerNames(
 
 export function applySpeakerNames(
   segments: TranscriptSegment[],
-  nameMap: Record<string, string>
+  nameMap: Record<string, string>,
+  labelMap: Record<string, string> = {}
 ): TranscriptSegment[] {
-  return segments.map((seg) => ({
-    ...seg,
-    speaker:
-      seg.speaker && nameMap[seg.speaker]
-        ? nameMap[seg.speaker]
-        : seg.speaker,
-  }));
+  return segments.map((seg) => {
+    if (!seg.speaker) return seg;
+    // Rewrite sibling labels to their canonical first so a name resolved
+    // against the canonical applies to every clustered sibling segment.
+    const canonical = labelMap[seg.speaker] ?? seg.speaker;
+    const resolved = nameMap[canonical] ?? canonical;
+    return { ...seg, speaker: resolved };
+  });
 }
