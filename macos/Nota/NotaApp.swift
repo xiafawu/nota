@@ -59,12 +59,18 @@ final class NotaModel: ObservableObject {
   @Published var resultViewMode: ResultViewMode = .richText
   @Published var displayName = "Drop Audio"
   @Published var displayPath = "MP3, M4A, WAV, CAF, QTA, MOV, MP4"
+  @Published var history: [HistoryEntry] = []
+  @Published var selectedHistoryID: HistoryEntry.ID?
 
   private let projectDirectory = URL(fileURLWithPath: ProcessInfo.processInfo.environment["NOTA_PROJECT_DIR"] ?? "/Users/xiafawu/Developer/Nota")
   private let outputDirectory = notaOutputDirectory()
 
   var richText: NSAttributedString {
     renderMarkdownAsRichText(markdown)
+  }
+
+  var hasContent: Bool {
+    !markdown.isEmpty
   }
 
   init() {
@@ -84,6 +90,7 @@ final class NotaModel: ObservableObject {
         self.accept(first)
       }
     }
+    refreshHistory()
   }
 
   func chooseFile() {
@@ -146,12 +153,77 @@ final class NotaModel: ObservableObject {
         markdown = result.markdown
         lastOutputURL = result.outputURL
         status = "Complete"
+        refreshHistory()
+        if let entry = history.first(where: { $0.url.standardizedFileURL == result.outputURL.standardizedFileURL }) {
+          selectedHistoryID = entry.id
+        }
       } catch {
         markdown = failureMarkdown("Transcription failed", details: error.localizedDescription)
         status = "Transcription failed"
       }
       isRunning = false
     }
+  }
+
+  func refreshHistory() {
+    let fileManager = FileManager.default
+    let contents = (try? fileManager.contentsOfDirectory(
+      at: outputDirectory,
+      includingPropertiesForKeys: [.contentModificationDateKey],
+      options: [.skipsHiddenFiles]
+    )) ?? []
+
+    let entries: [HistoryEntry] = contents.compactMap { url in
+      let name = url.lastPathComponent
+      guard name.hasSuffix(".summary.md"), !name.hasPrefix(".nota-") else {
+        return nil
+      }
+      let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
+      let date = values?.contentModificationDate ?? Date.distantPast
+      return HistoryEntry(url: url, modifiedAt: date)
+    }
+    history = entries.sorted { $0.modifiedAt > $1.modifiedAt }
+  }
+
+  func openHistory(_ entry: HistoryEntry) {
+    guard !isRunning else {
+      return
+    }
+    do {
+      markdown = try String(contentsOf: entry.url, encoding: .utf8)
+      lastOutputURL = entry.url
+      selectedURL = nil
+      selectedHistoryID = entry.id
+      displayName = entry.title
+      displayPath = entry.url.path
+      status = entry.title
+    } catch {
+      status = "Could not open transcript"
+    }
+  }
+
+  func newTranscription() {
+    guard !isRunning else {
+      return
+    }
+    markdown = ""
+    lastOutputURL = nil
+    selectedURL = nil
+    selectedHistoryID = nil
+    displayName = "Drop Audio"
+    displayPath = "MP3, M4A, WAV, CAF, QTA, MOV, MP4"
+    status = "Drop audio to transcribe"
+  }
+
+  func deleteHistory(_ entry: HistoryEntry) {
+    guard !isRunning else {
+      return
+    }
+    try? FileManager.default.removeItem(at: entry.url)
+    if selectedHistoryID == entry.id {
+      newTranscription()
+    }
+    refreshHistory()
   }
 
   func copyMarkdown() {
@@ -312,6 +384,32 @@ final class NotaModel: ObservableObject {
 private struct NotaResult {
   let markdown: String
   let outputURL: URL
+}
+
+struct HistoryEntry: Identifiable, Hashable {
+  let url: URL
+  let modifiedAt: Date
+
+  var id: URL { url }
+
+  var title: String {
+    let base = url.deletingPathExtension().lastPathComponent
+    let stripped = base.hasSuffix(".summary") ? String(base.dropLast(".summary".count)) : base
+    if let dashRange = stripped.range(of: "-", options: .backwards),
+       let _ = Int(stripped[dashRange.upperBound...].prefix(8)) {
+      let prefix = stripped[..<dashRange.lowerBound]
+      if !prefix.isEmpty {
+        return String(prefix)
+      }
+    }
+    return stripped
+  }
+
+  var relativeDate: String {
+    let formatter = RelativeDateTimeFormatter()
+    formatter.unitsStyle = .abbreviated
+    return formatter.localizedString(for: modifiedAt, relativeTo: Date())
+  }
 }
 
 enum ResultViewMode: String, CaseIterable, Identifiable {
@@ -715,6 +813,24 @@ private struct LiquidGlassButtonModifier: ViewModifier {
   }
 }
 
+private struct ViewModePickerButtonStyle: ViewModifier {
+  let isSelected: Bool
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+  @ViewBuilder
+  func body(content: Content) -> some View {
+    if reduceTransparency && isSelected {
+      content.buttonStyle(.borderedProminent)
+    } else if reduceTransparency {
+      content.buttonStyle(.bordered)
+    } else if isSelected {
+      content.buttonStyle(.glassProminent)
+    } else {
+      content.buttonStyle(.glass)
+    }
+  }
+}
+
 extension View {
   fileprivate func liquidGlass<S: Shape>(_ glass: Glass = .regular, in shape: S) -> some View {
     modifier(LiquidGlassModifier(glass: glass, shape: shape))
@@ -754,11 +870,11 @@ struct ContentView: View {
 
   var body: some View {
     NavigationSplitView {
-      dropPane
-        .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 360)
+      historyPane
+        .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)
     } detail: {
-      resultPane
-        .navigationSplitViewColumnWidth(min: 460, ideal: 640)
+      mainPane
+        .navigationSplitViewColumnWidth(min: 520, ideal: 720)
         .background(.thinMaterial)
     }
     .toolbar {
@@ -783,14 +899,19 @@ struct ContentView: View {
       }
 
       ToolbarItem(placement: .principal) {
-        Picker("View", selection: $model.resultViewMode) {
+        HStack(spacing: 6) {
           ForEach(ResultViewMode.allCases) { mode in
-            Text(mode.rawValue).tag(mode)
+            Button {
+              model.resultViewMode = mode
+            } label: {
+              Text(mode.rawValue)
+                .font(.callout.weight(model.resultViewMode == mode ? .semibold : .regular))
+                .frame(minWidth: 76)
+            }
+            .help("Show \(mode.rawValue)")
+            .modifier(ViewModePickerButtonStyle(isSelected: model.resultViewMode == mode))
           }
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .frame(width: 200)
       }
 
       ToolbarItemGroup(placement: .status) {
@@ -863,50 +984,121 @@ struct ContentView: View {
     .containerBackground(.regularMaterial, for: .window)
   }
 
-  private var dropPane: some View {
-    VStack(spacing: 18) {
-      Spacer()
-
-      Image(systemName: model.isRunning ? "waveform" : "tray.and.arrow.down")
-        .font(.system(size: 60, weight: .semibold))
-        .foregroundStyle(model.isDropTargeted ? Color.accentColor : Color.primary.opacity(0.85))
-        .symbolEffect(.pulse, isActive: model.isRunning)
-
-      VStack(spacing: 10) {
-        Text(model.displayName)
-          .font(.title2)
-          .fontWeight(.bold)
-          .foregroundStyle(.primary)
-          .lineLimit(3)
-          .multilineTextAlignment(.center)
-
-        Text(model.displayPath)
-          .font(.caption)
-          .fontWeight(.medium)
-          .foregroundStyle(.primary.opacity(0.85))
-          .lineLimit(4)
-          .multilineTextAlignment(.center)
-          .padding(.horizontal, 4)
+  private var historyPane: some View {
+    VStack(spacing: 0) {
+      Button {
+        model.newTranscription()
+      } label: {
+        HStack(spacing: 8) {
+          Image(systemName: "square.and.pencil")
+          Text("New Transcription")
+            .fontWeight(.medium)
+          Spacer()
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
+        .contentShape(Rectangle())
       }
-
-      Spacer()
-
-      Toggle(isOn: $model.identifySpeakers) {
-        Label("Remember speakers", systemImage: "person.wave.2")
-          .labelStyle(.titleAndIcon)
-          .font(.callout)
-      }
-      .toggleStyle(.switch)
-      .controlSize(.small)
+      .buttonStyle(.plain)
+      .liquidGlass(.regular.tint(.accentColor.opacity(0.15)), in: RoundedRectangle(cornerRadius: 10))
+      .padding(.horizontal, 10)
+      .padding(.top, 10)
+      .padding(.bottom, 6)
       .disabled(model.isRunning)
-      .padding(.top, 16)
-      .padding(.bottom, 12)
+
+      if model.history.isEmpty {
+        Spacer()
+        VStack(spacing: 8) {
+          Image(systemName: "tray")
+            .font(.system(size: 26, weight: .regular))
+            .foregroundStyle(.secondary)
+          Text("No transcripts yet")
+            .font(.callout)
+            .foregroundStyle(.secondary)
+          Text("Drop audio into the main window")
+            .font(.caption)
+            .foregroundStyle(.tertiary)
+            .multilineTextAlignment(.center)
+        }
+        .padding(.horizontal, 16)
+        Spacer()
+      } else {
+        List(selection: $model.selectedHistoryID) {
+          Section {
+            ForEach(model.history) { entry in
+              historyRow(entry)
+                .tag(Optional(entry.id))
+                .contextMenu {
+                  Button {
+                    model.openHistory(entry)
+                  } label: {
+                    Label("Open", systemImage: "doc.text")
+                  }
+                  Button {
+                    NSWorkspace.shared.activateFileViewerSelecting([entry.url])
+                  } label: {
+                    Label("Reveal in Finder", systemImage: "finder")
+                  }
+                  Divider()
+                  Button(role: .destructive) {
+                    model.deleteHistory(entry)
+                  } label: {
+                    Label("Delete", systemImage: "trash")
+                  }
+                }
+            }
+          } header: {
+            Text("History")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
+        }
+        .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+      }
     }
-    .padding(.horizontal, 22)
-    .padding(.vertical, 28)
-    .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .dropTargetGlass(isTargeted: model.isDropTargeted)
-    .padding(18)
+    .onChange(of: model.selectedHistoryID) { _, newValue in
+      guard let newValue, let entry = model.history.first(where: { $0.id == newValue }) else {
+        return
+      }
+      if entry.url.standardizedFileURL != model.lastOutputURL?.standardizedFileURL {
+        model.openHistory(entry)
+      }
+    }
+  }
+
+  private func historyRow(_ entry: HistoryEntry) -> some View {
+    VStack(alignment: .leading, spacing: 2) {
+      Text(entry.title)
+        .font(.callout)
+        .fontWeight(.medium)
+        .lineLimit(1)
+        .truncationMode(.middle)
+      Text(entry.relativeDate)
+        .font(.caption2)
+        .foregroundStyle(.secondary)
+    }
+    .padding(.vertical, 2)
+  }
+
+  private var mainPane: some View {
+    ZStack {
+      if model.hasContent {
+        resultPane
+      } else {
+        emptyState
+      }
+
+      if model.isDropTargeted {
+        RoundedRectangle(cornerRadius: 0)
+          .strokeBorder(Color.accentColor, lineWidth: 3)
+          .allowsHitTesting(false)
+          .transition(.opacity)
+      }
+    }
+    .animation(.easeInOut(duration: 0.15), value: model.isDropTargeted)
+    .animation(.easeInOut(duration: 0.2), value: model.hasContent)
     .onDrop(of: [UTType.fileURL.identifier], isTargeted: $model.isDropTargeted) { providers in
       guard let provider = providers.first else {
         return false
@@ -930,6 +1122,45 @@ struct ContentView: View {
       }
       return true
     }
+  }
+
+  private var emptyState: some View {
+    VStack(spacing: 24) {
+      Spacer()
+
+      Image(systemName: model.isRunning ? "waveform" : "tray.and.arrow.down")
+        .font(.system(size: 72, weight: .semibold))
+        .foregroundStyle(model.isDropTargeted ? Color.accentColor : Color.primary.opacity(0.85))
+        .symbolEffect(.pulse, isActive: model.isRunning)
+
+      VStack(spacing: 10) {
+        Text(model.displayName)
+          .font(.title)
+          .fontWeight(.bold)
+          .foregroundStyle(.primary)
+          .multilineTextAlignment(.center)
+
+        Text(model.displayPath)
+          .font(.callout)
+          .foregroundStyle(.secondary)
+          .multilineTextAlignment(.center)
+          .padding(.horizontal, 24)
+      }
+
+      Toggle(isOn: $model.identifySpeakers) {
+        Label("Remember speakers", systemImage: "person.wave.2")
+          .labelStyle(.titleAndIcon)
+          .font(.callout)
+      }
+      .toggleStyle(.switch)
+      .controlSize(.regular)
+      .disabled(model.isRunning)
+      .padding(.top, 12)
+
+      Spacer()
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .padding(40)
   }
 
   private var resultPane: some View {
