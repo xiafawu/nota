@@ -56,7 +56,6 @@ final class NotaModel: ObservableObject {
   @Published var isDropTargeted = false
   @Published var identifySpeakers = false
   @Published var lastOutputURL: URL?
-  @Published var resultViewMode: ResultViewMode = .richText
   @Published var displayName = "Drop Audio"
   @Published var displayPath = "MP3, M4A, WAV, CAF, QTA, MOV, MP4"
   @Published var history: [HistoryEntry] = []
@@ -409,15 +408,6 @@ struct HistoryEntry: Identifiable, Hashable {
     let formatter = RelativeDateTimeFormatter()
     formatter.unitsStyle = .abbreviated
     return formatter.localizedString(for: modifiedAt, relativeTo: Date())
-  }
-}
-
-enum ResultViewMode: String, CaseIterable, Identifiable {
-  case richText = "Rich Text"
-  case markdown = "Markdown"
-
-  var id: String {
-    rawValue
   }
 }
 
@@ -813,24 +803,6 @@ private struct LiquidGlassButtonModifier: ViewModifier {
   }
 }
 
-private struct ViewModePickerButtonStyle: ViewModifier {
-  let isSelected: Bool
-  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
-
-  @ViewBuilder
-  func body(content: Content) -> some View {
-    if reduceTransparency && isSelected {
-      content.buttonStyle(.borderedProminent)
-    } else if reduceTransparency {
-      content.buttonStyle(.bordered)
-    } else if isSelected {
-      content.buttonStyle(.glassProminent)
-    } else {
-      content.buttonStyle(.glass)
-    }
-  }
-}
-
 extension View {
   fileprivate func liquidGlass<S: Shape>(_ glass: Glass = .regular, in shape: S) -> some View {
     modifier(LiquidGlassModifier(glass: glass, shape: shape))
@@ -896,22 +868,6 @@ struct ContentView: View {
         .help("Transcribe current audio")
         .liquidGlassButton()
         .disabled(model.selectedURL == nil || model.isRunning)
-      }
-
-      ToolbarItem(placement: .principal) {
-        HStack(spacing: 6) {
-          ForEach(ResultViewMode.allCases) { mode in
-            Button {
-              model.resultViewMode = mode
-            } label: {
-              Text(mode.rawValue)
-                .font(.callout.weight(model.resultViewMode == mode ? .semibold : .regular))
-                .frame(minWidth: 76)
-            }
-            .help("Show \(mode.rawValue)")
-            .modifier(ViewModePickerButtonStyle(isSelected: model.resultViewMode == mode))
-          }
-        }
       }
 
       ToolbarItemGroup(placement: .status) {
@@ -1164,15 +1120,6 @@ struct ContentView: View {
   }
 
   private var resultPane: some View {
-    Group {
-      if model.resultViewMode == .richText {
-        RichTextViewer(attributedString: model.richText)
-      } else {
-        TextEditor(text: $model.markdown)
-          .font(.system(.body, design: .monospaced))
-          .scrollContentBackground(.hidden)
-          .scrollEdgeEffectStyle(.hard, for: .top)
-      }
-    }
+    RichTextViewer(attributedString: model.richText)
   }
 }
