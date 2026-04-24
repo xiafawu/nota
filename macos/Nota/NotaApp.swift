@@ -772,12 +772,11 @@ struct ContentView: View {
     }
     .padding(20)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(model.isDropTargeted ? Color.accentColor.opacity(0.12) : Color(nsColor: .windowBackgroundColor))
-    .overlay {
-      RoundedRectangle(cornerRadius: 8)
-        .strokeBorder(model.isDropTargeted ? Color.accentColor : Color.secondary.opacity(0.35), style: StrokeStyle(lineWidth: 1, dash: [6, 6]))
-        .padding(14)
-    }
+    .glassEffect(
+      model.isDropTargeted ? .regular.tint(.accentColor) : .regular,
+      in: RoundedRectangle(cornerRadius: 20)
+    )
+    .padding(14)
     .onDrop(of: [UTType.fileURL.identifier], isTargeted: $model.isDropTargeted) { providers in
       guard let provider = providers.first else {
         return false
