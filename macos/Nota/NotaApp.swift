@@ -699,12 +699,12 @@ struct ContentView: View {
         .padding(12)
         .background(.bar)
 
-      HSplitView {
+      NavigationSplitView {
         dropPane
-          .frame(minWidth: 260, idealWidth: 300, maxWidth: 360)
-
+          .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 360)
+      } detail: {
         resultPane
-          .frame(minWidth: 460)
+          .navigationSplitViewColumnWidth(min: 460, ideal: 640)
       }
     }
   }
