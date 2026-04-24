@@ -3,6 +3,12 @@
 
 set -euo pipefail
 
+XCODE_VERSION="$(xcodebuild -version | head -1 | awk '{print $2}')"
+if [[ ! "$XCODE_VERSION" =~ ^26 ]]; then
+  echo "Error: Xcode 26+ required (found: $XCODE_VERSION)"
+  exit 1
+fi
+
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="Nota"
 BUILD_DIR="$PROJECT_DIR/.build/macos-app"
@@ -19,7 +25,7 @@ SHARE_MACOS_DIR="$SHARE_CONTENTS_DIR/MacOS"
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$MODULE_CACHE_DIR" "$SHARE_MACOS_DIR"
 
 swiftc \
-  -target arm64-apple-macosx14.0 \
+  -target arm64-apple-macosx26.0 \
   -module-cache-path "$MODULE_CACHE_DIR" \
   -parse-as-library \
   -framework SwiftUI \
@@ -33,7 +39,7 @@ printf 'APPL????' > "$CONTENTS_DIR/PkgInfo"
 chmod +x "$MACOS_DIR/$APP_NAME"
 
 swiftc \
-  -target arm64-apple-macosx14.0 \
+  -target arm64-apple-macosx26.0 \
   -module-cache-path "$MODULE_CACHE_DIR" \
   -parse-as-library \
   -emit-library \
