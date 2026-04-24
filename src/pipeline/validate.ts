@@ -31,19 +31,21 @@ export async function validateInput(filePath: string): Promise<void> {
 }
 
 export async function checkPython(): Promise<void> {
+  const pythonBin = process.env.PYTHON_BIN ?? "python3";
+
   try {
-    await execFileAsync("python3", ["--version"]);
+    await execFileAsync(pythonBin, ["--version"]);
   } catch {
     throw new Error(
-      "python3 is not installed or not in PATH. Required for speaker diarization."
+      `${pythonBin} is not installed or not in PATH. Required for speaker diarization.`
     );
   }
 
   try {
-    await execFileAsync("python3", ["-c", "import importlib.util; exit(0 if importlib.util.find_spec('pyannote.audio') else 1)"]);
+    await execFileAsync(pythonBin, ["-c", "import importlib.util; exit(0 if importlib.util.find_spec('pyannote.audio') else 1)"]);
   } catch {
     throw new Error(
-      "pyannote.audio is not installed. Run: pip install pyannote.audio torch"
+      `pyannote.audio is not installed for ${pythonBin}. Run: ${pythonBin} -m pip install pyannote.audio torch`
     );
   }
 }

@@ -15,11 +15,12 @@ export interface DiarizationSegment {
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const SCRIPT_PATH = path.resolve(__dirname, "../../scripts/diarize.py");
+const PYTHON_BIN = process.env.PYTHON_BIN ?? "python3";
 
 export async function runDiarization(
   audioPath: string
 ): Promise<DiarizationSegment[]> {
-  const { stdout, stderr } = await execFileAsync("python3", [
+  const { stdout, stderr } = await execFileAsync(PYTHON_BIN, [
     SCRIPT_PATH,
     audioPath,
   ], { maxBuffer: 50 * 1024 * 1024 });

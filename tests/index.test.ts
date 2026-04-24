@@ -18,6 +18,8 @@ describe("CLI", () => {
       encoding: "utf-8",
     });
     expect(output).toContain("--no-diarize");
+    expect(output).toContain("--identify");
+    expect(output).toContain("--provider");
   });
 
   it("shows version with --version flag", () => {

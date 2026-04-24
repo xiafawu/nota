@@ -10,6 +10,21 @@ import { mergeTranscriptions } from "./pipeline/merge.js";
 import { summarizeTranscript } from "./pipeline/summarize.js";
 import { writeOutput, defaultOutputPath } from "./pipeline/write.js";
 import { getAudioDuration } from "./utils/ffmpeg.js";
+import { unlink } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { transcribeWithAssemblyAI } from "./pipeline/assemblyai.js";
+import {
+  extractEmbeddings,
+  loadProfiles,
+  saveProfiles,
+  matchSpeakers,
+  promptForSpeakerNames,
+  applySpeakerNames,
+} from "./pipeline/speakers.js";
+
+const execFileAsync = promisify(execFile);
 
 export interface PipelineOptions {
   inputPath: string;
@@ -30,7 +45,7 @@ export async function runPipeline(options: PipelineOptions): Promise<string> {
   const outputPath = options.outputPath ?? defaultOutputPath(inputPath);
   const verbose = config.verbose;
 
-  // 1. Validate and get duration early (before file access might change)
+  // 1. Validate and get duration
   let spinner = log(verbose, "Validating input...");
   await validateInput(inputPath);
   let durationMinutes: number;
@@ -38,20 +53,179 @@ export async function runPipeline(options: PipelineOptions): Promise<string> {
     const duration = await getAudioDuration(inputPath);
     durationMinutes = Math.round(duration / 60);
   } catch {
-    durationMinutes = 0; // fallback if duration can't be determined
+    durationMinutes = 0;
   }
   spinner?.succeed("Input validated");
 
+  if (config.provider === "assemblyai") {
+    return runAssemblyAIPipeline(inputPath, outputPath, durationMinutes, config);
+  }
+  return runWhisperPipeline(inputPath, outputPath, durationMinutes, config);
+}
+
+async function runAssemblyAIPipeline(
+  inputPath: string,
+  outputPath: string,
+  durationMinutes: number,
+  config: AppConfig
+): Promise<string> {
+  const verbose = config.verbose;
+
+  // 1b. Pre-convert .qta to .wav if speaker identification is needed
+  //     (the original file may be a temp file that gets deleted during transcription)
+  let localAudioPath: string | null = null;
+  if (config.identify && path.extname(inputPath).toLowerCase() === ".qta") {
+    const spinner0 = log(verbose, "Converting audio for speaker identification...");
+    localAudioPath = path.join(
+      tmpdir(),
+      `meetingsum-local-${Date.now()}.wav`
+    );
+    await execFileAsync("ffmpeg", [
+      "-y", "-i", inputPath, "-ar", "16000", "-ac", "1", localAudioPath,
+    ]);
+    spinner0?.succeed("Audio converted");
+  }
+
+  try {
+    return await runAssemblyAIPipelineInner(
+      inputPath, outputPath, durationMinutes, config, localAudioPath
+    );
+  } finally {
+    if (localAudioPath) {
+      await unlink(localAudioPath).catch(() => {});
+    }
+  }
+}
+
+async function runAssemblyAIPipelineInner(
+  inputPath: string,
+  outputPath: string,
+  durationMinutes: number,
+  config: AppConfig,
+  localAudioPath: string | null
+): Promise<string> {
+  const verbose = config.verbose;
+
+  // 2. Transcribe + diarize (single API call)
+  let spinner = log(verbose, "Transcribing and diarizing with AssemblyAI...");
+  const result = await transcribeWithAssemblyAI(inputPath, {
+    apiKey: config.assemblyaiApiKey!,
+    numSpeakers: config.numSpeakers,
+    language: config.language,
+  });
+  spinner?.succeed("Transcription and diarization complete");
+
+  // 2b. Identify speakers by voice (if enabled)
+  let segments = result.segments;
+  if (config.identify) {
+    const audioForEmbeddings = localAudioPath ?? inputPath;
+    segments = await identifySpeakers(audioForEmbeddings, segments, verbose);
+  }
+
+  // 3. Summarize
+  spinner = log(verbose, "Summarizing with GPT-4o...");
+  const summary = await summarizeTranscript(
+    result.text,
+    config.openaiApiKey,
+    config.summaryModel,
+    segments
+  );
+  spinner?.succeed("Summary generated");
+
+  // 4. Write
+  spinner = log(verbose, "Writing output...");
+  const date = new Date().toISOString().split("T")[0];
+  const source = path.basename(inputPath);
+
+  await writeOutput(
+    { summary, segments, date, duration: durationMinutes, source },
+    outputPath
+  );
+  spinner?.succeed(`Output written to ${outputPath}`);
+
+  return outputPath;
+}
+
+async function identifySpeakers(
+  inputPath: string,
+  segments: import("./pipeline/transcribe.js").TranscriptSegment[],
+  verbose: boolean
+): Promise<import("./pipeline/transcribe.js").TranscriptSegment[]> {
+  let spinner = log(verbose, "Extracting speaker voiceprints...");
+  try {
+    const embeddings = await extractEmbeddings(inputPath, segments);
+    spinner?.succeed("Speaker voiceprints extracted");
+
+    const profiles = await loadProfiles();
+    const matches = matchSpeakers(embeddings, profiles);
+
+    // Build name mapping from matches
+    const nameMap: Record<string, string> = {};
+    for (const [label, match] of Object.entries(matches)) {
+      nameMap[label] = match.name;
+      if (verbose) {
+        console.log(
+          `  Matched ${label} → ${match.name} (${Math.round(match.confidence * 100)}%)`
+        );
+      }
+    }
+
+    // Find unmatched speakers
+    const allSpeakers = [
+      ...new Set(
+        segments.map((s) => s.speaker).filter(Boolean) as string[]
+      ),
+    ];
+    const unmatchedSpeakers = allSpeakers.filter((s) => !nameMap[s]);
+
+    // Prompt for unmatched speakers (if interactive terminal)
+    if (unmatchedSpeakers.length > 0 && process.stdin.isTTY) {
+      const newNames = await promptForSpeakerNames(segments, unmatchedSpeakers);
+      Object.assign(nameMap, newNames);
+
+      // Enroll newly named speakers
+      for (const [label, name] of Object.entries(newNames)) {
+        if (embeddings[label]) {
+          profiles.speakers[name] = {
+            embedding: embeddings[label],
+            enrolledAt: new Date().toISOString(),
+            source: path.basename(inputPath),
+          };
+        }
+      }
+      await saveProfiles(profiles);
+    }
+
+    return applySpeakerNames(segments, nameMap);
+  } catch (error) {
+    spinner?.fail("Speaker identification unavailable (using generic labels)");
+    if (verbose) {
+      console.error(
+        `  ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    return segments;
+  }
+}
+
+async function runWhisperPipeline(
+  inputPath: string,
+  outputPath: string,
+  durationMinutes: number,
+  config: AppConfig
+): Promise<string> {
+  const verbose = config.verbose;
+
   // 1b. Validate diarization requirements
   if (config.diarize) {
-    spinner = log(verbose, "Checking diarization requirements...");
+    let spinner = log(verbose, "Checking diarization requirements...");
     await checkPython();
     checkHuggingFaceToken();
     spinner?.succeed("Diarization requirements met");
   }
 
   // 2. Chunk
-  spinner = log(verbose, "Checking if chunking is needed...");
+  let spinner = log(verbose, "Checking if chunking is needed...");
   const chunks = await chunkAudio(inputPath);
   spinner?.succeed(
     chunks.length === 1

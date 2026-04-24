@@ -1,17 +1,34 @@
+export type Provider = "assemblyai" | "whisper";
+
 export interface CLIOptions {
   output?: string;
   language?: string;
   model?: string;
   verbose?: boolean;
   diarize?: boolean;
+  provider?: string;
+  numSpeakers?: number;
+  identify?: boolean;
 }
 
 export interface AppConfig {
+  provider: Provider;
   openaiApiKey: string;
+  assemblyaiApiKey?: string;
   summaryModel: string;
   language?: string;
   verbose: boolean;
   diarize: boolean;
+  numSpeakers?: number;
+  identify: boolean;
+}
+
+function parseProvider(provider?: string): Provider {
+  if (!provider || provider === "assemblyai") return "assemblyai";
+  if (provider === "whisper") return "whisper";
+  throw new Error(
+    `Unsupported provider: ${provider}. Supported providers: assemblyai, whisper`
+  );
 }
 
 export function loadConfig(options: CLIOptions): AppConfig {
@@ -22,11 +39,32 @@ export function loadConfig(options: CLIOptions): AppConfig {
     );
   }
 
+  const provider = parseProvider(options.provider);
+
+  if (
+    options.numSpeakers !== undefined &&
+    (!Number.isInteger(options.numSpeakers) || options.numSpeakers < 1)
+  ) {
+    throw new Error("--num-speakers must be a positive integer");
+  }
+
+  const assemblyaiApiKey = process.env.ASSEMBLYAI_API_KEY;
+  if (provider === "assemblyai" && !assemblyaiApiKey) {
+    throw new Error(
+      "ASSEMBLYAI_API_KEY environment variable is required when using assemblyai provider. " +
+      "Get one at https://www.assemblyai.com/dashboard/signup"
+    );
+  }
+
   return {
+    provider,
     openaiApiKey,
+    assemblyaiApiKey,
     summaryModel: options.model ?? "gpt-4o",
     language: options.language,
     verbose: options.verbose ?? false,
-    diarize: options.diarize ?? true,
+    diarize: provider === "assemblyai" ? true : (options.diarize ?? true),
+    numSpeakers: options.numSpeakers,
+    identify: options.identify ?? false,
   };
 }

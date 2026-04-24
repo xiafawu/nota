@@ -27,6 +27,12 @@ def main():
         sys.exit(1)
 
     try:
+        import torch
+    except ImportError:
+        print("torch is not installed. Run: pip install pyannote.audio torch", file=sys.stderr)
+        sys.exit(1)
+
+    try:
         pipeline = Pipeline.from_pretrained(
             "pyannote/speaker-diarization-3.1",
             token=token,
@@ -35,14 +41,27 @@ def main():
         print(f"Failed to load diarization model: {e}", file=sys.stderr)
         sys.exit(1)
 
+    # Use GPU if available: MPS on Apple Silicon, CUDA on NVIDIA
+    if torch.backends.mps.is_available():
+        pipeline.to(torch.device("mps"))
+        print("Using MPS (Apple Silicon GPU)", file=sys.stderr)
+    elif torch.cuda.is_available():
+        pipeline.to(torch.device("cuda"))
+        print("Using CUDA GPU", file=sys.stderr)
+    else:
+        print("Using CPU", file=sys.stderr)
+
     try:
         diarization = pipeline(audio_path)
     except Exception as e:
         print(f"Diarization failed: {e}", file=sys.stderr)
         sys.exit(1)
 
+    # pyannote.audio 4.x returns DiarizeOutput; 3.x returns Annotation directly
+    annotation = getattr(diarization, "speaker_diarization", diarization)
+
     segments = []
-    for turn, _, speaker in diarization.itertracks(yield_label=True):
+    for turn, _, speaker in annotation.itertracks(yield_label=True):
         segments.append({
             "start": round(turn.start, 3),
             "end": round(turn.end, 3),

@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-MeetingSum is a TypeScript CLI tool that transcribes audio files using OpenAI Whisper and summarizes them using GPT-4o. It outputs structured markdown with narrative summary, key topics, decisions, and action items. Only requires a single OpenAI API key.
+MeetingSum is a TypeScript CLI tool that transcribes and diarizes audio files using AssemblyAI (default) or OpenAI Whisper, then summarizes with GPT-4o. It outputs structured markdown with narrative summary, key topics, decisions, and action items.
 
 ## Build & Run Commands
 
@@ -17,39 +17,52 @@ MeetingSum is a TypeScript CLI tool that transcribes audio files using OpenAI Wh
 
 ## Architecture
 
-Linear pipeline: `Audio → Validate → Chunk → Transcribe → Merge → Summarize → Write`
+Two pipeline paths controlled by `--provider`:
+
+**AssemblyAI (default):** `Audio → Validate → Transcribe+Diarize (AssemblyAI) → Summarize (GPT-4o) → Write`
+
+**Whisper (fallback):** `Audio → Validate → Chunk → Transcribe (Whisper) + Diarize (pyannote) → Merge → Align → Summarize (GPT-4o) → Write`
 
 - **src/index.ts** — CLI entry point (commander). Parses args, calls orchestrator.
-- **src/config.ts** — Loads API key from env var (`OPENAI_API_KEY`), merges CLI options.
+- **src/config.ts** — Loads API keys from env vars, merges CLI options, selects provider.
 - **src/constants.ts** — Shared constants: `SEGMENT_DURATION`, `OVERLAP_DURATION`, `CHUNK_THRESHOLD_BYTES`.
-- **src/orchestrator.ts** — Runs pipeline stages in sequence, handles verbose progress output via ora spinners.
-- **src/pipeline/** — One module per pipeline stage. Each exports a single primary function:
+- **src/orchestrator.ts** — Branches on `provider` to run AssemblyAI or Whisper pipeline.
+- **src/pipeline/** — One module per pipeline stage:
+  - `assemblyai.ts` — single API call for transcription + diarization, handles .qta conversion
   - `validate.ts` — checks file exists, format supported, ffmpeg installed
-  - `chunk.ts` — splits audio >20MB into ~10min segments with 30s overlap via ffmpeg
-  - `transcribe.ts` — parallel Whisper API calls (max 3 concurrent via p-limit)
-  - `merge.ts` — concatenates transcripts, deduplicates overlap regions by timestamp filtering
+  - `chunk.ts` — splits audio >20MB into ~10min segments with 30s overlap (whisper only)
+  - `transcribe.ts` — parallel Whisper API calls, exports `TranscriptSegment` interface (shared)
+  - `merge.ts` — concatenates transcripts, deduplicates overlap regions (whisper only)
   - `summarize.ts` — sends transcript to GPT-4o; for >100k tokens, does section-by-section then roll-up
-  - `diarize.ts` — calls Python pyannote script, aligns speaker labels with transcript segments
+  - `diarize.ts` — calls Python pyannote script, aligns speaker labels (whisper only)
   - `write.ts` — generates markdown output file
 - **src/utils/** — Shared helpers: ffmpeg wrapper (`ffmpeg.ts`), token estimation (`tokens.ts`).
 
+## CLI Flags
+
+- `--provider <name>` — `assemblyai` (default) or `whisper`
+- `--num-speakers <n>` — expected speaker count (assemblyai only)
+- `--no-diarize` — skip pyannote diarization for `--provider whisper`
+- `--identify` — identify and remember recurring speakers by voice
+- `-o, --output <path>` — output file path
+- `-l, --language <lang>` — audio language hint
+- `-m, --model <model>` — GPT model for summarization (default: gpt-4o)
+- `-v, --verbose` — show progress spinners
+
 ## Key Design Decisions
 
-- Whisper API (not local) to avoid GPU/model download requirements
-- 20MB chunking threshold (5MB below Whisper's 25MB limit)
-- 30s overlap between audio chunks to avoid losing words at boundaries
+- AssemblyAI as default provider: transcription + diarization in one API call ($0.15/hr)
+- Whisper retained as fallback via `--provider whisper`
+- `.qta` files auto-converted to `.m4a` via ffmpeg before AssemblyAI upload
+- Optional `--identify` stores speaker voiceprints in `~/.meetingsum/speakers.json`
 - Long transcripts (>100k tokens) are summarized in sections then rolled up
 - Output saved as markdown file next to input by default
 - ESM-only project (`"type": "module"` in package.json)
-- Speaker diarization via pyannote.audio (Python subprocess), enabled by default
-- Diarization runs on full audio file in parallel with chunked transcription
-- Speaker labels aligned with Whisper segments by maximum time overlap
-- `--no-diarize` flag to skip when Python/pyannote not available
 
 ## External Requirements
 
 - `ffmpeg` and `ffprobe` must be installed and in PATH
 - Node.js 18+
-- Environment variable: `OPENAI_API_KEY`
-- Python 3.8+ with `pyannote.audio` and `torch` (for speaker diarization)
-- Environment variable: `HUGGINGFACE_TOKEN` (for speaker diarization)
+- Environment variable: `OPENAI_API_KEY` (always required for GPT-4o summarization)
+- Environment variable: `ASSEMBLYAI_API_KEY` (required for default assemblyai provider)
+- For `--provider whisper` only: Python 3.8+ with `pyannote.audio`, `HUGGINGFACE_TOKEN`
