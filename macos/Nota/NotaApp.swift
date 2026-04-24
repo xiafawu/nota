@@ -32,6 +32,12 @@ struct NotaApp: App {
           model.chooseFile()
         }
         .keyboardShortcut("o")
+
+        Button("Transcribe") {
+          model.transcribe()
+        }
+        .keyboardShortcut("t")
+        .disabled(model.selectedURL == nil || model.isRunning)
       }
     }
   }
@@ -850,26 +856,6 @@ struct ContentView: View {
         .background(.thinMaterial)
     }
     .toolbar {
-      ToolbarItemGroup(placement: .navigation) {
-        Button {
-          model.chooseFile()
-        } label: {
-          Label("Open", systemImage: "folder")
-        }
-        .help("Open audio file")
-        .liquidGlassButton()
-        .disabled(model.isRunning)
-
-        Button {
-          model.transcribe()
-        } label: {
-          Label("Transcribe", systemImage: "waveform")
-        }
-        .help("Transcribe current audio")
-        .liquidGlassButton()
-        .disabled(model.selectedURL == nil || model.isRunning)
-      }
-
       ToolbarItemGroup(placement: .status) {
         if model.isRunning || model.status != "Drop audio to transcribe" {
           HStack(spacing: 6) {
@@ -889,51 +875,47 @@ struct ContentView: View {
         }
       }
 
-      ToolbarItemGroup(placement: .primaryAction) {
+      ToolbarItem(placement: .primaryAction) {
         Menu {
-          Button {
-            model.copyRichText()
-          } label: {
-            Label("Copy Rich Text", systemImage: "doc.on.clipboard")
+          Section("Copy") {
+            Button {
+              model.copyRichText()
+            } label: {
+              Label("Copy Rich Text", systemImage: "doc.on.clipboard")
+            }
+            Button {
+              model.copyMarkdown()
+            } label: {
+              Label("Copy Markdown", systemImage: "chevron.left.forwardslash.chevron.right")
+            }
           }
-          Button {
-            model.copyMarkdown()
-          } label: {
-            Label("Copy Markdown", systemImage: "chevron.left.forwardslash.chevron.right")
+          Section("Export") {
+            Button {
+              model.exportRichText()
+            } label: {
+              Label("Export Rich Text...", systemImage: "textformat")
+            }
+            Button {
+              model.exportMarkdown()
+            } label: {
+              Label("Export Markdown...", systemImage: "number")
+            }
+          }
+          Section {
+            Button {
+              model.revealOutput()
+            } label: {
+              Label("Reveal in Finder", systemImage: "finder")
+            }
+            .disabled(model.lastOutputURL == nil)
           }
         } label: {
-          Label("Copy", systemImage: "doc.on.doc")
+          Label("Share", systemImage: "square.and.arrow.up")
         }
-        .help("Copy transcript")
+        .menuIndicator(.hidden)
+        .help("Copy, export, or reveal transcript")
         .liquidGlassButton()
-        .disabled(model.markdown.isEmpty)
-
-        Menu {
-          Button {
-            model.exportRichText()
-          } label: {
-            Label("Export Rich Text...", systemImage: "textformat")
-          }
-          Button {
-            model.exportMarkdown()
-          } label: {
-            Label("Export Markdown...", systemImage: "number")
-          }
-        } label: {
-          Label("Export", systemImage: "square.and.arrow.down")
-        }
-        .help("Export transcript to file")
-        .liquidGlassButton()
-        .disabled(model.markdown.isEmpty)
-
-        Button {
-          model.revealOutput()
-        } label: {
-          Label("Reveal", systemImage: "finder")
-        }
-        .help("Reveal output in Finder")
-        .liquidGlassButton()
-        .disabled(model.lastOutputURL == nil)
+        .disabled(model.markdown.isEmpty && model.lastOutputURL == nil)
       }
     }
     .animation(.easeInOut(duration: 0.2), value: model.isRunning)
