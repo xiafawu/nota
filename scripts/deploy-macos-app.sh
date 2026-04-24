@@ -31,6 +31,18 @@ fi
 
 mkdir -p "$DEPLOY_DIR"
 
+# Kill any running Nota process so the new binary actually loads on relaunch.
+# `open` alone just raises an already-running window without reloading the
+# executable, which masks source changes from testers and review loops.
+if pgrep -f "$DEST_APP/Contents/MacOS/$APP_NAME" >/dev/null 2>&1; then
+  pkill -f "$DEST_APP/Contents/MacOS/$APP_NAME" || true
+  # Wait up to 3s for graceful exit before overwriting the bundle.
+  for _ in 1 2 3; do
+    pgrep -f "$DEST_APP/Contents/MacOS/$APP_NAME" >/dev/null 2>&1 || break
+    sleep 1
+  done
+fi
+
 if [ -d "$DEST_APP" ]; then
   rm -rf "$DEST_APP"
 fi
