@@ -1121,5 +1121,6 @@ struct ContentView: View {
 
   private var resultPane: some View {
     RichTextViewer(attributedString: model.richText)
+      .scrollEdgeEffectStyle(.hard, for: .top)
   }
 }
