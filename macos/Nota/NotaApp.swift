@@ -56,11 +56,16 @@ final class NotaModel: ObservableObject {
   @Published var isDropTargeted = false
   @Published var identifySpeakers = false
   @Published var lastOutputURL: URL?
+  @Published var resultViewMode: ResultViewMode = .richText
   @Published var displayName = "Drop Audio"
   @Published var displayPath = "MP3, M4A, WAV, CAF, QTA, MOV, MP4"
 
   private let projectDirectory = URL(fileURLWithPath: ProcessInfo.processInfo.environment["NOTA_PROJECT_DIR"] ?? "/Users/xiafawu/Developer/Nota")
   private let outputDirectory = notaOutputDirectory()
+
+  var richText: NSAttributedString {
+    renderMarkdownAsRichText(markdown)
+  }
 
   init() {
     NotificationCenter.default.addObserver(
@@ -156,7 +161,64 @@ final class NotaModel: ObservableObject {
 
     NSPasteboard.general.clearContents()
     NSPasteboard.general.setString(markdown, forType: .string)
-    status = "Copied"
+    status = "Copied Markdown"
+  }
+
+  func copyRichText() {
+    guard !markdown.isEmpty else {
+      return
+    }
+
+    let attributedText = richText
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    if let data = try? rtfData(from: attributedText) {
+      pasteboard.setData(data, forType: .rtf)
+    }
+    pasteboard.setString(attributedText.string, forType: .string)
+    status = "Copied Rich Text"
+  }
+
+  func exportMarkdown() {
+    guard !markdown.isEmpty else {
+      return
+    }
+
+    let panel = NSSavePanel()
+    panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+    panel.nameFieldStringValue = defaultExportName(extensionName: "md")
+
+    guard panel.runModal() == .OK, let url = panel.url else {
+      return
+    }
+
+    do {
+      try markdown.write(to: url, atomically: true, encoding: .utf8)
+      status = "Exported Markdown"
+    } catch {
+      status = "Export failed"
+    }
+  }
+
+  func exportRichText() {
+    guard !markdown.isEmpty else {
+      return
+    }
+
+    let panel = NSSavePanel()
+    panel.allowedContentTypes = [.rtf]
+    panel.nameFieldStringValue = defaultExportName(extensionName: "rtf")
+
+    guard panel.runModal() == .OK, let url = panel.url else {
+      return
+    }
+
+    do {
+      try rtfData(from: richText).write(to: url, options: .atomic)
+      status = "Exported Rich Text"
+    } catch {
+      status = "Export failed"
+    }
   }
 
   func revealOutput() {
@@ -233,11 +295,32 @@ final class NotaModel: ObservableObject {
     return destination
   }
 
+  private func defaultExportName(extensionName: String) -> String {
+    if let lastOutputURL {
+      return "\(lastOutputURL.deletingPathExtension().lastPathComponent).\(extensionName)"
+    }
+
+    if let selectedURL {
+      return "\(sanitizedBaseName(selectedURL)).summary.\(extensionName)"
+    }
+
+    return "nota-summary.\(extensionName)"
+  }
+
 }
 
 private struct NotaResult {
   let markdown: String
   let outputURL: URL
+}
+
+enum ResultViewMode: String, CaseIterable, Identifiable {
+  case richText = "Rich Text"
+  case markdown = "Markdown"
+
+  var id: String {
+    rawValue
+  }
 }
 
 private enum NotaAppError: LocalizedError {
@@ -403,6 +486,210 @@ private func writeStandardError(_ message: String) {
   }
 }
 
+private func rtfData(from attributedText: NSAttributedString) throws -> Data {
+  try attributedText.data(
+    from: NSRange(location: 0, length: attributedText.length),
+    documentAttributes: [.documentType: NSAttributedString.DocumentType.rtf]
+  )
+}
+
+private func renderMarkdownAsRichText(_ markdown: String) -> NSAttributedString {
+  let output = NSMutableAttributedString()
+  let normalized = markdown.replacingOccurrences(of: "\r\n", with: "\n")
+  let lines = normalized.components(separatedBy: "\n")
+  var isInCodeBlock = false
+
+  for rawLine in lines {
+    let trimmedLine = rawLine.trimmingCharacters(in: .whitespaces)
+
+    if trimmedLine.hasPrefix("```") {
+      isInCodeBlock.toggle()
+      continue
+    }
+
+    if isInCodeBlock {
+      appendPlainLine(rawLine, to: output, font: .monospacedSystemFont(ofSize: 12, weight: .regular), color: .secondaryLabelColor)
+      continue
+    }
+
+    if trimmedLine.isEmpty {
+      output.append(NSAttributedString(string: "\n"))
+      continue
+    }
+
+    if trimmedLine == "---" {
+      appendPlainLine("------------------------------", to: output, font: .systemFont(ofSize: 13), color: .separatorColor)
+      continue
+    }
+
+    if trimmedLine.hasPrefix("## ") {
+      let title = String(trimmedLine.dropFirst(3))
+      appendPlainLine(title, to: output, font: .boldSystemFont(ofSize: 18), paragraphSpacing: 8)
+      continue
+    }
+
+    if trimmedLine.hasPrefix("# ") {
+      let title = String(trimmedLine.dropFirst(2))
+      appendPlainLine(title, to: output, font: .boldSystemFont(ofSize: 26), paragraphSpacing: 10)
+      continue
+    }
+
+    if trimmedLine.hasPrefix("- ") {
+      let item = String(trimmedLine.dropFirst(2))
+      appendBulletLine(item, to: output)
+      continue
+    }
+
+    if appendTranscriptLine(trimmedLine, to: output) {
+      continue
+    }
+
+    appendInlineMarkdownLine(trimmedLine, to: output)
+  }
+
+  return output
+}
+
+private func appendPlainLine(
+  _ line: String,
+  to output: NSMutableAttributedString,
+  font: NSFont,
+  color: NSColor = .labelColor,
+  paragraphSpacing: CGFloat = 4
+) {
+  let paragraph = NSMutableParagraphStyle()
+  paragraph.paragraphSpacing = paragraphSpacing
+  paragraph.lineSpacing = 2
+  output.append(NSAttributedString(string: line, attributes: [
+    .font: font,
+    .foregroundColor: color,
+    .paragraphStyle: paragraph
+  ]))
+  output.append(NSAttributedString(string: "\n"))
+}
+
+private func appendBulletLine(_ line: String, to output: NSMutableAttributedString) {
+  let paragraph = NSMutableParagraphStyle()
+  paragraph.firstLineHeadIndent = 0
+  paragraph.headIndent = 18
+  paragraph.paragraphSpacing = 4
+  paragraph.lineSpacing = 2
+
+  output.append(NSAttributedString(string: "• ", attributes: [
+    .font: NSFont.systemFont(ofSize: 14),
+    .foregroundColor: NSColor.labelColor,
+    .paragraphStyle: paragraph
+  ]))
+  appendInlineMarkdown(line, to: output, font: .systemFont(ofSize: 14), paragraphStyle: paragraph)
+  output.append(NSAttributedString(string: "\n"))
+}
+
+private func appendTranscriptLine(_ line: String, to output: NSMutableAttributedString) -> Bool {
+  let pattern = #"^\[([0-9]{2}:[0-9]{2})\] \*\*(.+?):\*\* (.*)$"#
+  guard
+    let regex = try? NSRegularExpression(pattern: pattern),
+    let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
+    match.numberOfRanges == 4,
+    let timestampRange = Range(match.range(at: 1), in: line),
+    let speakerRange = Range(match.range(at: 2), in: line),
+    let textRange = Range(match.range(at: 3), in: line)
+  else {
+    return false
+  }
+
+  let paragraph = NSMutableParagraphStyle()
+  paragraph.paragraphSpacing = 5
+  paragraph.lineSpacing = 2
+
+  let timestamp = String(line[timestampRange])
+  let speaker = String(line[speakerRange])
+  let text = String(line[textRange])
+
+  output.append(NSAttributedString(string: "[\(timestamp)] ", attributes: [
+    .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular),
+    .foregroundColor: NSColor.secondaryLabelColor,
+    .paragraphStyle: paragraph
+  ]))
+  output.append(NSAttributedString(string: "\(speaker): ", attributes: [
+    .font: NSFont.boldSystemFont(ofSize: 14),
+    .foregroundColor: NSColor.labelColor,
+    .paragraphStyle: paragraph
+  ]))
+  output.append(NSAttributedString(string: text, attributes: [
+    .font: NSFont.systemFont(ofSize: 14),
+    .foregroundColor: NSColor.labelColor,
+    .paragraphStyle: paragraph
+  ]))
+  output.append(NSAttributedString(string: "\n"))
+  return true
+}
+
+private func appendInlineMarkdownLine(_ line: String, to output: NSMutableAttributedString) {
+  let paragraph = NSMutableParagraphStyle()
+  paragraph.paragraphSpacing = 4
+  paragraph.lineSpacing = 2
+  appendInlineMarkdown(line, to: output, font: .systemFont(ofSize: 14), paragraphStyle: paragraph)
+  output.append(NSAttributedString(string: "\n"))
+}
+
+private func appendInlineMarkdown(
+  _ line: String,
+  to output: NSMutableAttributedString,
+  font: NSFont,
+  paragraphStyle: NSParagraphStyle
+) {
+  let parts = line.components(separatedBy: "**")
+  for index in parts.indices {
+    let part = parts[index]
+    guard !part.isEmpty else {
+      continue
+    }
+
+    let segmentFont = index.isMultiple(of: 2) ? font : NSFont.boldSystemFont(ofSize: font.pointSize)
+    output.append(NSAttributedString(string: part, attributes: [
+      .font: segmentFont,
+      .foregroundColor: NSColor.labelColor,
+      .paragraphStyle: paragraphStyle
+    ]))
+  }
+}
+
+struct RichTextViewer: NSViewRepresentable {
+  let attributedString: NSAttributedString
+
+  func makeNSView(context: Context) -> NSScrollView {
+    let scrollView = NSScrollView()
+    scrollView.hasVerticalScroller = true
+    scrollView.hasHorizontalScroller = false
+    scrollView.drawsBackground = true
+    scrollView.backgroundColor = .textBackgroundColor
+
+    let textView = NSTextView()
+    textView.isEditable = false
+    textView.isSelectable = true
+    textView.drawsBackground = false
+    textView.textContainerInset = NSSize(width: 20, height: 18)
+    textView.textContainer?.widthTracksTextView = true
+    textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
+    textView.isHorizontallyResizable = false
+    textView.isVerticallyResizable = true
+    textView.autoresizingMask = [.width]
+    textView.minSize = NSSize(width: 0, height: 0)
+    textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+
+    scrollView.documentView = textView
+    return scrollView
+  }
+
+  func updateNSView(_ scrollView: NSScrollView, context: Context) {
+    guard let textView = scrollView.documentView as? NSTextView else {
+      return
+    }
+
+    textView.textStorage?.setAttributedString(attributedString)
+  }
+}
+
 struct ContentView: View {
   @ObservedObject var model: NotaModel
 
@@ -522,12 +809,49 @@ struct ContentView: View {
         Text("Transcript")
           .font(.headline)
 
+        Picker("View", selection: $model.resultViewMode) {
+          ForEach(ResultViewMode.allCases) { mode in
+            Text(mode.rawValue).tag(mode)
+          }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 210)
+        .disabled(model.markdown.isEmpty)
+
         Spacer()
 
-        Button {
-          model.copyMarkdown()
+        Menu {
+          Button {
+            model.copyRichText()
+          } label: {
+            Label("Copy Rich Text", systemImage: "doc.on.clipboard")
+          }
+
+          Button {
+            model.copyMarkdown()
+          } label: {
+            Label("Copy Markdown", systemImage: "chevron.left.forwardslash.chevron.right")
+          }
         } label: {
           Label("Copy", systemImage: "doc.on.doc")
+        }
+        .disabled(model.markdown.isEmpty)
+
+        Menu {
+          Button {
+            model.exportRichText()
+          } label: {
+            Label("Export Rich Text...", systemImage: "textformat")
+          }
+
+          Button {
+            model.exportMarkdown()
+          } label: {
+            Label("Export Markdown...", systemImage: "number")
+          }
+        } label: {
+          Label("Export", systemImage: "square.and.arrow.down")
         }
         .disabled(model.markdown.isEmpty)
 
@@ -542,10 +866,14 @@ struct ContentView: View {
 
       Divider()
 
-      TextEditor(text: $model.markdown)
-        .font(.system(.body, design: .monospaced))
-        .scrollContentBackground(.hidden)
-        .background(Color(nsColor: .textBackgroundColor))
+      if model.resultViewMode == .richText {
+        RichTextViewer(attributedString: model.richText)
+      } else {
+        TextEditor(text: $model.markdown)
+          .font(.system(.body, design: .monospaced))
+          .scrollContentBackground(.hidden)
+          .background(Color(nsColor: .textBackgroundColor))
+      }
     }
   }
 }

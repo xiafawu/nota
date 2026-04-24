@@ -41,8 +41,10 @@ Deployment also runs a headless app smoke test. The smoke test launches the depl
 
 - Open `.build/macos-app/Nota.app`.
 - Drop an audio file into the window, or use **File > Open Audio...**.
-- Nota writes summaries to `~/Documents/Nota` and shows the generated markdown in the app.
-- Use **Copy** to copy the full markdown to the clipboard.
+- Nota writes markdown summaries to `~/Documents/Nota` and shows a rich text preview in the app by default.
+- Use the **Rich Text / Markdown** switch to choose between the rendered preview and raw markdown.
+- Use **Copy** to copy either rich text for Apple Notes or raw markdown.
+- Use **Export** to write either rich text (`.rtf`) or markdown (`.md`).
 - Use **Reveal** to show the generated summary file in Finder.
 
 The app supports the same audio extensions as the CLI: `.mp3`, `.wav`, `.m4a`, `.aac`, `.caf`, `.aif`, `.aiff`, `.ogg`, `.webm`, `.flac`, `.qta`, `.mov`, and `.mp4`.
