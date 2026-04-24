@@ -722,19 +722,25 @@ struct ContentView: View {
       }
 
       ToolbarItemGroup(placement: .automatic) {
-        if model.isRunning {
-          ProgressView()
-            .controlSize(.small)
+        if model.isRunning || !model.status.isEmpty {
+          HStack(spacing: 6) {
+            if model.isRunning {
+              ProgressView()
+                .controlSize(.small)
+            }
+            Text(model.status)
+              .font(.callout)
+              .lineLimit(1)
+              .truncationMode(.middle)
+          }
+          .padding(.horizontal, 10)
+          .padding(.vertical, 4)
+          .glassEffect(.regular.tint(.secondary.opacity(0.1)), in: .capsule)
+          .transition(.opacity.combined(with: .scale))
         }
-
-        Text(model.status)
-          .font(.callout)
-          .lineLimit(1)
-          .truncationMode(.middle)
-          .foregroundStyle(.secondary)
-          .frame(maxWidth: 280, alignment: .trailing)
       }
     }
+    .animation(.easeInOut(duration: 0.2), value: model.isRunning)
     .containerBackground(.regularMaterial, for: .window)
   }
 
