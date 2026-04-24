@@ -40,6 +40,31 @@ struct NotaApp: App {
         .disabled(model.selectedURL == nil || model.isRunning)
       }
     }
+
+    Settings {
+      SettingsView(model: model)
+    }
+  }
+}
+
+struct SettingsView: View {
+  @ObservedObject var model: NotaModel
+
+  var body: some View {
+    Form {
+      Section {
+        Toggle(isOn: $model.identifySpeakers) {
+          VStack(alignment: .leading, spacing: 2) {
+            Text("Remember speakers")
+            Text("Identify recurring voices across recordings.")
+              .font(.caption)
+              .foregroundStyle(.secondary)
+          }
+        }
+      }
+    }
+    .formStyle(.grouped)
+    .frame(width: 420, height: 160)
   }
 }
 
@@ -60,7 +85,9 @@ final class NotaModel: ObservableObject {
   @Published var status = "Drop audio to transcribe"
   @Published var isRunning = false
   @Published var isDropTargeted = false
-  @Published var identifySpeakers = false
+  @Published var identifySpeakers: Bool = (UserDefaults.standard.object(forKey: "identifySpeakers") as? Bool) ?? true {
+    didSet { UserDefaults.standard.set(identifySpeakers, forKey: "identifySpeakers") }
+  }
   @Published var lastOutputURL: URL?
   @Published var displayName = "Drop Audio"
   @Published var displayPath = "MP3, M4A, WAV, CAF, QTA, MOV, MP4"
@@ -1084,16 +1111,6 @@ struct ContentView: View {
           .multilineTextAlignment(.center)
           .padding(.horizontal, 24)
       }
-
-      Toggle(isOn: $model.identifySpeakers) {
-        Label("Remember speakers", systemImage: "person.wave.2")
-          .labelStyle(.titleAndIcon)
-          .font(.callout)
-      }
-      .toggleStyle(.switch)
-      .controlSize(.regular)
-      .disabled(model.isRunning)
-      .padding(.top, 12)
 
       Spacer()
     }
