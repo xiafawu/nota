@@ -860,7 +860,6 @@ struct ContentView: View {
 
       if model.resultViewMode == .richText {
         RichTextViewer(attributedString: model.richText)
-          .scrollEdgeEffect(.hard, for: .top)
       } else {
         TextEditor(text: $model.markdown)
           .font(.system(.body, design: .monospaced))
