@@ -8,6 +8,13 @@ import {
   listHistoryRecords,
   loadHistoryRecord,
 } from "./pipeline/history.js";
+import {
+  deleteSpeaker,
+  listSpeakers,
+  mergeSpeakers,
+  renameSpeaker,
+  showSpeaker,
+} from "./cli/speakers.js";
 
 const program = new Command();
 
@@ -108,6 +115,78 @@ history
         `\nError: ${error instanceof Error ? error.message : String(error)}`,
       );
       process.exit(1);
+    }
+  });
+
+function handleSpeakerError(error: unknown): never {
+  console.error(
+    `\nError: ${error instanceof Error ? error.message : String(error)}`,
+  );
+  process.exit(1);
+}
+
+const speakers = program
+  .command("speakers")
+  .description("Manage enrolled speaker voiceprints");
+
+speakers
+  .command("list")
+  .description("List enrolled speaker profiles (tab-separated)")
+  .action(async () => {
+    try {
+      await listSpeakers();
+    } catch (error) {
+      handleSpeakerError(error);
+    }
+  });
+
+speakers
+  .command("rename")
+  .description("Rename an enrolled speaker profile")
+  .argument("<old>", "Existing speaker name")
+  .argument("<new>", "New speaker name")
+  .action(async (oldName: string, newName: string) => {
+    try {
+      await renameSpeaker(oldName, newName);
+    } catch (error) {
+      handleSpeakerError(error);
+    }
+  });
+
+speakers
+  .command("delete")
+  .description("Delete an enrolled speaker profile")
+  .argument("<name>", "Speaker name to delete")
+  .action(async (name: string) => {
+    try {
+      await deleteSpeaker(name);
+    } catch (error) {
+      handleSpeakerError(error);
+    }
+  });
+
+speakers
+  .command("merge")
+  .description("Merge a source speaker into a destination speaker")
+  .argument("<src>", "Source speaker (will be removed)")
+  .argument("<dst>", "Destination speaker (kept)")
+  .action(async (src: string, dst: string) => {
+    try {
+      await mergeSpeakers(src, dst);
+    } catch (error) {
+      handleSpeakerError(error);
+    }
+  });
+
+speakers
+  .command("show")
+  .description("Show a speaker profile (embedding truncated to first 8 dims)")
+  .argument("<name>", "Speaker name")
+  .action(async (name: string) => {
+    try {
+      await showSpeaker(name);
+    } catch (error) {
+      handleSpeakerError(error);
     }
   });
 

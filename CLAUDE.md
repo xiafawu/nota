@@ -60,6 +60,20 @@ Two pipeline paths controlled by `--provider`:
 - `-m, --model <model>` — GPT model for summarization (default: gpt-4o)
 - `-v, --verbose` — show progress spinners
 
+## Speaker Management
+
+Manage enrolled speaker voiceprints (`~/.nota/speakers.json`, with legacy
+fallback to `~/.meetingsum/speakers.json`):
+
+- `nota speakers list` — print one tab-separated row per profile (name, enrolledAt, source, embedding length) on stdout
+- `nota speakers show <name>` — print profile JSON with embedding truncated to first 8 dims
+- `nota speakers rename <old> <new>` — rename a profile key
+- `nota speakers delete <name>` — remove a profile
+- `nota speakers merge <src> <dst>` — average embeddings (L2-renormalized) into `<dst>`, drop `<src>`
+
+Commands exit non-zero if a referenced profile is missing. Confirmation lines
+are written to stderr so stdout stays scriptable.
+
 ## Key Design Decisions
 
 - Nota is the primary name; MeetingSum references exist only for backward compatibility.
