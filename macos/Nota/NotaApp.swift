@@ -689,6 +689,42 @@ struct RichTextViewer: NSViewRepresentable {
   }
 }
 
+private struct LiquidGlassModifier<S: Shape>: ViewModifier {
+  let glass: Glass
+  let shape: S
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+  func body(content: Content) -> some View {
+    if reduceTransparency {
+      content.background(.regularMaterial, in: shape)
+    } else {
+      content.glassEffect(glass, in: shape)
+    }
+  }
+}
+
+private struct LiquidGlassButtonModifier: ViewModifier {
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
+
+  func body(content: Content) -> some View {
+    if reduceTransparency {
+      content.buttonStyle(.bordered)
+    } else {
+      content.buttonStyle(.glass)
+    }
+  }
+}
+
+extension View {
+  fileprivate func liquidGlass<S: Shape>(_ glass: Glass = .regular, in shape: S) -> some View {
+    modifier(LiquidGlassModifier(glass: glass, shape: shape))
+  }
+
+  fileprivate func liquidGlassButton() -> some View {
+    modifier(LiquidGlassButtonModifier())
+  }
+}
+
 struct ContentView: View {
   @ObservedObject var model: NotaModel
 
@@ -708,7 +744,7 @@ struct ContentView: View {
           } label: {
             Label("Open", systemImage: "folder")
           }
-          .glassEffect(.regular, in: .capsule)
+          .liquidGlass(.regular, in: .capsule)
           .disabled(model.isRunning)
 
           Button {
@@ -716,12 +752,12 @@ struct ContentView: View {
           } label: {
             Label("Transcribe", systemImage: "waveform")
           }
-          .glassEffect(.regular, in: .capsule)
+          .liquidGlass(.regular, in: .capsule)
           .disabled(model.selectedURL == nil || model.isRunning)
 
           Toggle("Remember speakers", isOn: $model.identifySpeakers)
             .toggleStyle(.checkbox)
-            .glassEffect(.regular, in: .capsule)
+            .liquidGlass(.regular, in: .capsule)
             .disabled(model.isRunning)
         }
       }
@@ -740,7 +776,7 @@ struct ContentView: View {
           }
           .padding(.horizontal, 10)
           .padding(.vertical, 4)
-          .glassEffect(.regular.tint(.secondary.opacity(0.1)), in: .capsule)
+          .liquidGlass(.regular.tint(.secondary.opacity(0.1)), in: .capsule)
           .transition(.opacity.combined(with: .scale))
         }
       }
@@ -776,7 +812,7 @@ struct ContentView: View {
     }
     .padding(20)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .glassEffect(
+    .liquidGlass(
       model.isDropTargeted ? .regular.tint(.accentColor) : .regular,
       in: RoundedRectangle(cornerRadius: 20)
     )
@@ -840,7 +876,7 @@ struct ContentView: View {
           } label: {
             Label("Copy", systemImage: "doc.on.doc")
           }
-          .buttonStyle(.glass)
+          .liquidGlassButton()
           .disabled(model.markdown.isEmpty)
 
           Menu {
@@ -858,7 +894,7 @@ struct ContentView: View {
           } label: {
             Label("Export", systemImage: "square.and.arrow.down")
           }
-          .buttonStyle(.glass)
+          .liquidGlassButton()
           .disabled(model.markdown.isEmpty)
 
           Button {
@@ -866,7 +902,7 @@ struct ContentView: View {
           } label: {
             Label("Reveal", systemImage: "finder")
           }
-          .buttonStyle(.glass)
+          .liquidGlassButton()
           .disabled(model.lastOutputURL == nil)
         }
       }
