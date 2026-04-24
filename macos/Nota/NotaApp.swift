@@ -762,8 +762,8 @@ struct ContentView: View {
         }
       }
 
-      ToolbarItemGroup(placement: .automatic) {
-        if model.isRunning || !model.status.isEmpty {
+      ToolbarItemGroup(placement: .status) {
+        if model.isRunning || model.status != "Drop audio to transcribe" {
           HStack(spacing: 6) {
             if model.isRunning {
               ProgressView()
@@ -794,7 +794,7 @@ struct ContentView: View {
         .foregroundStyle(model.isDropTargeted ? Color.accentColor : Color.secondary)
         .symbolEffect(.pulse, isActive: model.isRunning)
 
-      VStack(spacing: 6) {
+      VStack(spacing: 8) {
         Text(model.displayName)
           .font(.title3)
           .fontWeight(.semibold)
@@ -802,10 +802,12 @@ struct ContentView: View {
           .multilineTextAlignment(.center)
 
         Text(model.displayPath)
-          .font(.callout)
+          .font(.footnote)
+          .monospaced()
           .foregroundStyle(.secondary)
           .lineLimit(4)
           .multilineTextAlignment(.center)
+          .padding(.horizontal, 8)
       }
 
       Spacer()
@@ -900,7 +902,7 @@ struct ContentView: View {
           Button {
             model.revealOutput()
           } label: {
-            Label("Reveal", systemImage: "finder")
+            Label("Reveal in Finder", systemImage: "finder")
           }
           .liquidGlassButton()
           .disabled(model.lastOutputURL == nil)
