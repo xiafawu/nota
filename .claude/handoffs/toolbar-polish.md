@@ -1,30 +1,23 @@
 # Handoff: Nota macOS Toolbar Polish
 
-**Status:** Resolved 2026-04-24. Ship-blocker re-review on `.claude/reviews/toolbar-iter-2.png` returned `RATING: 8/10` with no `CRITICAL_ISSUES`. One remaining follow-up: manual `accessibilityReduceTransparency` smoke test.
+**Status:** Closed 2026-04-24. Rich Text / Markdown view toggle removed entirely in `bf5607a`; toolbar fit-and-finish items the toggle was blocking are now moot by subtraction.
 **Priority:** Medium. Gemini flagged as a ship-blocker at 7/10; not blocking user workflows, but visually sloppy.
 **Owner file:** `macos/Nota/NotaApp.swift`
 
-## Resolution
+## Resolution timeline
 
-Swapped the segmented `Picker` for an `HStack` of two `Button`s routed through a new `ViewModePickerButtonStyle` modifier that branches on `isSelected`:
+1. **Commit `f65e42f`** — swapped the segmented `Picker` for a two-`Button` `HStack` routed through a new `ViewModePickerButtonStyle` modifier. Ship-blocker re-review on `.claude/reviews/toolbar-iter-2.png` returned `RATING: 8/10` with no `CRITICAL_ISSUES`.
+2. **Commit `bf5607a`** — subsequent product decision to render rich text only. Removed the `.principal` toolbar item, `ResultViewMode` enum, `resultViewMode` published property, and the `ViewModePickerButtonStyle` modifier introduced in step 1. `resultPane` now always renders `RichTextViewer`. Copy / Export Markdown menu items unaffected — they read the raw markdown string, not the view mode.
 
-- Selected → `.buttonStyle(.glassProminent)` (or `.borderedProminent` under `reduceTransparency`)
-- Unselected → `.buttonStyle(.glass)` (or `.bordered` under `reduceTransparency`)
+Final toolbar strip: `Open · Transcribe · [title] · status · Copy · Export · Reveal`. No selection control → no alignment or contrast concerns left.
 
-Why this works where the segmented picker didn't:
+## What we learned (for the next time a toolbar picker regresses)
 
-1. **Alignment unified.** All toolbar buttons (Open, Transcribe, picker choices, Copy/Export/Reveal) now flow through the same `.glass`-family button-style pipeline, so they share the single accessory-baseline layout pass. The `.principal` placement still centers the pair in the toolbar but the per-button chrome matches the rest of the strip.
-2. **Selected-state contrast.** `.glassProminent` on macOS 26 paints a brightened opaque capsule that overrides the translucent material chain entirely, giving high-delta relief regardless of wallpaper/window background. Stronger than `.segmented`'s accent-tint overlay on light liquid glass.
-3. **Inference fix.** The style-switch modifier uses explicit `if / else if / else` branches under `@ViewBuilder` rather than a ternary, so the type checker resolves each branch independently. A ternary on `isSelected ? .borderedProminent : .bordered` tripped SourceKit's opaque-return-type inference.
-
-Diff anchors:
-
-- [macos/Nota/NotaApp.swift:816-832](../../macos/Nota/NotaApp.swift:816) — new `ViewModePickerButtonStyle` modifier.
-- [macos/Nota/NotaApp.swift:883-897](../../macos/Nota/NotaApp.swift:883) — `.principal` toolbar slot now holds the two-button `HStack`.
-
-### Remaining manual check
-
-- [ ] `accessibilityReduceTransparency` branch: toggle `System Settings → Accessibility → Display → Reduce transparency` ON, relaunch Nota, confirm the `.bordered` / `.borderedProminent` pair still renders legibly and stays aligned with the other toolbar buttons.
+- **`.pickerStyle(.segmented)` in a Liquid Glass toolbar has poor selected-state contrast** because Tahoe paints selection with a low-alpha accent fill on top of an already-bright translucent material. Gemini flagged this consistently.
+- **Mixing `.ToolbarItem(.principal)` (title-bar baseline) with `.navigation` / `.primaryAction` (accessory baseline) can produce a few-px vertical offset.** Routing every toolbar item through the same `.glass`-family button-style pipeline unifies the baseline even across placements.
+- **`.glassProminent` on macOS 26 is the strongest selected-state indicator for toolbar picker choices** — opaque brightened capsule, overrides the translucent material chain, high-delta against any backdrop.
+- **`@ViewBuilder` + explicit `if / else if` beats a ternary when the branches return different concrete button styles.** A ternary `isSelected ? .borderedProminent : .bordered` tripped SourceKit's opaque-return-type inference; `@ViewBuilder` body with four branches compiled clean.
+- **`npm run build:macos` inside `scripts/deploy-macos-app.sh` can exit 141 (SIGPIPE) under background-task output capture**, silently skipping the `pkill` + `ditto` + `open` steps. The `/Applications/Nota.app` binary stays stale and all subsequent review captures read the previous build. Diagnose by comparing `stat -f "%Sm" /Applications/Nota.app/Contents/MacOS/Nota` to wall-clock time. Recover by invoking `bash scripts/build-macos-app.sh` directly, then running the deploy-script's post-build steps manually. See the `shell-tail-masks-exit-code` skill + `macos-app-deploy-kill-first`.
 
 ## The Complaint
 
