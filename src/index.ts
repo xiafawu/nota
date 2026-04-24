@@ -3,6 +3,11 @@
 import { Command } from "commander";
 import { loadConfig } from "./config.js";
 import { runPipeline } from "./orchestrator.js";
+import {
+  formatHistoryList,
+  listHistoryRecords,
+  loadHistoryRecord,
+} from "./pipeline/history.js";
 
 const program = new Command();
 
@@ -19,14 +24,29 @@ program
   .description("Transcribe, diarize, and summarize audio files")
   .version("1.0.0")
   .argument("<audio-file>", "Path to audio file (.mp3, .wav, .m4a, etc.)")
-  .option("-o, --output <path>", "Output file path (default: <input>.summary.md)")
+  .option(
+    "-o, --output <path>",
+    "Output file path (default: <input>.summary.md)",
+  )
   .option("-l, --language <lang>", "Audio language hint")
   .option("-m, --model <model>", "GPT model to use for summarization", "gpt-4o")
   .option("-v, --verbose", "Show progress for each pipeline stage")
-  .option("--provider <name>", "Transcription provider: assemblyai or whisper", "assemblyai")
-  .option("--num-speakers <n>", "Expected number of speakers (assemblyai only)", parsePositiveInteger)
+  .option(
+    "--provider <name>",
+    "Transcription provider: assemblyai or whisper",
+    "assemblyai",
+  )
+  .option(
+    "--num-speakers <n>",
+    "Expected number of speakers (assemblyai only)",
+    parsePositiveInteger,
+  )
   .option("--no-diarize", "Skip pyannote diarization for --provider whisper")
-  .option("--identify", "Identify and remember speakers by voice across recordings")
+  .option(
+    "--identify",
+    "Identify and remember speakers by voice across recordings",
+  )
+  .option("--no-history", "Do not save this transcript to ~/.nota/history")
   .action(async (audioFile: string, options) => {
     try {
       const config = loadConfig({
@@ -34,6 +54,7 @@ program
         diarize: options.diarize,
         numSpeakers: options.numSpeakers,
         identify: options.identify,
+        history: options.history,
       });
       const outputPath = await runPipeline({
         inputPath: audioFile,
@@ -43,7 +64,48 @@ program
       console.log(`\nDone! Summary saved to: ${outputPath}`);
     } catch (error) {
       console.error(
-        `\nError: ${error instanceof Error ? error.message : String(error)}`
+        `\nError: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      process.exit(1);
+    }
+  });
+
+const history = program
+  .command("history")
+  .description("Inspect saved Nota transcript histories");
+
+history
+  .command("list")
+  .description("List saved transcript histories")
+  .option(
+    "--limit <n>",
+    "Maximum number of records to show",
+    parsePositiveInteger,
+    20,
+  )
+  .action(async (options) => {
+    try {
+      const records = await listHistoryRecords();
+      console.log(formatHistoryList(records.slice(0, options.limit)));
+    } catch (error) {
+      console.error(
+        `\nError: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      process.exit(1);
+    }
+  });
+
+history
+  .command("show")
+  .description("Show a saved transcript history record as JSON")
+  .argument("<id>", "History id or unique id prefix")
+  .action(async (id: string) => {
+    try {
+      const record = await loadHistoryRecord(id);
+      console.log(JSON.stringify(record, null, 2));
+    } catch (error) {
+      console.error(
+        `\nError: ${error instanceof Error ? error.message : String(error)}`,
       );
       process.exit(1);
     }

@@ -1,0 +1,110 @@
+import { mkdtemp, rm } from "node:fs/promises";
+import path from "node:path";
+import { tmpdir } from "node:os";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import {
+  completeHistoryRecord,
+  createHistoryRecord,
+  formatHistoryList,
+  listHistoryRecords,
+  loadHistoryRecord,
+} from "../../src/pipeline/history.js";
+
+describe("history", () => {
+  let historyDir: string;
+
+  beforeEach(async () => {
+    historyDir = await mkdtemp(path.join(tmpdir(), "nota-history-test-"));
+  });
+
+  afterEach(async () => {
+    await rm(historyDir, { recursive: true, force: true });
+  });
+
+  it("creates and completes a history record", async () => {
+    const record = await createHistoryRecord(
+      {
+        sourcePath: "/tmp/meeting.m4a",
+        provider: "assemblyai",
+        options: {
+          diarize: true,
+          identify: false,
+          model: "gpt-4o",
+        },
+        durationMinutes: 12,
+        transcriptText: "Hello world",
+        segments: [{ start: 0, end: 1, text: "Hello world", speaker: "A" }],
+        outputPath: "/tmp/meeting.summary.md",
+      },
+      historyDir,
+    );
+
+    expect(record.status).toBe("transcribed");
+    expect(record.sourceName).toBe("meeting.m4a");
+
+    const completed = await completeHistoryRecord(
+      record.id,
+      {
+        summary: {
+          narrative: "A short meeting.",
+          keyTopics: ["Topic"],
+          decisions: [],
+          actionItems: [],
+        },
+        outputPath: "/tmp/meeting.summary.md",
+      },
+      historyDir,
+    );
+
+    expect(completed.status).toBe("completed");
+    expect(completed.summary?.narrative).toBe("A short meeting.");
+  });
+
+  it("lists records newest first and loads by unique prefix", async () => {
+    const first = await createHistoryRecord(
+      {
+        sourcePath: "/tmp/first.m4a",
+        provider: "whisper",
+        options: {
+          diarize: false,
+          identify: false,
+          model: "gpt-4o-mini",
+        },
+        durationMinutes: 1,
+        transcriptText: "First",
+        segments: [],
+      },
+      historyDir,
+    );
+    const second = await createHistoryRecord(
+      {
+        sourcePath: "/tmp/second.m4a",
+        provider: "assemblyai",
+        options: {
+          diarize: true,
+          identify: true,
+          model: "gpt-4o",
+        },
+        durationMinutes: 2,
+        transcriptText: "Second",
+        segments: [],
+      },
+      historyDir,
+    );
+
+    const records = await listHistoryRecords(historyDir);
+    expect(records.map((record) => record.id)).toEqual([second.id, first.id]);
+
+    const loaded = await loadHistoryRecord(second.id.slice(0, -1), historyDir);
+    expect(loaded.id).toBe(second.id);
+
+    const list = formatHistoryList(records);
+    expect(list).toContain("Created\tID\tProvider\tStatus\tSource");
+    expect(list).toContain("second.m4a");
+  });
+
+  it("returns an empty list for a missing history directory", async () => {
+    await rm(historyDir, { recursive: true, force: true });
+    await expect(listHistoryRecords(historyDir)).resolves.toEqual([]);
+  });
+});

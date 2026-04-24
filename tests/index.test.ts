@@ -20,6 +20,19 @@ describe("CLI", () => {
     expect(output).toContain("--no-diarize");
     expect(output).toContain("--identify");
     expect(output).toContain("--provider");
+    expect(output).toContain("--no-history");
+  });
+
+  it("shows history commands in help", () => {
+    const output = execFileSync(
+      "npx",
+      ["tsx", "src/index.ts", "history", "--help"],
+      {
+        encoding: "utf-8",
+      },
+    );
+    expect(output).toContain("list");
+    expect(output).toContain("show");
   });
 
   it("shows version with --version flag", () => {

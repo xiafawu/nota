@@ -83,7 +83,7 @@ describe("loadConfig", () => {
     process.env.OPENAI_API_KEY = "sk-test";
     process.env.ASSEMBLYAI_API_KEY = "aai-test";
     expect(() => loadConfig({ provider: "local" })).toThrow(
-      "Unsupported provider"
+      "Unsupported provider",
     );
   });
 
@@ -91,7 +91,21 @@ describe("loadConfig", () => {
     process.env.OPENAI_API_KEY = "sk-test";
     process.env.ASSEMBLYAI_API_KEY = "aai-test";
     expect(() => loadConfig({ numSpeakers: 0 })).toThrow(
-      "--num-speakers must be a positive integer"
+      "--num-speakers must be a positive integer",
     );
+  });
+
+  it("saves history by default", () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.ASSEMBLYAI_API_KEY = "aai-test";
+    const config = loadConfig({});
+    expect(config.history).toBe(true);
+  });
+
+  it("respects history false override", () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.ASSEMBLYAI_API_KEY = "aai-test";
+    const config = loadConfig({ history: false });
+    expect(config.history).toBe(false);
   });
 });

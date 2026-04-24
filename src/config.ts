@@ -9,6 +9,7 @@ export interface CLIOptions {
   provider?: string;
   numSpeakers?: number;
   identify?: boolean;
+  history?: boolean;
 }
 
 export interface AppConfig {
@@ -21,13 +22,14 @@ export interface AppConfig {
   diarize: boolean;
   numSpeakers?: number;
   identify: boolean;
+  history: boolean;
 }
 
 function parseProvider(provider?: string): Provider {
   if (!provider || provider === "assemblyai") return "assemblyai";
   if (provider === "whisper") return "whisper";
   throw new Error(
-    `Unsupported provider: ${provider}. Supported providers: assemblyai, whisper`
+    `Unsupported provider: ${provider}. Supported providers: assemblyai, whisper`,
   );
 }
 
@@ -35,7 +37,7 @@ export function loadConfig(options: CLIOptions): AppConfig {
   const openaiApiKey = process.env.OPENAI_API_KEY;
   if (!openaiApiKey) {
     throw new Error(
-      "OPENAI_API_KEY environment variable is required. Get one at https://platform.openai.com/api-keys"
+      "OPENAI_API_KEY environment variable is required. Get one at https://platform.openai.com/api-keys",
     );
   }
 
@@ -52,7 +54,7 @@ export function loadConfig(options: CLIOptions): AppConfig {
   if (provider === "assemblyai" && !assemblyaiApiKey) {
     throw new Error(
       "ASSEMBLYAI_API_KEY environment variable is required when using assemblyai provider. " +
-      "Get one at https://www.assemblyai.com/dashboard/signup"
+        "Get one at https://www.assemblyai.com/dashboard/signup",
     );
   }
 
@@ -66,5 +68,6 @@ export function loadConfig(options: CLIOptions): AppConfig {
     diarize: provider === "assemblyai" ? true : (options.diarize ?? true),
     numSpeakers: options.numSpeakers,
     identify: options.identify ?? false,
+    history: options.history ?? true,
   };
 }

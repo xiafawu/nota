@@ -2,7 +2,11 @@ import path from "node:path";
 import ora from "ora";
 import type { AppConfig } from "./config.js";
 import { OVERLAP_DURATION } from "./constants.js";
-import { validateInput, checkPython, checkHuggingFaceToken } from "./pipeline/validate.js";
+import {
+  validateInput,
+  checkPython,
+  checkHuggingFaceToken,
+} from "./pipeline/validate.js";
 import { runDiarization, alignSpeakers } from "./pipeline/diarize.js";
 import { chunkAudio } from "./pipeline/chunk.js";
 import { transcribeChunks } from "./pipeline/transcribe.js";
@@ -15,6 +19,11 @@ import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { transcribeWithAssemblyAI } from "./pipeline/assemblyai.js";
+import {
+  completeHistoryRecord,
+  createHistoryRecord,
+  type HistoryOptions,
+} from "./pipeline/history.js";
 import {
   extractEmbeddings,
   loadProfiles,
@@ -40,6 +49,16 @@ function log(verbose: boolean, message: string) {
   return null;
 }
 
+function historyOptions(config: AppConfig): HistoryOptions {
+  return {
+    language: config.language,
+    diarize: config.diarize,
+    identify: config.identify,
+    numSpeakers: config.numSpeakers,
+    model: config.summaryModel,
+  };
+}
+
 export async function runPipeline(options: PipelineOptions): Promise<string> {
   const { inputPath, config } = options;
   const outputPath = options.outputPath ?? defaultOutputPath(inputPath);
@@ -58,7 +77,12 @@ export async function runPipeline(options: PipelineOptions): Promise<string> {
   spinner?.succeed("Input validated");
 
   if (config.provider === "assemblyai") {
-    return runAssemblyAIPipeline(inputPath, outputPath, durationMinutes, config);
+    return runAssemblyAIPipeline(
+      inputPath,
+      outputPath,
+      durationMinutes,
+      config,
+    );
   }
   return runWhisperPipeline(inputPath, outputPath, durationMinutes, config);
 }
@@ -67,7 +91,7 @@ async function runAssemblyAIPipeline(
   inputPath: string,
   outputPath: string,
   durationMinutes: number,
-  config: AppConfig
+  config: AppConfig,
 ): Promise<string> {
   const verbose = config.verbose;
 
@@ -75,20 +99,31 @@ async function runAssemblyAIPipeline(
   //     (the original file may be a temp file that gets deleted during transcription)
   let localAudioPath: string | null = null;
   if (config.identify && path.extname(inputPath).toLowerCase() === ".qta") {
-    const spinner0 = log(verbose, "Converting audio for speaker identification...");
-    localAudioPath = path.join(
-      tmpdir(),
-      `nota-local-${Date.now()}.wav`
+    const spinner0 = log(
+      verbose,
+      "Converting audio for speaker identification...",
     );
+    localAudioPath = path.join(tmpdir(), `nota-local-${Date.now()}.wav`);
     await execFileAsync("ffmpeg", [
-      "-y", "-i", inputPath, "-ar", "16000", "-ac", "1", localAudioPath,
+      "-y",
+      "-i",
+      inputPath,
+      "-ar",
+      "16000",
+      "-ac",
+      "1",
+      localAudioPath,
     ]);
     spinner0?.succeed("Audio converted");
   }
 
   try {
     return await runAssemblyAIPipelineInner(
-      inputPath, outputPath, durationMinutes, config, localAudioPath
+      inputPath,
+      outputPath,
+      durationMinutes,
+      config,
+      localAudioPath,
     );
   } finally {
     if (localAudioPath) {
@@ -102,7 +137,7 @@ async function runAssemblyAIPipelineInner(
   outputPath: string,
   durationMinutes: number,
   config: AppConfig,
-  localAudioPath: string | null
+  localAudioPath: string | null,
 ): Promise<string> {
   const verbose = config.verbose;
 
@@ -122,13 +157,31 @@ async function runAssemblyAIPipelineInner(
     segments = await identifySpeakers(audioForEmbeddings, segments, verbose);
   }
 
+  // 2c. Save transcript history before summarization so the transcript survives
+  //     even if the GPT summary step fails.
+  let historyId: string | undefined;
+  if (config.history) {
+    spinner = log(verbose, "Saving transcript history...");
+    const history = await createHistoryRecord({
+      sourcePath: inputPath,
+      provider: config.provider,
+      options: historyOptions(config),
+      durationMinutes,
+      transcriptText: result.text,
+      segments,
+      outputPath,
+    });
+    historyId = history.id;
+    spinner?.succeed(`History saved as ${history.id}`);
+  }
+
   // 3. Summarize
   spinner = log(verbose, "Summarizing with GPT-4o...");
   const summary = await summarizeTranscript(
     result.text,
     config.openaiApiKey,
     config.summaryModel,
-    segments
+    segments,
   );
   spinner?.succeed("Summary generated");
 
@@ -139,8 +192,11 @@ async function runAssemblyAIPipelineInner(
 
   await writeOutput(
     { summary, segments, date, duration: durationMinutes, source },
-    outputPath
+    outputPath,
   );
+  if (historyId) {
+    await completeHistoryRecord(historyId, { summary, outputPath });
+  }
   spinner?.succeed(`Output written to ${outputPath}`);
 
   return outputPath;
@@ -149,7 +205,7 @@ async function runAssemblyAIPipelineInner(
 async function identifySpeakers(
   inputPath: string,
   segments: import("./pipeline/transcribe.js").TranscriptSegment[],
-  verbose: boolean
+  verbose: boolean,
 ): Promise<import("./pipeline/transcribe.js").TranscriptSegment[]> {
   let spinner = log(verbose, "Extracting speaker voiceprints...");
   try {
@@ -165,16 +221,14 @@ async function identifySpeakers(
       nameMap[label] = match.name;
       if (verbose) {
         console.log(
-          `  Matched ${label} → ${match.name} (${Math.round(match.confidence * 100)}%)`
+          `  Matched ${label} → ${match.name} (${Math.round(match.confidence * 100)}%)`,
         );
       }
     }
 
     // Find unmatched speakers
     const allSpeakers = [
-      ...new Set(
-        segments.map((s) => s.speaker).filter(Boolean) as string[]
-      ),
+      ...new Set(segments.map((s) => s.speaker).filter(Boolean) as string[]),
     ];
     const unmatchedSpeakers = allSpeakers.filter((s) => !nameMap[s]);
 
@@ -201,7 +255,7 @@ async function identifySpeakers(
     spinner?.fail("Speaker identification unavailable (using generic labels)");
     if (verbose) {
       console.error(
-        `  ${error instanceof Error ? error.message : String(error)}`
+        `  ${error instanceof Error ? error.message : String(error)}`,
       );
     }
     return segments;
@@ -212,7 +266,7 @@ async function runWhisperPipeline(
   inputPath: string,
   outputPath: string,
   durationMinutes: number,
-  config: AppConfig
+  config: AppConfig,
 ): Promise<string> {
   const verbose = config.verbose;
 
@@ -230,22 +284,25 @@ async function runWhisperPipeline(
   spinner?.succeed(
     chunks.length === 1
       ? "File within size limit, no chunking needed"
-      : `Split into ${chunks.length} chunks`
+      : `Split into ${chunks.length} chunks`,
   );
 
   // 3. Transcribe (and diarize in parallel if enabled)
-  spinner = log(verbose, config.diarize
-    ? `Transcribing ${chunks.length} chunk(s) and diarizing speakers...`
-    : `Transcribing ${chunks.length} chunk(s)...`
+  spinner = log(
+    verbose,
+    config.diarize
+      ? `Transcribing ${chunks.length} chunk(s) and diarizing speakers...`
+      : `Transcribing ${chunks.length} chunk(s)...`,
   );
 
   const [transcriptions, diarization] = await Promise.all([
     transcribeChunks(chunks, config.openaiApiKey, config.language),
     config.diarize ? runDiarization(inputPath) : Promise.resolve(null),
   ]);
-  spinner?.succeed(config.diarize
-    ? "Transcription and diarization complete"
-    : "Transcription complete"
+  spinner?.succeed(
+    config.diarize
+      ? "Transcription and diarization complete"
+      : "Transcription complete",
   );
 
   // 4. Merge
@@ -256,8 +313,29 @@ async function runWhisperPipeline(
   // 4b. Align speakers
   if (diarization) {
     spinner = log(verbose, "Aligning speaker labels...");
-    merged = { ...merged, segments: alignSpeakers(merged.segments, diarization) };
+    merged = {
+      ...merged,
+      segments: alignSpeakers(merged.segments, diarization),
+    };
     spinner?.succeed("Speaker labels aligned");
+  }
+
+  // 4c. Save transcript history before summarization so the transcript survives
+  //     even if the GPT summary step fails.
+  let historyId: string | undefined;
+  if (config.history) {
+    spinner = log(verbose, "Saving transcript history...");
+    const history = await createHistoryRecord({
+      sourcePath: inputPath,
+      provider: config.provider,
+      options: historyOptions(config),
+      durationMinutes,
+      transcriptText: merged.text,
+      segments: merged.segments,
+      outputPath,
+    });
+    historyId = history.id;
+    spinner?.succeed(`History saved as ${history.id}`);
   }
 
   // 5. Summarize
@@ -266,7 +344,7 @@ async function runWhisperPipeline(
     merged.text,
     config.openaiApiKey,
     config.summaryModel,
-    diarization ? merged.segments : undefined
+    diarization ? merged.segments : undefined,
   );
   spinner?.succeed("Summary generated");
 
@@ -276,9 +354,18 @@ async function runWhisperPipeline(
   const source = path.basename(inputPath);
 
   await writeOutput(
-    { summary, segments: merged.segments, date, duration: durationMinutes, source },
-    outputPath
+    {
+      summary,
+      segments: merged.segments,
+      date,
+      duration: durationMinutes,
+      source,
+    },
+    outputPath,
   );
+  if (historyId) {
+    await completeHistoryRecord(historyId, { summary, outputPath });
+  }
   spinner?.succeed(`Output written to ${outputPath}`);
 
   return outputPath;
