@@ -694,54 +694,47 @@ struct ContentView: View {
   @ObservedObject var model: NotaModel
 
   var body: some View {
-    VStack(spacing: 0) {
-      toolbar
-        .padding(12)
-        .background(.bar)
+    HSplitView {
+      dropPane
+        .frame(minWidth: 260, idealWidth: 300, maxWidth: 360)
 
-      HSplitView {
-        dropPane
-          .frame(minWidth: 260, idealWidth: 300, maxWidth: 360)
-
-        resultPane
-          .frame(minWidth: 460)
-      }
+      resultPane
+        .frame(minWidth: 460)
     }
-  }
-
-  private var toolbar: some View {
-    HStack(spacing: 10) {
-      Button {
-        model.chooseFile()
-      } label: {
-        Label("Open", systemImage: "folder")
-      }
-      .disabled(model.isRunning)
-
-      Button {
-        model.transcribe()
-      } label: {
-        Label("Transcribe", systemImage: "waveform")
-      }
-      .disabled(model.selectedURL == nil || model.isRunning)
-
-      Toggle("Remember speakers", isOn: $model.identifySpeakers)
-        .toggleStyle(.checkbox)
+    .toolbar {
+      ToolbarItemGroup(placement: .primaryAction) {
+        Button {
+          model.chooseFile()
+        } label: {
+          Label("Open", systemImage: "folder")
+        }
         .disabled(model.isRunning)
 
-      Spacer()
+        Button {
+          model.transcribe()
+        } label: {
+          Label("Transcribe", systemImage: "waveform")
+        }
+        .disabled(model.selectedURL == nil || model.isRunning)
 
-      if model.isRunning {
-        ProgressView()
-          .controlSize(.small)
+        Toggle("Remember speakers", isOn: $model.identifySpeakers)
+          .toggleStyle(.checkbox)
+          .disabled(model.isRunning)
       }
 
-      Text(model.status)
-        .font(.callout)
-        .lineLimit(1)
-        .truncationMode(.middle)
-        .foregroundStyle(.secondary)
-        .frame(maxWidth: 280, alignment: .trailing)
+      ToolbarItemGroup(placement: .automatic) {
+        if model.isRunning {
+          ProgressView()
+            .controlSize(.small)
+        }
+
+        Text(model.status)
+          .font(.callout)
+          .lineLimit(1)
+          .truncationMode(.middle)
+          .foregroundStyle(.secondary)
+          .frame(maxWidth: 280, alignment: .trailing)
+      }
     }
   }
 
