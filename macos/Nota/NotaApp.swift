@@ -702,23 +702,28 @@ struct ContentView: View {
     }
     .toolbar {
       ToolbarItemGroup(placement: .primaryAction) {
-        Button {
-          model.chooseFile()
-        } label: {
-          Label("Open", systemImage: "folder")
-        }
-        .disabled(model.isRunning)
-
-        Button {
-          model.transcribe()
-        } label: {
-          Label("Transcribe", systemImage: "waveform")
-        }
-        .disabled(model.selectedURL == nil || model.isRunning)
-
-        Toggle("Remember speakers", isOn: $model.identifySpeakers)
-          .toggleStyle(.checkbox)
+        GlassEffectContainer(spacing: 8) {
+          Button {
+            model.chooseFile()
+          } label: {
+            Label("Open", systemImage: "folder")
+          }
+          .glassEffect(.regular, in: .capsule)
           .disabled(model.isRunning)
+
+          Button {
+            model.transcribe()
+          } label: {
+            Label("Transcribe", systemImage: "waveform")
+          }
+          .glassEffect(.regular, in: .capsule)
+          .disabled(model.selectedURL == nil || model.isRunning)
+
+          Toggle("Remember speakers", isOn: $model.identifySpeakers)
+            .toggleStyle(.checkbox)
+            .glassEffect(.regular, in: .capsule)
+            .disabled(model.isRunning)
+        }
       }
 
       ToolbarItemGroup(placement: .automatic) {
