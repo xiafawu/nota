@@ -694,54 +694,47 @@ struct ContentView: View {
   @ObservedObject var model: NotaModel
 
   var body: some View {
-    VStack(spacing: 0) {
-      toolbar
-        .padding(12)
-        .background(.bar)
-
-      NavigationSplitView {
-        dropPane
-          .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 360)
-      } detail: {
-        resultPane
-          .navigationSplitViewColumnWidth(min: 460, ideal: 640)
-      }
+    NavigationSplitView {
+      dropPane
+        .navigationSplitViewColumnWidth(min: 260, ideal: 300, max: 360)
+    } detail: {
+      resultPane
+        .navigationSplitViewColumnWidth(min: 460, ideal: 640)
     }
-  }
-
-  private var toolbar: some View {
-    HStack(spacing: 10) {
-      Button {
-        model.chooseFile()
-      } label: {
-        Label("Open", systemImage: "folder")
-      }
-      .disabled(model.isRunning)
-
-      Button {
-        model.transcribe()
-      } label: {
-        Label("Transcribe", systemImage: "waveform")
-      }
-      .disabled(model.selectedURL == nil || model.isRunning)
-
-      Toggle("Remember speakers", isOn: $model.identifySpeakers)
-        .toggleStyle(.checkbox)
+    .toolbar {
+      ToolbarItemGroup(placement: .primaryAction) {
+        Button {
+          model.chooseFile()
+        } label: {
+          Label("Open", systemImage: "folder")
+        }
         .disabled(model.isRunning)
 
-      Spacer()
+        Button {
+          model.transcribe()
+        } label: {
+          Label("Transcribe", systemImage: "waveform")
+        }
+        .disabled(model.selectedURL == nil || model.isRunning)
 
-      if model.isRunning {
-        ProgressView()
-          .controlSize(.small)
+        Toggle("Remember speakers", isOn: $model.identifySpeakers)
+          .toggleStyle(.checkbox)
+          .disabled(model.isRunning)
       }
 
-      Text(model.status)
-        .font(.callout)
-        .lineLimit(1)
-        .truncationMode(.middle)
-        .foregroundStyle(.secondary)
-        .frame(maxWidth: 280, alignment: .trailing)
+      ToolbarItemGroup(placement: .automatic) {
+        if model.isRunning {
+          ProgressView()
+            .controlSize(.small)
+        }
+
+        Text(model.status)
+          .font(.callout)
+          .lineLimit(1)
+          .truncationMode(.middle)
+          .foregroundStyle(.secondary)
+          .frame(maxWidth: 280, alignment: .trailing)
+      }
     }
   }
 
