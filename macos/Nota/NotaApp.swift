@@ -856,28 +856,28 @@ struct ContentView: View {
       Spacer()
 
       Image(systemName: model.isRunning ? "waveform" : "tray.and.arrow.down")
-        .font(.system(size: 48, weight: .regular))
-        .foregroundStyle(model.isDropTargeted ? Color.accentColor : Color.secondary)
+        .font(.system(size: 56, weight: .medium))
+        .foregroundStyle(model.isDropTargeted ? Color.accentColor : Color.primary.opacity(0.8))
         .symbolEffect(.pulse, isActive: model.isRunning)
 
-      VStack(spacing: 10) {
+      VStack(spacing: 12) {
         Text(model.displayName)
-          .font(.title3)
+          .font(.title2)
           .fontWeight(.semibold)
           .foregroundStyle(.primary)
           .lineLimit(3)
           .multilineTextAlignment(.center)
 
         Text(model.displayPath)
-          .font(.caption)
+          .font(.footnote)
           .monospaced()
-          .foregroundStyle(.secondary)
+          .foregroundStyle(.primary.opacity(0.7))
           .lineLimit(4)
           .multilineTextAlignment(.center)
-          .padding(.horizontal, 10)
-          .padding(.vertical, 4)
+          .padding(.horizontal, 12)
+          .padding(.vertical, 6)
           .background(
-            Capsule().fill(Color.secondary.opacity(0.08))
+            Capsule().fill(Color.primary.opacity(0.06))
           )
       }
 
@@ -891,9 +891,10 @@ struct ContentView: View {
       .toggleStyle(.switch)
       .controlSize(.small)
       .disabled(model.isRunning)
+      .padding(.top, 12)
       .padding(.horizontal, 4)
     }
-    .padding(20)
+    .padding(24)
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .dropTargetGlass(isTargeted: model.isDropTargeted)
     .padding(14)
@@ -942,9 +943,10 @@ struct ContentView: View {
         Spacer()
       }
       .padding(.horizontal, 16)
-      .padding(.vertical, 10)
+      .padding(.vertical, 12)
 
       Divider()
+        .opacity(0.4)
 
       if model.resultViewMode == .richText {
         RichTextViewer(attributedString: model.richText)
