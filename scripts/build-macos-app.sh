@@ -35,6 +35,7 @@ swiftc \
   -o "$MACOS_DIR/$APP_NAME"
 
 cp "$PROJECT_DIR/macos/Nota/Info.plist" "$CONTENTS_DIR/Info.plist"
+cp "$PROJECT_DIR/macos/Nota/Assets/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
 printf 'APPL????' > "$CONTENTS_DIR/PkgInfo"
 chmod +x "$MACOS_DIR/$APP_NAME"
 
