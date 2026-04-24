@@ -791,7 +791,6 @@ struct ContentView: View {
         .pickerStyle(.segmented)
         .labelsHidden()
         .frame(width: 200)
-        .disabled(model.markdown.isEmpty)
       }
 
       ToolbarItemGroup(placement: .status) {
