@@ -10,7 +10,7 @@ Instructions for AI agents working with this codebase.
 - Default share output folder: `~/Documents/Nota`
 - Persistent speaker profiles: `~/.nota/speakers.json`
 - Legacy MeetingSum identifiers are compatibility aliases only. Preserve `scripts/meetingsum-share.sh`, the `meetingsum` bin alias, `MEETINGSUM_*` env fallbacks, and `~/.meetingsum/speakers.json` fallback unless intentionally doing a breaking cleanup.
-- The repository path is still `/Users/xiafawu/Developer/MeetingSum`; treat that as a filesystem location, not the product name.
+- The repository path is `/Users/xiafawu/Developer/Nota`; treat that as a filesystem location, not the product name.
 - `docs/superpowers/` contains historical implementation plans/specs from the old name. Do not use those files as the source of truth for current branding.
 
 ## Quick Start — Running Nota

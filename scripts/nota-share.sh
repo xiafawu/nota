@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-PROJECT_DIR="${NOTA_PROJECT_DIR:-${MEETINGSUM_PROJECT_DIR:-/Users/xiafawu/Developer/MeetingSum}}"
+PROJECT_DIR="${NOTA_PROJECT_DIR:-${MEETINGSUM_PROJECT_DIR:-/Users/xiafawu/Developer/Nota}}"
 OUTPUT_DIR="${NOTA_OUTPUT_DIR:-${MEETINGSUM_OUTPUT_DIR:-$HOME/Documents/Nota}}"
 ERROR_LOG="${NOTA_ERROR_LOG:-${MEETINGSUM_ERROR_LOG:-/tmp/nota-error.log}}"
 

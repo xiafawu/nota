@@ -14,7 +14,7 @@ Nota is a TypeScript CLI tool that transcribes and diarizes audio files using As
 - Default share output folder: `~/Documents/Nota`
 - Persistent speaker profiles: `~/.nota/speakers.json`
 - Legacy `meetingsum` names are compatibility aliases only. Keep `scripts/meetingsum-share.sh`, the `meetingsum` bin alias, `MEETINGSUM_*` env fallbacks, and `~/.meetingsum/speakers.json` fallback unless intentionally doing a breaking cleanup.
-- The repository path is still `/Users/xiafawu/Developer/MeetingSum` for now. Treat that as a filesystem location, not the product name.
+- The repository path is `/Users/xiafawu/Developer/Nota`. Treat that as a filesystem location, not the product name.
 - `docs/superpowers/` contains historical implementation plans/specs from the old name. Do not use those files as the source of truth for current branding.
 
 ## Build & Run Commands
@@ -62,7 +62,7 @@ Two pipeline paths controlled by `--provider`:
 
 ## Key Design Decisions
 
-- Nota is the primary name; MeetingSum references exist only for backward compatibility during the rename.
+- Nota is the primary name; MeetingSum references exist only for backward compatibility.
 - AssemblyAI as default provider: transcription + diarization in one API call ($0.15/hr)
 - Whisper retained as fallback via `--provider whisper`
 - `.qta` files auto-converted to `.m4a` via ffmpeg before AssemblyAI upload

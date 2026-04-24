@@ -30,7 +30,7 @@ export PYTHON_BIN="python3.11"
 8. Use this script:
 
 ```bash
-/Users/xiafawu/Developer/MeetingSum/scripts/nota-share.sh "$@"
+/Users/xiafawu/Developer/Nota/scripts/nota-share.sh "$@"
 ```
 
 ## Use It
