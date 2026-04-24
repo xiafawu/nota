@@ -946,7 +946,8 @@ struct ContentView: View {
       }
     }
     .animation(.easeInOut(duration: 0.2), value: model.isRunning)
-    .containerBackground(.regularMaterial, for: .window)
+    .containerBackground(.ultraThinMaterial, for: .window)
+    .toolbarBackground(.hidden, for: .windowToolbar)
   }
 
   private var historyPane: some View {
