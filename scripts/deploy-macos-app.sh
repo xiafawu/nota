@@ -45,6 +45,17 @@ if [ -x "$LSREGISTER" ]; then
   "$LSREGISTER" -f "$DEST_APP" || true
 fi
 
+# Liquid Glass linkage assertions (#13)
+MIN_OS="$(defaults read "$DEST_APP/Contents/Info.plist" LSMinimumSystemVersion)"
+if [ "$MIN_OS" != "26.0" ]; then
+  echo "Liquid Glass check failed: LSMinimumSystemVersion=$MIN_OS (expected 26.0)" >&2
+  exit 1
+fi
+if ! otool -L "$DEST_APP/Contents/MacOS/Nota" | grep -q SwiftUI.framework; then
+  echo "Liquid Glass check failed: SwiftUI.framework not linked" >&2
+  exit 1
+fi
+
 if [ "${NOTA_SKIP_APP_SMOKE:-0}" != "1" ]; then
   SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nota-app-smoke.XXXXXX")"
   smoke_input="$SMOKE_DIR/smoke.m4a"
