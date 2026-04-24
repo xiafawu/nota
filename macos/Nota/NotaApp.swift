@@ -824,46 +824,51 @@ struct ContentView: View {
 
         Spacer()
 
-        Menu {
-          Button {
-            model.copyRichText()
+        GlassEffectContainer(spacing: 8) {
+          Menu {
+            Button {
+              model.copyRichText()
+            } label: {
+              Label("Copy Rich Text", systemImage: "doc.on.clipboard")
+            }
+
+            Button {
+              model.copyMarkdown()
+            } label: {
+              Label("Copy Markdown", systemImage: "chevron.left.forwardslash.chevron.right")
+            }
           } label: {
-            Label("Copy Rich Text", systemImage: "doc.on.clipboard")
+            Label("Copy", systemImage: "doc.on.doc")
           }
+          .buttonStyle(.glass)
+          .disabled(model.markdown.isEmpty)
+
+          Menu {
+            Button {
+              model.exportRichText()
+            } label: {
+              Label("Export Rich Text...", systemImage: "textformat")
+            }
+
+            Button {
+              model.exportMarkdown()
+            } label: {
+              Label("Export Markdown...", systemImage: "number")
+            }
+          } label: {
+            Label("Export", systemImage: "square.and.arrow.down")
+          }
+          .buttonStyle(.glass)
+          .disabled(model.markdown.isEmpty)
 
           Button {
-            model.copyMarkdown()
+            model.revealOutput()
           } label: {
-            Label("Copy Markdown", systemImage: "chevron.left.forwardslash.chevron.right")
+            Label("Reveal", systemImage: "finder")
           }
-        } label: {
-          Label("Copy", systemImage: "doc.on.doc")
+          .buttonStyle(.glass)
+          .disabled(model.lastOutputURL == nil)
         }
-        .disabled(model.markdown.isEmpty)
-
-        Menu {
-          Button {
-            model.exportRichText()
-          } label: {
-            Label("Export Rich Text...", systemImage: "textformat")
-          }
-
-          Button {
-            model.exportMarkdown()
-          } label: {
-            Label("Export Markdown...", systemImage: "number")
-          }
-        } label: {
-          Label("Export", systemImage: "square.and.arrow.down")
-        }
-        .disabled(model.markdown.isEmpty)
-
-        Button {
-          model.revealOutput()
-        } label: {
-          Label("Reveal", systemImage: "finder")
-        }
-        .disabled(model.lastOutputURL == nil)
       }
       .padding(12)
 
