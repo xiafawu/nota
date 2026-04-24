@@ -781,6 +781,18 @@ struct ContentView: View {
         .disabled(model.selectedURL == nil || model.isRunning)
       }
 
+      ToolbarItem(placement: .principal) {
+        Picker("View", selection: $model.resultViewMode) {
+          ForEach(ResultViewMode.allCases) { mode in
+            Text(mode.rawValue).tag(mode)
+          }
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .frame(width: 200)
+        .disabled(model.markdown.isEmpty)
+      }
+
       ToolbarItemGroup(placement: .status) {
         if model.isRunning || model.status != "Drop audio to transcribe" {
           HStack(spacing: 6) {
@@ -924,30 +936,7 @@ struct ContentView: View {
   }
 
   private var resultPane: some View {
-    VStack(spacing: 0) {
-      HStack(spacing: 12) {
-        Text("Transcript")
-          .font(.headline)
-          .foregroundStyle(.primary)
-
-        Picker("View", selection: $model.resultViewMode) {
-          ForEach(ResultViewMode.allCases) { mode in
-            Text(mode.rawValue).tag(mode)
-          }
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .frame(width: 180)
-        .disabled(model.markdown.isEmpty)
-
-        Spacer()
-      }
-      .padding(.horizontal, 16)
-      .padding(.vertical, 12)
-
-      Divider()
-        .opacity(0.4)
-
+    Group {
       if model.resultViewMode == .richText {
         RichTextViewer(attributedString: model.richText)
       } else {
