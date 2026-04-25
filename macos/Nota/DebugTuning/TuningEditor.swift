@@ -3,6 +3,7 @@ import SwiftUI
 
 struct TuningEditor: View {
   @ObservedObject private var store = TuningStore.shared
+  @State private var outcome: WritebackOutcome?
 
   var body: some View {
     HSplitView {
@@ -14,6 +15,14 @@ struct TuningEditor: View {
     .toolbar {
       ToolbarItem(placement: .primaryAction) {
         Button {
+          applyWriteback()
+        } label: {
+          Label("Apply", systemImage: "square.and.arrow.down")
+        }
+        .help("Write current values back into Tokens.swift and Metrics.swift")
+      }
+      ToolbarItem(placement: .secondaryAction) {
+        Button {
           store.resetToDefaults()
         } label: {
           Label("Reset", systemImage: "arrow.uturn.backward")
@@ -22,7 +31,41 @@ struct TuningEditor: View {
       }
     }
     .navigationTitle("UI Tuning")
+    .alert(
+      outcome?.title ?? "",
+      isPresented: Binding(
+        get: { outcome != nil },
+        set: { if !$0 { outcome = nil } }
+      ),
+      presenting: outcome
+    ) { _ in
+      Button("OK", role: .cancel) {}
+    } message: { result in
+      Text(result.message)
+    }
   }
+
+  private func applyWriteback() {
+    let service = WritebackService(projectDirectory: WritebackService.defaultProjectDirectory())
+    do {
+      let updated = try service.apply(store: store)
+      if updated.isEmpty {
+        outcome = WritebackOutcome(title: "No Changes", message: "Tokens already match the current source.")
+      } else {
+        let names = updated.map(\.lastPathComponent).joined(separator: "\n")
+        outcome = WritebackOutcome(title: "Applied", message: "Updated:\n\(names)\n\nRebuild to see the new defaults take effect.")
+      }
+    } catch {
+      outcome = WritebackOutcome(title: "Apply Failed", message: error.localizedDescription)
+    }
+  }
+}
+
+private struct WritebackOutcome: Identifiable {
+  let id = UUID()
+  let title: String
+  let message: String
+}
 
   private var controlsPane: some View {
     Form {
