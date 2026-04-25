@@ -79,11 +79,13 @@ struct ContentView: View {
             } label: {
               Label("Copy Rich Text", systemImage: "doc.on.clipboard")
             }
+            .liquidGlassButton()
             Button {
               model.copyMarkdown()
             } label: {
               Label("Copy Markdown", systemImage: "chevron.left.forwardslash.chevron.right")
             }
+            .liquidGlassButton()
           }
           Section("Export") {
             Button {
@@ -91,11 +93,13 @@ struct ContentView: View {
             } label: {
               Label("Export Rich Text...", systemImage: "textformat")
             }
+            .liquidGlassButton()
             Button {
               model.exportMarkdown()
             } label: {
               Label("Export Markdown...", systemImage: "number")
             }
+            .liquidGlassButton()
           }
           Section {
             Button {
@@ -103,6 +107,7 @@ struct ContentView: View {
             } label: {
               Label("Reveal in Finder", systemImage: "finder")
             }
+            .liquidGlassButton()
             .disabled(model.lastOutputURL == nil)
           }
         } label: {
