@@ -31,6 +31,9 @@ export const MERGE_THRESHOLD = 0.85;
 
 export type MatchResult = { name: string; confidence: number; tentative?: boolean };
 
+export const DEFAULT_SPEAKERS_FILE = SPEAKERS_FILE;
+export const DEFAULT_LEGACY_SPEAKERS_FILE = LEGACY_SPEAKERS_FILE;
+
 const QTA_EXTENSIONS = new Set([".qta"]);
 
 export interface SpeakerProfile {
@@ -57,23 +60,31 @@ export function cosineSimilarity(a: number[], b: number[]): number {
   return denom === 0 ? 0 : dot / denom;
 }
 
-export async function loadProfiles(): Promise<SpeakerStore> {
+export async function loadProfiles(
+  filePath: string = SPEAKERS_FILE,
+): Promise<SpeakerStore> {
   try {
-    const data = await readFile(SPEAKERS_FILE, "utf-8");
+    const data = await readFile(filePath, "utf-8");
     return JSON.parse(data);
   } catch {
-    try {
-      const legacyData = await readFile(LEGACY_SPEAKERS_FILE, "utf-8");
-      return JSON.parse(legacyData);
-    } catch {
-      return { version: 1, speakers: {} };
+    if (filePath === SPEAKERS_FILE) {
+      try {
+        const legacyData = await readFile(LEGACY_SPEAKERS_FILE, "utf-8");
+        return JSON.parse(legacyData);
+      } catch {
+        return { version: 1, speakers: {} };
+      }
     }
+    return { version: 1, speakers: {} };
   }
 }
 
-export async function saveProfiles(store: SpeakerStore): Promise<void> {
-  await mkdir(SPEAKERS_DIR, { recursive: true });
-  await writeFile(SPEAKERS_FILE, JSON.stringify(store, null, 2), "utf-8");
+export async function saveProfiles(
+  store: SpeakerStore,
+  filePath: string = SPEAKERS_FILE,
+): Promise<void> {
+  await mkdir(path.dirname(filePath), { recursive: true });
+  await writeFile(filePath, JSON.stringify(store, null, 2), "utf-8");
 }
 
 /**
