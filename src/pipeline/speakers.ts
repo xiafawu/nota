@@ -18,11 +18,18 @@ const PYTHON_BIN = process.env.PYTHON_BIN ?? "python3";
 const SPEAKERS_DIR = path.join(homedir(), ".nota");
 const LEGACY_SPEAKERS_FILE = path.join(homedir(), ".meetingsum", "speakers.json");
 const SPEAKERS_FILE = path.join(SPEAKERS_DIR, "speakers.json");
+// >= SIMILARITY_THRESHOLD auto-claims silently. >= LOW_CONFIDENCE but below
+// SIMILARITY_THRESHOLD enters the confirmation band: prompt the user with
+// the candidate and a confidence pct so cross-session drift doesn't silently
+// mis-attribute speech. Below LOW_CONFIDENCE falls through to fresh-unknown.
 const SIMILARITY_THRESHOLD = 0.70;
+export const LOW_CONFIDENCE = 0.55;
 // Diarizers occasionally split one real speaker into multiple labels with
 // near-identical voiceprints; collapse pairs at or above this cosine before
 // matching so we don't enroll the same person twice.
 export const MERGE_THRESHOLD = 0.85;
+
+export type MatchResult = { name: string; confidence: number; tentative?: boolean };
 
 const QTA_EXTENSIONS = new Set([".qta"]);
 
@@ -162,8 +169,8 @@ export function clusterLabels(
 export function matchSpeakers(
   embeddings: Record<string, number[]>,
   profiles: SpeakerStore
-): Record<string, { name: string; confidence: number }> {
-  const matches: Record<string, { name: string; confidence: number }> = {};
+): Record<string, MatchResult> {
+  const matches: Record<string, MatchResult> = {};
   const profileEntries = Object.entries(profiles.speakers);
 
   if (profileEntries.length === 0) return matches;
@@ -175,12 +182,15 @@ export function matchSpeakers(
   // Track which profile names have been claimed to avoid duplicates
   const claimed = new Set<string>();
 
-  // Sort by best match first so higher-confidence matches claim names first
+  // Sort by best match first so higher-confidence matches claim names first.
+  // Anything in [LOW_CONFIDENCE, SIMILARITY_THRESHOLD) is tentative — still a
+  // candidate, but routed through a confirmation prompt instead of silent
+  // auto-claim.
   const candidates: { label: string; name: string; score: number }[] = [];
   for (const [label, embedding] of Object.entries(merged)) {
     for (const [name, profile] of profileEntries) {
       const score = cosineSimilarity(embedding, profile.embedding);
-      if (score >= SIMILARITY_THRESHOLD) {
+      if (score >= LOW_CONFIDENCE) {
         candidates.push({ label, name, score });
       }
     }
@@ -189,7 +199,10 @@ export function matchSpeakers(
 
   for (const { label, name, score } of candidates) {
     if (matches[label] || claimed.has(name)) continue;
-    matches[label] = { name, confidence: score };
+    const tentative = score < SIMILARITY_THRESHOLD;
+    matches[label] = tentative
+      ? { name, confidence: score, tentative: true }
+      : { name, confidence: score };
     claimed.add(name);
   }
 
@@ -289,14 +302,37 @@ export async function extractEmbeddings(
   }
 }
 
+export interface TentativeMatch {
+  name: string;
+  confidence: number;
+}
+
+export interface PromptResult {
+  // Names assigned by the user this session. Includes both confirmed
+  // tentative matches (existing profile, no re-enroll) and brand-new
+  // names entered fresh.
+  names: Record<string, string>;
+  // Subset of `names` that came from a fresh prompt, i.e. the user typed
+  // a new name (not a tentative confirmation). Caller uses this to decide
+  // which labels to enroll into the profile store.
+  enroll: Record<string, string>;
+}
+
 export async function promptForSpeakerNames(
   segments: TranscriptSegment[],
-  unmatchedSpeakers: string[]
-): Promise<Record<string, string>> {
-  // Gather sample utterances per speaker
+  unmatchedSpeakers: string[],
+  tentative: Record<string, TentativeMatch> = {}
+): Promise<PromptResult> {
+  // Gather sample utterances per speaker. Tentative-band labels are not in
+  // unmatchedSpeakers (they have a candidate name), so include them too so
+  // the user has context when confirming.
+  const allLabels = [
+    ...Object.keys(tentative),
+    ...unmatchedSpeakers.filter((s) => !tentative[s]),
+  ];
   const samples: Record<string, string[]> = {};
   for (const seg of segments) {
-    if (!seg.speaker || !unmatchedSpeakers.includes(seg.speaker)) continue;
+    if (!seg.speaker || !allLabels.includes(seg.speaker)) continue;
     if (!samples[seg.speaker]) samples[seg.speaker] = [];
     if (samples[seg.speaker].length < 3) {
       samples[seg.speaker].push(seg.text);
@@ -309,23 +345,66 @@ export async function promptForSpeakerNames(
   });
 
   const names: Record<string, string> = {};
+  const enroll: Record<string, string> = {};
+
+  const ask = (question: string): Promise<string> =>
+    new Promise((resolve) => rl.question(question, resolve));
 
   console.error("\n--- Speaker Identification ---");
-  console.error("Name each speaker below (press Enter to skip).\n");
+
+  // Confirmation pass: ask y/n/new for each tentative match first so the
+  // user can dispatch quick yes-confirmations before the open-ended prompts.
+  const tentativeLabels = Object.keys(tentative);
+  if (tentativeLabels.length > 0) {
+    console.error("Confirm tentative matches (y / n / new name).\n");
+    for (const speaker of tentativeLabels) {
+      const { name: candidate, confidence } = tentative[speaker];
+      const speakerSamples = samples[speaker] ?? [];
+      console.error(`${speaker} said:`);
+      for (const sample of speakerSamples) {
+        console.error(`  "${sample}"`);
+      }
+
+      const pct = Math.round(confidence * 100);
+      const reply = (
+        await ask(`Is ${speaker} = ${candidate} (confidence ${pct}%)? [y/n/new name] `)
+      ).trim();
+
+      if (reply.toLowerCase() === "y") {
+        // Confirmed existing profile — assign name without re-enrollment.
+        names[speaker] = candidate;
+      } else if (reply.toLowerCase() === "n" || reply === "") {
+        // Reject the tentative match; fall through to fresh-unknown prompt
+        // below by leaving this label unnamed for now.
+        if (!unmatchedSpeakers.includes(speaker)) {
+          unmatchedSpeakers = [...unmatchedSpeakers, speaker];
+        }
+      } else {
+        // Anything else is treated as a brand-new name.
+        names[speaker] = reply;
+        enroll[speaker] = reply;
+      }
+      console.error("");
+    }
+  }
+
+  if (unmatchedSpeakers.length > 0) {
+    console.error("Name each speaker below (press Enter to skip).\n");
+  }
 
   for (const speaker of unmatchedSpeakers) {
+    if (names[speaker]) continue; // already resolved via tentative pass
     const speakerSamples = samples[speaker] ?? [];
     console.error(`${speaker} said:`);
     for (const sample of speakerSamples) {
       console.error(`  "${sample}"`);
     }
 
-    const name = await new Promise<string>((resolve) => {
-      rl.question(`Who is ${speaker}? `, resolve);
-    });
+    const name = (await ask(`Who is ${speaker}? `)).trim();
 
-    if (name.trim()) {
-      names[speaker] = name.trim();
+    if (name) {
+      names[speaker] = name;
+      enroll[speaker] = name;
     }
     console.error("");
   }
@@ -333,7 +412,7 @@ export async function promptForSpeakerNames(
   rl.close();
   console.error("--- Saved! Future meetings will auto-identify these speakers. ---\n");
 
-  return names;
+  return { names, enroll };
 }
 
 export function applySpeakerNames(
