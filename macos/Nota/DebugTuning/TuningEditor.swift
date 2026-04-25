@@ -89,13 +89,6 @@ struct TuningEditor: View {
       outcome = WritebackOutcome(title: "Delete Failed", message: error.localizedDescription)
     }
   }
-}
-
-private struct WritebackOutcome: Identifiable {
-  let id = UUID()
-  let title: String
-  let message: String
-}
 
   private var controlsPane: some View {
     Form {
@@ -263,6 +256,12 @@ private struct WritebackOutcome: Identifiable {
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
   }
+}
+
+private struct WritebackOutcome: Identifiable {
+  let id = UUID()
+  let title: String
+  let message: String
 }
 
 #Preview {
