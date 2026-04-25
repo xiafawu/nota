@@ -3,7 +3,9 @@ import SwiftUI
 
 struct TuningEditor: View {
   @ObservedObject private var store = TuningStore.shared
+  @ObservedObject private var snapshots = TuningSnapshotStore.shared
   @State private var outcome: WritebackOutcome?
+  @State private var newSnapshotName: String = ""
 
   var body: some View {
     HSplitView {
@@ -59,6 +61,34 @@ struct TuningEditor: View {
       outcome = WritebackOutcome(title: "Apply Failed", message: error.localizedDescription)
     }
   }
+
+  private func saveSnapshot() {
+    let trimmed = newSnapshotName.trimmingCharacters(in: .whitespaces)
+    guard !trimmed.isEmpty else { return }
+    do {
+      try snapshots.save(name: trimmed, from: store)
+      newSnapshotName = ""
+    } catch {
+      outcome = WritebackOutcome(title: "Save Failed", message: error.localizedDescription)
+    }
+  }
+
+  private func loadSnapshot(_ name: String) {
+    do {
+      let data = try snapshots.load(name: name)
+      data.apply(to: store)
+    } catch {
+      outcome = WritebackOutcome(title: "Load Failed", message: error.localizedDescription)
+    }
+  }
+
+  private func deleteSnapshot(_ name: String) {
+    do {
+      try snapshots.delete(name: name)
+    } catch {
+      outcome = WritebackOutcome(title: "Delete Failed", message: error.localizedDescription)
+    }
+  }
 }
 
 private struct WritebackOutcome: Identifiable {
@@ -69,6 +99,39 @@ private struct WritebackOutcome: Identifiable {
 
   private var controlsPane: some View {
     Form {
+      Section("Snapshots") {
+        HStack {
+          TextField("Snapshot name", text: $newSnapshotName)
+            .textFieldStyle(.roundedBorder)
+          Button("Save") {
+            saveSnapshot()
+          }
+          .disabled(newSnapshotName.trimmingCharacters(in: .whitespaces).isEmpty)
+        }
+        if snapshots.snapshots.isEmpty {
+          Text("No saved snapshots")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+        } else {
+          ForEach(snapshots.snapshots, id: \.self) { name in
+            HStack(spacing: 8) {
+              Text(name)
+                .frame(maxWidth: .infinity, alignment: .leading)
+              Button("Load") {
+                loadSnapshot(name)
+              }
+              .controlSize(.small)
+              Button(role: .destructive) {
+                deleteSnapshot(name)
+              } label: {
+                Image(systemName: "trash")
+              }
+              .controlSize(.small)
+              .buttonStyle(.borderless)
+            }
+          }
+        }
+      }
       Section("Toolbar Pill") {
         cgSlider("H Padding", value: $store.statusPillH, range: 0...40)
         cgSlider("V Padding", value: $store.statusPillV, range: 0...20)
