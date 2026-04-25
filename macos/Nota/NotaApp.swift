@@ -778,58 +778,35 @@ private func appendInlineMarkdown(
 struct RichTextViewer: NSViewRepresentable {
   let attributedString: NSAttributedString
 
-  func makeNSView(context: Context) -> NSTextView {
+  func makeNSView(context: Context) -> NSScrollView {
+    let scrollView = NSScrollView()
+    scrollView.hasVerticalScroller = true
+    scrollView.hasHorizontalScroller = false
+    scrollView.drawsBackground = false
+
     let textView = NSTextView()
     textView.isEditable = false
     textView.isSelectable = true
     textView.drawsBackground = false
     textView.textContainerInset = NSSize(width: 20, height: 18)
     textView.textContainer?.widthTracksTextView = true
-    textView.textContainer?.lineFragmentPadding = 0
+    textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
     textView.isHorizontallyResizable = false
     textView.isVerticallyResizable = true
     textView.autoresizingMask = [.width]
-    textView.minSize = .zero
-    textView.maxSize = NSSize(
-      width: CGFloat.greatestFiniteMagnitude,
-      height: CGFloat.greatestFiniteMagnitude
-    )
-    return textView
+    textView.minSize = NSSize(width: 0, height: 0)
+    textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+
+    scrollView.documentView = textView
+    return scrollView
   }
 
-  func updateNSView(_ textView: NSTextView, context: Context) {
-    if textView.textStorage?.isEqual(to: attributedString) != true {
-      textView.textStorage?.setAttributedString(attributedString)
-      if let textContainer = textView.textContainer {
-        textView.layoutManager?.ensureLayout(for: textContainer)
-      }
+  func updateNSView(_ scrollView: NSScrollView, context: Context) {
+    guard let textView = scrollView.documentView as? NSTextView else {
+      return
     }
-    textView.invalidateIntrinsicContentSize()
-  }
 
-  func sizeThatFits(
-    _ proposal: ProposedViewSize,
-    nsView textView: NSTextView
-  ) -> CGSize? {
-    guard
-      let layoutManager = textView.layoutManager,
-      let textContainer = textView.textContainer
-    else { return nil }
-
-    let proposedWidth = proposal.width ?? textView.bounds.width
-    if textContainer.size.width != proposedWidth {
-      textContainer.size = NSSize(
-        width: proposedWidth,
-        height: CGFloat.greatestFiniteMagnitude
-      )
-    }
-    layoutManager.ensureLayout(for: textContainer)
-    let used = layoutManager.usedRect(for: textContainer)
-    let inset = textView.textContainerInset
-    return CGSize(
-      width: proposedWidth,
-      height: ceil(used.height + inset.height * 2)
-    )
+    textView.textStorage?.setAttributedString(attributedString)
   }
 }
 
@@ -1143,10 +1120,6 @@ struct ContentView: View {
   }
 
   private var resultPane: some View {
-    ScrollView(.vertical) {
-      RichTextViewer(attributedString: model.richText)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
-    }
-    .scrollEdgeEffectStyle(.hard, for: .top)
+    RichTextViewer(attributedString: model.richText)
   }
 }
