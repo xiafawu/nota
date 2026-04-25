@@ -800,6 +800,9 @@ struct RichTextViewer: NSViewRepresentable {
   func updateNSView(_ textView: NSTextView, context: Context) {
     if textView.textStorage?.isEqual(to: attributedString) != true {
       textView.textStorage?.setAttributedString(attributedString)
+      if let textContainer = textView.textContainer {
+        textView.layoutManager?.ensureLayout(for: textContainer)
+      }
     }
     textView.invalidateIntrinsicContentSize()
   }
@@ -819,8 +822,8 @@ struct RichTextViewer: NSViewRepresentable {
         width: proposedWidth,
         height: CGFloat.greatestFiniteMagnitude
       )
-      layoutManager.ensureLayout(for: textContainer)
     }
+    layoutManager.ensureLayout(for: textContainer)
     let used = layoutManager.usedRect(for: textContainer)
     let inset = textView.textContainerInset
     return CGSize(
@@ -1144,5 +1147,6 @@ struct ContentView: View {
       RichTextViewer(attributedString: model.richText)
         .frame(maxWidth: .infinity, alignment: .topLeading)
     }
+    .scrollEdgeEffectStyle(.hard, for: .top)
   }
 }
