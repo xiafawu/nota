@@ -64,9 +64,11 @@ describe("matchSpeakers", () => {
     expect(matches["Speaker 1"]?.confidence).toBeGreaterThan(0.7);
   });
 
-  it("does not match speakers below threshold", () => {
+  it("does not match speakers below LOW_CONFIDENCE", () => {
+    // Cosine ~0.40 against Alice [1,0,0] and ~0.40 against Bob [0,1,0],
+    // both below the 0.55 LOW_CONFIDENCE floor.
     const embeddings = {
-      "Speaker 1": [0.5, 0.5, 0.5], // not close to anyone
+      "Speaker 1": [0.4, 0.4, Math.sqrt(1 - 0.32)],
     };
 
     const matches = matchSpeakers(embeddings, profiles);
@@ -260,5 +262,60 @@ describe("matchSpeakers with clustering", () => {
     // Both siblings collapsed to canonical "Speaker 1"; Alice resolves once.
     expect(matches["Speaker 1"]?.name).toBe("Alice");
     expect(matches["Speaker 2"]).toBeUndefined();
+  });
+});
+
+describe("matchSpeakers confidence band", () => {
+  const profiles: SpeakerStore = {
+    version: 1,
+    speakers: {
+      Alice: {
+        embedding: [1, 0, 0],
+        enrolledAt: "2026-01-01",
+        source: "test.mp3",
+      },
+    },
+  };
+
+  // For a unit reference vector [1,0,0], cosine of [a, sqrt(1-a^2), 0] is a.
+  const vecForScore = (s: number): number[] => [s, Math.sqrt(1 - s * s), 0];
+
+  it("auto-matches at 0.80 (no tentative flag)", () => {
+    const embeddings = { "Speaker 1": vecForScore(0.8) };
+    const matches = matchSpeakers(embeddings, profiles);
+
+    expect(matches["Speaker 1"]?.name).toBe("Alice");
+    expect(matches["Speaker 1"]?.confidence).toBeCloseTo(0.8, 5);
+    expect(matches["Speaker 1"]?.tentative).toBeUndefined();
+  });
+
+  it("flags tentative at 0.65 (in 0.55-0.70 band)", () => {
+    const embeddings = { "Speaker 1": vecForScore(0.65) };
+    const matches = matchSpeakers(embeddings, profiles);
+
+    expect(matches["Speaker 1"]?.name).toBe("Alice");
+    expect(matches["Speaker 1"]?.confidence).toBeCloseTo(0.65, 5);
+    expect(matches["Speaker 1"]?.tentative).toBe(true);
+  });
+
+  it("returns no match at 0.45 (below LOW_CONFIDENCE)", () => {
+    const embeddings = { "Speaker 1": vecForScore(0.45) };
+    const matches = matchSpeakers(embeddings, profiles);
+
+    expect(matches["Speaker 1"]).toBeUndefined();
+  });
+
+  it("treats exactly 0.70 as confident (boundary)", () => {
+    const embeddings = { "Speaker 1": vecForScore(0.70) };
+    const matches = matchSpeakers(embeddings, profiles);
+
+    expect(matches["Speaker 1"]?.tentative).toBeUndefined();
+  });
+
+  it("treats exactly 0.55 as tentative (boundary)", () => {
+    const embeddings = { "Speaker 1": vecForScore(0.55) };
+    const matches = matchSpeakers(embeddings, profiles);
+
+    expect(matches["Speaker 1"]?.tentative).toBe(true);
   });
 });

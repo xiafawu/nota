@@ -220,18 +220,30 @@ async function identifySpeakers(
     const profiles = await loadProfiles();
     const matches = matchSpeakers(merged, profiles);
 
-    // Build name mapping from matches (keyed by canonical labels)
+    // Build name mapping from confident matches only. Tentative matches go
+    // into a separate map and are resolved interactively below.
     const nameMap: Record<string, string> = {};
+    const tentative: Record<string, { name: string; confidence: number }> = {};
     for (const [label, match] of Object.entries(matches)) {
-      nameMap[label] = match.name;
-      if (verbose) {
-        console.log(
-          `  Matched ${label} → ${match.name} (${Math.round(match.confidence * 100)}%)`,
-        );
+      if (match.tentative) {
+        tentative[label] = { name: match.name, confidence: match.confidence };
+        if (verbose) {
+          console.log(
+            `  Tentative: ${label} ~ ${match.name} (${Math.round(match.confidence * 100)}%)`,
+          );
+        }
+      } else {
+        nameMap[label] = match.name;
+        if (verbose) {
+          console.log(
+            `  Matched ${label} → ${match.name} (${Math.round(match.confidence * 100)}%)`,
+          );
+        }
       }
     }
 
-    // Find unmatched canonical speakers
+    // Find unmatched canonical speakers (excludes tentative — those are
+    // resolved by the confirmation pass inside promptForSpeakerNames).
     const canonicalSpeakers = [
       ...new Set(
         (segments.map((s) => s.speaker).filter(Boolean) as string[]).map(
@@ -239,21 +251,28 @@ async function identifySpeakers(
         ),
       ),
     ];
-    const unmatchedSpeakers = canonicalSpeakers.filter((s) => !nameMap[s]);
+    const unmatchedSpeakers = canonicalSpeakers.filter(
+      (s) => !nameMap[s] && !tentative[s],
+    );
 
-    // Prompt for unmatched speakers (if interactive terminal). Rewrite
-    // segments to canonical labels first so prompt samples and the prompt
-    // ids match what was actually clustered.
+    // Prompt for tentative + unmatched speakers (if interactive terminal).
+    // Rewrite segments to canonical labels first so prompt samples and the
+    // prompt ids match what was actually clustered.
     const canonicalSegments = applySpeakerNames(segments, {}, canonicalOf);
-    if (unmatchedSpeakers.length > 0 && process.stdin.isTTY) {
-      const newNames = await promptForSpeakerNames(
+    const needsPrompt =
+      unmatchedSpeakers.length > 0 || Object.keys(tentative).length > 0;
+    if (needsPrompt && process.stdin.isTTY) {
+      const { names: newNames, enroll } = await promptForSpeakerNames(
         canonicalSegments,
         unmatchedSpeakers,
+        tentative,
       );
       Object.assign(nameMap, newNames);
 
-      // Enroll newly named speakers using the canonical (averaged) embedding.
-      for (const [label, name] of Object.entries(newNames)) {
+      // Only enroll labels the user typed fresh — tentative confirmations
+      // (`y` to existing candidate) reuse the existing profile without
+      // overwriting its embedding.
+      for (const [label, name] of Object.entries(enroll)) {
         const embedding = merged[label] ?? embeddings[label];
         if (embedding) {
           profiles.speakers[name] = {
@@ -263,7 +282,9 @@ async function identifySpeakers(
           };
         }
       }
-      await saveProfiles(profiles);
+      if (Object.keys(enroll).length > 0) {
+        await saveProfiles(profiles);
+      }
     }
 
     return applySpeakerNames(segments, nameMap, canonicalOf);
