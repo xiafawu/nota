@@ -29,6 +29,7 @@ import {
   loadProfiles,
   saveProfiles,
   matchSpeakers,
+  clusterLabels,
   promptForSpeakerNames,
   applySpeakerNames,
 } from "./pipeline/speakers.js";
@@ -212,10 +213,14 @@ async function identifySpeakers(
     const embeddings = await extractEmbeddings(inputPath, segments);
     spinner?.succeed("Speaker voiceprints extracted");
 
+    // Collapse near-duplicate diarizer labels (e.g. one person split into
+    // "Speaker 1" and "Speaker 2") before matching or enrollment so a single
+    // real speaker doesn't produce two profiles.
+    const { canonicalOf, merged } = clusterLabels(embeddings);
     const profiles = await loadProfiles();
-    const matches = matchSpeakers(embeddings, profiles);
+    const matches = matchSpeakers(merged, profiles);
 
-    // Build name mapping from matches
+    // Build name mapping from matches (keyed by canonical labels)
     const nameMap: Record<string, string> = {};
     for (const [label, match] of Object.entries(matches)) {
       nameMap[label] = match.name;
@@ -226,22 +231,33 @@ async function identifySpeakers(
       }
     }
 
-    // Find unmatched speakers
-    const allSpeakers = [
-      ...new Set(segments.map((s) => s.speaker).filter(Boolean) as string[]),
+    // Find unmatched canonical speakers
+    const canonicalSpeakers = [
+      ...new Set(
+        (segments.map((s) => s.speaker).filter(Boolean) as string[]).map(
+          (s) => canonicalOf[s] ?? s,
+        ),
+      ),
     ];
-    const unmatchedSpeakers = allSpeakers.filter((s) => !nameMap[s]);
+    const unmatchedSpeakers = canonicalSpeakers.filter((s) => !nameMap[s]);
 
-    // Prompt for unmatched speakers (if interactive terminal)
+    // Prompt for unmatched speakers (if interactive terminal). Rewrite
+    // segments to canonical labels first so prompt samples and the prompt
+    // ids match what was actually clustered.
+    const canonicalSegments = applySpeakerNames(segments, {}, canonicalOf);
     if (unmatchedSpeakers.length > 0 && process.stdin.isTTY) {
-      const newNames = await promptForSpeakerNames(segments, unmatchedSpeakers);
+      const newNames = await promptForSpeakerNames(
+        canonicalSegments,
+        unmatchedSpeakers,
+      );
       Object.assign(nameMap, newNames);
 
-      // Enroll newly named speakers
+      // Enroll newly named speakers using the canonical (averaged) embedding.
       for (const [label, name] of Object.entries(newNames)) {
-        if (embeddings[label]) {
+        const embedding = merged[label] ?? embeddings[label];
+        if (embedding) {
           profiles.speakers[name] = {
-            embedding: embeddings[label],
+            embedding,
             enrolledAt: new Date().toISOString(),
             source: path.basename(inputPath),
           };
@@ -250,7 +266,7 @@ async function identifySpeakers(
       await saveProfiles(profiles);
     }
 
-    return applySpeakerNames(segments, nameMap);
+    return applySpeakerNames(segments, nameMap, canonicalOf);
   } catch (error) {
     spinner?.fail("Speaker identification unavailable (using generic labels)");
     if (verbose) {
