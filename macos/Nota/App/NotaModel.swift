@@ -9,6 +9,7 @@ let supportedExtensions: Set<String> = [
 @MainActor
 final class NotaModel: ObservableObject {
   @Published var selectedURL: URL?
+  @Published var originalSelectedURL: URL?
   @Published var markdown = ""
   @Published var status = "Drop audio to transcribe"
   @Published var isRunning = false
@@ -86,9 +87,11 @@ final class NotaModel: ObservableObject {
 
     do {
       selectedURL = try makeStableInputCopy(from: url)
+      originalSelectedURL = url
       status = url.lastPathComponent
     } catch {
       selectedURL = nil
+      originalSelectedURL = nil
       markdown = failureMarkdown("Could not copy audio", details: error.localizedDescription)
       status = "Could not copy audio"
       return
@@ -101,6 +104,7 @@ final class NotaModel: ObservableObject {
     guard let selectedURL, !isRunning else {
       return
     }
+    let displayURL = originalSelectedURL ?? selectedURL
 
     isRunning = true
     markdown = ""
@@ -109,7 +113,7 @@ final class NotaModel: ObservableObject {
 
     Task {
       do {
-        let result = try await runNota(for: selectedURL)
+        let result = try await runNota(for: selectedURL, displayURL: displayURL)
         markdown = result.markdown
         lastOutputURL = result.outputURL
         status = "Complete"
@@ -135,7 +139,7 @@ final class NotaModel: ObservableObject {
 
     let entries: [HistoryEntry] = contents.compactMap { url in
       let name = url.lastPathComponent
-      guard name.hasSuffix(".summary.md"), !name.hasPrefix(".nota-") else {
+      guard name.hasSuffix(".summary.md") else {
         return nil
       }
       let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
@@ -169,6 +173,7 @@ final class NotaModel: ObservableObject {
     markdown = ""
     lastOutputURL = nil
     selectedURL = nil
+    originalSelectedURL = nil
     selectedHistoryID = nil
     displayName = "Drop Audio"
     displayPath = "MP3, M4A, WAV, CAF, QTA, MOV, MP4"
@@ -260,7 +265,7 @@ final class NotaModel: ObservableObject {
     NSWorkspace.shared.activateFileViewerSelecting([lastOutputURL])
   }
 
-  private func runNota(for url: URL) async throws -> NotaResult {
+  private func runNota(for url: URL, displayURL: URL) async throws -> NotaResult {
     try await Task.detached(priority: .userInitiated) { [identifySpeakers, projectDirectory, outputDirectory] in
       let fileManager = FileManager.default
       try fileManager.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
@@ -269,7 +274,7 @@ final class NotaModel: ObservableObject {
         && (url.lastPathComponent.hasPrefix(".nota-share-") || url.lastPathComponent.hasPrefix(".nota-input-"))
 
       let timestamp = notaTimestamp()
-      let baseName = sanitizedBaseName(url)
+      let baseName = sanitizedBaseName(displayURL)
       let outputURL = outputDirectory.appendingPathComponent("\(baseName)-\(timestamp).summary.md")
       let runnerURL = projectDirectory
         .appendingPathComponent("scripts", isDirectory: true)
@@ -332,8 +337,8 @@ final class NotaModel: ObservableObject {
       return "\(lastOutputURL.deletingPathExtension().lastPathComponent).\(extensionName)"
     }
 
-    if let selectedURL {
-      return "\(sanitizedBaseName(selectedURL)).summary.\(extensionName)"
+    if let url = originalSelectedURL ?? selectedURL {
+      return "\(sanitizedBaseName(url)).summary.\(extensionName)"
     }
 
     return "nota-summary.\(extensionName)"
