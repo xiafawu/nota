@@ -20,7 +20,7 @@ struct NotaApp: App {
   var body: some Scene {
     WindowGroup {
       ContentView(model: model)
-        .frame(minWidth: 780, minHeight: 560)
+        .frame(minWidth: Metrics.windowMinWidth, minHeight: Metrics.windowMinHeight)
         .onOpenURL { url in
           model.accept(url)
         }
@@ -54,17 +54,17 @@ struct SettingsView: View {
     Form {
       Section {
         Toggle(isOn: $model.identifySpeakers) {
-          VStack(alignment: .leading, spacing: 2) {
+          VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
             Text("Remember speakers")
             Text("Identify recurring voices across recordings.")
-              .font(.caption)
+              .font(Tokens.settingsCaptionFont)
               .foregroundStyle(.secondary)
           }
         }
       }
     }
     .formStyle(.grouped)
-    .frame(width: 420, height: 160)
+    .frame(width: Metrics.settingsWidth, height: Metrics.settingsHeight)
   }
 }
 
@@ -629,7 +629,7 @@ private func renderMarkdownAsRichText(_ markdown: String) -> NSAttributedString 
     }
 
     if isInCodeBlock {
-      appendPlainLine(rawLine, to: output, font: .monospacedSystemFont(ofSize: 12, weight: .regular), color: .secondaryLabelColor)
+      appendPlainLine(rawLine, to: output, font: NSFonts.codeBlock, color: .secondaryLabelColor)
       continue
     }
 
@@ -639,19 +639,19 @@ private func renderMarkdownAsRichText(_ markdown: String) -> NSAttributedString 
     }
 
     if trimmedLine == "---" {
-      appendPlainLine("------------------------------", to: output, font: .systemFont(ofSize: 13), color: .separatorColor)
+      appendPlainLine("------------------------------", to: output, font: NSFonts.separator, color: .separatorColor)
       continue
     }
 
     if trimmedLine.hasPrefix("## ") {
       let title = String(trimmedLine.dropFirst(3))
-      appendPlainLine(title, to: output, font: .boldSystemFont(ofSize: 18), paragraphSpacing: 8)
+      appendPlainLine(title, to: output, font: NSFonts.h2, paragraphSpacing: Metrics.paraSpacingH2)
       continue
     }
 
     if trimmedLine.hasPrefix("# ") {
       let title = String(trimmedLine.dropFirst(2))
-      appendPlainLine(title, to: output, font: .boldSystemFont(ofSize: 26), paragraphSpacing: 10)
+      appendPlainLine(title, to: output, font: NSFonts.h1, paragraphSpacing: Metrics.paraSpacingH1)
       continue
     }
 
@@ -676,11 +676,11 @@ private func appendPlainLine(
   to output: NSMutableAttributedString,
   font: NSFont,
   color: NSColor = .labelColor,
-  paragraphSpacing: CGFloat = 4
+  paragraphSpacing: CGFloat = Metrics.paraSpacingTight
 ) {
   let paragraph = NSMutableParagraphStyle()
   paragraph.paragraphSpacing = paragraphSpacing
-  paragraph.lineSpacing = 2
+  paragraph.lineSpacing = Metrics.lineSpacingDefault
   output.append(NSAttributedString(string: line, attributes: [
     .font: font,
     .foregroundColor: color,
@@ -692,16 +692,16 @@ private func appendPlainLine(
 private func appendBulletLine(_ line: String, to output: NSMutableAttributedString) {
   let paragraph = NSMutableParagraphStyle()
   paragraph.firstLineHeadIndent = 0
-  paragraph.headIndent = 18
-  paragraph.paragraphSpacing = 4
-  paragraph.lineSpacing = 2
+  paragraph.headIndent = Metrics.bulletHeadIndent
+  paragraph.paragraphSpacing = Metrics.paraSpacingTight
+  paragraph.lineSpacing = Metrics.lineSpacingDefault
 
   output.append(NSAttributedString(string: "• ", attributes: [
-    .font: NSFont.systemFont(ofSize: 14),
+    .font: NSFonts.body,
     .foregroundColor: NSColor.labelColor,
     .paragraphStyle: paragraph
   ]))
-  appendInlineMarkdown(line, to: output, font: .systemFont(ofSize: 14), paragraphStyle: paragraph)
+  appendInlineMarkdown(line, to: output, font: NSFonts.body, paragraphStyle: paragraph)
   output.append(NSAttributedString(string: "\n"))
 }
 
@@ -719,25 +719,25 @@ private func appendTranscriptLine(_ line: String, to output: NSMutableAttributed
   }
 
   let paragraph = NSMutableParagraphStyle()
-  paragraph.paragraphSpacing = 5
-  paragraph.lineSpacing = 2
+  paragraph.paragraphSpacing = Metrics.paraSpacingTranscript
+  paragraph.lineSpacing = Metrics.lineSpacingDefault
 
   let timestamp = String(line[timestampRange])
   let speaker = String(line[speakerRange])
   let text = String(line[textRange])
 
   output.append(NSAttributedString(string: "[\(timestamp)] ", attributes: [
-    .font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .regular),
+    .font: NSFonts.timestamp,
     .foregroundColor: NSColor.secondaryLabelColor,
     .paragraphStyle: paragraph
   ]))
   output.append(NSAttributedString(string: "\(speaker): ", attributes: [
-    .font: NSFont.boldSystemFont(ofSize: 14),
+    .font: NSFonts.speaker,
     .foregroundColor: NSColor.labelColor,
     .paragraphStyle: paragraph
   ]))
   output.append(NSAttributedString(string: text, attributes: [
-    .font: NSFont.systemFont(ofSize: 14),
+    .font: NSFonts.body,
     .foregroundColor: NSColor.labelColor,
     .paragraphStyle: paragraph
   ]))
@@ -747,9 +747,9 @@ private func appendTranscriptLine(_ line: String, to output: NSMutableAttributed
 
 private func appendInlineMarkdownLine(_ line: String, to output: NSMutableAttributedString) {
   let paragraph = NSMutableParagraphStyle()
-  paragraph.paragraphSpacing = 4
-  paragraph.lineSpacing = 2
-  appendInlineMarkdown(line, to: output, font: .systemFont(ofSize: 14), paragraphStyle: paragraph)
+  paragraph.paragraphSpacing = Metrics.paraSpacingTight
+  paragraph.lineSpacing = Metrics.lineSpacingDefault
+  appendInlineMarkdown(line, to: output, font: NSFonts.body, paragraphStyle: paragraph)
   output.append(NSAttributedString(string: "\n"))
 }
 
@@ -788,7 +788,7 @@ struct RichTextViewer: NSViewRepresentable {
     textView.isEditable = false
     textView.isSelectable = true
     textView.drawsBackground = false
-    textView.textContainerInset = NSSize(width: 20, height: 18)
+    textView.textContainerInset = NSSize(width: Metrics.richTextInsetX, height: Metrics.richTextInsetY)
     textView.textContainer?.widthTracksTextView = true
     textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
     textView.isHorizontallyResizable = false
@@ -857,15 +857,15 @@ private struct DropTargetGlassModifier: ViewModifier {
   func body(content: Content) -> some View {
     if reduceTransparency {
       content
-        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 20))
+        .background(.thinMaterial, in: RoundedRectangle(cornerRadius: Metrics.dropCornerRadius))
         .overlay(
-          RoundedRectangle(cornerRadius: 20)
-            .strokeBorder(isTargeted ? Color.accentColor : Color.secondary.opacity(0.2), lineWidth: isTargeted ? 2 : 1)
+          RoundedRectangle(cornerRadius: Metrics.dropCornerRadius)
+            .strokeBorder(isTargeted ? Tokens.dropAccent : Tokens.dropFallbackStrokeIdle, lineWidth: isTargeted ? Metrics.dropStrokeActive : Metrics.dropStrokeIdle)
         )
     } else if isTargeted {
-      content.glassEffect(.clear.tint(.accentColor), in: RoundedRectangle(cornerRadius: 20))
+      content.glassEffect(.clear.tint(Tokens.dropAccent), in: RoundedRectangle(cornerRadius: Metrics.dropCornerRadius))
     } else {
-      content.glassEffect(.clear, in: RoundedRectangle(cornerRadius: 20))
+      content.glassEffect(.clear, in: RoundedRectangle(cornerRadius: Metrics.dropCornerRadius))
     }
   }
 }
@@ -876,28 +876,28 @@ struct ContentView: View {
   var body: some View {
     NavigationSplitView {
       historyPane
-        .navigationSplitViewColumnWidth(min: 220, ideal: 260, max: 320)
+        .navigationSplitViewColumnWidth(min: Metrics.sidebarMin, ideal: Metrics.sidebarIdeal, max: Metrics.sidebarMax)
     } detail: {
       mainPane
-        .navigationSplitViewColumnWidth(min: 520, ideal: 720)
+        .navigationSplitViewColumnWidth(min: Metrics.detailMin, ideal: Metrics.detailIdeal)
         .background(.thinMaterial)
     }
     .toolbar {
       ToolbarItemGroup(placement: .status) {
         if model.isRunning || model.status != "Drop audio to transcribe" {
-          HStack(spacing: 6) {
+          HStack(spacing: Metrics.statusHStackSpacing) {
             if model.isRunning {
               ProgressView()
                 .controlSize(.small)
             }
             Text(model.status)
-              .font(.callout)
+              .font(Tokens.statusFont)
               .lineLimit(1)
               .truncationMode(.middle)
           }
-          .padding(.horizontal, 10)
-          .padding(.vertical, 4)
-          .liquidGlass(.regular.tint(.secondary.opacity(0.1)), in: .capsule)
+          .padding(.horizontal, Metrics.statusPillH)
+          .padding(.vertical, Metrics.statusPillV)
+          .liquidGlass(.regular.tint(Tokens.toolbarStatusTint), in: .capsule)
           .transition(.opacity.combined(with: .scale))
         }
       }
@@ -945,7 +945,7 @@ struct ContentView: View {
         .disabled(model.markdown.isEmpty && model.lastOutputURL == nil)
       }
     }
-    .animation(.easeInOut(duration: 0.2), value: model.isRunning)
+    .animation(Tokens.animFast, value: model.isRunning)
     .containerBackground(.ultraThinMaterial, for: .window)
     .toolbarBackground(.hidden, for: .windowToolbar)
   }
@@ -955,39 +955,39 @@ struct ContentView: View {
       Button {
         model.newTranscription()
       } label: {
-        HStack(spacing: 8) {
+        HStack(spacing: Metrics.newButtonStackSpacing) {
           Image(systemName: "square.and.pencil")
           Text("New Transcription")
             .fontWeight(.medium)
           Spacer()
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
+        .padding(.horizontal, Metrics.newButtonH)
+        .padding(.vertical, Metrics.newButtonV)
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .liquidGlass(.regular.tint(.accentColor.opacity(0.15)), in: RoundedRectangle(cornerRadius: 10))
-      .padding(.horizontal, 10)
-      .padding(.top, 10)
-      .padding(.bottom, 6)
+      .liquidGlass(.regular.tint(Tokens.primaryActionTint), in: RoundedRectangle(cornerRadius: Metrics.primaryActionCornerRadius))
+      .padding(.horizontal, Metrics.newButtonOuterH)
+      .padding(.top, Metrics.newButtonOuterTop)
+      .padding(.bottom, Metrics.newButtonOuterBottom)
       .disabled(model.isRunning)
 
       if model.history.isEmpty {
         Spacer()
-        VStack(spacing: 8) {
+        VStack(spacing: Metrics.emptyHistoryStackSpacing) {
           Image(systemName: "tray")
-            .font(.system(size: 26, weight: .regular))
+            .font(Tokens.emptyHistoryIconFont)
             .foregroundStyle(.secondary)
           Text("No transcripts yet")
-            .font(.callout)
+            .font(Tokens.emptyHistoryLabelFont)
             .foregroundStyle(.secondary)
           Text("Drop audio into the main window")
-            .font(.caption)
+            .font(Tokens.emptyHistoryHelperFont)
             .foregroundStyle(.tertiary)
             .multilineTextAlignment(.center)
         }
-        .padding(.horizontal, 16)
+        .padding(.horizontal, Metrics.historyEmptyHorizontalPadding)
         Spacer()
       } else {
         List(selection: $model.selectedHistoryID) {
@@ -1016,7 +1016,7 @@ struct ContentView: View {
             }
           } header: {
             Text("History")
-              .font(.caption)
+              .font(Tokens.historySectionFont)
               .foregroundStyle(.secondary)
           }
         }
@@ -1035,17 +1035,17 @@ struct ContentView: View {
   }
 
   private func historyRow(_ entry: HistoryEntry) -> some View {
-    VStack(alignment: .leading, spacing: 2) {
+    VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
       Text(entry.title)
-        .font(.callout)
+        .font(Tokens.historyTitleFont)
         .fontWeight(.medium)
         .lineLimit(1)
         .truncationMode(.middle)
       Text(entry.relativeDate)
-        .font(.caption2)
+        .font(Tokens.historyDateFont)
         .foregroundStyle(.secondary)
     }
-    .padding(.vertical, 2)
+    .padding(.vertical, Metrics.historyRowVerticalPadding)
   }
 
   private var mainPane: some View {
@@ -1057,14 +1057,14 @@ struct ContentView: View {
       }
 
       if model.isDropTargeted {
-        RoundedRectangle(cornerRadius: 0)
-          .strokeBorder(Color.accentColor, lineWidth: 3)
+        RoundedRectangle(cornerRadius: Metrics.dropFullBleedCornerRadius)
+          .strokeBorder(Tokens.dropAccent, lineWidth: Metrics.dropTargetStrokeWidth)
           .allowsHitTesting(false)
           .transition(.opacity)
       }
     }
-    .animation(.easeInOut(duration: 0.15), value: model.isDropTargeted)
-    .animation(.easeInOut(duration: 0.2), value: model.hasContent)
+    .animation(Tokens.animSnap, value: model.isDropTargeted)
+    .animation(Tokens.animFast, value: model.hasContent)
     .onDrop(of: [UTType.fileURL.identifier], isTargeted: $model.isDropTargeted) { providers in
       guard let provider = providers.first else {
         return false
@@ -1091,32 +1091,32 @@ struct ContentView: View {
   }
 
   private var emptyState: some View {
-    VStack(spacing: 24) {
+    VStack(spacing: Metrics.emptyMainSpacing) {
       Spacer()
 
       Image(systemName: model.isRunning ? "waveform" : "tray.and.arrow.down")
-        .font(.system(size: 72, weight: .semibold))
-        .foregroundStyle(model.isDropTargeted ? Color.accentColor : Color.primary.opacity(0.85))
+        .font(Tokens.emptyMainIconFont)
+        .foregroundStyle(model.isDropTargeted ? Tokens.dropAccent : Tokens.emptyIconColor)
         .symbolEffect(.pulse, isActive: model.isRunning)
 
-      VStack(spacing: 10) {
+      VStack(spacing: Metrics.emptyTextSpacing) {
         Text(model.displayName)
-          .font(.title)
+          .font(Tokens.emptyMainTitleFont)
           .fontWeight(.bold)
           .foregroundStyle(.primary)
           .multilineTextAlignment(.center)
 
         Text(model.displayPath)
-          .font(.callout)
+          .font(Tokens.emptyMainPathFont)
           .foregroundStyle(.secondary)
           .multilineTextAlignment(.center)
-          .padding(.horizontal, 24)
+          .padding(.horizontal, Metrics.emptySubtextHorizontalPadding)
       }
 
       Spacer()
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .padding(40)
+    .padding(Metrics.emptyMainOuterPadding)
   }
 
   private var resultPane: some View {
