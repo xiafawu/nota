@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-XCODE_VERSION="$(xcodebuild -version | head -1 | awk '{print $2}')"
+XCODE_VERSION="$(xcodebuild -version | awk 'NR==1{ver=$2} END{print ver}')"
 if [[ ! "$XCODE_VERSION" =~ ^26 ]]; then
   echo "Error: Xcode 26+ required (found: $XCODE_VERSION)"
   exit 1
@@ -24,6 +24,31 @@ SHARE_MACOS_DIR="$SHARE_CONTENTS_DIR/MacOS"
 
 mkdir -p "$MACOS_DIR" "$RESOURCES_DIR" "$MODULE_CACHE_DIR" "$SHARE_MACOS_DIR"
 
+NOTA_SOURCES=()
+while IFS= read -r -d '' file; do
+  NOTA_SOURCES+=("$file")
+done < <(find "$PROJECT_DIR/macos/Nota" -type f -name "*.swift" -print0 | sort -z)
+
+if [ "${#NOTA_SOURCES[@]}" -eq 0 ]; then
+  echo "No Swift sources found under $PROJECT_DIR/macos/Nota" >&2
+  exit 1
+fi
+
+NOTA_BUILD_CONFIG="${NOTA_BUILD_CONFIG:-debug}"
+NOTA_SWIFT_FLAGS=()
+case "$NOTA_BUILD_CONFIG" in
+  debug)
+    NOTA_SWIFT_FLAGS+=("-D" "DEBUG" "-Onone")
+    ;;
+  release)
+    NOTA_SWIFT_FLAGS+=("-O")
+    ;;
+  *)
+    echo "Unknown NOTA_BUILD_CONFIG: $NOTA_BUILD_CONFIG (expected debug|release)" >&2
+    exit 1
+    ;;
+esac
+
 swiftc \
   -target arm64-apple-macosx26.0 \
   -module-cache-path "$MODULE_CACHE_DIR" \
@@ -31,7 +56,8 @@ swiftc \
   -framework SwiftUI \
   -framework AppKit \
   -framework UniformTypeIdentifiers \
-  "$PROJECT_DIR/macos/Nota/NotaApp.swift" \
+  "${NOTA_SWIFT_FLAGS[@]}" \
+  "${NOTA_SOURCES[@]}" \
   -o "$MACOS_DIR/$APP_NAME"
 
 cp "$PROJECT_DIR/macos/Nota/Info.plist" "$CONTENTS_DIR/Info.plist"

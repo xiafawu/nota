@@ -1,0 +1,129 @@
+import AppKit
+import SwiftUI
+import UniformTypeIdentifiers
+
+struct ContentView: View {
+  @ObservedObject var model: NotaModel
+
+  private var historyState: HistoryPaneState {
+    HistoryPaneState(
+      isRunning: model.isRunning,
+      rows: model.history.map { entry in
+        HistoryRowState(id: entry.id, title: entry.title, relativeDate: entry.relativeDate)
+      }
+    )
+  }
+
+  private var mainContent: MainPaneContent {
+    if model.hasContent {
+      return .rich(model.richText)
+    }
+    return .empty(EmptyMainState(
+      isRunning: model.isRunning,
+      displayName: model.displayName,
+      displayPath: model.displayPath
+    ))
+  }
+
+  private var toolbarStatusPillState: ToolbarStatusPillState? {
+    guard model.isRunning || model.status != "Drop audio to transcribe" else {
+      return nil
+    }
+    return ToolbarStatusPillState(isRunning: model.isRunning, text: model.status)
+  }
+
+  var body: some View {
+    NavigationSplitView {
+      HistoryPaneView(
+        state: historyState,
+        selectedID: $model.selectedHistoryID,
+        onNewTranscription: { model.newTranscription() },
+        onOpen: { id in
+          if let entry = model.history.first(where: { $0.id == id }) {
+            model.openHistory(entry)
+          }
+        },
+        onReveal: { id in
+          NSWorkspace.shared.activateFileViewerSelecting([id])
+        },
+        onDelete: { id in
+          if let entry = model.history.first(where: { $0.id == id }) {
+            model.deleteHistory(entry)
+          }
+        }
+      )
+      .navigationSplitViewColumnWidth(min: Metrics.sidebarMin, ideal: Metrics.sidebarIdeal, max: Metrics.sidebarMax)
+    } detail: {
+      MainPaneView(
+        content: mainContent,
+        isDropTargeted: $model.isDropTargeted,
+        onDropURL: { url in
+          model.accept(url)
+        }
+      )
+      .navigationSplitViewColumnWidth(min: Metrics.detailMin, ideal: Metrics.detailIdeal)
+      .background(.thinMaterial)
+    }
+    .toolbar {
+      ToolbarItemGroup(placement: .status) {
+        if let pillState = toolbarStatusPillState {
+          ToolbarStatusPill(state: pillState)
+        }
+      }
+
+      ToolbarItem(placement: .primaryAction) {
+        Menu {
+          Section("Copy") {
+            Button {
+              model.copyRichText()
+            } label: {
+              Label("Copy Rich Text", systemImage: "doc.on.clipboard")
+            }
+            Button {
+              model.copyMarkdown()
+            } label: {
+              Label("Copy Markdown", systemImage: "chevron.left.forwardslash.chevron.right")
+            }
+          }
+          Section("Export") {
+            Button {
+              model.exportRichText()
+            } label: {
+              Label("Export Rich Text...", systemImage: "textformat")
+            }
+            Button {
+              model.exportMarkdown()
+            } label: {
+              Label("Export Markdown...", systemImage: "number")
+            }
+          }
+          Section {
+            Button {
+              model.revealOutput()
+            } label: {
+              Label("Reveal in Finder", systemImage: "finder")
+            }
+            .disabled(model.lastOutputURL == nil)
+          }
+        } label: {
+          Label("Share", systemImage: "square.and.arrow.up")
+        }
+        .menuIndicator(.hidden)
+        .help("Copy, export, or reveal transcript")
+        .liquidGlassButton()
+        .disabled(model.markdown.isEmpty && model.lastOutputURL == nil)
+      }
+    }
+    .animation(Tokens.animFast, value: model.isRunning)
+    .containerBackground(.ultraThinMaterial, for: .window)
+    .toolbarBackground(.hidden, for: .windowToolbar)
+    .onChange(of: model.selectedHistoryID) { _, newValue in
+      guard let newValue, let entry = model.history.first(where: { $0.id == newValue }) else {
+        return
+      }
+      if entry.url.standardizedFileURL != model.lastOutputURL?.standardizedFileURL {
+        model.openHistory(entry)
+      }
+    }
+  }
+}
