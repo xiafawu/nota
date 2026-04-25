@@ -54,3 +54,32 @@ struct MainPaneView: View {
     return false
   }
 }
+
+#if DEBUG
+#Preview("empty idle") {
+  MainPaneView(
+    content: .empty(PreviewMocks.emptyMainIdle),
+    isDropTargeted: .constant(false),
+    onDropURL: { _ in }
+  )
+  .frame(width: 720, height: 540)
+}
+
+#Preview("empty targeted") {
+  MainPaneView(
+    content: .empty(PreviewMocks.emptyMainIdle),
+    isDropTargeted: .constant(true),
+    onDropURL: { _ in }
+  )
+  .frame(width: 720, height: 540)
+}
+
+#Preview("rich content") {
+  MainPaneView(
+    content: .rich(PreviewMocks.sampleRichText),
+    isDropTargeted: .constant(false),
+    onDropURL: { _ in }
+  )
+  .frame(width: 720, height: 540)
+}
+#endif

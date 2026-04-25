@@ -33,3 +33,20 @@ struct EmptyMainView: View {
     .padding(Metrics.emptyMainOuterPadding)
   }
 }
+
+#if DEBUG
+#Preview("idle") {
+  EmptyMainView(state: PreviewMocks.emptyMainIdle, isDropTargeted: false)
+    .frame(width: 720, height: 540)
+}
+
+#Preview("targeted") {
+  EmptyMainView(state: PreviewMocks.emptyMainIdle, isDropTargeted: true)
+    .frame(width: 720, height: 540)
+}
+
+#Preview("running") {
+  EmptyMainView(state: PreviewMocks.emptyMainRunning, isDropTargeted: false)
+    .frame(width: 720, height: 540)
+}
+#endif

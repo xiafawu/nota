@@ -1,12 +1,12 @@
 import SwiftUI
 
 struct SettingsView: View {
-  @ObservedObject var model: NotaModel
+  @Binding var identifySpeakers: Bool
 
   var body: some View {
     Form {
       Section {
-        Toggle(isOn: $model.identifySpeakers) {
+        Toggle(isOn: $identifySpeakers) {
           VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
             Text("Remember speakers")
             Text("Identify recurring voices across recordings.")
@@ -20,3 +20,13 @@ struct SettingsView: View {
     .frame(width: Metrics.settingsWidth, height: Metrics.settingsHeight)
   }
 }
+
+#if DEBUG
+#Preview("on") {
+  SettingsView(identifySpeakers: .constant(true))
+}
+
+#Preview("off") {
+  SettingsView(identifySpeakers: .constant(false))
+}
+#endif

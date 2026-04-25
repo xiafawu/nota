@@ -25,6 +25,13 @@ struct ContentView: View {
     ))
   }
 
+  private var toolbarStatusPillState: ToolbarStatusPillState? {
+    guard model.isRunning || model.status != "Drop audio to transcribe" else {
+      return nil
+    }
+    return ToolbarStatusPillState(isRunning: model.isRunning, text: model.status)
+  }
+
   var body: some View {
     NavigationSplitView {
       HistoryPaneView(
@@ -59,21 +66,8 @@ struct ContentView: View {
     }
     .toolbar {
       ToolbarItemGroup(placement: .status) {
-        if model.isRunning || model.status != "Drop audio to transcribe" {
-          HStack(spacing: Metrics.statusHStackSpacing) {
-            if model.isRunning {
-              ProgressView()
-                .controlSize(.small)
-            }
-            Text(model.status)
-              .font(Tokens.statusFont)
-              .lineLimit(1)
-              .truncationMode(.middle)
-          }
-          .padding(.horizontal, Metrics.statusPillH)
-          .padding(.vertical, Metrics.statusPillV)
-          .liquidGlass(.regular.tint(Tokens.toolbarStatusTint), in: .capsule)
-          .transition(.opacity.combined(with: .scale))
+        if let pillState = toolbarStatusPillState {
+          ToolbarStatusPill(state: pillState)
         }
       }
 

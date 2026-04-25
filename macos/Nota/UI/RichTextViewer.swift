@@ -35,3 +35,10 @@ struct RichTextViewer: NSViewRepresentable {
     textView.textStorage?.setAttributedString(attributedString)
   }
 }
+
+#if DEBUG
+#Preview("sample") {
+  RichTextViewer(attributedString: PreviewMocks.sampleRichText)
+    .frame(width: 720, height: 540)
+}
+#endif

@@ -34,6 +34,21 @@ if [ "${#NOTA_SOURCES[@]}" -eq 0 ]; then
   exit 1
 fi
 
+NOTA_BUILD_CONFIG="${NOTA_BUILD_CONFIG:-debug}"
+NOTA_SWIFT_FLAGS=()
+case "$NOTA_BUILD_CONFIG" in
+  debug)
+    NOTA_SWIFT_FLAGS+=("-D" "DEBUG" "-Onone")
+    ;;
+  release)
+    NOTA_SWIFT_FLAGS+=("-O")
+    ;;
+  *)
+    echo "Unknown NOTA_BUILD_CONFIG: $NOTA_BUILD_CONFIG (expected debug|release)" >&2
+    exit 1
+    ;;
+esac
+
 swiftc \
   -target arm64-apple-macosx26.0 \
   -module-cache-path "$MODULE_CACHE_DIR" \
@@ -41,6 +56,7 @@ swiftc \
   -framework SwiftUI \
   -framework AppKit \
   -framework UniformTypeIdentifiers \
+  "${NOTA_SWIFT_FLAGS[@]}" \
   "${NOTA_SOURCES[@]}" \
   -o "$MACOS_DIR/$APP_NAME"
 

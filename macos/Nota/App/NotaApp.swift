@@ -37,7 +37,7 @@ struct NotaApp: App {
     }
 
     Settings {
-      SettingsView(model: model)
+      SettingsView(identifySpeakers: $model.identifySpeakers)
     }
   }
 }

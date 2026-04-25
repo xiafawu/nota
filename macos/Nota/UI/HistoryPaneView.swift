@@ -99,3 +99,41 @@ struct HistoryPaneView: View {
     .padding(.vertical, Metrics.historyRowVerticalPadding)
   }
 }
+
+#if DEBUG
+#Preview("empty") {
+  HistoryPaneView(
+    state: PreviewMocks.historyEmpty,
+    selectedID: .constant(nil),
+    onNewTranscription: {},
+    onOpen: { _ in },
+    onReveal: { _ in },
+    onDelete: { _ in }
+  )
+  .frame(width: 260, height: 480)
+}
+
+#Preview("populated") {
+  HistoryPaneView(
+    state: PreviewMocks.historyRowsFew,
+    selectedID: .constant(nil),
+    onNewTranscription: {},
+    onOpen: { _ in },
+    onReveal: { _ in },
+    onDelete: { _ in }
+  )
+  .frame(width: 260, height: 480)
+}
+
+#Preview("running") {
+  HistoryPaneView(
+    state: PreviewMocks.historyRowsRunning,
+    selectedID: .constant(nil),
+    onNewTranscription: {},
+    onOpen: { _ in },
+    onReveal: { _ in },
+    onDelete: { _ in }
+  )
+  .frame(width: 260, height: 480)
+}
+#endif
