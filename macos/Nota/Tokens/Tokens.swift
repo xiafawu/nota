@@ -2,11 +2,16 @@ import AppKit
 import SwiftUI
 
 enum Tokens {
-  static let toolbarStatusTint: Color = .secondary.opacity(0.1)
-  static let primaryActionTint: Color = .accentColor.opacity(0.15)
+  static let toolbarStatusTintOpacity: Double = 0.1
+  static let primaryActionTintOpacity: Double = 0.15
+  static let dropFallbackStrokeIdleOpacity: Double = 0.2
+  static let emptyIconColorOpacity: Double = 0.85
+
+  static let toolbarStatusTint: Color = .secondary.opacity(toolbarStatusTintOpacity)
+  static let primaryActionTint: Color = .accentColor.opacity(primaryActionTintOpacity)
   static let dropAccent: Color = .accentColor
-  static let dropFallbackStrokeIdle: Color = .secondary.opacity(0.2)
-  static let emptyIconColor: Color = .primary.opacity(0.85)
+  static let dropFallbackStrokeIdle: Color = .secondary.opacity(dropFallbackStrokeIdleOpacity)
+  static let emptyIconColor: Color = .primary.opacity(emptyIconColorOpacity)
 
   static let statusFont: Font = .callout
   static let historyTitleFont: Font = .callout

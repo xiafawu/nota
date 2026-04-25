@@ -34,13 +34,39 @@ struct NotaApp: App {
         .keyboardShortcut("t")
         .disabled(model.selectedURL == nil || model.isRunning)
       }
+      #if DEBUG
+      CommandGroup(after: .windowArrangement) {
+        OpenTuningWindowButton()
+      }
+      #endif
     }
 
     Settings {
       SettingsView(identifySpeakers: $model.identifySpeakers)
     }
+
+    #if DEBUG
+    Window("UI Tuning", id: "tuning-editor") {
+      TuningEditor()
+        .frame(minWidth: 880, minHeight: 640)
+    }
+    .windowResizability(.contentSize)
+    #endif
   }
 }
+
+#if DEBUG
+private struct OpenTuningWindowButton: View {
+  @Environment(\.openWindow) private var openWindow
+
+  var body: some View {
+    Button("UI Tuning…") {
+      openWindow(id: "tuning-editor")
+    }
+    .keyboardShortcut("u", modifiers: [.command, .option])
+  }
+}
+#endif
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
   func application(_ application: NSApplication, open urls: [URL]) {
