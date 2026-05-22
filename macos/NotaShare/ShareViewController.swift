@@ -49,6 +49,7 @@ final class ShareViewController: NSViewController {
   }
 
   private func routeSharedAudio() async {
+    pruneStaleStagedFiles()
     do {
       guard let url = try await firstSharedFileURL() else {
         await MainActor.run {
@@ -142,6 +143,33 @@ final class ShareViewController: NSViewController {
     let destination = directory.appendingPathComponent(".nota-share-\(Int(Date().timeIntervalSince1970))-\(UUID().uuidString).\(extensionName)")
     try fileManager.copyItem(at: url, to: destination)
     return destination
+  }
+
+  /// Sweep stale share-staging files older than 5 minutes from the
+  /// extension's container Documents/Nota. Without this, the container
+  /// accumulates ~78 MB per share (macOS does not auto-clean files inside
+  /// a sandbox container's persistent dirs). The host app has already
+  /// re-copied successful shares into its own ~/Documents/Nota via
+  /// makeStableInputCopy, so anything still here is staging debris.
+  private func pruneStaleStagedFiles() {
+    let fileManager = FileManager.default
+    let directory = fileManager.homeDirectoryForCurrentUser
+      .appendingPathComponent("Documents", isDirectory: true)
+      .appendingPathComponent("Nota", isDirectory: true)
+    guard let entries = try? fileManager.contentsOfDirectory(
+      at: directory,
+      includingPropertiesForKeys: [.contentModificationDateKey],
+      options: []
+    ) else { return }
+    let cutoff = Date().addingTimeInterval(-5 * 60)
+    for entry in entries where entry.lastPathComponent.hasPrefix(".nota-share-") {
+      let mtime = (try? entry.resourceValues(
+        forKeys: [.contentModificationDateKey]
+      ).contentModificationDate) ?? .distantPast
+      if mtime < cutoff {
+        try? fileManager.removeItem(at: entry)
+      }
+    }
   }
 }
 
