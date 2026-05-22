@@ -10,11 +10,13 @@ struct RichTextViewer: NSViewRepresentable {
     scrollView.hasHorizontalScroller = false
     scrollView.drawsBackground = false
 
-    let textView = NSTextView()
+    let textView = HoverTimestampTextView()
     textView.isEditable = false
     textView.isSelectable = true
     textView.drawsBackground = false
-    textView.textContainerInset = NSSize(width: Metrics.richTextInsetX, height: Metrics.richTextInsetY)
+    // Left inset doubles as the hover-timestamp gutter (symmetric, so the right
+    // margin matches for a balanced reading column).
+    textView.textContainerInset = NSSize(width: Metrics.gutterWidth, height: Metrics.richTextInsetY)
     textView.textContainer?.widthTracksTextView = true
     textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
     textView.isHorizontallyResizable = false

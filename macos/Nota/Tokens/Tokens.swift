@@ -28,8 +28,12 @@ enum Tokens {
   static let emptyMainPathFont: Font = .callout
   static let settingsCaptionFont: Font = .caption
 
+  static let docTitleFont: Font = .title2
+  static let docSubtitleFont: Font = .subheadline
+
   static let animFast: Animation = .easeInOut(duration: 0.2)
   static let animSnap: Animation = .easeInOut(duration: 0.15)
+  static let hoverFadeDuration: Double = 0.18
 }
 
 enum NSFonts {
@@ -40,4 +44,5 @@ enum NSFonts {
   static let separator: NSFont = .systemFont(ofSize: 13)
   static let timestamp: NSFont = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
   static let speaker: NSFont = .boldSystemFont(ofSize: 14)
+  static let gutterTimestamp: NSFont = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
 }

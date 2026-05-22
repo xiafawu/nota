@@ -56,8 +56,12 @@ enum PreviewMocks {
     text: "Transcribing audio…"
   )
 
-  static let sampleRichText: NSAttributedString = renderMarkdownAsRichText("""
+  static let sampleMarkdown = """
   # Sample Transcript
+
+  **Captured:** 2026-05-20
+  **Duration:** 12 minutes
+  **Tags:** onboarding, roadmap, demo
 
   ## Summary
 
@@ -81,6 +85,9 @@ enum PreviewMocks {
 
   [00:00] **Alex:** Welcome to the call.
   [00:14] **Sam:** Good to be here, let's get started.
-  """)
+  """
+
+  static let sampleRichText: NSAttributedString = renderMarkdownAsRichText(sampleMarkdown)
+  static let sampleDocument = DocumentRender(meta: parseDocumentMeta(sampleMarkdown), body: sampleRichText)
 }
 #endif
