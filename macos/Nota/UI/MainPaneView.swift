@@ -11,8 +11,14 @@ struct MainPaneView: View {
       switch content {
       case .empty(let state):
         EmptyMainView(state: state, isDropTargeted: isDropTargeted)
-      case .rich(let attributedString):
-        RichTextViewer(attributedString: attributedString)
+      case .rich(let document):
+        VStack(spacing: 0) {
+          if let meta = document.meta {
+            DocumentHeaderView(meta: meta)
+            Divider()
+          }
+          RichTextViewer(attributedString: document.body)
+        }
       }
 
       if isDropTargeted {
@@ -76,7 +82,7 @@ struct MainPaneView: View {
 
 #Preview("rich content") {
   MainPaneView(
-    content: .rich(PreviewMocks.sampleRichText),
+    content: .rich(PreviewMocks.sampleDocument),
     isDropTargeted: .constant(false),
     onDropURL: { _ in }
   )

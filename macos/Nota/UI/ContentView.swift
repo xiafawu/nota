@@ -16,7 +16,7 @@ struct ContentView: View {
 
   private var mainContent: MainPaneContent {
     if model.hasContent {
-      return .rich(model.richText)
+      return .rich(DocumentRender(meta: parseDocumentMeta(model.markdown), body: model.richText))
     }
     return .empty(EmptyMainState(
       isRunning: model.isRunning,

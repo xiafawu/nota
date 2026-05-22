@@ -65,14 +65,21 @@ cp "$PROJECT_DIR/macos/Nota/Assets/AppIcon.icns" "$RESOURCES_DIR/AppIcon.icns"
 printf 'APPL????' > "$CONTENTS_DIR/PkgInfo"
 chmod +x "$MACOS_DIR/$APP_NAME"
 
+# Build the share extension as a real executable (MH_EXECUTE), NOT a dylib.
+# A .appex is exec'd as its own process by pkd, and — critically — codesign
+# silently ignores --entitlements on a dylib, so an `-emit-library` build can
+# never carry the App Sandbox entitlement pkd requires. The entry point is
+# _NSExtensionMain (from Foundation), which reads Info.plist and instantiates
+# NSExtensionPrincipalClass.
 swiftc \
   -target arm64-apple-macosx26.0 \
   -module-cache-path "$MODULE_CACHE_DIR" \
   -parse-as-library \
-  -emit-library \
   -module-name NotaShare \
+  -framework Foundation \
   -framework AppKit \
   -framework UniformTypeIdentifiers \
+  -Xlinker -e -Xlinker _NSExtensionMain \
   "$PROJECT_DIR/macos/NotaShare/ShareViewController.swift" \
   -o "$SHARE_MACOS_DIR/NotaShare"
 
@@ -80,8 +87,15 @@ cp "$PROJECT_DIR/macos/NotaShare/Info.plist" "$SHARE_CONTENTS_DIR/Info.plist"
 chmod +x "$SHARE_MACOS_DIR/NotaShare"
 
 if command -v codesign >/dev/null 2>&1; then
-  codesign --force --deep --sign - "$SHARE_APP_EXTENSION_DIR" >/dev/null 2>&1 || true
-  codesign --force --deep --sign - "$APP_DIR" >/dev/null 2>&1 || true
+  # Sign the extension FIRST, WITH its sandbox entitlements. Do not use --deep:
+  # signing the outer app with --deep would re-sign (and strip the entitlements
+  # off) the nested .appex. Failures must abort the build, not be swallowed.
+  codesign --force --sign - \
+    --entitlements "$PROJECT_DIR/macos/NotaShare/NotaShare.entitlements" \
+    "$SHARE_APP_EXTENSION_DIR"
+  # Re-seal the app bundle (no --deep) so it embeds the already-signed,
+  # entitled extension without re-signing it.
+  codesign --force --sign - "$APP_DIR"
 fi
 
 echo "$APP_DIR"

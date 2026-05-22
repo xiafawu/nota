@@ -74,21 +74,26 @@ final class NotaModel: ObservableObject {
   }
 
   func accept(_ url: URL) {
-    guard isSupportedAudio(url) else {
+    // The share extension can't open a file in another sandboxed app directly,
+    // so it hands the staged copy over as nota://import?path=<abs path>.
+    // Normalise that back to a file URL; plain file opens pass through.
+    let fileURL = Self.resolveSharedURL(url)
+
+    guard isSupportedAudio(fileURL) else {
       status = "Unsupported file type"
       return
     }
 
     markdown = ""
     lastOutputURL = nil
-    displayName = url.lastPathComponent
-    displayPath = url.path
+    displayName = fileURL.lastPathComponent
+    displayPath = fileURL.path
     status = "Copying audio..."
 
     do {
-      selectedURL = try makeStableInputCopy(from: url)
-      originalSelectedURL = url
-      status = url.lastPathComponent
+      selectedURL = try makeStableInputCopy(from: fileURL)
+      originalSelectedURL = fileURL
+      status = fileURL.lastPathComponent
     } catch {
       selectedURL = nil
       originalSelectedURL = nil
@@ -321,6 +326,21 @@ final class NotaModel: ObservableObject {
       let markdown = try String(contentsOf: outputURL, encoding: .utf8)
       return NotaResult(markdown: markdown, outputURL: outputURL)
     }.value
+  }
+
+  /// Map an incoming open request to a file URL. Plain file URLs pass through;
+  /// the share extension's `nota://import?path=<abs path>` is decoded back to
+  /// the staged file in ~/Documents/Nota.
+  private static func resolveSharedURL(_ url: URL) -> URL {
+    guard !url.isFileURL,
+          url.scheme == "nota",
+          let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+          let path = comps.queryItems?.first(where: { $0.name == "path" })?.value,
+          !path.isEmpty
+    else {
+      return url
+    }
+    return URL(fileURLWithPath: path)
   }
 
   private func isSupportedAudio(_ url: URL) -> Bool {

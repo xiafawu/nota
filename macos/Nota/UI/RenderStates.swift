@@ -19,7 +19,14 @@ struct MainPaneState {
 
 enum MainPaneContent {
   case empty(EmptyMainState)
-  case rich(NSAttributedString)
+  case rich(DocumentRender)
+}
+
+/// A rendered document: parsed header metadata (nil for legacy/headerless
+/// content) plus the rich-text body that scrolls beneath the SwiftUI header.
+struct DocumentRender {
+  let meta: DocMeta?
+  let body: NSAttributedString
 }
 
 struct EmptyMainState {

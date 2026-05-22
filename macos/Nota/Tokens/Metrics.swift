@@ -36,6 +36,14 @@ enum Metrics {
   static let richTextInsetX: CGFloat = 20
   static let richTextInsetY: CGFloat = 18
 
+  // Left reading margin doubles as the hover-timestamp gutter for transcript lines.
+  static let gutterWidth: CGFloat = 48
+  static let tsGutterTrailingGap: CGFloat = 8
+
+  static let docHeaderTopPadding: CGFloat = 16
+  static let docHeaderBottomPadding: CGFloat = 12
+  static let docHeaderSpacing: CGFloat = 6
+
   static let dropCornerRadius: CGFloat = 20
   static let dropFullBleedCornerRadius: CGFloat = 0
   static let dropStrokeIdle: CGFloat = 1

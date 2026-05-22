@@ -12,10 +12,22 @@ func renderMarkdownAsRichText(_ markdown: String) -> NSAttributedString {
   let output = NSMutableAttributedString()
   let normalized = markdown.replacingOccurrences(of: "\r\n", with: "\n")
   let lines = normalized.components(separatedBy: "\n")
+  let hasBodySection = lines.contains { $0.trimmingCharacters(in: .whitespaces).hasPrefix("## ") }
+  var skippingHeader = hasBodySection
   var isInCodeBlock = false
 
   for rawLine in lines {
     let trimmedLine = rawLine.trimmingCharacters(in: .whitespaces)
+
+    // Skip the leading header block (title + `**Captured:**`/`**Tags:**` etc.) —
+    // the SwiftUI DocumentHeaderView renders it. Body begins at the first `## `.
+    if skippingHeader {
+      if trimmedLine.hasPrefix("## ") {
+        skippingHeader = false
+      } else {
+        continue
+      }
+    }
 
     if trimmedLine.hasPrefix("```") {
       isInCodeBlock.toggle()
@@ -100,43 +112,84 @@ private func appendBulletLine(_ line: String, to output: NSMutableAttributedStri
 }
 
 private func appendTranscriptLine(_ line: String, to output: NSMutableAttributedString) -> Bool {
-  let pattern = #"^\[([0-9]{2}:[0-9]{2})\] \*\*(.+?):\*\* (.*)$"#
-  guard
-    let regex = try? NSRegularExpression(pattern: pattern),
-    let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)),
-    match.numberOfRanges == 4,
-    let timestampRange = Range(match.range(at: 1), in: line),
-    let speakerRange = Range(match.range(at: 2), in: line),
-    let textRange = Range(match.range(at: 3), in: line)
-  else {
-    return false
-  }
-
   let paragraph = NSMutableParagraphStyle()
   paragraph.paragraphSpacing = Metrics.paraSpacingTranscript
   paragraph.lineSpacing = Metrics.lineSpacingDefault
 
-  let timestamp = String(line[timestampRange])
-  let speaker = String(line[speakerRange])
-  let text = String(line[textRange])
+  // [MM:SS] **Speaker:** text — render speaker + text, drop the visible timestamp,
+  // and carry it as a `.notaTimestamp` attribute for the hover gutter.
+  let speakerPattern = #"^\[([0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?)\] \*\*(.+?):\*\* (.*)$"#
+  if let groups = matchTranscript(speakerPattern, in: line) {
+    let start = output.length
+    output.append(NSAttributedString(string: "\(groups[2]): ", attributes: [
+      .font: NSFonts.speaker,
+      .foregroundColor: NSColor.labelColor,
+      .paragraphStyle: paragraph
+    ]))
+    output.append(NSAttributedString(string: groups[3], attributes: [
+      .font: NSFonts.body,
+      .foregroundColor: NSColor.labelColor,
+      .paragraphStyle: paragraph
+    ]))
+    attachTimestamp(prettyTimestamp(groups[1]), from: start, to: output)
+    output.append(NSAttributedString(string: "\n"))
+    return true
+  }
 
-  output.append(NSAttributedString(string: "[\(timestamp)] ", attributes: [
-    .font: NSFonts.timestamp,
-    .foregroundColor: NSColor.secondaryLabelColor,
-    .paragraphStyle: paragraph
-  ]))
-  output.append(NSAttributedString(string: "\(speaker): ", attributes: [
-    .font: NSFonts.speaker,
-    .foregroundColor: NSColor.labelColor,
-    .paragraphStyle: paragraph
-  ]))
-  output.append(NSAttributedString(string: text, attributes: [
-    .font: NSFonts.body,
-    .foregroundColor: NSColor.labelColor,
-    .paragraphStyle: paragraph
-  ]))
-  output.append(NSAttributedString(string: "\n"))
-  return true
+  // [MM:SS] text — timestamped line without a speaker label.
+  let plainPattern = #"^\[([0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?)\] (.*)$"#
+  if let groups = matchTranscript(plainPattern, in: line) {
+    let start = output.length
+    output.append(NSAttributedString(string: groups[2], attributes: [
+      .font: NSFonts.body,
+      .foregroundColor: NSColor.labelColor,
+      .paragraphStyle: paragraph
+    ]))
+    attachTimestamp(prettyTimestamp(groups[1]), from: start, to: output)
+    output.append(NSAttributedString(string: "\n"))
+    return true
+  }
+
+  return false
+}
+
+/// Match `pattern` against `line`, returning every capture group as a string
+/// (index 0 is the full match), or nil when it doesn't match.
+private func matchTranscript(_ pattern: String, in line: String) -> [String]? {
+  guard
+    let regex = try? NSRegularExpression(pattern: pattern),
+    let match = regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line))
+  else {
+    return nil
+  }
+  var groups: [String] = []
+  for index in 0..<match.numberOfRanges {
+    guard let range = Range(match.range(at: index), in: line) else {
+      return nil
+    }
+    groups.append(String(line[range]))
+  }
+  return groups
+}
+
+/// Tag the just-appended speaker+text range with its timestamp so the hover
+/// gutter can reveal it. The caller appends the trailing newline, which is left
+/// untagged so hovering line breaks reveals nothing.
+private func attachTimestamp(_ timestamp: String, from start: Int, to output: NSMutableAttributedString) {
+  guard output.length > start else {
+    return
+  }
+  output.addAttribute(.notaTimestamp, value: timestamp, range: NSRange(location: start, length: output.length - start))
+}
+
+/// "00:14" → "0:14", "01:02:03" → "1:02:03": drop a single leading zero from the
+/// first field so the gutter reads naturally.
+private func prettyTimestamp(_ raw: String) -> String {
+  var fields = raw.split(separator: ":").map(String.init)
+  if let first = fields.first {
+    fields[0] = String(Int(first) ?? 0)
+  }
+  return fields.joined(separator: ":")
 }
 
 private func appendInlineMarkdownLine(_ line: String, to output: NSMutableAttributedString) {

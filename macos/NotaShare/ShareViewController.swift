@@ -49,6 +49,7 @@ final class ShareViewController: NSViewController {
   }
 
   private func routeSharedAudio() async {
+    pruneStaleStagedFiles()
     do {
       guard let url = try await firstSharedFileURL() else {
         await MainActor.run {
@@ -58,17 +59,40 @@ final class ShareViewController: NSViewController {
       }
 
       let copiedURL = try copyForNota(url)
-      let _ = await MainActor.run {
-        NSWorkspace.shared.open(copiedURL)
-      }
       await MainActor.run {
-        finish(with: "Opened in Nota")
+        self.openInNota(copiedURL)
       }
     } catch {
       await MainActor.run {
         finish(with: "Could not open in Nota", error: error)
       }
     }
+  }
+
+  /// Hand the staged file to the host app via its custom URL scheme. A
+  /// sandboxed extension must use `extensionContext.open` (not NSWorkspace,
+  /// which is restricted in extensions), and a `nota://` URL guarantees the
+  /// file opens in Nota rather than the system default audio handler.
+  @MainActor
+  private func openInNota(_ fileURL: URL) {
+    var components = URLComponents()
+    components.scheme = "nota"
+    components.host = "import"
+    components.queryItems = [URLQueryItem(name: "path", value: fileURL.path)]
+
+    guard let url = components.url else {
+      finish(with: "Could not open in Nota", error: ShareError.openFailed)
+      return
+    }
+
+    // macOS share extensions launch the host app through NSWorkspace.
+    // NSExtensionContext.open is an iOS containing-app API: on a macOS share
+    // extension it no-ops and reports failure, so it cannot hand off here.
+    let opened = NSWorkspace.shared.open(url)
+    finish(
+      with: opened ? "Opened in Nota" : "Could not open in Nota",
+      error: opened ? nil : ShareError.openFailed
+    )
   }
 
   private func firstSharedFileURL() async throws -> URL? {
@@ -120,15 +144,45 @@ final class ShareViewController: NSViewController {
     try fileManager.copyItem(at: url, to: destination)
     return destination
   }
+
+  /// Sweep stale share-staging files older than 5 minutes from the
+  /// extension's container Documents/Nota. Without this, the container
+  /// accumulates ~78 MB per share (macOS does not auto-clean files inside
+  /// a sandbox container's persistent dirs). The host app has already
+  /// re-copied successful shares into its own ~/Documents/Nota via
+  /// makeStableInputCopy, so anything still here is staging debris.
+  private func pruneStaleStagedFiles() {
+    let fileManager = FileManager.default
+    let directory = fileManager.homeDirectoryForCurrentUser
+      .appendingPathComponent("Documents", isDirectory: true)
+      .appendingPathComponent("Nota", isDirectory: true)
+    guard let entries = try? fileManager.contentsOfDirectory(
+      at: directory,
+      includingPropertiesForKeys: [.contentModificationDateKey],
+      options: []
+    ) else { return }
+    let cutoff = Date().addingTimeInterval(-5 * 60)
+    for entry in entries where entry.lastPathComponent.hasPrefix(".nota-share-") {
+      let mtime = (try? entry.resourceValues(
+        forKeys: [.contentModificationDateKey]
+      ).contentModificationDate) ?? .distantPast
+      if mtime < cutoff {
+        try? fileManager.removeItem(at: entry)
+      }
+    }
+  }
 }
 
 private enum ShareError: LocalizedError {
   case noFile
+  case openFailed
 
   var errorDescription: String? {
     switch self {
     case .noFile:
       return "No shared audio file was provided."
+    case .openFailed:
+      return "Could not open Nota for the shared audio."
     }
   }
 }
