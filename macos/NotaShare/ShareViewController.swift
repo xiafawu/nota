@@ -58,17 +58,40 @@ final class ShareViewController: NSViewController {
       }
 
       let copiedURL = try copyForNota(url)
-      let _ = await MainActor.run {
-        NSWorkspace.shared.open(copiedURL)
-      }
       await MainActor.run {
-        finish(with: "Opened in Nota")
+        self.openInNota(copiedURL)
       }
     } catch {
       await MainActor.run {
         finish(with: "Could not open in Nota", error: error)
       }
     }
+  }
+
+  /// Hand the staged file to the host app via its custom URL scheme. A
+  /// sandboxed extension must use `extensionContext.open` (not NSWorkspace,
+  /// which is restricted in extensions), and a `nota://` URL guarantees the
+  /// file opens in Nota rather than the system default audio handler.
+  @MainActor
+  private func openInNota(_ fileURL: URL) {
+    var components = URLComponents()
+    components.scheme = "nota"
+    components.host = "import"
+    components.queryItems = [URLQueryItem(name: "path", value: fileURL.path)]
+
+    guard let url = components.url else {
+      finish(with: "Could not open in Nota", error: ShareError.openFailed)
+      return
+    }
+
+    // macOS share extensions launch the host app through NSWorkspace.
+    // NSExtensionContext.open is an iOS containing-app API: on a macOS share
+    // extension it no-ops and reports failure, so it cannot hand off here.
+    let opened = NSWorkspace.shared.open(url)
+    finish(
+      with: opened ? "Opened in Nota" : "Could not open in Nota",
+      error: opened ? nil : ShareError.openFailed
+    )
   }
 
   private func firstSharedFileURL() async throws -> URL? {
@@ -124,11 +147,14 @@ final class ShareViewController: NSViewController {
 
 private enum ShareError: LocalizedError {
   case noFile
+  case openFailed
 
   var errorDescription: String? {
     switch self {
     case .noFile:
       return "No shared audio file was provided."
+    case .openFailed:
+      return "Could not open Nota for the shared audio."
     }
   }
 }

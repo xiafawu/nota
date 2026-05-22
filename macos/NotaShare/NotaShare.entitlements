@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <!-- App extensions MUST adopt the sandbox or pkd refuses to register them. -->
+  <key>com.apple.security.app-sandbox</key>
+  <true/>
+  <!-- Read the audio file the user shared from Voice Memos / Finder. -->
+  <key>com.apple.security.files.user-selected.read-only</key>
+  <true/>
+  <!-- Stage the copy into ~/Documents/Nota so the host app can pick it up.
+       App Groups would be cleaner but require a Team ID; this ad-hoc build
+       has none, so a home-relative temporary exception is used instead. -->
+  <key>com.apple.security.temporary-exception.files.home-relative-path.read-write</key>
+  <array>
+    <string>/Documents/Nota/</string>
+  </array>
+</dict>
+</plist>
