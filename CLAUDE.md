@@ -46,8 +46,8 @@ Two pipeline paths controlled by `--provider`:
   - `merge.ts` — concatenates transcripts, deduplicates overlap regions (whisper only)
   - `summarize.ts` — sends transcript to GPT-4o; for >100k tokens, does section-by-section then roll-up
   - `diarize.ts` — calls Python pyannote script, aligns speaker labels (whisper only)
-  - `write.ts` — generates markdown output file
-- **src/utils/** — Shared helpers: ffmpeg wrapper (`ffmpeg.ts`), token estimation (`tokens.ts`).
+  - `write.ts` — generates markdown output file; header carries **Captured** (recording time from container metadata, fs-birthtime fallback) and **Transcribed** (processing time) dates
+- **src/utils/** — Shared helpers: ffmpeg wrapper (`ffmpeg.ts`), token estimation (`tokens.ts`), capture-date resolution (`capture-date.ts`).
 
 ## CLI Flags
 

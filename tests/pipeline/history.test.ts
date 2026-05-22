@@ -107,4 +107,38 @@ describe("history", () => {
     await rm(historyDir, { recursive: true, force: true });
     await expect(listHistoryRecords(historyDir)).resolves.toEqual([]);
   });
+
+  it("persists capturedAt and round-trips it on read", async () => {
+    const record = await createHistoryRecord(
+      {
+        sourcePath: "/tmp/recorded.m4a",
+        provider: "assemblyai",
+        options: { diarize: true, identify: false, model: "gpt-4o" },
+        durationMinutes: 5,
+        transcriptText: "Hi",
+        segments: [],
+        capturedAt: "2020-01-02T03:04:05.000Z",
+      },
+      historyDir,
+    );
+    expect(record.capturedAt).toBe("2020-01-02T03:04:05.000Z");
+
+    const loaded = await loadHistoryRecord(record.id, historyDir);
+    expect(loaded.capturedAt).toBe("2020-01-02T03:04:05.000Z");
+  });
+
+  it("stores null capturedAt when not provided", async () => {
+    const record = await createHistoryRecord(
+      {
+        sourcePath: "/tmp/unknown.m4a",
+        provider: "whisper",
+        options: { diarize: false, identify: false, model: "gpt-4o" },
+        durationMinutes: 1,
+        transcriptText: "Hi",
+        segments: [],
+      },
+      historyDir,
+    );
+    expect(record.capturedAt).toBeNull();
+  });
 });

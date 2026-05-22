@@ -7,13 +7,15 @@ import { formatTimestamp } from "./transcribe.js";
 export interface WriteInput {
   summary: MeetingSummary;
   segments: TranscriptSegment[];
-  date: string;
+  capturedDate: string | null;
+  transcribedDate: string;
   duration: number;
   source: string;
 }
 
 export function buildMarkdown(input: WriteInput): string {
-  const { summary, segments, date, duration, source } = input;
+  const { summary, segments, capturedDate, transcribedDate, duration, source } =
+    input;
 
   const topicLines = summary.keyTopics.map((t) => `- ${t}`).join("\n");
   const decisionLines = summary.decisions.map((d) => `- ${d}`).join("\n");
@@ -30,7 +32,8 @@ export function buildMarkdown(input: WriteInput): string {
 
   return `# Nota Summary
 
-**Date:** ${date}
+**Captured:** ${capturedDate ?? "—"}
+**Transcribed:** ${transcribedDate}
 **Duration:** ${duration} minutes
 **Source:** ${source}
 

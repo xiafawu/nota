@@ -20,6 +20,7 @@ export interface HistoryRecord {
   id: string;
   createdAt: string;
   updatedAt: string;
+  capturedAt: string | null;
   sourcePath: string;
   sourceName: string;
   provider: Provider;
@@ -39,6 +40,7 @@ export interface CreateHistoryInput {
   durationMinutes: number;
   transcriptText: string;
   segments: TranscriptSegment[];
+  capturedAt?: string | null;
   outputPath?: string;
 }
 
@@ -75,6 +77,7 @@ export async function createHistoryRecord(
     id: makeHistoryId(now),
     createdAt: now,
     updatedAt: now,
+    capturedAt: input.capturedAt ?? null,
     sourcePath: input.sourcePath,
     sourceName: path.basename(input.sourcePath),
     provider: input.provider,
