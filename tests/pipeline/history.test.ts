@@ -76,6 +76,9 @@ describe("history", () => {
       },
       historyDir,
     );
+    // Ensure a distinct createdAt; same-millisecond creates tie under
+    // listHistoryRecords' createdAt-only sort, making newest-first indeterminate.
+    await new Promise((resolve) => setTimeout(resolve, 5));
     const second = await createHistoryRecord(
       {
         sourcePath: "/tmp/second.m4a",
