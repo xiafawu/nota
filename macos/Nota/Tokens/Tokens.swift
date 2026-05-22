@@ -4,6 +4,7 @@ import SwiftUI
 enum Tokens {
   static let toolbarStatusTintOpacity: Double = 0.1
   static let primaryActionTintOpacity: Double = 0.15
+  static let tagPillFillOpacity: Double = 0.12
   static let dropFallbackStrokeIdleOpacity: Double = 0.2
   static let emptyIconColorOpacity: Double = 0.85
 
@@ -12,11 +13,13 @@ enum Tokens {
   static let dropAccent: Color = .accentColor
   static let dropFallbackStrokeIdle: Color = .secondary.opacity(dropFallbackStrokeIdleOpacity)
   static let emptyIconColor: Color = .primary.opacity(emptyIconColorOpacity)
+  static let tagPillFill: Color = .secondary.opacity(tagPillFillOpacity)
 
   static let statusFont: Font = .callout
   static let historyTitleFont: Font = .callout
   static let historyDateFont: Font = .caption2
   static let historySectionFont: Font = .caption
+  static let historyTagFont: Font = .caption2
   static let emptyHistoryLabelFont: Font = .callout
   static let emptyHistoryHelperFont: Font = .caption
   static let emptyHistoryIconFont: Font = .system(size: 26, weight: .regular)

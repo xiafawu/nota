@@ -5,3 +5,7 @@ dist/
 audio/
 .omc/
 *.summary.md
+
+# macOS
+.DS_Store
+**/.DS_Store

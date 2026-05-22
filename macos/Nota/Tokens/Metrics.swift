@@ -50,4 +50,11 @@ enum Metrics {
   static let bulletHeadIndent: CGFloat = 18
 
   static let tightStackSpacing: CGFloat = 2
+
+  static let tagPillH: CGFloat = 8
+  static let tagPillV: CGFloat = 3
+  static let tagSpacing: CGFloat = 4
+  static let tagTopPadding: CGFloat = 4
+  static let tagToggleIconSpacing: CGFloat = 2
+  static let maxVisibleTags: Int = 3
 }

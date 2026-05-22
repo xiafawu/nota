@@ -17,6 +17,11 @@ export function buildMarkdown(input: WriteInput): string {
   const { summary, segments, capturedDate, transcribedDate, duration, source } =
     input;
 
+  const title = summary.title?.trim() || "Nota Summary";
+  const tagsLine =
+    summary.tags && summary.tags.length > 0
+      ? `\n**Tags:** ${summary.tags.join(", ")}`
+      : "";
   const topicLines = summary.keyTopics.map((t) => `- ${t}`).join("\n");
   const decisionLines = summary.decisions.map((d) => `- ${d}`).join("\n");
   const actionLines = summary.actionItems.map((a) => `- ${a}`).join("\n");
@@ -30,12 +35,12 @@ export function buildMarkdown(input: WriteInput): string {
     })
     .join("\n");
 
-  return `# Nota Summary
+  return `# ${title}
 
 **Captured:** ${capturedDate ?? "—"}
 **Transcribed:** ${transcribedDate}
 **Duration:** ${duration} minutes
-**Source:** ${source}
+**Source:** ${source}${tagsLine}
 
 ## Summary
 

@@ -11,17 +11,20 @@ enum PreviewMocks {
       HistoryRowState(
         id: URL(string: "file:///mock/team-sync.summary.md")!,
         title: "Team sync",
-        relativeDate: "2h"
+        relativeDate: "2h",
+        tags: ["planning", "roadmap", "hiring"]
       ),
       HistoryRowState(
         id: URL(string: "file:///mock/coffee-chat.summary.md")!,
         title: "Coffee chat",
-        relativeDate: "1d"
+        relativeDate: "1d",
+        tags: ["1:1", "feedback"]
       ),
       HistoryRowState(
         id: URL(string: "file:///mock/standup.summary.md")!,
         title: "Standup",
-        relativeDate: "3d"
+        relativeDate: "3d",
+        tags: []
       )
     ]
   )

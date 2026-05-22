@@ -6,6 +6,8 @@ import type { MeetingSummary } from "../../src/pipeline/summarize.js";
 describe("buildMarkdown", () => {
   it("produces valid markdown with all sections", () => {
     const summary: MeetingSummary = {
+      title: "API Design Standup",
+      tags: ["api", "design", "rest"],
       narrative: "A productive meeting.",
       keyTopics: ["**API design** — discussed endpoints"],
       decisions: ["Use REST over GraphQL"],
@@ -24,7 +26,8 @@ describe("buildMarkdown", () => {
       source: "standup.mp3",
     });
 
-    expect(md).toContain("# Nota Summary");
+    expect(md).toContain("# API Design Standup");
+    expect(md).toContain("**Tags:** api, design, rest");
     expect(md).toContain("**Captured:** 2026-03-08");
     expect(md).toContain("**Transcribed:** 2026-03-10");
     expect(md).toContain("**Duration:** 47 minutes");
@@ -36,6 +39,8 @@ describe("buildMarkdown", () => {
 
   it("includes speaker labels in transcript when present", () => {
     const summary: MeetingSummary = {
+      title: "Q3 Budget Review",
+      tags: ["budget", "finance"],
       narrative: "A productive meeting.",
       keyTopics: ["**Budget** — discussed allocations"],
       decisions: ["Increase Q3 budget"],
@@ -62,6 +67,8 @@ describe("buildMarkdown", () => {
 
   it("renders an em dash when captured date is unknown", () => {
     const summary: MeetingSummary = {
+      title: "Untitled",
+      tags: [],
       narrative: "x",
       keyTopics: [],
       decisions: [],
