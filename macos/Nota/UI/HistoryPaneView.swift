@@ -9,6 +9,8 @@ struct HistoryPaneView: View {
   let onReveal: (HistoryEntry.ID) -> Void
   let onDelete: (HistoryEntry.ID) -> Void
 
+  @State private var expandedRows: Set<HistoryEntry.ID> = []
+
   var body: some View {
     VStack(spacing: 0) {
       Button {
@@ -96,34 +98,134 @@ struct HistoryPaneView: View {
         .font(Tokens.historyDateFont)
         .foregroundStyle(.secondary)
       if !row.tags.isEmpty {
-        HStack(spacing: Metrics.tagSpacing) {
-          ForEach(row.tags.prefix(Metrics.maxVisibleTags), id: \.self) { tag in
-            tagPill(tag)
-          }
-          if row.tags.count > Metrics.maxVisibleTags {
-            tagPill("+\(row.tags.count - Metrics.maxVisibleTags)", fixed: true)
-          }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.top, Metrics.tagTopPadding)
-        .clipped()
+        tagSection(row)
       }
     }
     .padding(.vertical, Metrics.historyRowVerticalPadding)
   }
 
-  // Tag pills truncate to fit the sidebar width; the small "+N" pill stays
-  // fixed so it is never the one that shrinks.
-  private func tagPill(_ tag: String, fixed: Bool = false) -> some View {
-    Text(tag)
+  // Collapsed: first N tags + a right-aligned "+k" button. Expanded: every tag
+  // wrapped across lines + a "Less" button. The toggle pills are buttons so a
+  // tap expands/collapses without selecting (opening) the row.
+  @ViewBuilder
+  private func tagSection(_ row: HistoryRowState) -> some View {
+    let overflow = row.tags.count - Metrics.maxVisibleTags
+    Group {
+      if expandedRows.contains(row.id) {
+        VStack(alignment: .leading, spacing: Metrics.tagSpacing) {
+          FlowLayout(spacing: Metrics.tagSpacing, lineSpacing: Metrics.tagSpacing) {
+            ForEach(row.tags, id: \.self) { pillLabel($0) }
+          }
+          HStack(spacing: 0) {
+            Spacer(minLength: 0)
+            togglePill("Less", systemImage: "chevron.up") { collapse(row.id) }
+          }
+        }
+      } else {
+        HStack(spacing: Metrics.tagSpacing) {
+          ForEach(row.tags.prefix(Metrics.maxVisibleTags), id: \.self) { pillLabel($0) }
+          if overflow > 0 {
+            Spacer(minLength: Metrics.tagSpacing)
+            togglePill("+\(overflow)", systemImage: "chevron.down") { expand(row.id) }
+          }
+        }
+      }
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .padding(.top, Metrics.tagTopPadding)
+  }
+
+  // A plain tag label. No fixed width, so it truncates to fit a collapsed row
+  // and reports its full intrinsic size when wrapped by FlowLayout.
+  private func pillLabel(_ text: String) -> some View {
+    Text(text)
       .font(Tokens.historyTagFont)
       .foregroundStyle(.secondary)
       .lineLimit(1)
       .truncationMode(.tail)
-      .fixedSize(horizontal: fixed, vertical: false)
       .padding(.horizontal, Metrics.tagPillH)
       .padding(.vertical, Metrics.tagPillV)
       .background(Tokens.tagPillFill, in: Capsule())
+  }
+
+  // Expand/collapse toggle: a chevron marks it as a control (vs. a plain tag).
+  // Uses .secondary — not .tint — because the sidebar selection highlight is
+  // the accent color, and accent text on the accent highlight is illegible.
+  private func togglePill(_ text: String, systemImage: String, action: @escaping () -> Void) -> some View {
+    Button(action: action) {
+      HStack(spacing: Metrics.tagToggleIconSpacing) {
+        Text(text)
+        Image(systemName: systemImage)
+          .imageScale(.small)
+      }
+      .font(Tokens.historyTagFont)
+      .foregroundStyle(.secondary)
+      .fixedSize(horizontal: true, vertical: false)
+      .padding(.horizontal, Metrics.tagPillH)
+      .padding(.vertical, Metrics.tagPillV)
+      .background(Tokens.tagPillFill, in: Capsule())
+    }
+    .buttonStyle(.plain)
+  }
+
+  private func expand(_ id: HistoryEntry.ID) {
+    withAnimation(Tokens.animSnap) { _ = expandedRows.insert(id) }
+  }
+
+  private func collapse(_ id: HistoryEntry.ID) {
+    withAnimation(Tokens.animSnap) { expandedRows.remove(id) }
+  }
+}
+
+/// Wrapping layout for the expanded tag list: left-to-right, wrapping to a new
+/// line when the next pill would exceed the available width.
+struct FlowLayout: Layout {
+  var spacing: CGFloat = 4
+  var lineSpacing: CGFloat = 4
+
+  func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) -> CGSize {
+    let maxWidth = proposal.width ?? .infinity
+    var x: CGFloat = 0
+    var y: CGFloat = 0
+    var lineHeight: CGFloat = 0
+    var widestRow: CGFloat = 0
+
+    for subview in subviews {
+      let size = subview.sizeThatFits(.unspecified)
+      if x > 0, x + size.width > maxWidth {
+        widestRow = max(widestRow, x - spacing)
+        x = 0
+        y += lineHeight + lineSpacing
+        lineHeight = 0
+      }
+      x += size.width + spacing
+      lineHeight = max(lineHeight, size.height)
+    }
+    widestRow = max(widestRow, x - spacing)
+    let width = maxWidth.isFinite ? min(widestRow, maxWidth) : widestRow
+    return CGSize(width: max(width, 0), height: y + lineHeight)
+  }
+
+  func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Void) {
+    var x: CGFloat = 0
+    var y: CGFloat = 0
+    var lineHeight: CGFloat = 0
+
+    for subview in subviews {
+      let size = subview.sizeThatFits(.unspecified)
+      if x > 0, x + size.width > bounds.width {
+        x = 0
+        y += lineHeight + lineSpacing
+        lineHeight = 0
+      }
+      subview.place(
+        at: CGPoint(x: bounds.minX + x, y: bounds.minY + y),
+        anchor: .topLeading,
+        proposal: ProposedViewSize(size)
+      )
+      x += size.width + spacing
+      lineHeight = max(lineHeight, size.height)
+    }
   }
 }
 
