@@ -14,6 +14,7 @@ import { mergeTranscriptions } from "./pipeline/merge.js";
 import { summarizeTranscript } from "./pipeline/summarize.js";
 import { writeOutput, defaultOutputPath } from "./pipeline/write.js";
 import { getAudioDuration } from "./utils/ffmpeg.js";
+import { resolveCaptureDate } from "./utils/capture-date.js";
 import { unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
@@ -158,6 +159,8 @@ async function runAssemblyAIPipelineInner(
     segments = await identifySpeakers(audioForEmbeddings, segments, verbose);
   }
 
+  const capturedAt = await resolveCaptureDate(inputPath);
+
   // 2c. Save transcript history before summarization so the transcript survives
   //     even if the GPT summary step fails.
   let historyId: string | undefined;
@@ -171,6 +174,7 @@ async function runAssemblyAIPipelineInner(
       transcriptText: result.text,
       segments,
       outputPath,
+      capturedAt: capturedAt ? capturedAt.toISOString() : null,
     });
     historyId = history.id;
     spinner?.succeed(`History saved as ${history.id}`);
@@ -188,11 +192,21 @@ async function runAssemblyAIPipelineInner(
 
   // 4. Write
   spinner = log(verbose, "Writing output...");
-  const date = new Date().toISOString().split("T")[0];
+  const transcribedDate = new Date().toISOString().split("T")[0];
+  const capturedDate = capturedAt
+    ? capturedAt.toISOString().split("T")[0]
+    : null;
   const source = path.basename(inputPath);
 
   await writeOutput(
-    { summary, segments, date, duration: durationMinutes, source },
+    {
+      summary,
+      segments,
+      capturedDate,
+      transcribedDate,
+      duration: durationMinutes,
+      source,
+    },
     outputPath,
   );
   if (historyId) {
@@ -357,6 +371,8 @@ async function runWhisperPipeline(
     spinner?.succeed("Speaker labels aligned");
   }
 
+  const capturedAt = await resolveCaptureDate(inputPath);
+
   // 4c. Save transcript history before summarization so the transcript survives
   //     even if the GPT summary step fails.
   let historyId: string | undefined;
@@ -370,6 +386,7 @@ async function runWhisperPipeline(
       transcriptText: merged.text,
       segments: merged.segments,
       outputPath,
+      capturedAt: capturedAt ? capturedAt.toISOString() : null,
     });
     historyId = history.id;
     spinner?.succeed(`History saved as ${history.id}`);
@@ -387,14 +404,18 @@ async function runWhisperPipeline(
 
   // 6. Write
   spinner = log(verbose, "Writing output...");
-  const date = new Date().toISOString().split("T")[0];
+  const transcribedDate = new Date().toISOString().split("T")[0];
+  const capturedDate = capturedAt
+    ? capturedAt.toISOString().split("T")[0]
+    : null;
   const source = path.basename(inputPath);
 
   await writeOutput(
     {
       summary,
       segments: merged.segments,
-      date,
+      capturedDate,
+      transcribedDate,
       duration: durationMinutes,
       source,
     },
