@@ -95,8 +95,35 @@ struct HistoryPaneView: View {
       Text(row.relativeDate)
         .font(Tokens.historyDateFont)
         .foregroundStyle(.secondary)
+      if !row.tags.isEmpty {
+        HStack(spacing: Metrics.tagSpacing) {
+          ForEach(row.tags.prefix(Metrics.maxVisibleTags), id: \.self) { tag in
+            tagPill(tag)
+          }
+          if row.tags.count > Metrics.maxVisibleTags {
+            tagPill("+\(row.tags.count - Metrics.maxVisibleTags)", fixed: true)
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.top, Metrics.tagTopPadding)
+        .clipped()
+      }
     }
     .padding(.vertical, Metrics.historyRowVerticalPadding)
+  }
+
+  // Tag pills truncate to fit the sidebar width; the small "+N" pill stays
+  // fixed so it is never the one that shrinks.
+  private func tagPill(_ tag: String, fixed: Bool = false) -> some View {
+    Text(tag)
+      .font(Tokens.historyTagFont)
+      .foregroundStyle(.secondary)
+      .lineLimit(1)
+      .truncationMode(.tail)
+      .fixedSize(horizontal: fixed, vertical: false)
+      .padding(.horizontal, Metrics.tagPillH)
+      .padding(.vertical, Metrics.tagPillV)
+      .background(Tokens.tagPillFill, in: Capsule())
   }
 }
 

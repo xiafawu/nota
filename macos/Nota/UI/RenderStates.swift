@@ -10,6 +10,7 @@ struct HistoryRowState: Identifiable, Hashable {
   let id: HistoryEntry.ID
   let title: String
   let relativeDate: String
+  let tags: [String]
 }
 
 struct MainPaneState {

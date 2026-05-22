@@ -9,7 +9,7 @@ struct ContentView: View {
     HistoryPaneState(
       isRunning: model.isRunning,
       rows: model.history.map { entry in
-        HistoryRowState(id: entry.id, title: entry.title, relativeDate: entry.relativeDate)
+        HistoryRowState(id: entry.id, title: entry.title, relativeDate: entry.relativeDate, tags: entry.tags)
       }
     )
   }
@@ -62,7 +62,6 @@ struct ContentView: View {
         }
       )
       .navigationSplitViewColumnWidth(min: Metrics.detailMin, ideal: Metrics.detailIdeal)
-      .background(.thinMaterial)
     }
     .toolbar {
       ToolbarItemGroup(placement: .status) {
@@ -120,7 +119,6 @@ struct ContentView: View {
       }
     }
     .animation(Tokens.animFast, value: model.isRunning)
-    .containerBackground(.ultraThinMaterial, for: .window)
     .toolbarBackground(.hidden, for: .windowToolbar)
     .onChange(of: model.selectedHistoryID) { _, newValue in
       guard let newValue, let entry = model.history.first(where: { $0.id == newValue }) else {

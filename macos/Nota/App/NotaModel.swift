@@ -131,10 +131,14 @@ final class NotaModel: ObservableObject {
 
   func refreshHistory() {
     let fileManager = FileManager.default
+    // NOTE: do NOT pass .skipsHiddenFiles — every Nota output inherits a
+    // leading-dot basename (.nota-input-/.nota-share- copies), so the summary
+    // files are themselves dotfiles. .skipsHiddenFiles would drop the entire
+    // history before the .summary.md filter below ever runs (issue #25).
     let contents = (try? fileManager.contentsOfDirectory(
       at: outputDirectory,
       includingPropertiesForKeys: [.contentModificationDateKey],
-      options: [.skipsHiddenFiles]
+      options: []
     )) ?? []
 
     let entries: [HistoryEntry] = contents.compactMap { url in
@@ -144,7 +148,7 @@ final class NotaModel: ObservableObject {
       }
       let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
       let date = values?.contentModificationDate ?? Date.distantPast
-      return HistoryEntry(url: url, modifiedAt: date)
+      return HistoryEntry.make(url: url, modifiedAt: date)
     }
     history = entries.sorted { $0.modifiedAt > $1.modifiedAt }
   }
