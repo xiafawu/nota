@@ -3,6 +3,8 @@ import { shouldChunkTranscript, splitTranscriptIntoSections } from "../utils/tok
 import type { TranscriptSegment } from "./transcribe.js";
 
 export interface MeetingSummary {
+  title: string;
+  tags: string[];
   narrative: string;
   keyTopics: string[];
   decisions: string[];
@@ -31,6 +33,9 @@ ${hasSpeakers ? "\nNote: The transcript includes speaker labels (Speaker 1, Spea
 
 Produce the following sections in your response. Use exactly these headers:
 
+### Title
+A concise, descriptive title for this meeting in at most 6 words. Plain text only — no quotes, no trailing punctuation.
+
 ### Summary
 Write a concise 2-4 sentence narrative summary of the meeting.
 
@@ -48,7 +53,10 @@ If no decisions were made, write "No explicit decisions were recorded."
 List each action item as a checkbox:
 - [ ] Action item — assigned to Person (if identifiable from the transcript)
 
-If no action items were identified, write "No action items were identified."`;
+If no action items were identified, write "No action items were identified."
+
+### Tags
+3 to 6 short, lowercase topical tags on a single line, comma-separated (for example: planning, roadmap, hiring).`;
 }
 
 function buildRollupPrompt(sectionSummaries: string[]): string {
@@ -64,6 +72,9 @@ ${combined}
 
 Produce a unified summary with these sections using exactly these headers:
 
+### Title
+A concise, descriptive title for the entire meeting in at most 6 words. Plain text only — no quotes, no trailing punctuation.
+
 ### Summary
 Write a concise 2-4 sentence narrative summary of the entire meeting.
 
@@ -77,16 +88,52 @@ Merge all decisions:
 
 ### Action Items
 Merge all action items, deduplicating:
-- [ ] Action item — assigned to Person`;
+- [ ] Action item — assigned to Person
+
+### Tags
+3 to 6 short, lowercase topical tags on a single line, comma-separated (for example: planning, roadmap, hiring).`;
+}
+
+function cleanTitle(raw: string): string {
+  const firstLine = raw.trim().split("\n").find((l) => l.trim().length > 0) ?? "";
+  return firstLine
+    .replace(/^[-*#\s]+/, "") // stray bullet/heading markers
+    .replace(/^["'`]+|["'`]+$/g, "") // wrapping quotes
+    .replace(/[.\s]+$/g, "") // trailing period/space
+    .trim();
+}
+
+function parseTags(raw: string): string[] {
+  const trimmed = raw.trim();
+  if (!trimmed) return [];
+  // Accept a comma-separated line or a bullet list.
+  const tokens = trimmed.includes(",")
+    ? trimmed.split(/[,\n]/)
+    : trimmed.split("\n");
+  return Array.from(
+    new Set(
+      tokens
+        .map((t) => t.replace(/^[-*]\s*/, "").replace(/^#/, "").trim().toLowerCase())
+        .filter((t) => t.length > 0)
+    )
+  ).slice(0, 8);
 }
 
 export function parseSummaryResponse(response: string): MeetingSummary {
   const sections = {
+    title: "",
+    tags: [] as string[],
     narrative: "",
     keyTopics: [] as string[],
     decisions: [] as string[],
     actionItems: [] as string[],
   };
+
+  const titleMatch = response.match(/### Title\s*\n([\s\S]*?)(?=\n### |$)/);
+  if (titleMatch) sections.title = cleanTitle(titleMatch[1]);
+
+  const tagsMatch = response.match(/### Tags\s*\n([\s\S]*?)(?=\n### |$)/);
+  if (tagsMatch) sections.tags = parseTags(tagsMatch[1]);
 
   const summaryMatch = response.match(
     /### Summary\s*\n([\s\S]*?)(?=\n### |$)/

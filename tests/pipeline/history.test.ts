@@ -46,6 +46,8 @@ describe("history", () => {
       record.id,
       {
         summary: {
+          title: "Short meeting",
+          tags: ["sync"],
           narrative: "A short meeting.",
           keyTopics: ["Topic"],
           decisions: [],
