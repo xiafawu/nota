@@ -22,12 +22,24 @@ final class NotaModel: ObservableObject {
   @Published var displayPath = "MP3, M4A, WAV, CAF, QTA, MOV, MP4"
   @Published var history: [HistoryEntry] = []
   @Published var selectedHistoryID: HistoryEntry.ID?
+  /// Speaker chips derived from the current document's label set + sidecar.
+  @Published var speakerChips: [SpeakerChip] = []
 
   private let projectDirectory = URL(fileURLWithPath: ProcessInfo.processInfo.environment["NOTA_PROJECT_DIR"] ?? "/Users/xiafawu/Developer/Nota")
   private let outputDirectory = notaOutputDirectory()
 
+  /// The history record whose `outputPath` matches the current `lastOutputURL`,
+  /// cached on document open so the enroll queue can look up `historyId` and
+  /// `sourcePath` without re-scanning history every rename.
+  private var cachedHistoryRecord: HistoryRecordInfo?
+
   var richText: NSAttributedString {
-    renderMarkdownAsRichText(markdown)
+    let overrides = Dictionary(
+      uniqueKeysWithValues: speakerChips
+        .filter { !$0.name.isEmpty }
+        .map { ($0.label, $0.name) }
+    )
+    return renderMarkdownAsRichText(markdown, overrides: overrides)
   }
 
   var hasContent: Bool {
@@ -126,6 +138,7 @@ final class NotaModel: ObservableObject {
         if let entry = history.first(where: { $0.url.standardizedFileURL == result.outputURL.standardizedFileURL }) {
           selectedHistoryID = entry.id
         }
+        loadChips(for: result.outputURL)
       } catch {
         markdown = failureMarkdown("Transcription failed", details: error.localizedDescription)
         status = "Transcription failed"
@@ -170,6 +183,7 @@ final class NotaModel: ObservableObject {
       displayName = entry.title
       displayPath = entry.url.path
       status = entry.title
+      loadChips(for: entry.url)
     } catch {
       status = "Could not open transcript"
     }
@@ -187,6 +201,8 @@ final class NotaModel: ObservableObject {
     displayName = "Drop Audio"
     displayPath = "MP3, M4A, WAV, CAF, QTA, MOV, MP4"
     status = "Drop audio to transcribe"
+    speakerChips = []
+    cachedHistoryRecord = nil
   }
 
   func deleteHistory(_ entry: HistoryEntry) {
@@ -367,11 +383,154 @@ final class NotaModel: ObservableObject {
 
     return "nota-summary.\(extensionName)"
   }
+
+  // MARK: - Speaker chips
+
+  /// Parse unique speaker labels (first-seen order) from the markdown body.
+  private static func parseSpeakerLabels(from markdown: String) -> [String] {
+    let pattern = #"^\[([0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?)\] \*\*(.+?):\*\*"#
+    guard let regex = try? NSRegularExpression(pattern: pattern, options: .anchorsMatchLines) else {
+      return []
+    }
+    var seen = Set<String>()
+    var ordered: [String] = []
+    let range = NSRange(markdown.startIndex..., in: markdown)
+    for match in regex.matches(in: markdown, range: range) {
+      if let labelRange = Range(match.range(at: 2), in: markdown) {
+        let label = String(markdown[labelRange])
+        if seen.insert(label).inserted {
+          ordered.append(label)
+        }
+      }
+    }
+    return ordered
+  }
+
+  /// Load chips from the sidecar for `documentURL`, cache the history record,
+  /// and set the initial indicator for each chip.
+  private func loadChips(for documentURL: URL) {
+    let labels = Self.parseSpeakerLabels(from: markdown)
+    let sidecar = SpeakerSidecar.load(for: documentURL)
+
+    // Cache history record (background task to avoid blocking main thread)
+    cachedHistoryRecord = nil
+    let historyDir = notaHistoryDirectory()
+    let docPath = documentURL.path
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      let info = await Task.detached(priority: .utility) {
+        HistoryRecordInfo.find(outputPath: docPath, historyDir: historyDir)
+      }.value
+      self.cachedHistoryRecord = info
+    }
+
+    speakerChips = labels.map { label in
+      let name = sidecar.speakers[label] ?? ""
+      // Initial indicator: if name is set but we don't know enroll status yet,
+      // show .skipped(.noHistoryRecord) as a conservative default; it gets
+      // overwritten when the history record lookup completes (via the enroll queue).
+      let indicator: ChipIndicator = name.isEmpty ? .none : .skipped(reason: "no history record")
+      return SpeakerChip(label: label, name: name, indicator: indicator)
+    }
+  }
+
+  /// Called by the chip strip when the user commits a name for a label.
+  func renameChip(label: String, newName: String) {
+    guard let documentURL = lastOutputURL else { return }
+
+    // Update in-memory chip immediately
+    if let idx = speakerChips.firstIndex(where: { $0.label == label }) {
+      speakerChips[idx].name = newName
+      speakerChips[idx].indicator = newName.isEmpty ? .none : .pending
+    }
+
+    // Write sidecar (always, even for empty name = clear mapping)
+    var sidecar = SpeakerSidecar.load(for: documentURL)
+    if newName.isEmpty {
+      sidecar.speakers.removeValue(forKey: label)
+    } else {
+      sidecar.speakers[label] = newName
+    }
+    try? SpeakerSidecar.save(sidecar, for: documentURL)
+
+    // If empty name, nothing to enroll
+    guard !newName.isEmpty else { return }
+
+    // Enroll voiceprint if we have a history record
+    guard let info = cachedHistoryRecord else {
+      // Still waiting for the background lookup — indicator already set to
+      // .skipped(.noHistoryRecord) which is the correct amber state.
+      return
+    }
+
+    // Mark chip as enrolling
+    if let idx = speakerChips.firstIndex(where: { $0.label == label }) {
+      speakerChips[idx].indicator = .enrolling
+    }
+
+    let chipLabel = label
+    Task {
+      await EnrollQueue.shared.enqueue(
+        historyID: info.historyID,
+        label: chipLabel,
+        name: newName
+      ) { [weak self] result in
+        guard let self else { return }
+        guard let idx = self.speakerChips.firstIndex(where: { $0.label == chipLabel }) else { return }
+        switch result {
+        case .enrolled:
+          self.speakerChips[idx].indicator = .enrolled
+        case .skipped(let reason):
+          self.speakerChips[idx].indicator = .skipped(reason: reason.tooltip)
+        case .failed(let stderr):
+          self.speakerChips[idx].indicator = .failed(stderr: stderr)
+        }
+      }
+    }
+  }
 }
 
 struct NotaResult {
   let markdown: String
   let outputURL: URL
+}
+
+// MARK: - History record info (cached per-document)
+
+/// Lightweight cache of the history record matching the current document.
+/// We only need `historyID` and `sourcePath` for the enroll flow, so we
+/// avoid holding the full (potentially large) segments array in memory.
+struct HistoryRecordInfo {
+  let historyID: String
+  let sourcePath: String
+
+  /// Walk `~/.nota/history/*.json` and return the record whose `outputPath`
+  /// matches `outputPath`. Returns nil when no match exists (imported .md).
+  static func find(outputPath: String, historyDir: URL) -> HistoryRecordInfo? {
+    let fileManager = FileManager.default
+    guard let entries = try? fileManager.contentsOfDirectory(
+      at: historyDir,
+      includingPropertiesForKeys: nil,
+      options: []
+    ) else {
+      return nil
+    }
+
+    for entry in entries where entry.pathExtension == "json" {
+      guard
+        let data = try? Data(contentsOf: entry),
+        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let recordOutput = json["outputPath"] as? String,
+        recordOutput == outputPath,
+        let id = json["id"] as? String,
+        let source = json["sourcePath"] as? String
+      else {
+        continue
+      }
+      return HistoryRecordInfo(historyID: id, sourcePath: source)
+    }
+    return nil
+  }
 }
 
 enum NotaAppError: LocalizedError {

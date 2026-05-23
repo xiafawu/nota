@@ -32,6 +32,12 @@ func notaTimestamp() -> String {
   return formatter.string(from: Date())
 }
 
+func notaHistoryDirectory() -> URL {
+  FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent(".nota", isDirectory: true)
+    .appendingPathComponent("history", isDirectory: true)
+}
+
 func notaOutputDirectory() -> URL {
   if let override = ProcessInfo.processInfo.environment["NOTA_OUTPUT_DIR"], !override.isEmpty {
     return URL(fileURLWithPath: override, isDirectory: true)

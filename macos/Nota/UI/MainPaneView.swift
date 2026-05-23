@@ -4,7 +4,9 @@ import UniformTypeIdentifiers
 struct MainPaneView: View {
   let content: MainPaneContent
   @Binding var isDropTargeted: Bool
+  @Binding var speakerChips: [SpeakerChip]
   let onDropURL: (URL) -> Void
+  let onRename: (_ label: String, _ newName: String) -> Void
 
   var body: some View {
     ZStack {
@@ -14,7 +16,7 @@ struct MainPaneView: View {
       case .rich(let document):
         VStack(spacing: 0) {
           if let meta = document.meta {
-            DocumentHeaderView(meta: meta)
+            DocumentHeaderView(meta: meta, chips: $speakerChips, onRename: onRename)
             Divider()
           }
           RichTextViewer(attributedString: document.body)
@@ -66,7 +68,9 @@ struct MainPaneView: View {
   MainPaneView(
     content: .empty(PreviewMocks.emptyMainIdle),
     isDropTargeted: .constant(false),
-    onDropURL: { _ in }
+    speakerChips: .constant([]),
+    onDropURL: { _ in },
+    onRename: { _, _ in }
   )
   .frame(width: 720, height: 540)
 }
@@ -75,7 +79,9 @@ struct MainPaneView: View {
   MainPaneView(
     content: .empty(PreviewMocks.emptyMainIdle),
     isDropTargeted: .constant(true),
-    onDropURL: { _ in }
+    speakerChips: .constant([]),
+    onDropURL: { _ in },
+    onRename: { _, _ in }
   )
   .frame(width: 720, height: 540)
 }
@@ -84,7 +90,9 @@ struct MainPaneView: View {
   MainPaneView(
     content: .rich(PreviewMocks.sampleDocument),
     isDropTargeted: .constant(false),
-    onDropURL: { _ in }
+    speakerChips: .constant([]),
+    onDropURL: { _ in },
+    onRename: { _, _ in }
   )
   .frame(width: 720, height: 540)
 }

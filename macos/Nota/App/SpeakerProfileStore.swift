@@ -1,18 +1,67 @@
 import Foundation
 
-// MARK: - Codable schema
+// MARK: - Codable schema (v2 pointer model)
 
-struct SpeakerProfile: Codable, Hashable {
+/// One enrollment event: a single embedding appended at a point in time.
+/// Mirrors the TypeScript `Voiceprint` interface in src/pipeline/speakers.ts.
+struct Voiceprint: Codable, Hashable {
+  var id: String
   var embedding: [Double]
   var enrolledAt: String
   var source: String
+}
+
+/// A speaker profile is a *pointer*: one name → N voiceprints (one per
+/// enrollment event). Matching takes the max score across all voiceprints so
+/// adding more can only help recall. Mirrors `SpeakerProfile` in speakers.ts.
+struct SpeakerProfile: Codable, Hashable {
+  var voiceprints: [Voiceprint]
+
+  // MARK: - v1 → v2 migration decoder
+  //
+  // The legacy on-disk format had `embedding`, `enrolledAt`, `source` at the
+  // profile's top level (v1). We try the v2 shape first; if `voiceprints` is
+  // missing we wrap the three legacy fields into a single-element array so
+  // the rest of the app never sees the v1 shape. Mirrors `migrateProfile` in
+  // src/pipeline/speakers.ts.
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+
+    // v2 path
+    if let voiceprints = try container.decodeIfPresent([Voiceprint].self, forKey: .voiceprints) {
+      self.voiceprints = voiceprints
+      return
+    }
+
+    // v1 fallback: reconstruct a single Voiceprint from the legacy flat fields
+    let embedding = try container.decode([Double].self, forKey: .legacyEmbedding)
+    let enrolledAt = try container.decode(String.self, forKey: .legacyEnrolledAt)
+    let source = try container.decode(String.self, forKey: .legacySource)
+    self.voiceprints = [
+      Voiceprint(id: enrolledAt, embedding: embedding, enrolledAt: enrolledAt, source: source)
+    ]
+  }
+
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(voiceprints, forKey: .voiceprints)
+  }
+
+  private enum CodingKeys: String, CodingKey {
+    case voiceprints
+    // Legacy v1 field names
+    case legacyEmbedding = "embedding"
+    case legacyEnrolledAt = "enrolledAt"
+    case legacySource = "source"
+  }
 }
 
 struct SpeakerStore: Codable {
   var version: Int
   var speakers: [String: SpeakerProfile]
 
-  static let empty = SpeakerStore(version: 1, speakers: [:])
+  static let empty = SpeakerStore(version: 2, speakers: [:])
 }
 
 // MARK: - On-disk locations

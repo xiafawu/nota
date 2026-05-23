@@ -57,8 +57,12 @@ struct ContentView: View {
       MainPaneView(
         content: mainContent,
         isDropTargeted: $model.isDropTargeted,
+        speakerChips: $model.speakerChips,
         onDropURL: { url in
           model.accept(url)
+        },
+        onRename: { label, newName in
+          model.renameChip(label: label, newName: newName)
         }
       )
       .navigationSplitViewColumnWidth(min: Metrics.detailMin, ideal: Metrics.detailIdeal)
