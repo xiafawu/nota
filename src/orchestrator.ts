@@ -285,15 +285,29 @@ async function identifySpeakers(
 
       // Only enroll labels the user typed fresh — tentative confirmations
       // (`y` to existing candidate) reuse the existing profile without
-      // overwriting its embedding.
+      // touching its voiceprints.
+      //
+      // V2 pointer model: a fresh enrollment APPENDS a voiceprint to the
+      // named profile (creating it if missing). If the user types an
+      // existing name for a different label (e.g. drift produced a new
+      // diarizer cluster the user identifies as the same person), this is
+      // the drift-capture path — append rather than overwrite, so the
+      // original voiceprint remains intact.
       for (const [label, name] of Object.entries(enroll)) {
         const embedding = merged[label] ?? embeddings[label];
-        if (embedding) {
-          profiles.speakers[name] = {
-            embedding,
-            enrolledAt: new Date().toISOString(),
-            source: path.basename(inputPath),
-          };
+        if (!embedding) continue;
+        const now = new Date().toISOString();
+        const voiceprint = {
+          id: now,
+          embedding,
+          enrolledAt: now,
+          source: path.basename(inputPath),
+        };
+        const existing = profiles.speakers[name];
+        if (existing) {
+          existing.voiceprints.push(voiceprint);
+        } else {
+          profiles.speakers[name] = { voiceprints: [voiceprint] };
         }
       }
       if (Object.keys(enroll).length > 0) {

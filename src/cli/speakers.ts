@@ -4,6 +4,7 @@ import {
   saveProfiles,
   type SpeakerProfile,
   type SpeakerStore,
+  type Voiceprint,
 } from "../pipeline/speakers.js";
 
 export interface SpeakerCommandOptions {
@@ -12,28 +13,6 @@ export interface SpeakerCommandOptions {
 
 function resolveStorePath(options?: SpeakerCommandOptions): string {
   return options?.storePath ?? DEFAULT_SPEAKERS_FILE;
-}
-
-function l2Norm(vec: number[]): number {
-  let sum = 0;
-  for (const v of vec) sum += v * v;
-  return Math.sqrt(sum);
-}
-
-function normalize(vec: number[]): number[] {
-  const norm = l2Norm(vec);
-  if (norm === 0) return vec.slice();
-  return vec.map((v) => v / norm);
-}
-
-export function averageEmbeddings(a: number[], b: number[]): number[] {
-  if (a.length !== b.length) {
-    throw new Error(
-      `Cannot average embeddings of different lengths (${a.length} vs ${b.length})`,
-    );
-  }
-  const summed = a.map((value, index) => (value + b[index]) / 2);
-  return normalize(summed);
 }
 
 function requireProfile(
@@ -47,9 +26,33 @@ function requireProfile(
   return profile;
 }
 
+/**
+ * Locate the (name, voiceprint, index) tuple for a given voiceprint id by
+ * scanning every profile. Voiceprint ids are ISO timestamps issued at
+ * enrollment, so they are globally unique across the store under normal
+ * usage; first hit wins. Returns `null` so callers can craft a targeted
+ * error message instead of throwing here.
+ */
+function findVoiceprint(
+  store: SpeakerStore,
+  vpId: string,
+): { name: string; voiceprint: Voiceprint; index: number } | null {
+  for (const [name, profile] of Object.entries(store.speakers)) {
+    const index = profile.voiceprints.findIndex((vp) => vp.id === vpId);
+    if (index >= 0) {
+      return { name, voiceprint: profile.voiceprints[index], index };
+    }
+  }
+  return null;
+}
+
 export async function listSpeakers(
   options?: SpeakerCommandOptions,
 ): Promise<void> {
+  // One row per voiceprint: name \t vp-id \t enrolledAt \t source \t dim.
+  // `reassign` operates on voiceprint id, so the id has to be visible here.
+  // Name repeats across rows when a profile holds multiple voiceprints — the
+  // tab format stays grep/awk-friendly without inventing nested formatting.
   const store = await loadProfiles(resolveStorePath(options));
   const entries = Object.entries(store.speakers);
   if (entries.length === 0) {
@@ -57,13 +60,23 @@ export async function listSpeakers(
     return;
   }
   for (const [name, profile] of entries) {
-    const line = [
-      name,
-      profile.enrolledAt,
-      profile.source,
-      String(profile.embedding.length),
-    ].join("\t");
-    process.stdout.write(`${line}\n`);
+    if (profile.voiceprints.length === 0) {
+      // Defensive: an empty-voiceprint profile shouldn't persist after any
+      // CLI mutation, but if one slipped in (manual edit), still surface it
+      // so the user can clean up.
+      process.stdout.write(`${name}\t\t\t\t0\n`);
+      continue;
+    }
+    for (const vp of profile.voiceprints) {
+      const line = [
+        name,
+        vp.id,
+        vp.enrolledAt,
+        vp.source,
+        String(vp.embedding.length),
+      ].join("\t");
+      process.stdout.write(`${line}\n`);
+    }
   }
 }
 
@@ -114,15 +127,76 @@ export async function mergeSpeakers(
   const store = await loadProfiles(storePath);
   const srcProfile = requireProfile(store, src);
   const dstProfile = requireProfile(store, dst);
-  const merged = averageEmbeddings(srcProfile.embedding, dstProfile.embedding);
-  store.speakers[dst] = {
-    embedding: merged,
-    enrolledAt: dstProfile.enrolledAt,
-    source: dstProfile.source,
-  };
+
+  // Concat voiceprints, dedup by id so a no-op re-merge (or migration race)
+  // can't double-count the same enrollment. Order preserved: dst first,
+  // then src — keeps the original dst voiceprints addressable at their
+  // existing indices in any UI that displays them.
+  const seen = new Set<string>();
+  const merged: Voiceprint[] = [];
+  for (const vp of [...dstProfile.voiceprints, ...srcProfile.voiceprints]) {
+    if (seen.has(vp.id)) continue;
+    seen.add(vp.id);
+    merged.push(vp);
+  }
+
+  store.speakers[dst] = { voiceprints: merged };
   delete store.speakers[src];
   await saveProfiles(store, storePath);
-  process.stderr.write(`Merged "${src}" into "${dst}".\n`);
+  process.stderr.write(
+    `Merged "${src}" into "${dst}" (${merged.length} voiceprint${merged.length === 1 ? "" : "s"}).\n`,
+  );
+}
+
+export async function reassignVoiceprint(
+  vpId: string,
+  newName: string,
+  options?: SpeakerCommandOptions,
+): Promise<void> {
+  // Pointer-level fix for the "silent mis-attribute" failure mode: one
+  // voiceprint was filed under the wrong name. Move just that voiceprint
+  // to the correct name without touching any embeddings.
+  const storePath = resolveStorePath(options);
+  const store = await loadProfiles(storePath);
+
+  const found = findVoiceprint(store, vpId);
+  if (!found) {
+    throw new Error(`Voiceprint "${vpId}" not found.`);
+  }
+  const { name: srcName, voiceprint, index } = found;
+  if (srcName === newName) {
+    process.stderr.write(
+      `Voiceprint "${vpId}" already belongs to "${newName}".\n`,
+    );
+    return;
+  }
+
+  // Remove from source first so a destination-collision throw doesn't leave
+  // the store in a partially-mutated state (only relevant if we later add
+  // dst-side validation that can throw).
+  store.speakers[srcName].voiceprints.splice(index, 1);
+  if (store.speakers[srcName].voiceprints.length === 0) {
+    // Last voiceprint left the profile — drop the name entirely so `list`
+    // doesn't show a ghost profile with zero voiceprints.
+    delete store.speakers[srcName];
+  }
+
+  const dstProfile = store.speakers[newName];
+  if (dstProfile) {
+    // Append. If id collides with an existing dst voiceprint (extremely
+    // unlikely — ISO timestamp at ms resolution from same instant), skip
+    // the move silently to keep dst dedup invariant.
+    if (!dstProfile.voiceprints.some((vp) => vp.id === vpId)) {
+      dstProfile.voiceprints.push(voiceprint);
+    }
+  } else {
+    store.speakers[newName] = { voiceprints: [voiceprint] };
+  }
+
+  await saveProfiles(store, storePath);
+  process.stderr.write(
+    `Reassigned voiceprint "${vpId}" from "${srcName}" to "${newName}".\n`,
+  );
 }
 
 export async function showSpeaker(
@@ -133,10 +207,14 @@ export async function showSpeaker(
   const profile = requireProfile(store, name);
   const view = {
     name,
-    enrolledAt: profile.enrolledAt,
-    source: profile.source,
-    embeddingLength: profile.embedding.length,
-    embeddingPreview: profile.embedding.slice(0, 8),
+    voiceprintCount: profile.voiceprints.length,
+    voiceprints: profile.voiceprints.map((vp) => ({
+      id: vp.id,
+      enrolledAt: vp.enrolledAt,
+      source: vp.source,
+      embeddingLength: vp.embedding.length,
+      embeddingPreview: vp.embedding.slice(0, 8),
+    })),
   };
   process.stdout.write(`${JSON.stringify(view, null, 2)}\n`);
 }

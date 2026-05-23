@@ -36,15 +36,78 @@ export const DEFAULT_LEGACY_SPEAKERS_FILE = LEGACY_SPEAKERS_FILE;
 
 const QTA_EXTENSIONS = new Set([".qta"]);
 
-export interface SpeakerProfile {
+// Schema v2: a profile is a *pointer* — one name maps to N voiceprints
+// (one per enrollment event). Match scores a new cluster against every
+// voiceprint under each name and takes the max, so adding voiceprints can
+// only help recall (no centroid averaging, no drift compounding). Schema
+// v1 (single top-level embedding) is migrated in `loadProfiles`.
+export interface Voiceprint {
+  /** ISO timestamp of enrollment — also serves as stable CLI handle. */
+  id: string;
   embedding: number[];
   enrolledAt: string;
   source: string;
 }
 
+export interface SpeakerProfile {
+  voiceprints: Voiceprint[];
+}
+
 export interface SpeakerStore {
   version: number;
   speakers: Record<string, SpeakerProfile>;
+}
+
+// Internal types only used during migration from v1 on-disk format.
+interface LegacySpeakerProfile {
+  embedding: number[];
+  enrolledAt: string;
+  source: string;
+}
+interface LegacySpeakerStore {
+  version?: number;
+  speakers: Record<string, LegacySpeakerProfile | SpeakerProfile>;
+}
+
+const STORE_VERSION = 2;
+
+function isLegacyProfile(
+  profile: LegacySpeakerProfile | SpeakerProfile,
+): profile is LegacySpeakerProfile {
+  return (
+    Array.isArray((profile as LegacySpeakerProfile).embedding) &&
+    !Array.isArray((profile as SpeakerProfile).voiceprints)
+  );
+}
+
+/**
+ * Promote a v1 single-embedding profile into a v2 voiceprints array. The
+ * single legacy embedding becomes voiceprint #1 with id = enrolledAt; the
+ * profile remains addressable by the same name (callers see only the v2
+ * shape after `loadProfiles`).
+ */
+function migrateProfile(
+  profile: LegacySpeakerProfile | SpeakerProfile,
+): SpeakerProfile {
+  if (!isLegacyProfile(profile)) return profile;
+  return {
+    voiceprints: [
+      {
+        id: profile.enrolledAt,
+        embedding: profile.embedding,
+        enrolledAt: profile.enrolledAt,
+        source: profile.source,
+      },
+    ],
+  };
+}
+
+function migrateStore(raw: LegacySpeakerStore): SpeakerStore {
+  const speakers: Record<string, SpeakerProfile> = {};
+  for (const [name, profile] of Object.entries(raw.speakers ?? {})) {
+    speakers[name] = migrateProfile(profile);
+  }
+  return { version: STORE_VERSION, speakers };
 }
 
 export function cosineSimilarity(a: number[], b: number[]): number {
@@ -63,19 +126,21 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 export async function loadProfiles(
   filePath: string = SPEAKERS_FILE,
 ): Promise<SpeakerStore> {
+  // Always returns the v2 shape; v1 stores are migrated in-memory and
+  // re-serialized as v2 on next `saveProfiles`. We never persist a hybrid.
   try {
     const data = await readFile(filePath, "utf-8");
-    return JSON.parse(data);
+    return migrateStore(JSON.parse(data) as LegacySpeakerStore);
   } catch {
     if (filePath === SPEAKERS_FILE) {
       try {
         const legacyData = await readFile(LEGACY_SPEAKERS_FILE, "utf-8");
-        return JSON.parse(legacyData);
+        return migrateStore(JSON.parse(legacyData) as LegacySpeakerStore);
       } catch {
-        return { version: 1, speakers: {} };
+        return { version: STORE_VERSION, speakers: {} };
       }
     }
-    return { version: 1, speakers: {} };
+    return { version: STORE_VERSION, speakers: {} };
   }
 }
 
@@ -197,12 +262,22 @@ export function matchSpeakers(
   // Anything in [LOW_CONFIDENCE, SIMILARITY_THRESHOLD) is tentative — still a
   // candidate, but routed through a confirmation prompt instead of silent
   // auto-claim.
+  //
+  // For each name, score = MAX cosine across that name's voiceprints. Max
+  // (not mean) is the right aggregation for the pointer model: any one
+  // voiceprint resembling the cluster centroid is enough evidence — a stale
+  // voiceprint can't drag a fresh one's score down.
   const candidates: { label: string; name: string; score: number }[] = [];
   for (const [label, embedding] of Object.entries(merged)) {
     for (const [name, profile] of profileEntries) {
-      const score = cosineSimilarity(embedding, profile.embedding);
-      if (score >= LOW_CONFIDENCE) {
-        candidates.push({ label, name, score });
+      if (profile.voiceprints.length === 0) continue;
+      let best = -Infinity;
+      for (const vp of profile.voiceprints) {
+        const s = cosineSimilarity(embedding, vp.embedding);
+        if (s > best) best = s;
+      }
+      if (best >= LOW_CONFIDENCE) {
+        candidates.push({ label, name, score: best });
       }
     }
   }

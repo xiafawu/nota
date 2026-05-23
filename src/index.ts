@@ -12,6 +12,7 @@ import {
   deleteSpeaker,
   listSpeakers,
   mergeSpeakers,
+  reassignVoiceprint,
   renameSpeaker,
   showSpeaker,
 } from "./cli/speakers.js";
@@ -173,6 +174,24 @@ speakers
   .action(async (src: string, dst: string) => {
     try {
       await mergeSpeakers(src, dst);
+    } catch (error) {
+      handleSpeakerError(error);
+    }
+  });
+
+speakers
+  .command("reassign")
+  .description(
+    "Move a single voiceprint from its current speaker to another (creates the destination if missing)",
+  )
+  .argument(
+    "<vp-id>",
+    "Voiceprint id (the ISO timestamp shown by `nota speakers list`)",
+  )
+  .argument("<new-name>", "Destination speaker name")
+  .action(async (vpId: string, newName: string) => {
+    try {
+      await reassignVoiceprint(vpId, newName);
     } catch (error) {
       handleSpeakerError(error);
     }
