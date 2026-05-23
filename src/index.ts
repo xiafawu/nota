@@ -16,6 +16,7 @@ import {
   renameSpeaker,
   showSpeaker,
 } from "./cli/speakers.js";
+import { enrollSpeaker, EnrollError } from "./cli/enroll.js";
 
 const program = new Command();
 
@@ -206,6 +207,29 @@ speakers
       await showSpeaker(name);
     } catch (error) {
       handleSpeakerError(error);
+    }
+  });
+
+program
+  .command("enroll")
+  .description(
+    "Enroll a speaker from a history record into the voiceprint store",
+  )
+  .argument("<history-id>", "History record id or unique prefix")
+  .argument("<speaker-label>", "Speaker label in the history record (e.g. 'Speaker 1')")
+  .argument("<name>", "Name to enroll the speaker under")
+  .action(async (historyId: string, label: string, name: string) => {
+    try {
+      await enrollSpeaker(historyId, label, name);
+    } catch (error) {
+      if (error instanceof EnrollError) {
+        console.error(`\nError: ${error.message}`);
+        process.exit(error.exitCode);
+      }
+      console.error(
+        `\nError: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      process.exit(1);
     }
   });
 
