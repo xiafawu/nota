@@ -9,3 +9,9 @@ audio/
 # macOS
 .DS_Store
 **/.DS_Store
+
+# Local dev / review artifacts (per-session, not commit-worthy)
+.claude/reviews/
+.claude/worktrees/
+.claude/handoffs/
+.playwright-mcp/

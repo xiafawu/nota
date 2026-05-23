@@ -8,7 +8,18 @@ func rtfData(from attributedText: NSAttributedString) throws -> Data {
   )
 }
 
-func renderMarkdownAsRichText(_ markdown: String) -> NSAttributedString {
+/// Render markdown to a rich `NSAttributedString`.
+///
+/// - Parameters:
+///   - markdown: Raw markdown body.
+///   - overrides: Optional label→name substitution map. When a transcript
+///     line's speaker label matches a key, the display name in the rendered
+///     string uses the mapped value instead of the original label. The body
+///     on disk is **never** mutated — substitution is purely at render time.
+func renderMarkdownAsRichText(
+  _ markdown: String,
+  overrides: [String: String] = [:]
+) -> NSAttributedString {
   let output = NSMutableAttributedString()
   let normalized = markdown.replacingOccurrences(of: "\r\n", with: "\n")
   let lines = normalized.components(separatedBy: "\n")
@@ -67,7 +78,7 @@ func renderMarkdownAsRichText(_ markdown: String) -> NSAttributedString {
       continue
     }
 
-    if appendTranscriptLine(trimmedLine, to: output) {
+    if appendTranscriptLine(trimmedLine, to: output, overrides: overrides) {
       continue
     }
 
@@ -111,7 +122,11 @@ private func appendBulletLine(_ line: String, to output: NSMutableAttributedStri
   output.append(NSAttributedString(string: "\n"))
 }
 
-private func appendTranscriptLine(_ line: String, to output: NSMutableAttributedString) -> Bool {
+private func appendTranscriptLine(
+  _ line: String,
+  to output: NSMutableAttributedString,
+  overrides: [String: String] = [:]
+) -> Bool {
   let paragraph = NSMutableParagraphStyle()
   paragraph.paragraphSpacing = Metrics.paraSpacingTranscript
   paragraph.lineSpacing = Metrics.lineSpacingDefault
@@ -120,8 +135,12 @@ private func appendTranscriptLine(_ line: String, to output: NSMutableAttributed
   // and carry it as a `.notaTimestamp` attribute for the hover gutter.
   let speakerPattern = #"^\[([0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?)\] \*\*(.+?):\*\* (.*)$"#
   if let groups = matchTranscript(speakerPattern, in: line) {
+    let rawLabel = groups[2]
+    // Apply render-time substitution: use override name when present, original
+    // label otherwise. Body on disk is never mutated.
+    let displayLabel = overrides[rawLabel] ?? rawLabel
     let start = output.length
-    output.append(NSAttributedString(string: "\(groups[2]): ", attributes: [
+    output.append(NSAttributedString(string: "\(displayLabel): ", attributes: [
       .font: NSFonts.speaker,
       .foregroundColor: NSColor.labelColor,
       .paragraphStyle: paragraph

@@ -232,12 +232,18 @@ struct SpeakersSettingsView: View {
         .lineLimit(1)
         .truncationMode(.middle)
       HStack(spacing: 6) {
-        Text(formatEnrolledAt(entry.profile.enrolledAt))
-        if !entry.profile.source.isEmpty {
+        // Show count + first voiceprint's enrolledAt / source for the row
+        let count = entry.profile.voiceprints.count
+        Text("\(count) voiceprint\(count == 1 ? "" : "s")")
+        if let first = entry.profile.voiceprints.first {
           Text("•")
-          Text(URL(fileURLWithPath: entry.profile.source).lastPathComponent)
-            .lineLimit(1)
-            .truncationMode(.middle)
+          Text(formatEnrolledAt(first.enrolledAt))
+          if !first.source.isEmpty {
+            Text("•")
+            Text(URL(fileURLWithPath: first.source).lastPathComponent)
+              .lineLimit(1)
+              .truncationMode(.middle)
+          }
         }
       }
       .font(.caption2)
@@ -280,21 +286,29 @@ struct SpeakersSettingsView: View {
       }
 
       Section("Profile") {
-        LabeledContent("Enrolled") {
-          Text(formatEnrolledAt(entry.profile.enrolledAt))
-        }
-        LabeledContent("Source") {
-          Text(entry.profile.source.isEmpty ? "Unknown" : entry.profile.source)
-            .font(.caption)
-            .foregroundStyle(.secondary)
-            .lineLimit(2)
-            .truncationMode(.middle)
-            .textSelection(.enabled)
-        }
-        LabeledContent("Embedding") {
-          Text("\(entry.profile.embedding.count) dims")
+        // TODO: Add a per-voiceprint list UI (out of scope for V1)
+        LabeledContent("Voiceprints") {
+          Text("\(entry.profile.voiceprints.count)")
             .font(.callout)
             .foregroundStyle(.secondary)
+        }
+        if let first = entry.profile.voiceprints.first {
+          LabeledContent("First Enrolled") {
+            Text(formatEnrolledAt(first.enrolledAt))
+          }
+          LabeledContent("Source") {
+            Text(first.source.isEmpty ? "Unknown" : first.source)
+              .font(.caption)
+              .foregroundStyle(.secondary)
+              .lineLimit(2)
+              .truncationMode(.middle)
+              .textSelection(.enabled)
+          }
+          LabeledContent("Embedding") {
+            Text("\(first.embedding.count) dims")
+              .font(.callout)
+              .foregroundStyle(.secondary)
+          }
         }
       }
 
