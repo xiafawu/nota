@@ -42,8 +42,8 @@ describe("eagle", () => {
       expect(profile.length).toBeGreaterThan(0);
 
       const scores = recognize(KEY!, { "Speaker 1": pcm }, [profile]);
-      expect(scores["Speaker 1"].index).toBe(0);
-      expect(scores["Speaker 1"].score).toBeGreaterThan(0.5);
+      expect(scores["Speaker 1"]).toHaveLength(1);
+      expect(scores["Speaker 1"][0]).toBeGreaterThan(0.5);
     } finally {
       await rm(dir, { recursive: true, force: true });
     }

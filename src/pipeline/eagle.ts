@@ -42,16 +42,18 @@ export async function enrollProfile(
 
 /**
  * Score each label's PCM against a flat list of enrolled profiles. Feeds
- * chunks of >= minProcessSamples and means the per-profile scores, then
- * returns the best { index, score } per label. `index` points into `profiles`.
- * Labels with too little voiced audio to score are omitted.
+ * chunks of >= minProcessSamples and means the per-profile scores, returning
+ * the full per-profile score vector for each label (index-aligned to
+ * `profiles`). The full vector — not just the best — is needed so the caller
+ * can resolve label↔name conflicts globally (claim-once). Labels with too
+ * little voiced audio to score at all are omitted.
  */
 export function recognize(
   accessKey: string,
   pcmByLabel: Record<string, Int16Array>,
   profiles: Uint8Array[],
-): Record<string, { index: number; score: number }> {
-  const out: Record<string, { index: number; score: number }> = {};
+): Record<string, number[]> {
+  const out: Record<string, number[]> = {};
   if (profiles.length === 0) return out;
   const eagle = new Eagle(accessKey);
   try {
@@ -66,16 +68,7 @@ export function recognize(
         n++;
       }
       if (n === 0) continue;
-      let bestIdx = 0;
-      let best = -Infinity;
-      for (let p = 0; p < profiles.length; p++) {
-        const mean = sums[p] / n;
-        if (mean > best) {
-          best = mean;
-          bestIdx = p;
-        }
-      }
-      out[label] = { index: bestIdx, score: best };
+      out[label] = sums.map((s) => s / n);
     }
     return out;
   } finally {
