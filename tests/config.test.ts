@@ -108,4 +108,18 @@ describe("loadConfig", () => {
     const config = loadConfig({ history: false });
     expect(config.history).toBe(false);
   });
+
+  it("reads PICOVOICE_ACCESS_KEY into config", () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.ASSEMBLYAI_API_KEY = "aai-test";
+    process.env.PICOVOICE_ACCESS_KEY = "pv-test";
+    expect(loadConfig({}).picovoiceAccessKey).toBe("pv-test");
+  });
+
+  it("leaves picovoiceAccessKey undefined when unset", () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.ASSEMBLYAI_API_KEY = "aai-test";
+    delete process.env.PICOVOICE_ACCESS_KEY;
+    expect(loadConfig({}).picovoiceAccessKey).toBeUndefined();
+  });
 });

@@ -23,6 +23,8 @@ export interface AppConfig {
   numSpeakers?: number;
   identify: boolean;
   history: boolean;
+  /** Picovoice AccessKey for on-device Eagle speaker recognition (identity). */
+  picovoiceAccessKey?: string;
 }
 
 function parseProvider(provider?: string): Provider {
@@ -69,5 +71,6 @@ export function loadConfig(options: CLIOptions): AppConfig {
     numSpeakers: options.numSpeakers,
     identify: options.identify ?? false,
     history: options.history ?? true,
+    picovoiceAccessKey: process.env.PICOVOICE_ACCESS_KEY,
   };
 }
