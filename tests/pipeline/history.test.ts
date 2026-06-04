@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -8,6 +8,8 @@ import {
   formatHistoryList,
   listHistoryRecords,
   loadHistoryRecord,
+  speakerClipPath,
+  writeSpeakerClip,
 } from "../../src/pipeline/history.js";
 
 describe("history", () => {
@@ -145,5 +147,38 @@ describe("history", () => {
       historyDir,
     );
     expect(record.capturedAt).toBeNull();
+  });
+
+  it("writes a per-speaker clip under <id>.assets and returns a relative pointer", async () => {
+    const rel = await writeSpeakerClip(
+      "20260604-000000Z-abcd1234",
+      "Speaker 1",
+      new Int16Array([1, 2, 3]),
+      historyDir,
+    );
+    expect(rel).toBe("20260604-000000Z-abcd1234.assets/Speaker 1.pcm");
+    const abs = speakerClipPath("20260604-000000Z-abcd1234", "Speaker 1", historyDir);
+    const buf = await readFile(abs);
+    expect(buf.length).toBe(6); // 3 Int16 samples = 6 bytes
+  });
+
+  it("persists speakerClipsPcm and records relative clip pointers on the record", async () => {
+    const record = await createHistoryRecord(
+      {
+        sourcePath: "/tmp/clips.m4a",
+        provider: "assemblyai",
+        options: { diarize: true, identify: true, model: "gpt-4o" },
+        durationMinutes: 4,
+        transcriptText: "hi",
+        segments: [],
+        speakerClipsPcm: { "Speaker 1": new Int16Array([4, 5]) },
+      },
+      historyDir,
+    );
+    expect(record.speakerClips?.["Speaker 1"]).toBe(`${record.id}.assets/Speaker 1.pcm`);
+    const loaded = await loadHistoryRecord(record.id, historyDir);
+    expect(loaded.speakerClips?.["Speaker 1"]).toBe(`${record.id}.assets/Speaker 1.pcm`);
+    const buf = await readFile(speakerClipPath(record.id, "Speaker 1", historyDir));
+    expect(buf.length).toBe(4); // 2 Int16 samples
   });
 });
