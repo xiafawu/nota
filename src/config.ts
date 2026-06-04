@@ -10,6 +10,7 @@ export interface CLIOptions {
   numSpeakers?: number;
   identify?: boolean;
   history?: boolean;
+  force?: boolean;
 }
 
 export interface AppConfig {
@@ -23,6 +24,8 @@ export interface AppConfig {
   numSpeakers?: number;
   identify: boolean;
   history: boolean;
+  /** Reprocess even when an identical audio file is already in history. */
+  force: boolean;
 }
 
 function parseProvider(provider?: string): Provider {
@@ -69,5 +72,6 @@ export function loadConfig(options: CLIOptions): AppConfig {
     numSpeakers: options.numSpeakers,
     identify: options.identify ?? false,
     history: options.history ?? true,
+    force: options.force ?? false,
   };
 }

@@ -14,8 +14,9 @@ import { mergeTranscriptions } from "./pipeline/merge.js";
 import { summarizeTranscript } from "./pipeline/summarize.js";
 import { writeOutput, defaultOutputPath } from "./pipeline/write.js";
 import { getAudioDuration } from "./utils/ffmpeg.js";
+import { hashFile } from "./utils/audio-hash.js";
 import { resolveCaptureDate } from "./utils/capture-date.js";
-import { unlink } from "node:fs/promises";
+import { access, unlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
@@ -23,6 +24,7 @@ import { transcribeWithAssemblyAI } from "./pipeline/assemblyai.js";
 import {
   completeHistoryRecord,
   createHistoryRecord,
+  findHistoryByHash,
   type HistoryOptions,
 } from "./pipeline/history.js";
 import {
@@ -78,15 +80,95 @@ export async function runPipeline(options: PipelineOptions): Promise<string> {
   }
   spinner?.succeed("Input validated");
 
+  // 1c. Duplicate detection. Hash the raw bytes once and, unless --force or
+  //     --no-history is set, short-circuit to the existing summary when this
+  //     exact file was already processed. Done here in the shared funnel so it
+  //     runs before any paid transcription call in either provider branch.
+  //
+  //     Note: there is no cross-process lock, so two concurrent invocations of
+  //     the same file can both miss and both transcribe. That's an accepted
+  //     limitation for a single-user CLI; the access() check below is likewise
+  //     advisory (the resolved path is only printed, never read back by us).
+  let contentHash: string | undefined;
+  if (config.history) {
+    spinner = log(verbose, "Checking for duplicate audio...");
+    try {
+      contentHash = await hashFile(inputPath);
+    } catch {
+      contentHash = undefined;
+    }
+
+    if (!contentHash) {
+      // Hashing failed even though validateInput could access the file (e.g. a
+      // transient read error). Don't abort — transcription can still run and
+      // the transcript is still saved to history — but the run can't be
+      // deduplicated and won't be matchable by future runs, so say so rather
+      // than claiming "no duplicate found".
+      spinner?.warn("Could not hash audio — skipping duplicate check");
+      console.error(
+        "Warning: could not hash audio; this run is not deduplicated and a " +
+          "future run of the same file won't recognize it as a duplicate.",
+      );
+    } else {
+      if (!config.force) {
+        const duplicateOutput = await findDuplicateOutput(contentHash);
+        if (duplicateOutput) {
+          spinner?.succeed("Duplicate audio detected");
+          console.error(
+            `Duplicate audio: matches history ${duplicateOutput.id} ` +
+              `(${duplicateOutput.sourceName}). Reusing existing summary ` +
+              `(skipping transcription):\n` +
+              `  ${duplicateOutput.outputPath}\n` +
+              `Pass --force to transcribe and summarize it again.`,
+          );
+          return duplicateOutput.outputPath;
+        }
+      }
+      spinner?.succeed("No duplicate found");
+    }
+  }
+
   if (config.provider === "assemblyai") {
     return runAssemblyAIPipeline(
       inputPath,
       outputPath,
       durationMinutes,
       config,
+      contentHash,
     );
   }
-  return runWhisperPipeline(inputPath, outputPath, durationMinutes, config);
+  return runWhisperPipeline(
+    inputPath,
+    outputPath,
+    durationMinutes,
+    config,
+    contentHash,
+  );
+}
+
+/**
+ * Resolve a prior, reusable summary for an audio file by content hash.
+ * Only a `completed` record whose output file still exists on disk counts —
+ * a transcribed-but-failed run or a record whose `.md` was deleted should be
+ * reprocessed, not silently skipped. Returns the matched id/name/outputPath
+ * or `null` when there is nothing safe to reuse.
+ */
+async function findDuplicateOutput(
+  contentHash: string,
+): Promise<{ id: string; sourceName: string; outputPath: string } | null> {
+  const prior = await findHistoryByHash(contentHash);
+  if (!prior || prior.status !== "completed" || !prior.outputPath) {
+    return null;
+  }
+  const outputExists = await access(prior.outputPath)
+    .then(() => true)
+    .catch(() => false);
+  if (!outputExists) return null;
+  return {
+    id: prior.id,
+    sourceName: prior.sourceName,
+    outputPath: prior.outputPath,
+  };
 }
 
 async function runAssemblyAIPipeline(
@@ -94,6 +176,7 @@ async function runAssemblyAIPipeline(
   outputPath: string,
   durationMinutes: number,
   config: AppConfig,
+  contentHash: string | undefined,
 ): Promise<string> {
   const verbose = config.verbose;
 
@@ -126,6 +209,7 @@ async function runAssemblyAIPipeline(
       durationMinutes,
       config,
       localAudioPath,
+      contentHash,
     );
   } finally {
     if (localAudioPath) {
@@ -140,6 +224,7 @@ async function runAssemblyAIPipelineInner(
   durationMinutes: number,
   config: AppConfig,
   localAudioPath: string | null,
+  contentHash: string | undefined,
 ): Promise<string> {
   const verbose = config.verbose;
 
@@ -175,6 +260,7 @@ async function runAssemblyAIPipelineInner(
       segments,
       outputPath,
       capturedAt: capturedAt ? capturedAt.toISOString() : null,
+      contentHash,
     });
     historyId = history.id;
     spinner?.succeed(`History saved as ${history.id}`);
@@ -332,6 +418,7 @@ async function runWhisperPipeline(
   outputPath: string,
   durationMinutes: number,
   config: AppConfig,
+  contentHash: string | undefined,
 ): Promise<string> {
   const verbose = config.verbose;
 
@@ -401,6 +488,7 @@ async function runWhisperPipeline(
       segments: merged.segments,
       outputPath,
       capturedAt: capturedAt ? capturedAt.toISOString() : null,
+      contentHash,
     });
     historyId = history.id;
     spinner?.succeed(`History saved as ${history.id}`);
