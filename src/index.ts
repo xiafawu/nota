@@ -19,6 +19,7 @@ import {
 import { enrollSpeaker, EnrollError } from "./cli/enroll.js";
 import { printConfig } from "./cli/config.js";
 import { applyEnvFile } from "./utils/env-file.js";
+import { summarizeHistory } from "./cli/summarize-history.js";
 
 const program = new Command();
 
@@ -114,6 +115,30 @@ history
     try {
       const record = await loadHistoryRecord(id);
       console.log(JSON.stringify(record, null, 2));
+    } catch (error) {
+      console.error(
+        `\nError: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      process.exit(1);
+    }
+  });
+
+history
+  .command("summarize")
+  .description(
+    "Summarize a saved transcript (recovers a transcribed-but-unsummarized record without re-transcribing)",
+  )
+  .argument("<id>", "History record id or unique prefix")
+  .option("-m, --model <model>", "GPT model to use for summarization", "gpt-4o")
+  .option("-o, --output <path>", "Output markdown path")
+  .option("--force", "Re-summarize even if the record is already completed")
+  .action(async (id: string, options) => {
+    try {
+      await summarizeHistory(id, {
+        model: options.model,
+        output: options.output,
+        force: options.force,
+      });
     } catch (error) {
       console.error(
         `\nError: ${error instanceof Error ? error.message : String(error)}`,
