@@ -17,6 +17,8 @@ import {
   showSpeaker,
 } from "./cli/speakers.js";
 import { enrollSpeaker, EnrollError } from "./cli/enroll.js";
+import { printConfig } from "./cli/config.js";
+import { applyEnvFile } from "./utils/env-file.js";
 
 const program = new Command();
 
@@ -232,5 +234,16 @@ program
       process.exit(1);
     }
   });
+
+program
+  .command("config")
+  .description(
+    "Show which API keys resolve and from where (masked value, secrets never printed)",
+  )
+  .action(printConfig);
+
+// Load ~/.nota/config once at bootstrap so every subcommand (run, history,
+// speakers, config) sees file-provided keys. Real env vars still win.
+applyEnvFile();
 
 program.parse();

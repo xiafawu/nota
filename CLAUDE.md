@@ -94,3 +94,13 @@ are written to stderr so stdout stays scriptable.
 - Environment variable: `ASSEMBLYAI_API_KEY` (required for default assemblyai provider)
 - Environment variable: `PICOVOICE_ACCESS_KEY` (required for `--identify` / speaker identity; free at https://console.picovoice.ai)
 - For `--provider whisper` only: Python 3.8+ with `pyannote.audio`, `HUGGINGFACE_TOKEN` (pyannote is used only for whisper-path diarization now, not speaker identity)
+
+### API-key config file
+
+Instead of exporting env vars, keys may be placed in `~/.nota/config` as a
+dotenv-style file (`KEY=VALUE`, one per line; `chmod 600`). Every `KEY=VALUE`
+line is loaded generically (no allowlist), so future providers like
+`GEMINI_API_KEY` work with zero code change. Real environment variables always
+override file values (the file only fills unset keys). Set `NOTA_ENV_FILE` to
+point at a different path. Run `nota config` to see which keys resolve and from
+where (values are masked; secrets are never printed).

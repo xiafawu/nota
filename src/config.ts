@@ -1,3 +1,5 @@
+import { applyEnvFile } from "./utils/env-file.js";
+
 export type Provider = "assemblyai" | "whisper";
 
 export interface CLIOptions {
@@ -36,6 +38,9 @@ function parseProvider(provider?: string): Provider {
 }
 
 export function loadConfig(options: CLIOptions): AppConfig {
+  // Fill unset API keys from ~/.nota/config before reading them (env wins).
+  applyEnvFile();
+
   const openaiApiKey = process.env.OPENAI_API_KEY;
   if (!openaiApiKey) {
     throw new Error(

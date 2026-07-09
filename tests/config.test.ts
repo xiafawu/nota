@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { loadConfig } from "../src/config.js";
 
 describe("loadConfig", () => {
@@ -6,6 +8,12 @@ describe("loadConfig", () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    // loadConfig now fills unset keys from ~/.nota/config; point the loader at
+    // a guaranteed-absent path so these tests stay hermetic on any machine.
+    process.env.NOTA_ENV_FILE = path.join(
+      tmpdir(),
+      "nota-config-absent-for-tests",
+    );
   });
 
   afterEach(() => {
