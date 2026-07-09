@@ -3,7 +3,7 @@ import {
   completeHistoryRecord,
   loadHistoryRecord,
 } from "../pipeline/history.js";
-import { summarizeTranscript } from "../pipeline/summarize.js";
+import { isGeminiModel, summarizeTranscript } from "../pipeline/summarize.js";
 import { defaultOutputPath, writeOutput } from "../pipeline/write.js";
 
 export interface SummarizeHistoryOptions {
@@ -29,14 +29,19 @@ export async function summarizeHistory(
     return existing;
   }
 
-  const apiKey = process.env.OPENAI_API_KEY;
+  const model = options?.model ?? record.options?.model ?? "gpt-4o";
+  const gemini = isGeminiModel(model);
+  const apiKey = gemini
+    ? process.env.GEMINI_API_KEY
+    : process.env.OPENAI_API_KEY;
   if (!apiKey) {
     throw new Error(
-      "OPENAI_API_KEY environment variable is required. Get one at https://platform.openai.com/api-keys",
+      gemini
+        ? "GEMINI_API_KEY environment variable is required for gemini models. Get one at https://aistudio.google.com/apikey"
+        : "OPENAI_API_KEY environment variable is required. Get one at https://platform.openai.com/api-keys",
     );
   }
 
-  const model = options?.model ?? record.options?.model ?? "gpt-4o";
   const segments =
     record.segments && record.segments.length > 0 ? record.segments : undefined;
 

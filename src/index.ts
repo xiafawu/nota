@@ -23,6 +23,13 @@ import { summarizeHistory } from "./cli/summarize-history.js";
 
 const program = new Command();
 
+// The top-level command and several subcommands (e.g. `history summarize`) both
+// define `-m, --model`. Without positional options, the parent's `-m` greedily
+// captures the flag before a subcommand sees it, so `nota history summarize <id>
+// -m gemini-2.5-flash` would silently fall back to the parent default (gpt-4o).
+// Positional options scope each `-m` to the command it follows.
+program.enablePositionalOptions();
+
 function parsePositiveInteger(value: string): number {
   const parsed = Number(value);
   if (!Number.isInteger(parsed) || parsed < 1) {

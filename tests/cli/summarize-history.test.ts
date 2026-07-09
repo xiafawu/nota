@@ -3,10 +3,13 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-// Mock the summarize module so no OpenAI request is ever made. The factory is
-// hoisted above the imports below by vitest, so summarizeHistory picks up the
-// spy rather than the real implementation.
-vi.mock("../../src/pipeline/summarize.js", () => ({
+// Mock the summarize module so no OpenAI/Gemini request is ever made. Only
+// summarizeTranscript is stubbed; the rest of the module (e.g. the pure
+// isGeminiModel used for provider routing) is preserved via importActual so the
+// factory does not blank it out. The factory is hoisted above the imports below
+// by vitest, so summarizeHistory picks up the spy rather than the real call.
+vi.mock("../../src/pipeline/summarize.js", async (importActual) => ({
+  ...(await importActual<typeof import("../../src/pipeline/summarize.js")>()),
   summarizeTranscript: vi.fn(),
 }));
 
@@ -49,12 +52,22 @@ function transcribedInput(
 let historyDir: string;
 let outputPath: string;
 let originalApiKey: string | undefined;
+let originalGeminiKey: string | undefined;
 let stderrSpy: ReturnType<typeof vi.spyOn>;
+
+function restoreKey(name: string, original: string | undefined): void {
+  if (original === undefined) {
+    delete process.env[name];
+  } else {
+    process.env[name] = original;
+  }
+}
 
 beforeEach(() => {
   historyDir = mkdtempSync(path.join(tmpdir(), "nota-summarize-history-"));
   outputPath = path.join(historyDir, "out.summary.md");
   originalApiKey = process.env.OPENAI_API_KEY;
+  originalGeminiKey = process.env.GEMINI_API_KEY;
   vi.mocked(summarizeTranscript).mockReset();
   vi.mocked(summarizeTranscript).mockResolvedValue(FIXED_SUMMARY);
   stderrSpy = vi
@@ -64,11 +77,8 @@ beforeEach(() => {
 
 afterEach(() => {
   stderrSpy.mockRestore();
-  if (originalApiKey === undefined) {
-    delete process.env.OPENAI_API_KEY;
-  } else {
-    process.env.OPENAI_API_KEY = originalApiKey;
-  }
+  restoreKey("OPENAI_API_KEY", originalApiKey);
+  restoreKey("GEMINI_API_KEY", originalGeminiKey);
   rmSync(historyDir, { recursive: true, force: true });
 });
 
@@ -131,6 +141,40 @@ describe("summarizeHistory", () => {
 
     expect(result).toBe(outputPath);
     expect(summarizeTranscript).toHaveBeenCalledTimes(1);
+  });
+
+  it("routes gemini-* models to GEMINI_API_KEY", async () => {
+    delete process.env.OPENAI_API_KEY; // prove it does not fall back to OpenAI
+    process.env.GEMINI_API_KEY = "gem-key";
+    const record = await createHistoryRecord(transcribedInput(), historyDir);
+
+    const result = await summarizeHistory(record.id, {
+      historyDir,
+      output: outputPath,
+      model: "gemini-2.5-flash",
+    });
+
+    expect(result).toBe(outputPath);
+    expect(summarizeTranscript).toHaveBeenCalledTimes(1);
+    // Provider routing: apiKey (arg 2) is the Gemini key, model (arg 3) is passed through.
+    const call = vi.mocked(summarizeTranscript).mock.calls[0];
+    expect(call[1]).toBe("gem-key");
+    expect(call[2]).toBe("gemini-2.5-flash");
+  });
+
+  it("rejects with a helpful error when GEMINI_API_KEY is missing for a gemini model", async () => {
+    delete process.env.OPENAI_API_KEY;
+    delete process.env.GEMINI_API_KEY;
+    const record = await createHistoryRecord(transcribedInput(), historyDir);
+
+    await expect(
+      summarizeHistory(record.id, {
+        historyDir,
+        output: outputPath,
+        model: "gemini-2.5-flash",
+      }),
+    ).rejects.toThrow(/GEMINI_API_KEY environment variable is required/);
+    expect(summarizeTranscript).not.toHaveBeenCalled();
   });
 
   it("rejects with a helpful error when OPENAI_API_KEY is missing", async () => {
