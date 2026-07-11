@@ -23,6 +23,12 @@ export interface HistoryRecord {
   capturedAt: string | null;
   sourcePath: string;
   sourceName: string;
+  /**
+   * SHA-256 of the source audio bytes, used to detect duplicate ingests.
+   * Optional because records written before duplicate detection shipped
+   * predate the field; treat `undefined` as "unknown / never matches".
+   */
+  contentHash?: string;
   provider: Provider;
   options: HistoryOptions;
   durationMinutes: number;
@@ -41,6 +47,7 @@ export interface CreateHistoryInput {
   transcriptText: string;
   segments: TranscriptSegment[];
   capturedAt?: string | null;
+  contentHash?: string;
   outputPath?: string;
 }
 
@@ -80,6 +87,7 @@ export async function createHistoryRecord(
     capturedAt: input.capturedAt ?? null,
     sourcePath: input.sourcePath,
     sourceName: path.basename(input.sourcePath),
+    contentHash: input.contentHash,
     provider: input.provider,
     options: input.options,
     durationMinutes: input.durationMinutes,
@@ -162,6 +170,26 @@ export async function loadHistoryRecord(
     throw new Error(`History id prefix is ambiguous: ${idOrPrefix}`);
   }
   throw new Error(`History record not found: ${idOrPrefix}`);
+}
+
+/**
+ * Find the newest history record whose source audio has the given content
+ * hash, or `null` if none. Records without a `contentHash` (written before
+ * duplicate detection shipped) never match. The caller decides what to do
+ * with a hit (e.g. only skip reprocessing when the match is `completed` and
+ * its output file still exists).
+ */
+export async function findHistoryByHash(
+  contentHash: string,
+  historyDir = DEFAULT_HISTORY_DIR,
+): Promise<HistoryRecord | null> {
+  // Reject empty (legacy/unknown) and malformed hashes so a garbage value can
+  // never coincidentally match. A SHA-256 digest is exactly 64 lowercase hex
+  // chars; legacy records have `contentHash === undefined` and never match.
+  if (!/^[a-f0-9]{64}$/.test(contentHash)) return null;
+  // listHistoryRecords already returns newest-first.
+  const records = await listHistoryRecords(historyDir);
+  return records.find((record) => record.contentHash === contentHash) ?? null;
 }
 
 export function formatHistoryList(records: HistoryRecord[]): string {

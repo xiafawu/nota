@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   completeHistoryRecord,
   createHistoryRecord,
+  findHistoryByHash,
   formatHistoryList,
   listHistoryRecords,
   loadHistoryRecord,
@@ -145,5 +146,112 @@ describe("history", () => {
       historyDir,
     );
     expect(record.capturedAt).toBeNull();
+  });
+
+  it("persists contentHash and round-trips it on read", async () => {
+    const record = await createHistoryRecord(
+      {
+        sourcePath: "/tmp/hashed.m4a",
+        provider: "assemblyai",
+        options: { diarize: true, identify: false, model: "gpt-4o" },
+        durationMinutes: 3,
+        transcriptText: "Hi",
+        segments: [],
+        contentHash: "deadbeef",
+      },
+      historyDir,
+    );
+    expect(record.contentHash).toBe("deadbeef");
+
+    const loaded = await loadHistoryRecord(record.id, historyDir);
+    expect(loaded.contentHash).toBe("deadbeef");
+  });
+
+  describe("findHistoryByHash", () => {
+    const HASH_A = "a".repeat(64);
+    const HASH_B = "b".repeat(64);
+    const HASH_C = "c".repeat(64);
+
+    it("returns the newest record matching a content hash", async () => {
+      const older = await createHistoryRecord(
+        {
+          sourcePath: "/tmp/older.m4a",
+          provider: "assemblyai",
+          options: { diarize: true, identify: false, model: "gpt-4o" },
+          durationMinutes: 1,
+          transcriptText: "Older",
+          segments: [],
+          contentHash: HASH_A,
+        },
+        historyDir,
+      );
+      // Distinct createdAt so newest-first ordering is deterministic.
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      const newer = await createHistoryRecord(
+        {
+          sourcePath: "/tmp/newer.m4a",
+          provider: "assemblyai",
+          options: { diarize: true, identify: false, model: "gpt-4o" },
+          durationMinutes: 1,
+          transcriptText: "Newer",
+          segments: [],
+          contentHash: HASH_A,
+        },
+        historyDir,
+      );
+
+      const found = await findHistoryByHash(HASH_A, historyDir);
+      expect(found?.id).toBe(newer.id);
+      expect(found?.id).not.toBe(older.id);
+    });
+
+    it("returns null when no record matches the hash", async () => {
+      await createHistoryRecord(
+        {
+          sourcePath: "/tmp/other.m4a",
+          provider: "whisper",
+          options: { diarize: false, identify: false, model: "gpt-4o" },
+          durationMinutes: 1,
+          transcriptText: "Other",
+          segments: [],
+          contentHash: HASH_B,
+        },
+        historyDir,
+      );
+      expect(await findHistoryByHash(HASH_C, historyDir)).toBeNull();
+    });
+
+    it("never matches legacy records that have no contentHash", async () => {
+      await createHistoryRecord(
+        {
+          sourcePath: "/tmp/legacy.m4a",
+          provider: "whisper",
+          options: { diarize: false, identify: false, model: "gpt-4o" },
+          durationMinutes: 1,
+          transcriptText: "Legacy",
+          segments: [],
+        },
+        historyDir,
+      );
+      // An empty query hash must not coincidentally match an undefined field.
+      expect(await findHistoryByHash("", historyDir)).toBeNull();
+    });
+
+    it("returns null for a malformed (non-hex) hash", async () => {
+      await createHistoryRecord(
+        {
+          sourcePath: "/tmp/real.m4a",
+          provider: "assemblyai",
+          options: { diarize: true, identify: false, model: "gpt-4o" },
+          durationMinutes: 1,
+          transcriptText: "Real",
+          segments: [],
+          contentHash: HASH_A,
+        },
+        historyDir,
+      );
+      // Too short, and contains non-hex chars — must be rejected, not matched.
+      expect(await findHistoryByHash("not-a-real-hash", historyDir)).toBeNull();
+    });
   });
 });

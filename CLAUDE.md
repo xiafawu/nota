@@ -59,6 +59,12 @@ Two pipeline paths controlled by `--provider`:
 - `-l, --language <lang>` — audio language hint
 - `-m, --model <model>` — GPT model for summarization (default: gpt-4o)
 - `-v, --verbose` — show progress spinners
+- `--no-history` — do not save this transcript to `~/.nota/history` (also disables duplicate detection, which relies on the history store)
+- `--force` — reprocess even if an identical audio file is already in history (overrides duplicate detection)
+
+Duplicate detection is automatic whenever history is enabled (the default): an
+identical file (same bytes) that was already transcribed reuses the prior
+summary instead of re-running paid transcription. See Key Design Decisions.
 
 ## Speaker Management
 
@@ -83,6 +89,7 @@ are written to stderr so stdout stays scriptable.
 - Optional `--identify` stores speaker voiceprints in `~/.nota/speakers.json`; existing `~/.meetingsum/speakers.json` profiles are still read as a fallback
 - Long transcripts (>100k tokens) are summarized in sections then rolled up
 - Output saved as markdown file next to input by default
+- Byte-level (SHA-256) duplicate detection: when history is enabled (the default), Nota hashes the raw audio once in `runPipeline` and, if an identical file already has a *completed* history record whose output `.md` still exists, reuses that summary and skips transcription. `--force` overrides; a hash failure warns but still transcribes. This gates the common case (same file shared twice) cheaply before any paid call; it is a byte hash, not an acoustic fingerprint, so a re-encoded copy of the same recording is not detected. Legacy records (pre-feature) have no `contentHash` and never match. Example: `nota recording.m4a --force` reprocesses a file already in history.
 - ESM-only project (`"type": "module"` in package.json)
 
 ## External Requirements

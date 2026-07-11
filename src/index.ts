@@ -56,6 +56,10 @@ program
     "Identify and remember speakers by voice across recordings",
   )
   .option("--no-history", "Do not save this transcript to ~/.nota/history")
+  .option(
+    "--force",
+    "Reprocess even if an identical audio file is already in history",
+  )
   .action(async (audioFile: string, options) => {
     try {
       const config = loadConfig({
@@ -64,6 +68,7 @@ program
         numSpeakers: options.numSpeakers,
         identify: options.identify,
         history: options.history,
+        force: options.force,
       });
       const outputPath = await runPipeline({
         inputPath: audioFile,
