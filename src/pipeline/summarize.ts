@@ -2,6 +2,20 @@ import OpenAI from "openai";
 import { shouldChunkTranscript, splitTranscriptIntoSections } from "../utils/tokens.js";
 import type { TranscriptSegment } from "./transcribe.js";
 
+/**
+ * Google's Gemini exposes an OpenAI-compatible endpoint, so the same OpenAI
+ * client summarizes with Gemini by swapping the base URL and using a
+ * `gemini-*` model with GEMINI_API_KEY. See
+ * https://ai.google.dev/gemini-api/docs/openai
+ */
+export const GEMINI_OPENAI_BASE_URL =
+  "https://generativelanguage.googleapis.com/v1beta/openai/";
+
+/** True when a model name targets Gemini rather than OpenAI. */
+export function isGeminiModel(model: string): boolean {
+  return model.startsWith("gemini");
+}
+
 export interface MeetingSummary {
   title: string;
   tags: string[];
@@ -196,9 +210,13 @@ export async function summarizeTranscript(
   transcript: string,
   apiKey: string,
   model: string,
-  segments?: TranscriptSegment[]
+  segments?: TranscriptSegment[],
+  baseURL?: string
 ): Promise<MeetingSummary> {
-  const client = new OpenAI({ apiKey });
+  const client = new OpenAI({
+    apiKey,
+    baseURL: baseURL ?? (isGeminiModel(model) ? GEMINI_OPENAI_BASE_URL : undefined),
+  });
 
   const textToSummarize = segments
     ? buildSpeakerLabeledTranscript(segments)

@@ -71,11 +71,11 @@ summary instead of re-running paid transcription. See Key Design Decisions.
 Manage enrolled speaker voiceprints (`~/.nota/speakers.json`, with legacy
 fallback to `~/.meetingsum/speakers.json`):
 
-- `nota speakers list` — print one tab-separated row per profile (name, enrolledAt, source, embedding length) on stdout
-- `nota speakers show <name>` — print profile JSON with embedding truncated to first 8 dims
+- `nota speakers list` — print one tab-separated row per voiceprint (name, voiceprint id, enrolledAt, source, profile size in bytes) on stdout
+- `nota speakers show <name>` — print profile JSON (each voiceprint's Eagle profile shown as a byte size)
 - `nota speakers rename <old> <new>` — rename a profile key
 - `nota speakers delete <name>` — remove a profile
-- `nota speakers merge <src> <dst>` — average embeddings (L2-renormalized) into `<dst>`, drop `<src>`
+- `nota speakers merge <src> <dst>` — concatenate `<src>`'s voiceprints into `<dst>` (dedup by id), drop `<src>`
 
 Commands exit non-zero if a referenced profile is missing. Confirmation lines
 are written to stderr so stdout stays scriptable.
@@ -86,7 +86,8 @@ are written to stderr so stdout stays scriptable.
 - AssemblyAI as default provider: transcription + diarization in one API call ($0.15/hr)
 - Whisper retained as fallback via `--provider whisper`
 - `.qta` files auto-converted to `.m4a` via ffmpeg before AssemblyAI upload
-- Optional `--identify` stores speaker voiceprints in `~/.nota/speakers.json`; existing `~/.meetingsum/speakers.json` profiles are still read as a fallback
+- Speaker identity uses on-device Picovoice Eagle (`@picovoice/eagle-node`), not pyannote. Voice embeddings are captured **during** the pipeline run (the source audio is often a temp file deleted afterward): a short per-speaker PCM clip is saved under `~/.nota/history/<id>.assets/<label>.pcm`, and naming a speaker later enrolls an Eagle profile from that stored clip — so it works without the original audio. Store schema v3 holds base64 Eagle profiles under `~/.nota/speakers.json`; legacy pyannote `embedding` records are dropped on load (re-enroll to restore). Requires `PICOVOICE_ACCESS_KEY`; without it, identity no-ops with a clear message.
+- Optional `--identify` recognizes enrolled speakers automatically and prompts for unknown ones (interactive TTY); freshly-typed names are enrolled inline from the captured clip
 - Long transcripts (>100k tokens) are summarized in sections then rolled up
 - Output saved as markdown file next to input by default
 - Byte-level (SHA-256) duplicate detection: when history is enabled (the default), Nota hashes the raw audio once in `runPipeline` and, if an identical file already has a *completed* history record whose output `.md` still exists, reuses that summary and skips transcription. `--force` overrides; a hash failure warns but still transcribes. This gates the common case (same file shared twice) cheaply before any paid call; it is a byte hash, not an acoustic fingerprint, so a re-encoded copy of the same recording is not detected. Legacy records (pre-feature) have no `contentHash` and never match. Example: `nota recording.m4a --force` reprocesses a file already in history.
@@ -98,4 +99,15 @@ are written to stderr so stdout stays scriptable.
 - Node.js 18+
 - Environment variable: `OPENAI_API_KEY` (always required for GPT-4o summarization)
 - Environment variable: `ASSEMBLYAI_API_KEY` (required for default assemblyai provider)
-- For `--provider whisper` only: Python 3.8+ with `pyannote.audio`, `HUGGINGFACE_TOKEN`
+- Environment variable: `PICOVOICE_ACCESS_KEY` (required for `--identify` / speaker identity; free at https://console.picovoice.ai)
+- For `--provider whisper` only: Python 3.8+ with `pyannote.audio`, `HUGGINGFACE_TOKEN` (pyannote is used only for whisper-path diarization now, not speaker identity)
+
+### API-key config file
+
+Instead of exporting env vars, keys may be placed in `~/.nota/config` as a
+dotenv-style file (`KEY=VALUE`, one per line; `chmod 600`). Every `KEY=VALUE`
+line is loaded generically (no allowlist), so future providers like
+`GEMINI_API_KEY` work with zero code change. Real environment variables always
+override file values (the file only fills unset keys). Set `NOTA_ENV_FILE` to
+point at a different path. Run `nota config` to see which keys resolve and from
+where (values are masked; secrets are never printed).

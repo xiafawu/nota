@@ -28,14 +28,16 @@ import {
   type HistoryOptions,
 } from "./pipeline/history.js";
 import {
-  extractEmbeddings,
   loadProfiles,
   saveProfiles,
-  matchSpeakers,
-  clusterLabels,
+  matchProfiles,
+  encodeProfile,
   promptForSpeakerNames,
   applySpeakerNames,
 } from "./pipeline/speakers.js";
+import { isEagleAvailable, enrollProfile } from "./pipeline/eagle.js";
+import { decodePcm, slicePcm, concatToSeconds, SAMPLE_RATE } from "./utils/pcm.js";
+import type { TranscriptSegment } from "./pipeline/transcribe.js";
 
 const execFileAsync = promisify(execFile);
 
@@ -239,9 +241,19 @@ async function runAssemblyAIPipelineInner(
 
   // 2b. Identify speakers by voice (if enabled)
   let segments = result.segments;
+  let speakerClipsPcm: Record<string, Int16Array> | undefined;
   if (config.identify) {
     const audioForEmbeddings = localAudioPath ?? inputPath;
-    segments = await identifySpeakers(audioForEmbeddings, segments, verbose);
+    const ident = await identifySpeakers(
+      audioForEmbeddings,
+      segments,
+      config,
+      verbose,
+    );
+    segments = ident.segments;
+    // Persist clips so the macOS viewer can enroll a name later, after this
+    // (often temporary) audio file is gone.
+    speakerClipsPcm = ident.clips;
   }
 
   const capturedAt = await resolveCaptureDate(inputPath);
@@ -261,6 +273,7 @@ async function runAssemblyAIPipelineInner(
       outputPath,
       capturedAt: capturedAt ? capturedAt.toISOString() : null,
       contentHash,
+      speakerClipsPcm,
     });
     historyId = history.id;
     spinner?.succeed(`History saved as ${history.id}`);
@@ -303,25 +316,80 @@ async function runAssemblyAIPipelineInner(
   return outputPath;
 }
 
+/** Target / minimum seconds of speech captured per speaker for enrollment. */
+export const CLIP_TARGET_SEC = 24;
+export const CLIP_MIN_SEC = 5;
+
+/**
+ * Pick a speaker's longest utterances, in descending duration, until their
+ * total covers `targetSec`. Longest-first maximizes clean speech for Eagle
+ * enrollment within a bounded clip.
+ */
+export function selectClipRanges(
+  segments: TranscriptSegment[],
+  label: string,
+  targetSec: number,
+): { start: number; end: number }[] {
+  const mine = segments
+    .filter((s) => s.speaker === label)
+    .map((s) => ({ start: s.start, end: s.end }))
+    .sort((a, b) => b.end - b.start - (a.end - a.start));
+  const picked: { start: number; end: number }[] = [];
+  let acc = 0;
+  for (const r of mine) {
+    if (acc >= targetSec) break;
+    picked.push(r);
+    acc += r.end - r.start;
+  }
+  return picked;
+}
+
+interface IdentifyOutput {
+  segments: TranscriptSegment[];
+  /** Per-label PCM clips (>= CLIP_MIN_SEC) to persist for later enrollment. */
+  clips: Record<string, Int16Array>;
+}
+
 async function identifySpeakers(
   inputPath: string,
-  segments: import("./pipeline/transcribe.js").TranscriptSegment[],
+  segments: TranscriptSegment[],
+  config: AppConfig,
   verbose: boolean,
-): Promise<import("./pipeline/transcribe.js").TranscriptSegment[]> {
-  let spinner = log(verbose, "Extracting speaker voiceprints...");
+): Promise<IdentifyOutput> {
+  if (!isEagleAvailable(config.picovoiceAccessKey)) {
+    console.error(
+      "Speaker identity unavailable: set PICOVOICE_ACCESS_KEY (free at " +
+        "https://console.picovoice.ai) to recognize speakers across " +
+        "recordings. Using generic labels.",
+    );
+    return { segments, clips: {} };
+  }
+  const accessKey = config.picovoiceAccessKey!;
+  const spinner = log(verbose, "Identifying speakers (Eagle)...");
   try {
-    const embeddings = await extractEmbeddings(inputPath, segments);
-    spinner?.succeed("Speaker voiceprints extracted");
+    const pcm = await decodePcm(inputPath);
+    const labels = [
+      ...new Set(segments.map((s) => s.speaker).filter(Boolean) as string[]),
+    ];
 
-    // Collapse near-duplicate diarizer labels (e.g. one person split into
-    // "Speaker 1" and "Speaker 2") before matching or enrollment so a single
-    // real speaker doesn't produce two profiles.
-    const { canonicalOf, merged } = clusterLabels(embeddings);
-    const profiles = await loadProfiles();
-    const matches = matchSpeakers(merged, profiles);
+    // One representative clip per speaker (longest utterances first). Keep
+    // only clips with enough speech to be worth enrolling later.
+    const pcmByLabel: Record<string, Int16Array> = {};
+    const clips: Record<string, Int16Array> = {};
+    for (const label of labels) {
+      const ranges = selectClipRanges(segments, label, CLIP_TARGET_SEC);
+      const clip = concatToSeconds(
+        ranges.map((r) => slicePcm(pcm, [r])),
+        CLIP_TARGET_SEC,
+      );
+      pcmByLabel[label] = clip;
+      if (clip.length >= CLIP_MIN_SEC * SAMPLE_RATE) clips[label] = clip;
+    }
 
-    // Build name mapping from confident matches only. Tentative matches go
-    // into a separate map and are resolved interactively below.
+    const store = await loadProfiles();
+    const matches = matchProfiles(accessKey, pcmByLabel, store);
+    spinner?.succeed("Speaker identification complete");
+
     const nameMap: Record<string, string> = {};
     const tentative: Record<string, { name: string; confidence: number }> = {};
     for (const [label, match] of Object.entries(matches)) {
@@ -342,66 +410,49 @@ async function identifySpeakers(
       }
     }
 
-    // Find unmatched canonical speakers (excludes tentative — those are
-    // resolved by the confirmation pass inside promptForSpeakerNames).
-    const canonicalSpeakers = [
-      ...new Set(
-        (segments.map((s) => s.speaker).filter(Boolean) as string[]).map(
-          (s) => canonicalOf[s] ?? s,
-        ),
-      ),
-    ];
-    const unmatchedSpeakers = canonicalSpeakers.filter(
-      (s) => !nameMap[s] && !tentative[s],
-    );
-
-    // Prompt for tentative + unmatched speakers (if interactive terminal).
-    // Rewrite segments to canonical labels first so prompt samples and the
-    // prompt ids match what was actually clustered.
-    const canonicalSegments = applySpeakerNames(segments, {}, canonicalOf);
+    const unmatched = labels.filter((l) => !nameMap[l] && !tentative[l]);
     const needsPrompt =
-      unmatchedSpeakers.length > 0 || Object.keys(tentative).length > 0;
+      unmatched.length > 0 || Object.keys(tentative).length > 0;
     if (needsPrompt && process.stdin.isTTY) {
-      const { names: newNames, enroll } = await promptForSpeakerNames(
-        canonicalSegments,
-        unmatchedSpeakers,
+      const { names, enroll } = await promptForSpeakerNames(
+        segments,
+        unmatched,
         tentative,
       );
-      Object.assign(nameMap, newNames);
+      Object.assign(nameMap, names);
 
-      // Only enroll labels the user typed fresh — tentative confirmations
-      // (`y` to existing candidate) reuse the existing profile without
-      // touching its voiceprints.
-      //
-      // V2 pointer model: a fresh enrollment APPENDS a voiceprint to the
-      // named profile (creating it if missing). If the user types an
-      // existing name for a different label (e.g. drift produced a new
-      // diarizer cluster the user identifies as the same person), this is
-      // the drift-capture path — append rather than overwrite, so the
-      // original voiceprint remains intact.
+      // Enroll freshly-typed names inline from their in-memory clip so a CLI
+      // `--identify` run also persists voiceprints (the macOS viewer instead
+      // enrolls post-hoc from the stored clip via `nota enroll`). Tentative
+      // confirmations ("y") reuse the existing profile and are not in `enroll`.
+      let enrolled = 0;
       for (const [label, name] of Object.entries(enroll)) {
-        const embedding = merged[label] ?? embeddings[label];
-        if (!embedding) continue;
-        const now = new Date().toISOString();
-        const voiceprint = {
-          id: now,
-          embedding,
-          enrolledAt: now,
-          source: path.basename(inputPath),
-        };
-        const existing = profiles.speakers[name];
-        if (existing) {
-          existing.voiceprints.push(voiceprint);
-        } else {
-          profiles.speakers[name] = { voiceprints: [voiceprint] };
+        const clip = clips[label];
+        if (!clip) continue; // too little speech — skip, don't fail
+        try {
+          const bytes = await enrollProfile(accessKey, clip);
+          const now = new Date().toISOString();
+          const vp = {
+            id: now,
+            profile: encodeProfile(bytes),
+            enrolledAt: now,
+            source: path.basename(inputPath),
+          };
+          if (store.speakers[name]) store.speakers[name].voiceprints.push(vp);
+          else store.speakers[name] = { voiceprints: [vp] };
+          enrolled++;
+        } catch (e) {
+          if (verbose) {
+            console.error(
+              `  Could not enroll ${name}: ${e instanceof Error ? e.message : String(e)}`,
+            );
+          }
         }
       }
-      if (Object.keys(enroll).length > 0) {
-        await saveProfiles(profiles);
-      }
+      if (enrolled > 0) await saveProfiles(store);
     }
 
-    return applySpeakerNames(segments, nameMap, canonicalOf);
+    return { segments: applySpeakerNames(segments, nameMap), clips };
   } catch (error) {
     spinner?.fail("Speaker identification unavailable (using generic labels)");
     if (verbose) {
@@ -409,7 +460,7 @@ async function identifySpeakers(
         `  ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    return segments;
+    return { segments, clips: {} };
   }
 }
 

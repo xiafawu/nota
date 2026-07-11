@@ -1,27 +1,35 @@
-import path from "node:path";
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import {
   DEFAULT_SPEAKERS_FILE,
-  extractEmbeddings,
+  encodeProfile,
   loadProfiles,
   saveProfiles,
 } from "../pipeline/speakers.js";
 import {
   loadHistoryRecord,
+  speakerClipPath,
   DEFAULT_HISTORY_DIR,
   type HistoryRecord,
 } from "../pipeline/history.js";
+import {
+  isEagleAvailable,
+  enrollProfile,
+  InsufficientSpeechError,
+} from "../pipeline/eagle.js";
 
 export interface EnrollOptions {
   storePath?: string;
   historyDir?: string;
+  /** Picovoice AccessKey; falls back to PICOVOICE_ACCESS_KEY. */
+  accessKey?: string;
 }
 
-// Exit codes per spec:
+// Exit codes (the macOS EnrollQueue maps these to chip indicators):
 //   0 success
 //   2 history record not found
-//   3 audio file missing
-//   4 python/pyannote unavailable
+//   3 stored speaker clip missing
+//   4 Eagle unavailable (no AccessKey)
+//   5 insufficient speech to enroll
 //   1 other
 
 class EnrollError extends Error {
@@ -51,81 +59,76 @@ export async function enrollSpeaker(
 ): Promise<void> {
   const storePath = options?.storePath ?? DEFAULT_SPEAKERS_FILE;
   const historyDir = options?.historyDir ?? DEFAULT_HISTORY_DIR;
+  const accessKey = options?.accessKey ?? process.env.PICOVOICE_ACCESS_KEY;
 
-  // 1. Load history record (exit 2 if not found)
+  // 0. Eagle must be available (exit 4).
+  if (!isEagleAvailable(accessKey)) {
+    throw new EnrollError(
+      "PICOVOICE_ACCESS_KEY is required for Eagle enrollment. " +
+        "Get a free key at https://console.picovoice.ai.",
+      4,
+    );
+  }
+
+  // 1. Load history record (exit 2 if not found).
   let record: HistoryRecord;
   try {
     record = await loadHistoryRecord(historyId, historyDir);
   } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    throw new EnrollError(msg, 2);
-  }
-
-  // 2. Filter segments by speaker label
-  const filteredSegments = record.segments.filter(
-    (seg) => seg.speaker === label,
-  );
-  if (filteredSegments.length === 0) {
     throw new EnrollError(
-      `Speaker label "${label}" not found in history record "${historyId}". ` +
-        `Available labels: ${[...new Set(record.segments.map((s) => s.speaker).filter(Boolean))].join(", ") || "(none)"}`,
-      1,
+      error instanceof Error ? error.message : String(error),
+      2,
     );
   }
 
-  // 3. Verify audio file exists (exit 3 if missing)
-  const audioPath = record.sourcePath;
-  if (!(await fileExists(audioPath))) {
+  // 2. Resolve the stored clip for this label (exit 3 if missing).
+  const rel = record.speakerClips?.[label];
+  const clipPath = rel
+    ? speakerClipPath(record.id, label, historyDir)
+    : null;
+  if (!clipPath || !(await fileExists(clipPath))) {
+    const labels = Object.keys(record.speakerClips ?? {});
     throw new EnrollError(
-      `Audio file not found: ${audioPath}`,
+      `No stored audio clip for label "${label}" in history "${historyId}". ` +
+        `Available labels with clips: ${labels.join(", ") || "(none)"}`,
       3,
     );
   }
 
-  // 4. Extract embeddings (exit 4 on python/pyannote unavailable)
-  let embeddings: Record<string, number[]>;
-  try {
-    embeddings = await extractEmbeddings(audioPath, filteredSegments);
-  } catch (error) {
-    const msg = error instanceof Error ? error.message : String(error);
-    // Distinguish pyannote/python unavailability from other extraction errors.
-    // extractEmbeddings spawns PYTHON_BIN; if it fails to start or exits with
-    // a message about pyannote/import errors we map to exit 4.
-    const isPythonError =
-      msg.includes("ENOENT") ||
-      msg.includes("No such file") ||
-      msg.includes("ModuleNotFoundError") ||
-      msg.includes("ImportError") ||
-      msg.includes("pyannote");
-    throw new EnrollError(msg, isPythonError ? 4 : 1);
-  }
+  // 3. Decode the stored PCM and build an Eagle profile (exit 5 if too little
+  //    speech, exit 1 for any other Eagle failure).
+  const buf = await readFile(clipPath);
+  const pcm = new Int16Array(buf.length / 2);
+  for (let i = 0; i < pcm.length; i++) pcm[i] = buf.readInt16LE(i * 2);
 
-  const embedding = embeddings[label];
-  if (!embedding) {
+  let profileBytes: Uint8Array;
+  try {
+    profileBytes = await enrollProfile(accessKey!, pcm);
+  } catch (error) {
+    if (error instanceof InsufficientSpeechError) {
+      throw new EnrollError(error.message, 5);
+    }
     throw new EnrollError(
-      `Embedding extraction returned no result for label "${label}". ` +
-        `Available keys: ${Object.keys(embeddings).join(", ") || "(none)"}`,
+      error instanceof Error ? error.message : String(error),
       1,
     );
   }
 
-  // 5–7. Append voiceprint to the named profile (v2 pointer model)
+  // 4. Append the voiceprint to the named profile (v3 pointer model).
   const store = await loadProfiles(storePath);
   const now = new Date().toISOString();
   const voiceprint = {
     id: now,
-    embedding,
+    profile: encodeProfile(profileBytes),
     enrolledAt: now,
-    source: path.basename(audioPath),
+    source: record.sourceName,
   };
-
   const existing = store.speakers[name];
   if (existing) {
     existing.voiceprints.push(voiceprint);
   } else {
     store.speakers[name] = { voiceprints: [voiceprint] };
   }
-
   await saveProfiles(store, storePath);
 
   process.stderr.write(

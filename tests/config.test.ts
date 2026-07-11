@@ -1,4 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { loadConfig } from "../src/config.js";
 
 describe("loadConfig", () => {
@@ -6,6 +8,12 @@ describe("loadConfig", () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv };
+    // loadConfig now fills unset keys from ~/.nota/config; point the loader at
+    // a guaranteed-absent path so these tests stay hermetic on any machine.
+    process.env.NOTA_ENV_FILE = path.join(
+      tmpdir(),
+      "nota-config-absent-for-tests",
+    );
   });
 
   afterEach(() => {
@@ -107,5 +115,19 @@ describe("loadConfig", () => {
     process.env.ASSEMBLYAI_API_KEY = "aai-test";
     const config = loadConfig({ history: false });
     expect(config.history).toBe(false);
+  });
+
+  it("reads PICOVOICE_ACCESS_KEY into config", () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.ASSEMBLYAI_API_KEY = "aai-test";
+    process.env.PICOVOICE_ACCESS_KEY = "pv-test";
+    expect(loadConfig({}).picovoiceAccessKey).toBe("pv-test");
+  });
+
+  it("leaves picovoiceAccessKey undefined when unset", () => {
+    process.env.OPENAI_API_KEY = "sk-test";
+    process.env.ASSEMBLYAI_API_KEY = "aai-test";
+    delete process.env.PICOVOICE_ACCESS_KEY;
+    expect(loadConfig({}).picovoiceAccessKey).toBeUndefined();
   });
 });

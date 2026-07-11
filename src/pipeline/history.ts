@@ -34,6 +34,12 @@ export interface HistoryRecord {
   durationMinutes: number;
   transcriptText: string;
   segments: TranscriptSegment[];
+  /**
+   * Map of diarized speaker label → path (relative to the history dir) of the
+   * captured PCM clip for that speaker. Lets `nota enroll` build a voiceprint
+   * later, after the original (often temp) audio has been deleted.
+   */
+  speakerClips?: Record<string, string>;
   summary?: MeetingSummary;
   outputPath?: string;
   status: HistoryStatus;
@@ -48,6 +54,12 @@ export interface CreateHistoryInput {
   segments: TranscriptSegment[];
   capturedAt?: string | null;
   contentHash?: string;
+  /**
+   * Per-speaker PCM clips to persist alongside the record. Written under
+   * `<id>.assets/<label>.pcm`; the resulting relative paths populate the
+   * record's `speakerClips`.
+   */
+  speakerClipsPcm?: Record<string, Int16Array>;
   outputPath?: string;
 }
 
@@ -68,6 +80,31 @@ function makeHistoryId(createdAt: string): string {
 
 function historyPath(id: string, historyDir: string): string {
   return path.join(historyDir, `${id}.json`);
+}
+
+/** Absolute path of a captured per-speaker PCM clip for a record. */
+export function speakerClipPath(
+  id: string,
+  label: string,
+  historyDir = DEFAULT_HISTORY_DIR,
+): string {
+  return path.join(historyDir, `${id}.assets`, `${label}.pcm`);
+}
+
+/**
+ * Persist a speaker's PCM clip under `<id>.assets/<label>.pcm`.
+ * Returns the path relative to `historyDir` (what is stored in the record).
+ */
+export async function writeSpeakerClip(
+  id: string,
+  label: string,
+  pcm: Int16Array,
+  historyDir = DEFAULT_HISTORY_DIR,
+): Promise<string> {
+  const abs = speakerClipPath(id, label, historyDir);
+  await mkdir(path.dirname(abs), { recursive: true });
+  await writeFile(abs, Buffer.from(pcm.buffer, pcm.byteOffset, pcm.byteLength));
+  return path.relative(historyDir, abs);
 }
 
 async function readHistoryFile(filePath: string): Promise<HistoryRecord> {
@@ -98,6 +135,17 @@ export async function createHistoryRecord(
   };
 
   await mkdir(historyDir, { recursive: true });
+
+  // Persist any captured per-speaker clips first so the record's
+  // `speakerClips` pointers are written atomically with the record itself.
+  if (input.speakerClipsPcm) {
+    const clips: Record<string, string> = {};
+    for (const [label, pcm] of Object.entries(input.speakerClipsPcm)) {
+      clips[label] = await writeSpeakerClip(record.id, label, pcm, historyDir);
+    }
+    record.speakerClips = clips;
+  }
+
   await writeFile(
     historyPath(record.id, historyDir),
     JSON.stringify(record, null, 2),

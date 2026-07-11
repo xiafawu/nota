@@ -17,8 +17,18 @@ import {
   showSpeaker,
 } from "./cli/speakers.js";
 import { enrollSpeaker, EnrollError } from "./cli/enroll.js";
+import { printConfig } from "./cli/config.js";
+import { applyEnvFile } from "./utils/env-file.js";
+import { summarizeHistory } from "./cli/summarize-history.js";
 
 const program = new Command();
+
+// The top-level command and several subcommands (e.g. `history summarize`) both
+// define `-m, --model`. Without positional options, the parent's `-m` greedily
+// captures the flag before a subcommand sees it, so `nota history summarize <id>
+// -m gemini-2.5-flash` would silently fall back to the parent default (gpt-4o).
+// Positional options scope each `-m` to the command it follows.
+program.enablePositionalOptions();
 
 function parsePositiveInteger(value: string): number {
   const parsed = Number(value);
@@ -117,6 +127,30 @@ history
     try {
       const record = await loadHistoryRecord(id);
       console.log(JSON.stringify(record, null, 2));
+    } catch (error) {
+      console.error(
+        `\nError: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      process.exit(1);
+    }
+  });
+
+history
+  .command("summarize")
+  .description(
+    "Summarize a saved transcript (recovers a transcribed-but-unsummarized record without re-transcribing)",
+  )
+  .argument("<id>", "History record id or unique prefix")
+  .option("-m, --model <model>", "GPT model to use for summarization", "gpt-4o")
+  .option("-o, --output <path>", "Output markdown path")
+  .option("--force", "Re-summarize even if the record is already completed")
+  .action(async (id: string, options) => {
+    try {
+      await summarizeHistory(id, {
+        model: options.model,
+        output: options.output,
+        force: options.force,
+      });
     } catch (error) {
       console.error(
         `\nError: ${error instanceof Error ? error.message : String(error)}`,
@@ -237,5 +271,16 @@ program
       process.exit(1);
     }
   });
+
+program
+  .command("config")
+  .description(
+    "Show which API keys resolve and from where (masked value, secrets never printed)",
+  )
+  .action(printConfig);
+
+// Load ~/.nota/config once at bootstrap so every subcommand (run, history,
+// speakers, config) sees file-provided keys. Real env vars still win.
+applyEnvFile();
 
 program.parse();

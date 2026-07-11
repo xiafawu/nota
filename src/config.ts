@@ -1,3 +1,5 @@
+import { applyEnvFile } from "./utils/env-file.js";
+
 export type Provider = "assemblyai" | "whisper";
 
 export interface CLIOptions {
@@ -26,6 +28,8 @@ export interface AppConfig {
   history: boolean;
   /** Reprocess even when an identical audio file is already in history. */
   force: boolean;
+  /** Picovoice AccessKey for on-device Eagle speaker recognition (identity). */
+  picovoiceAccessKey?: string;
 }
 
 function parseProvider(provider?: string): Provider {
@@ -37,6 +41,9 @@ function parseProvider(provider?: string): Provider {
 }
 
 export function loadConfig(options: CLIOptions): AppConfig {
+  // Fill unset API keys from ~/.nota/config before reading them (env wins).
+  applyEnvFile();
+
   const openaiApiKey = process.env.OPENAI_API_KEY;
   if (!openaiApiKey) {
     throw new Error(
@@ -73,5 +80,6 @@ export function loadConfig(options: CLIOptions): AppConfig {
     identify: options.identify ?? false,
     history: options.history ?? true,
     force: options.force ?? false,
+    picovoiceAccessKey: process.env.PICOVOICE_ACCESS_KEY,
   };
 }
