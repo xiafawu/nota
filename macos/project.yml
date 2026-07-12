@@ -1,0 +1,75 @@
+name: Nota
+# Paths in this spec are resolved relative to this file's directory (macos/).
+# `xcodegen generate --spec macos/project.yml` writes macos/Nota.xcodeproj.
+options:
+  bundleIdPrefix: com.xiafawu
+  deploymentTarget:
+    macOS: "26.0"
+  createIntermediateGroups: true
+
+# Ad-hoc signing everywhere: no Team ID, manual style, "-" identity. This
+# mirrors the old hand-rolled script (codesign --sign -) so the nested
+# app-extension can still carry its App Sandbox entitlements.
+settings:
+  base:
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "-"
+    DEVELOPMENT_TEAM: ""
+    SWIFT_VERSION: "5.0"
+  configs:
+    Debug:
+      SWIFT_ACTIVE_COMPILATION_CONDITIONS: DEBUG
+      SWIFT_OPTIMIZATION_LEVEL: "-Onone"
+      GCC_PREPROCESSOR_DEFINITIONS: "DEBUG=1"
+    Release:
+      SWIFT_OPTIMIZATION_LEVEL: "-O"
+
+targets:
+  Nota:
+    type: application
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Nota
+        excludes:
+          - "Info.plist"
+          - "Assets/.gitignore"
+          - "Assets/AppIcon.iconset"
+          - "Assets/AppIcon.svg"
+    settings:
+      base:
+        INFOPLIST_FILE: Nota/Info.plist
+        PRODUCT_BUNDLE_IDENTIFIER: com.xiafawu.nota
+        PRODUCT_NAME: Nota
+        # Icon is wired via CFBundleIconFile=AppIcon in Info.plist, pointing at
+        # the AppIcon.icns bundled as a resource (from Nota/Assets).
+        # TODO: swap to AppIcon.icon (Icon Composer) once designed
+    dependencies:
+      - target: NotaShare
+        embed: true
+
+  NotaShare:
+    type: app-extension
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: NotaShare
+        excludes:
+          - "Info.plist"
+          - "NotaShare.entitlements"
+    settings:
+      base:
+        INFOPLIST_FILE: NotaShare/Info.plist
+        CODE_SIGN_ENTITLEMENTS: NotaShare/NotaShare.entitlements
+        PRODUCT_BUNDLE_IDENTIFIER: com.xiafawu.nota.share
+        PRODUCT_NAME: NotaShare
+
+schemes:
+  Nota:
+    build:
+      targets:
+        Nota: all
+    run:
+      config: Debug
+    archive:
+      config: Release

@@ -10,6 +10,9 @@ audio/
 .DS_Store
 **/.DS_Store
 
+# XcodeGen-generated project (only macos/project.yml is committed)
+macos/Nota.xcodeproj/
+
 # Local dev / review artifacts (per-session, not commit-worthy)
 .claude/reviews/
 .claude/worktrees/
