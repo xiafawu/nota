@@ -1,0 +1,12 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024">
+  <g fill="#F2E7CE">
+    <g transform="translate(160 235)">
+      <circle cx="150" cy="150" r="150"/>
+      <path d="M300 150 C300 335 232 442 66 490 C158 430 172 335 156 268 L150 150 Z"/>
+    </g>
+    <g transform="translate(508 235)">
+      <circle cx="150" cy="150" r="150"/>
+      <path d="M300 150 C300 335 232 442 66 490 C158 430 172 335 156 268 L150 150 Z"/>
+    </g>
+  </g>
+</svg>

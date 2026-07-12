@@ -36,14 +36,20 @@ targets:
           - "Assets/.gitignore"
           - "Assets/AppIcon.iconset"
           - "Assets/AppIcon.svg"
+          - "Assets/AppIcon.icon"
+      # Icon Composer document ("Quotation" concept): compiled by actool into
+      # Assets.car; system renders glass, dark, and mono appearances from it.
+      - path: Nota/Assets/AppIcon.icon
+        buildPhase: resources
+        type: file
     settings:
       base:
         INFOPLIST_FILE: Nota/Info.plist
         PRODUCT_BUNDLE_IDENTIFIER: com.xiafawu.nota
         PRODUCT_NAME: Nota
-        # Icon is wired via CFBundleIconFile=AppIcon in Info.plist, pointing at
-        # the AppIcon.icns bundled as a resource (from Nota/Assets).
-        # TODO: swap to AppIcon.icon (Icon Composer) once designed
+        # Primary icon: AppIcon.icon (Icon Composer). AppIcon.icns kept as
+        # CFBundleIconFile fallback for contexts that don't read Assets.car.
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
     dependencies:
       - target: NotaShare
         embed: true
