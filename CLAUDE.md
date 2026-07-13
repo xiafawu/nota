@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Nota is a TypeScript CLI tool that transcribes and diarizes audio files using AssemblyAI (default) or OpenAI Whisper, then summarizes with GPT-4o. It outputs structured markdown with narrative summary, key topics, decisions, and action items.
+Nota is a TypeScript CLI tool that transcribes and diarizes audio files using AssemblyAI (default) or OpenAI Whisper, then summarizes with an OpenAI or Gemini model (default `gpt-5-mini`). It outputs structured markdown with narrative summary, key topics, decisions, and action items.
+
+Transcription and summary models are chosen from a curated **model registry** (`src/registry.ts`, the single source of truth). Each model id maps to a task, a provider, and the API key it requires — the provider is always derived from the model id, never stored or chosen directly.
 
 ## Naming
 
@@ -30,12 +32,15 @@ Nota is a TypeScript CLI tool that transcribes and diarizes audio files using As
 
 Two pipeline paths controlled by `--provider`:
 
-**AssemblyAI (default):** `Audio → Validate → Transcribe+Diarize (AssemblyAI) → Summarize (GPT-4o) → Write`
+**AssemblyAI (default):** `Audio → Validate → Transcribe+Diarize (AssemblyAI) → Summarize (registry model) → Write`
 
-**Whisper (fallback):** `Audio → Validate → Chunk → Transcribe (Whisper) + Diarize (pyannote) → Merge → Align → Summarize (GPT-4o) → Write`
+**Whisper (fallback):** `Audio → Validate → Chunk → Transcribe (Whisper) + Diarize (pyannote) → Merge → Align → Summarize (registry model) → Write`
 
-- **src/index.ts** — CLI entry point (commander). Parses args, calls orchestrator.
-- **src/config.ts** — Loads API keys from env vars, merges CLI options, selects provider.
+- **src/index.ts** — CLI entry point (commander). Parses args, calls orchestrator; hosts `nota settings` and `nota config`.
+- **src/config.ts** — Resolves transcription + summary models (CLI > settings.json > defaults) via the registry, requires only the needed API keys, and derives the pipeline branch.
+- **src/registry.ts** — Curated model registry (single source of truth): model id → task, provider, required key env, base URL, label.
+- **src/utils/settings.ts** — Load/validate/write `~/.nota/settings.json` (non-secret model preferences).
+- **src/cli/settings.ts** — `nota settings list|get|set|unset` verbs.
 - **src/constants.ts** — Shared constants: `SEGMENT_DURATION`, `OVERLAP_DURATION`, `CHUNK_THRESHOLD_BYTES`.
 - **src/orchestrator.ts** — Branches on `provider` to run AssemblyAI or Whisper pipeline.
 - **src/pipeline/** — One module per pipeline stage:
@@ -44,20 +49,21 @@ Two pipeline paths controlled by `--provider`:
   - `chunk.ts` — splits audio >20MB into ~10min segments with 30s overlap (whisper only)
   - `transcribe.ts` — parallel Whisper API calls, exports `TranscriptSegment` interface (shared)
   - `merge.ts` — concatenates transcripts, deduplicates overlap regions (whisper only)
-  - `summarize.ts` — sends transcript to GPT-4o; for >100k tokens, does section-by-section then roll-up
+  - `summarize.ts` — sends transcript to the resolved summary model (OpenAI or Gemini via the OpenAI-compatible endpoint); for >100k tokens, does section-by-section then roll-up
   - `diarize.ts` — calls Python pyannote script, aligns speaker labels (whisper only)
   - `write.ts` — generates markdown output file; header carries **Captured** (recording time from container metadata, fs-birthtime fallback) and **Transcribed** (processing time) dates
 - **src/utils/** — Shared helpers: ffmpeg wrapper (`ffmpeg.ts`), token estimation (`tokens.ts`), capture-date resolution (`capture-date.ts`).
 
 ## CLI Flags
 
-- `--provider <name>` — `assemblyai` (default) or `whisper`
+- `--provider <name>` — back-compat alias that seeds the transcription model: `assemblyai` (default → `universal`) or `whisper` (→ `whisper-1`). Yields to an explicit `--transcribe-model` or a `transcription.model` setting.
+- `--transcribe-model <id>` — transcription model id from the registry (overrides settings.json and `--provider`)
 - `--num-speakers <n>` — expected speaker count (assemblyai only)
-- `--no-diarize` — skip pyannote diarization for `--provider whisper`
+- `--no-diarize` — skip pyannote diarization for whisper-path transcription
 - `--identify` — identify and remember recurring speakers by voice
 - `-o, --output <path>` — output file path
 - `-l, --language <lang>` — audio language hint
-- `-m, --model <model>` — GPT model for summarization (default: gpt-4o)
+- `-m, --model <model>` — summary model id from the registry. Precedence: this flag > `settings.json` > built-in default (`gpt-5-mini`).
 - `-v, --verbose` — show progress spinners
 - `--no-history` — do not save this transcript to `~/.nota/history` (also disables duplicate detection, which relies on the history store)
 - `--force` — reprocess even if an identical audio file is already in history (overrides duplicate detection)
@@ -80,9 +86,31 @@ fallback to `~/.meetingsum/speakers.json`):
 Commands exit non-zero if a referenced profile is missing. Confirmation lines
 are written to stderr so stdout stays scriptable.
 
+## Model Settings
+
+Non-secret model preferences live in `~/.nota/settings.json` (schema exactly
+`{ "transcription": { "model": "..." }, "summary": { "model": "..." } }`).
+Secrets never go here — API keys stay in `~/.nota/config`. Precedence for each
+model is **CLI flag > settings.json > built-in default** (transcription
+`universal`, summary `gpt-5-mini`). Invalid or unknown entries in settings.json
+are warned about on stderr and ignored.
+
+- `nota settings list` — effective model + source (settings.json vs default); tab-separated rows on stdout, header on stderr
+- `nota settings get <path>` — print the effective value for a dot-path (`transcription.model` or `summary.model`)
+- `nota settings set <path> <value>` — validate against the registry and persist; invalid model exits non-zero listing valid ids
+- `nota settings unset <path>` — remove the key, reverting to the default
+
+Valid model ids (from `src/registry.ts`):
+- Transcription: `universal`, `slam-1`, `nano` (AssemblyAI); `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` (OpenAI)
+- Summary: `gpt-5-mini`, `gpt-5`, `gpt-4o`, `gpt-4.1` (OpenAI); `gemini-2.5-flash`, `gemini-2.5-pro` (Gemini)
+
+The macOS Settings window (Cmd+,) exposes the same pickers plus masked API-key
+management; it mirrors the registry in `macos/Nota/App/ModelRegistry.swift`.
+
 ## Key Design Decisions
 
 - Nota is the primary name; MeetingSum references exist only for backward compatibility.
+- Model registry (`src/registry.ts`) is the single source of truth: model id → task, provider, required API key env, base URL. Provider is derived, never stored. Gemini summarization reaches Google through the OpenAI-compatible endpoint (`GEMINI_OPENAI_BASE_URL`). Only the API keys the resolved models actually need are required — e.g. AssemblyAI transcription + Gemini summary needs `ASSEMBLYAI_API_KEY` + `GEMINI_API_KEY` and no OpenAI key.
 - AssemblyAI as default provider: transcription + diarization in one API call ($0.15/hr)
 - Whisper retained as fallback via `--provider whisper`
 - `.qta` files auto-converted to `.m4a` via ffmpeg before AssemblyAI upload
@@ -97,8 +125,9 @@ are written to stderr so stdout stays scriptable.
 
 - `ffmpeg` and `ffprobe` must be installed and in PATH
 - Node.js 18+
-- Environment variable: `OPENAI_API_KEY` (always required for GPT-4o summarization)
-- Environment variable: `ASSEMBLYAI_API_KEY` (required for default assemblyai provider)
+- Environment variable: `OPENAI_API_KEY` — required only when a resolved model is an OpenAI model (any `gpt-*`/`whisper-1` transcription or summary model). Not needed for, e.g., AssemblyAI transcription + Gemini summary.
+- Environment variable: `ASSEMBLYAI_API_KEY` — required when the resolved transcription model is an AssemblyAI model (`universal`/`slam-1`/`nano`, the default)
+- Environment variable: `GEMINI_API_KEY` — required when the resolved summary model is a Gemini model
 - Environment variable: `PICOVOICE_ACCESS_KEY` (required for `--identify` / speaker identity; free at https://console.picovoice.ai)
 - For `--provider whisper` only: Python 3.8+ with `pyannote.audio`, `HUGGINGFACE_TOKEN` (pyannote is used only for whisper-path diarization now, not speaker identity)
 

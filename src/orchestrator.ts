@@ -233,7 +233,8 @@ async function runAssemblyAIPipelineInner(
   // 2. Transcribe + diarize (single API call)
   let spinner = log(verbose, "Transcribing and diarizing with AssemblyAI...");
   const result = await transcribeWithAssemblyAI(inputPath, {
-    apiKey: config.assemblyaiApiKey!,
+    apiKey: config.transcriptionApiKey,
+    speechModel: config.transcriptionModel,
     numSpeakers: config.numSpeakers,
     language: config.language,
   });
@@ -280,12 +281,13 @@ async function runAssemblyAIPipelineInner(
   }
 
   // 3. Summarize
-  spinner = log(verbose, "Summarizing with GPT-4o...");
+  spinner = log(verbose, `Summarizing with ${config.summaryModel}...`);
   const summary = await summarizeTranscript(
     result.text,
-    config.openaiApiKey,
+    config.summaryApiKey,
     config.summaryModel,
     segments,
+    config.summaryBaseURL,
   );
   spinner?.succeed("Summary generated");
 
@@ -499,7 +501,12 @@ async function runWhisperPipeline(
   );
 
   const [transcriptions, diarization] = await Promise.all([
-    transcribeChunks(chunks, config.openaiApiKey, config.language),
+    transcribeChunks(
+      chunks,
+      config.transcriptionApiKey,
+      config.language,
+      config.transcriptionModel,
+    ),
     config.diarize ? runDiarization(inputPath) : Promise.resolve(null),
   ]);
   spinner?.succeed(
@@ -546,12 +553,13 @@ async function runWhisperPipeline(
   }
 
   // 5. Summarize
-  spinner = log(verbose, "Summarizing with GPT-4o...");
+  spinner = log(verbose, `Summarizing with ${config.summaryModel}...`);
   const summary = await summarizeTranscript(
     merged.text,
-    config.openaiApiKey,
+    config.summaryApiKey,
     config.summaryModel,
     diarization ? merged.segments : undefined,
+    config.summaryBaseURL,
   );
   spinner?.succeed("Summary generated");
 

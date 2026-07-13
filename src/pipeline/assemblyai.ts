@@ -33,6 +33,8 @@ function speakerLabel(letter: string): string {
 
 export interface AssemblyAIOptions {
   apiKey: string;
+  /** AssemblyAI speech_model id (e.g. "universal", "slam-1", "nano"). */
+  speechModel?: string;
   numSpeakers?: number;
   language?: string;
 }
@@ -56,8 +58,8 @@ export async function transcribeWithAssemblyAI(
   try {
     const params = {
       audio: uploadPath,
-      speech_models: ["universal-3-pro"],
       speaker_labels: true,
+      ...(options.speechModel ? { speech_model: options.speechModel } : {}),
       ...(options.numSpeakers ? { speakers_expected: options.numSpeakers } : {}),
       ...(options.language ? { language_code: options.language } : {}),
     } as TranscribeParams;

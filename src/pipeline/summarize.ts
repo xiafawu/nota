@@ -2,19 +2,10 @@ import OpenAI from "openai";
 import { shouldChunkTranscript, splitTranscriptIntoSections } from "../utils/tokens.js";
 import type { TranscriptSegment } from "./transcribe.js";
 
-/**
- * Google's Gemini exposes an OpenAI-compatible endpoint, so the same OpenAI
- * client summarizes with Gemini by swapping the base URL and using a
- * `gemini-*` model with GEMINI_API_KEY. See
- * https://ai.google.dev/gemini-api/docs/openai
- */
-export const GEMINI_OPENAI_BASE_URL =
-  "https://generativelanguage.googleapis.com/v1beta/openai/";
-
-/** True when a model name targets Gemini rather than OpenAI. */
-export function isGeminiModel(model: string): boolean {
-  return model.startsWith("gemini");
-}
+// The gemini base URL and provider check are owned by the model registry (the
+// single source of truth). Re-exported here so existing importers keep working.
+export { GEMINI_OPENAI_BASE_URL, isGeminiModel } from "../registry.js";
+import { GEMINI_OPENAI_BASE_URL, isGeminiModel } from "../registry.js";
 
 export interface MeetingSummary {
   title: string;
