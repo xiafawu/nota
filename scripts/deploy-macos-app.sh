@@ -22,11 +22,52 @@ trap cleanup EXIT
 cd "$PROJECT_DIR"
 
 npm run build
-npm run build:macos
+# Deploys always ship Release. Debug builds emit a stub executable that loads
+# @rpath/Nota.debug.dylib, which breaks the linkage assertions below and is
+# not what testers should be running from /Applications.
+NOTA_BUILD_CONFIG=release npm run build:macos
 
 if [ ! -d "$BUILD_APP" ]; then
   echo "Build did not produce $BUILD_APP" >&2
   exit 1
+fi
+
+# Liquid Glass linkage assertions (#13) — checked on the build product BEFORE
+# touching /Applications, so a failed check never leaves a stale bundle there.
+MIN_OS="$(defaults read "$BUILD_APP/Contents/Info.plist" LSMinimumSystemVersion)"
+if [ "$MIN_OS" != "26.0" ]; then
+  echo "Liquid Glass check failed: LSMinimumSystemVersion=$MIN_OS (expected 26.0)" >&2
+  exit 1
+fi
+
+# SwiftUI linkage lives in the main executable for Release builds; Xcode 26
+# Debug builds emit a stub that links @rpath/Nota.debug.dylib and carry the
+# SwiftUI linkage there instead.
+swiftui_linked() {
+  local exe="$1/Contents/MacOS/$APP_NAME"
+  otool -L "$exe" | grep -q SwiftUI.framework && return 0
+  local dylib
+  dylib="$(otool -L "$exe" | awk -v app="$APP_NAME" '$1 ~ "@rpath/" app "\\.debug\\.dylib" {print $1; exit}')"
+  dylib="${dylib#@rpath/}"
+  [ -n "$dylib" ] && [ -f "$1/Contents/MacOS/$dylib" ] &&
+    otool -L "$1/Contents/MacOS/$dylib" | grep -q SwiftUI.framework
+}
+
+if ! swiftui_linked "$BUILD_APP"; then
+  echo "Liquid Glass check failed: SwiftUI.framework not linked" >&2
+  exit 1
+fi
+
+# Smoke-test the build product before deploying for the same reason.
+if [ "${NOTA_SKIP_APP_SMOKE:-0}" != "1" ]; then
+  SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nota-app-smoke.XXXXXX")"
+  smoke_input="$SMOKE_DIR/smoke.m4a"
+  smoke_output="$SMOKE_DIR/smoke.summary.md"
+  printf 'nota app smoke input\n' > "$smoke_input"
+  NOTA_APP_RUNNER_SMOKE=1 NOTA_OUTPUT_DIR="$SMOKE_DIR/output" "$BUILD_APP/Contents/MacOS/$APP_NAME" \
+    --smoke-test "$smoke_input" \
+    --smoke-output "$smoke_output"
+  grep -q '# Nota App Smoke Test' "$smoke_output"
 fi
 
 mkdir -p "$DEPLOY_DIR"
@@ -55,28 +96,6 @@ fi
 
 if [ -x "$LSREGISTER" ]; then
   "$LSREGISTER" -f "$DEST_APP" || true
-fi
-
-# Liquid Glass linkage assertions (#13)
-MIN_OS="$(defaults read "$DEST_APP/Contents/Info.plist" LSMinimumSystemVersion)"
-if [ "$MIN_OS" != "26.0" ]; then
-  echo "Liquid Glass check failed: LSMinimumSystemVersion=$MIN_OS (expected 26.0)" >&2
-  exit 1
-fi
-if ! otool -L "$DEST_APP/Contents/MacOS/Nota" | grep -q SwiftUI.framework; then
-  echo "Liquid Glass check failed: SwiftUI.framework not linked" >&2
-  exit 1
-fi
-
-if [ "${NOTA_SKIP_APP_SMOKE:-0}" != "1" ]; then
-  SMOKE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/nota-app-smoke.XXXXXX")"
-  smoke_input="$SMOKE_DIR/smoke.m4a"
-  smoke_output="$SMOKE_DIR/smoke.summary.md"
-  printf 'nota app smoke input\n' > "$smoke_input"
-  NOTA_APP_RUNNER_SMOKE=1 NOTA_OUTPUT_DIR="$SMOKE_DIR/output" "$DEST_APP/Contents/MacOS/Nota" \
-    --smoke-test "$smoke_input" \
-    --smoke-output "$smoke_output"
-  grep -q '# Nota App Smoke Test' "$smoke_output"
 fi
 
 if [ "${NOTA_OPEN_AFTER_DEPLOY:-1}" = "1" ]; then
