@@ -1,11 +1,27 @@
 import { applyEnvFile } from "./utils/env-file.js";
+import {
+  DEFAULT_SUMMARY_MODEL,
+  DEFAULT_TRANSCRIPTION_MODEL,
+  requireModel,
+  type ModelEntry,
+} from "./registry.js";
+import { loadSettings, type NotaSettings } from "./utils/settings.js";
 
+/**
+ * Which pipeline branch runs. Derived from the resolved transcription model's
+ * provider (assemblyai models → assemblyai pipeline; openai transcription
+ * models → whisper pipeline). Not a user-facing provider selector — `--provider`
+ * survives only as a back-compat alias that seeds the transcription model.
+ */
 export type Provider = "assemblyai" | "whisper";
 
 export interface CLIOptions {
   output?: string;
   language?: string;
+  /** Summary model (`-m/--model`). */
   model?: string;
+  /** Transcription model (`--transcribe-model`). */
+  transcribeModel?: string;
   verbose?: boolean;
   diarize?: boolean;
   provider?: string;
@@ -17,9 +33,14 @@ export interface CLIOptions {
 
 export interface AppConfig {
   provider: Provider;
-  openaiApiKey: string;
-  assemblyaiApiKey?: string;
+  transcriptionModel: string;
   summaryModel: string;
+  /** API key for the transcription model's provider. */
+  transcriptionApiKey: string;
+  /** API key for the summary model's provider. */
+  summaryApiKey: string;
+  /** OpenAI-compatible base URL for the summary model (set for gemini). */
+  summaryBaseURL?: string;
   language?: string;
   verbose: boolean;
   diarize: boolean;
@@ -32,7 +53,7 @@ export interface AppConfig {
   picovoiceAccessKey?: string;
 }
 
-function parseProvider(provider?: string): Provider {
+function parseProviderAlias(provider?: string): Provider {
   if (!provider || provider === "assemblyai") return "assemblyai";
   if (provider === "whisper") return "whisper";
   throw new Error(
@@ -40,18 +61,34 @@ function parseProvider(provider?: string): Provider {
   );
 }
 
-export function loadConfig(options: CLIOptions): AppConfig {
-  // Fill unset API keys from ~/.nota/config before reading them (env wins).
-  applyEnvFile();
-
-  const openaiApiKey = process.env.OPENAI_API_KEY;
-  if (!openaiApiKey) {
+function requireKey(entry: ModelEntry): string {
+  const value = process.env[entry.apiKeyEnv];
+  if (!value) {
     throw new Error(
-      "OPENAI_API_KEY environment variable is required. Get one at https://platform.openai.com/api-keys",
+      `${entry.apiKeyEnv} environment variable is required for model ${entry.id}.`,
     );
   }
+  return value;
+}
 
-  const provider = parseProvider(options.provider);
+/**
+ * Resolve effective settings and API keys.
+ *
+ * Precedence for each model: CLI flag > settings.json > built-in default.
+ * `--provider` is a back-compat alias: it seeds the transcription default
+ * (`whisper` → `whisper-1`, `assemblyai` → `universal`) but yields to an
+ * explicit `--transcribe-model` flag or a `transcription.model` setting.
+ *
+ * Only the API keys the resolved models actually need are required.
+ *
+ * `settings` may be injected (tests); otherwise it is loaded from disk.
+ */
+export function loadConfig(
+  options: CLIOptions,
+  settings: NotaSettings = loadSettings(),
+): AppConfig {
+  // Fill unset API keys from ~/.nota/config before reading them (env wins).
+  applyEnvFile();
 
   if (
     options.numSpeakers !== undefined &&
@@ -60,19 +97,43 @@ export function loadConfig(options: CLIOptions): AppConfig {
     throw new Error("--num-speakers must be a positive integer");
   }
 
-  const assemblyaiApiKey = process.env.ASSEMBLYAI_API_KEY;
-  if (provider === "assemblyai" && !assemblyaiApiKey) {
-    throw new Error(
-      "ASSEMBLYAI_API_KEY environment variable is required when using assemblyai provider. " +
-        "Get one at https://www.assemblyai.com/dashboard/signup",
-    );
+  // Transcription model: explicit flag/setting wins over the --provider alias.
+  const explicitTranscription =
+    options.transcribeModel ?? settings.transcription?.model;
+  let transcriptionId: string;
+  if (explicitTranscription) {
+    transcriptionId = explicitTranscription;
+  } else {
+    const alias = parseProviderAlias(options.provider);
+    transcriptionId =
+      alias === "whisper" ? "whisper-1" : DEFAULT_TRANSCRIPTION_MODEL;
   }
+  // A bare `--provider whisper` with no transcription override is still valid,
+  // but `parseProviderAlias` also guards against unsupported provider strings.
+  if (explicitTranscription) parseProviderAlias(options.provider);
+
+  const transcriptionEntry = requireModel(transcriptionId, "transcription");
+
+  // Summary model.
+  const summaryId =
+    options.model ?? settings.summary?.model ?? DEFAULT_SUMMARY_MODEL;
+  const summaryEntry = requireModel(summaryId, "summary");
+
+  // Pipeline branch derives from the transcription provider.
+  const provider: Provider =
+    transcriptionEntry.provider === "assemblyai" ? "assemblyai" : "whisper";
+
+  // Require only the keys the resolved models need.
+  const transcriptionApiKey = requireKey(transcriptionEntry);
+  const summaryApiKey = requireKey(summaryEntry);
 
   return {
     provider,
-    openaiApiKey,
-    assemblyaiApiKey,
-    summaryModel: options.model ?? "gpt-4o",
+    transcriptionModel: transcriptionEntry.id,
+    summaryModel: summaryEntry.id,
+    transcriptionApiKey,
+    summaryApiKey,
+    summaryBaseURL: summaryEntry.baseURL,
     language: options.language,
     verbose: options.verbose ?? false,
     diarize: provider === "assemblyai" ? true : (options.diarize ?? true),

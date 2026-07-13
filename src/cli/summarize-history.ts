@@ -3,14 +3,23 @@ import {
   completeHistoryRecord,
   loadHistoryRecord,
 } from "../pipeline/history.js";
-import { isGeminiModel, summarizeTranscript } from "../pipeline/summarize.js";
+import { summarizeTranscript } from "../pipeline/summarize.js";
 import { defaultOutputPath, writeOutput } from "../pipeline/write.js";
+import { DEFAULT_SUMMARY_MODEL, getModel, requireModel } from "../registry.js";
+import { loadSettings, type NotaSettings } from "../utils/settings.js";
 
 export interface SummarizeHistoryOptions {
   model?: string;
   output?: string;
   force?: boolean;
   historyDir?: string;
+  /** Injectable for tests; loaded from disk otherwise. */
+  settings?: NotaSettings;
+}
+
+/** True only when `id` is a known summary model in the registry. */
+function validSummaryModel(id: string | undefined): id is string {
+  return !!id && getModel(id)?.task === "summary";
 }
 
 export async function summarizeHistory(
@@ -29,16 +38,25 @@ export async function summarizeHistory(
     return existing;
   }
 
-  const model = options?.model ?? record.options?.model ?? "gpt-4o";
-  const gemini = isGeminiModel(model);
-  const apiKey = gemini
-    ? process.env.GEMINI_API_KEY
-    : process.env.OPENAI_API_KEY;
+  // Precedence: explicit -m > the model the record was made with (when still a
+  // valid summary model) > settings.summary.model > built-in default.
+  const settings = options?.settings ?? loadSettings();
+  const modelId =
+    options?.model ??
+    (validSummaryModel(record.options?.model)
+      ? record.options!.model!
+      : undefined) ??
+    settings.summary?.model ??
+    DEFAULT_SUMMARY_MODEL;
+
+  // Registry is the single source of truth for provider, key, and base URL.
+  const entry = requireModel(modelId, "summary");
+  const apiKey = process.env[entry.apiKeyEnv];
   if (!apiKey) {
     throw new Error(
-      gemini
-        ? "GEMINI_API_KEY environment variable is required for gemini models. Get one at https://aistudio.google.com/apikey"
-        : "OPENAI_API_KEY environment variable is required. Get one at https://platform.openai.com/api-keys",
+      entry.provider === "gemini"
+        ? `${entry.apiKeyEnv} environment variable is required for gemini models. Get one at https://aistudio.google.com/apikey`
+        : `${entry.apiKeyEnv} environment variable is required. Get one at https://platform.openai.com/api-keys`,
     );
   }
 
@@ -48,8 +66,9 @@ export async function summarizeHistory(
   const summary = await summarizeTranscript(
     record.transcriptText,
     apiKey,
-    model,
+    entry.id,
     segments,
+    entry.baseURL,
   );
 
   const transcribedDate = new Date().toISOString().split("T")[0];

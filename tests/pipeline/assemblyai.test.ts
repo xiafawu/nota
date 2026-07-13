@@ -127,6 +127,23 @@ describe("transcribeWithAssemblyAI", () => {
     );
   });
 
+  it("passes the selected speech_model", async () => {
+    mockTranscribe.mockResolvedValue({
+      status: "completed",
+      text: "",
+      utterances: [],
+    });
+
+    await transcribeWithAssemblyAI("/fake/audio.mp3", {
+      apiKey: "test-key",
+      speechModel: "slam-1",
+    });
+
+    expect(mockTranscribe).toHaveBeenCalledWith(
+      expect.objectContaining({ speech_model: "slam-1" }),
+    );
+  });
+
   it("passes language_code when language provided", async () => {
     mockTranscribe.mockResolvedValue({
       status: "completed",

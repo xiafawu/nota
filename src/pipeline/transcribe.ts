@@ -23,7 +23,8 @@ export function formatTimestamp(seconds: number): string {
 export async function transcribeChunks(
   chunkPaths: string[],
   apiKey: string,
-  language?: string
+  language?: string,
+  model: string = "whisper-1"
 ): Promise<TranscriptionResult[]> {
   const client = new OpenAI({ apiKey });
   const limit = pLimit(3);
@@ -33,7 +34,7 @@ export async function transcribeChunks(
       limit(async () => {
         const response = await client.audio.transcriptions.create({
           file: createReadStream(chunkPath),
-          model: "whisper-1",
+          model,
           response_format: "verbose_json",
           timestamp_granularities: ["segment"],
           ...(language ? { language } : {}),

@@ -20,6 +20,12 @@ import { enrollSpeaker, EnrollError } from "./cli/enroll.js";
 import { printConfig } from "./cli/config.js";
 import { applyEnvFile } from "./utils/env-file.js";
 import { summarizeHistory } from "./cli/summarize-history.js";
+import {
+  settingsGet,
+  settingsList,
+  settingsSet,
+  settingsUnset,
+} from "./cli/settings.js";
 
 const program = new Command();
 
@@ -48,11 +54,18 @@ program
     "Output file path (default: <input>.summary.md)",
   )
   .option("-l, --language <lang>", "Audio language hint")
-  .option("-m, --model <model>", "GPT model to use for summarization", "gpt-4o")
+  .option(
+    "-m, --model <model>",
+    "Summary model id (overrides settings.json; see `nota settings`)",
+  )
+  .option(
+    "--transcribe-model <model>",
+    "Transcription model id (overrides settings.json and --provider)",
+  )
   .option("-v, --verbose", "Show progress for each pipeline stage")
   .option(
     "--provider <name>",
-    "Transcription provider: assemblyai or whisper",
+    "Back-compat alias seeding the transcription model: assemblyai or whisper",
     "assemblyai",
   )
   .option(
@@ -74,6 +87,7 @@ program
     try {
       const config = loadConfig({
         ...options,
+        transcribeModel: options.transcribeModel,
         diarize: options.diarize,
         numSpeakers: options.numSpeakers,
         identify: options.identify,
@@ -141,7 +155,10 @@ history
     "Summarize a saved transcript (recovers a transcribed-but-unsummarized record without re-transcribing)",
   )
   .argument("<id>", "History record id or unique prefix")
-  .option("-m, --model <model>", "GPT model to use for summarization", "gpt-4o")
+  .option(
+    "-m, --model <model>",
+    "Summary model id (defaults to the record's model, then settings, then the built-in default)",
+  )
   .option("-o, --output <path>", "Output markdown path")
   .option("--force", "Re-summarize even if the record is already completed")
   .action(async (id: string, options) => {
@@ -269,6 +286,65 @@ program
         `\nError: ${error instanceof Error ? error.message : String(error)}`,
       );
       process.exit(1);
+    }
+  });
+
+function handleSettingsError(error: unknown): never {
+  console.error(
+    `Error: ${error instanceof Error ? error.message : String(error)}`,
+  );
+  process.exit(1);
+}
+
+const settings = program
+  .command("settings")
+  .description("View and edit non-secret model preferences (~/.nota/settings.json)");
+
+settings
+  .command("list")
+  .description("Show effective model settings and their source")
+  .action(() => {
+    try {
+      settingsList();
+    } catch (error) {
+      handleSettingsError(error);
+    }
+  });
+
+settings
+  .command("get")
+  .description("Print the effective value at a dot-path (e.g. summary.model)")
+  .argument("<path>", "Dot-path such as transcription.model or summary.model")
+  .action((dotPath: string) => {
+    try {
+      settingsGet(dotPath);
+    } catch (error) {
+      handleSettingsError(error);
+    }
+  });
+
+settings
+  .command("set")
+  .description("Set a model at a dot-path (validated against the registry)")
+  .argument("<path>", "Dot-path such as transcription.model or summary.model")
+  .argument("<value>", "Model id")
+  .action((dotPath: string, value: string) => {
+    try {
+      settingsSet(dotPath, value);
+    } catch (error) {
+      handleSettingsError(error);
+    }
+  });
+
+settings
+  .command("unset")
+  .description("Remove a setting at a dot-path, reverting to the default")
+  .argument("<path>", "Dot-path such as transcription.model or summary.model")
+  .action((dotPath: string) => {
+    try {
+      settingsUnset(dotPath);
+    } catch (error) {
+      handleSettingsError(error);
     }
   });
 
