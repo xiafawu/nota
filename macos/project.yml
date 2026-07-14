@@ -33,6 +33,7 @@ targets:
       - path: Nota
         excludes:
           - "Info.plist"
+          - "Dictation/Tests"
           - "Assets/.gitignore"
           - "Assets/AppIcon.iconset"
           - "Assets/AppIcon.svg"
@@ -50,6 +51,9 @@ targets:
         # Primary icon: AppIcon.icon (Icon Composer). AppIcon.icns kept as
         # CFBundleIconFile fallback for contexts that don't read Assets.car.
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        # Deliberately no CODE_SIGN_ENTITLEMENTS: the main app is unsandboxed
+        # for the production dictation distribution path. NotaShare remains
+        # separately sandboxed below.
     dependencies:
       - target: NotaShare
         embed: true
@@ -70,11 +74,27 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: com.xiafawu.nota.share
         PRODUCT_NAME: NotaShare
 
+  NotaDictationTests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Nota/Dictation/Tests
+    dependencies:
+      - target: Nota
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.xiafawu.nota.dictation-tests
+        GENERATE_INFOPLIST_FILE: YES
+
 schemes:
   Nota:
     build:
       targets:
         Nota: all
+    test:
+      targets:
+        - name: NotaDictationTests
     run:
       config: Debug
     archive:
