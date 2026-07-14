@@ -6,6 +6,8 @@ import os
 final class DictationController: ObservableObject {
   @Published private(set) var state: DictationState = .disabled(reason: "Checking permissions…")
   @Published private(set) var lastCaptureDiagnostics: CaptureDiagnostics?
+  @Published private(set) var lastLatency: TimeInterval?
+  @Published private(set) var lastHypothesis: String?
 
   let permissions: PermissionsCoordinator
   let capture: MicCapture
@@ -15,6 +17,12 @@ final class DictationController: ObservableObject {
   private var hasStarted = false
   private var launchObserver: NSObjectProtocol?
   private var activationObserver: NSObjectProtocol?
+
+  // P2: speech + injection session state
+  private var speechStream: (any SpeechStream)?
+  private var holdBeganAt: Date?
+  private var isSessionPending = false  // true while awaiting speech.start()
+  private let injector = TextInjector()
 
   init(
     permissions: PermissionsCoordinator? = nil,
@@ -52,6 +60,16 @@ final class DictationController: ObservableObject {
       }
     }
 
+    // P2: route PCM buffers to the active speech stream
+    self.capture.onPCMBuffer = { [weak self] buffer in
+      guard let self, let stream = self.speechStream else { return }
+      do {
+        try stream.feed(buffer)
+      } catch {
+        self.logger.error("SpeechStream.feed failed: \(error.localizedDescription, privacy: .public)")
+      }
+    }
+
     applyPermissionGate()
   }
 
@@ -72,8 +90,7 @@ final class DictationController: ObservableObject {
   private func applyPermissionGate() {
     guard permissions.isReady else {
       if capture.isCapturing {
-        capture.stop()
-        lastCaptureDiagnostics = capture.diagnostics
+        cancelSession()
       }
       hotkeyMonitor.stop()
       state = .disabled(reason: permissions.blockingReason)
@@ -100,15 +117,18 @@ final class DictationController: ObservableObject {
   private func handle(_ transition: HotkeyTransition) {
     switch transition {
     case .began:
-      beginCaptureIfAvailable()
+      holdBeganAt = Date()
+      beginCaptureAndSpeech()
     case .ended:
-      endCaptureIfNeeded()
+      endCaptureAndFinalize()
     }
   }
 
-  private func beginCaptureIfAvailable() {
+  // MARK: - P2 session lifecycle
+
+  private func beginCaptureAndSpeech() {
     guard permissions.isReady, hotkeyMonitor.isRunning else { return }
-    guard !capture.isCapturing else { return }
+    guard !capture.isCapturing, !isSessionPending else { return }
 
     switch state {
     case .idle:
@@ -119,27 +139,129 @@ final class DictationController: ObservableObject {
       return
     }
 
-    do {
-      try capture.start()
-      state = .listening
-      logger.info("Fn/Globe hold started microphone capture")
-    } catch {
-      state = .failed(message: error.localizedDescription)
-      logger.error("microphone capture failed: \(error.localizedDescription, privacy: .public)")
+    isSessionPending = true
+
+    // Create a fresh Apple speech stream for this session
+    let stream = AppleSpeechStream()
+    speechStream = stream
+    lastHypothesis = nil
+
+    // Observe partial hypotheses for diagnostics
+    Task { [weak self] in
+      guard let self else { return }
+      for await hypothesis in stream.hypotheses {
+        await MainActor.run {
+          self.lastHypothesis = hypothesis.text
+          self.logger.debug("Hypothesis isFinal=\(hypothesis.isFinal) text=\"\(hypothesis.text, privacy: .public)\"")
+        }
+      }
+    }
+
+    // Start speech recognition first, then capture once ready
+    Task {
+      do {
+        try await stream.start()
+      } catch {
+        await MainActor.run {
+          self.isSessionPending = false
+          self.speechStream = nil
+          self.state = .failed(message: error.localizedDescription)
+          self.logger.error("AppleSpeechStream.start failed: \(error.localizedDescription, privacy: .public)")
+        }
+        return
+      }
+
+      // Speech is ready — now start microphone capture
+      await MainActor.run {
+        // Guard: user may have released the key while we were awaiting start
+        guard self.isSessionPending else {
+          stream.cancel()
+          self.speechStream = nil
+          return
+        }
+        do {
+          try self.capture.start()
+          self.isSessionPending = false
+          self.state = .listening
+          self.logger.info("Fn/Globe hold started dictation session")
+        } catch {
+          stream.cancel()
+          self.isSessionPending = false
+          self.speechStream = nil
+          self.state = .failed(message: error.localizedDescription)
+          self.logger.error("microphone capture failed: \(error.localizedDescription, privacy: .public)")
+        }
+      }
     }
   }
 
-  private func endCaptureIfNeeded() {
+  private func endCaptureAndFinalize() {
+    // If we're still awaiting speech.start(), cancel and return
+    if isSessionPending {
+      isSessionPending = false
+      speechStream?.cancel()
+      speechStream = nil
+      state = .idle
+      logger.info("Dictation session cancelled before speech started")
+      return
+    }
+
     guard capture.isCapturing else { return }
     capture.stop()
     lastCaptureDiagnostics = capture.diagnostics
-    state = permissions.isReady ? .idle : .disabled(reason: permissions.blockingReason)
 
-    if let diagnostics = lastCaptureDiagnostics {
-      logger.info(
-        "Fn/Globe hold ended session \(diagnostics.sessionID.uuidString, privacy: .public) buffers=\(diagnostics.bufferCount)"
-      )
+    state = .finalizing
+
+    Task {
+      let finalText: String
+      do {
+        finalText = try await speechStream?.finish() ?? ""
+      } catch is CancellationError {
+        await MainActor.run {
+          self.isSessionPending = false
+          self.state = .idle
+          self.speechStream = nil
+        }
+        return
+      } catch {
+        await MainActor.run {
+          self.isSessionPending = false
+          self.state = .failed(message: error.localizedDescription)
+          self.speechStream = nil
+          self.logger.error("SpeechStream.finish failed: \(error.localizedDescription, privacy: .public)")
+        }
+        return
+      }
+
+      await MainActor.run {
+        self.isSessionPending = false
+        let startTime = self.holdBeganAt ?? Date()
+        let latency = Date().timeIntervalSince(startTime)
+        self.lastLatency = latency
+        self.lastHypothesis = finalText
+
+        self.logger.info(
+          "Dictation session: latency=\(String(format: "%.2f", latency))s text=\"\(finalText, privacy: .public)\""
+        )
+
+        // Inject if we have text
+        if !finalText.isEmpty {
+          self.state = .injecting
+          self.injector.inject(finalText)
+          self.logger.info("Paste injection completed for \"\(finalText, privacy: .public)\"")
+        }
+
+        self.state = .idle
+        self.speechStream = nil
+      }
     }
+  }
+
+  private func cancelSession() {
+    speechStream?.cancel()
+    speechStream = nil
+    capture.stop()
+    lastCaptureDiagnostics = capture.diagnostics
   }
 
   deinit {
@@ -151,5 +273,6 @@ final class DictationController: ObservableObject {
     }
     hotkeyMonitor.stop()
     capture.stop()
+    speechStream?.cancel()
   }
 }

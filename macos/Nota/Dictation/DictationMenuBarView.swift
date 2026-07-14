@@ -81,20 +81,26 @@ struct DictationMenuBarView: View {
 
   private var readyContent: some View {
     VStack(alignment: .leading, spacing: 10) {
-      Label("Hold Fn/Globe to listen", systemImage: "globe")
+      Label("Hold Fn/Globe to dictate", systemImage: "globe")
         .font(.callout)
+
+      if let text = controller.lastHypothesis, controller.state == .idle {
+        Text("Last: \"\(text)\"")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .fixedSize(horizontal: false, vertical: true)
+      }
+
+      if let latency = controller.lastLatency, controller.state == .idle {
+        Text("Latency: \(String(format: "%.2f", latency))s")
+          .font(.caption)
+          .foregroundStyle(.secondary)
+      }
 
       if case .failed(let message) = controller.state {
         Label(message, systemImage: "exclamationmark.triangle")
           .font(.callout)
           .foregroundStyle(.orange)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-
-      if let diagnostics = controller.lastCaptureDiagnostics {
-        Text(diagnosticsSummary(diagnostics))
-          .font(.caption)
-          .foregroundStyle(.secondary)
           .fixedSize(horizontal: false, vertical: true)
       }
     }
@@ -141,7 +147,7 @@ struct PermissionsOnboardingView: View {
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
 
-      Text("System-wide injection is reserved for a Developer ID signed, hardened-runtime, notarized direct-download build. This ad-hoc development build is capture-only.")
+      Text("Paste injection is available once Accessibility permission is granted. Keystroke-by-keystroke injection requires a Developer ID signed, notarized direct-download build.")
         .font(.caption)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)

@@ -47,4 +47,42 @@ final class DictationStateTests: XCTestCase {
     }
     XCTAssertEqual(duration, 0.25, accuracy: 0.0001)
   }
+
+  // MARK: - P2 tests
+
+  func testHypothesisEquality() {
+    let a = Hypothesis(text: "hello", isFinal: false)
+    let b = Hypothesis(text: "hello", isFinal: false)
+    let c = Hypothesis(text: "hello world", isFinal: true)
+    XCTAssertEqual(a, b)
+    XCTAssertNotEqual(a, c)
+    XCTAssertFalse(a.isFinal)
+    XCTAssertTrue(c.isFinal)
+  }
+
+  func testP2StateTransitions() {
+    // P2 adds .finalizing and .injecting states
+    XCTAssertEqual(DictationState.finalizing.statusTitle, "Stopping")
+    XCTAssertEqual(DictationState.injecting.statusTitle, "Injecting")
+
+    // .finalizing and .injecting should have blue tint
+    let finalizingSymbol = DictationState.finalizing.symbolName
+    let injectingSymbol = DictationState.injecting.symbolName
+    XCTAssertFalse(finalizingSymbol.isEmpty)
+    XCTAssertFalse(injectingSymbol.isEmpty)
+  }
+
+  func testAppleSpeechErrorDescriptions() {
+    XCTAssertFalse(AppleSpeechError.unavailable.errorDescription?.isEmpty ?? true)
+    XCTAssertFalse(AppleSpeechError.notAuthorized.errorDescription?.isEmpty ?? true)
+    XCTAssertNotEqual(
+      AppleSpeechError.unavailable.errorDescription,
+      AppleSpeechError.notAuthorized.errorDescription
+    )
+  }
+
+  func testSpeechStreamProtocolShape() {
+    // Compile-time check that AppleSpeechStream conforms
+    let _: any SpeechStream = AppleSpeechStream()
+   }
 }
