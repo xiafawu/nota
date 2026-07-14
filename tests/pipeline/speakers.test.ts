@@ -1,24 +1,16 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   applySpeakerNames,
   loadProfiles,
+  matchProfiles,
   saveProfiles,
-  encodeProfile,
-  decodeProfile,
   rankMatches,
 } from "../../src/pipeline/speakers.js";
 import type { SpeakerStore } from "../../src/pipeline/speakers.js";
 import type { TranscriptSegment } from "../../src/pipeline/transcribe.js";
-
-describe("profile codec", () => {
-  it("round-trips bytes through base64", () => {
-    const bytes = new Uint8Array([0, 1, 250, 255, 42]);
-    expect(Array.from(decodeProfile(encodeProfile(bytes)))).toEqual([0, 1, 250, 255, 42]);
-  });
-});
 
 describe("rankMatches", () => {
   // names[i] is the speaker that the i-th enrolled voiceprint belongs to.
@@ -30,18 +22,18 @@ describe("rankMatches", () => {
     expect(out["Speaker 2"]).toEqual({ name: "Bob", confidence: 0.8 });
   });
 
-  it("flags the tentative band [0.4, 0.6)", () => {
-    const out = rankMatches({ "Speaker 1": [0.5, 0.0] }, names);
-    expect(out["Speaker 1"]).toEqual({ name: "Alice", confidence: 0.5, tentative: true });
+  it("flags the tentative band [0.35, 0.5)", () => {
+    const out = rankMatches({ "Speaker 1": [0.49, 0.0] }, names);
+    expect(out["Speaker 1"]).toEqual({ name: "Alice", confidence: 0.49, tentative: true });
   });
 
-  it("treats exactly 0.6 as confident (boundary)", () => {
-    const out = rankMatches({ "Speaker 1": [0.6, 0.0] }, names);
+  it("treats exactly 0.5 as confident (boundary)", () => {
+    const out = rankMatches({ "Speaker 1": [0.5, 0.0] }, names);
     expect(out["Speaker 1"].tentative).toBeUndefined();
   });
 
-  it("drops scores below the tentative floor 0.4", () => {
-    const out = rankMatches({ "Speaker 1": [0.39, 0.1] }, names);
+  it("drops scores below the tentative floor 0.35", () => {
+    const out = rankMatches({ "Speaker 1": [0.34, 0.1] }, names);
     expect(out["Speaker 1"]).toBeUndefined();
   });
 
@@ -66,7 +58,50 @@ describe("rankMatches", () => {
   });
 });
 
-describe("speaker store v3", () => {
+describe("matchProfiles", () => {
+  it("matches label embeddings to stored voiceprints by cosine", () => {
+    const store: SpeakerStore = {
+      version: 4,
+      speakers: {
+        Alice: {
+          voiceprints: [{ id: "a", embedding: [1, 0], enrolledAt: "t", source: "a.m4a" }],
+        },
+        Bob: {
+          voiceprints: [{ id: "b", embedding: [0, 1], enrolledAt: "t", source: "b.m4a" }],
+        },
+      },
+    };
+
+    expect(matchProfiles({ "Speaker 1": [1, 0], "Speaker 2": [0, 1] }, store)).toEqual({
+      "Speaker 1": { name: "Alice", confidence: 1 },
+      "Speaker 2": { name: "Bob", confidence: 1 },
+    });
+  });
+
+  it("uses the best cosine across multiple voiceprints for one name", () => {
+    const store: SpeakerStore = {
+      version: 4,
+      speakers: {
+        Alice: {
+          voiceprints: [
+            { id: "old", embedding: [-1, 0], enrolledAt: "t1", source: "old.m4a" },
+            { id: "new", embedding: [0.8, 0.6], enrolledAt: "t2", source: "new.m4a" },
+          ],
+        },
+        Bob: {
+          voiceprints: [{ id: "b", embedding: [0, 1], enrolledAt: "t", source: "b.m4a" }],
+        },
+      },
+    };
+
+    expect(matchProfiles({ "Speaker 1": [0.8, 0.6] }, store)["Speaker 1"]).toEqual({
+      name: "Alice",
+      confidence: 1,
+    });
+  });
+});
+
+describe("speaker store v4", () => {
   let dir: string;
   let file: string;
   beforeEach(async () => {
@@ -74,49 +109,100 @@ describe("speaker store v3", () => {
     file = path.join(dir, "speakers.json");
   });
   afterEach(async () => {
+    vi.restoreAllMocks();
     await rm(dir, { recursive: true, force: true });
   });
 
-  it("round-trips a v3 profile blob", async () => {
-    const bytes = new Uint8Array([1, 2, 3, 4]);
+  it("round-trips a v4 embedding", async () => {
     const store: SpeakerStore = {
-      version: 3,
+      version: 4,
       speakers: {
         Alice: {
           voiceprints: [
-            { id: "t", profile: encodeProfile(bytes), enrolledAt: "t", source: "a.m4a" },
+            { id: "t", embedding: [0.25, -0.5, 0.75], enrolledAt: "t", source: "a.m4a" },
           ],
         },
       },
     };
     await saveProfiles(store, file);
     const loaded = await loadProfiles(file);
-    expect(loaded.version).toBe(3);
-    expect(Array.from(decodeProfile(loaded.speakers.Alice.voiceprints[0].profile))).toEqual([
-      1, 2, 3, 4,
-    ]);
+    expect(loaded.version).toBe(4);
+    expect(loaded.speakers.Alice.voiceprints[0].embedding).toEqual([0.25, -0.5, 0.75]);
   });
 
-  it("drops legacy embedding records on load", async () => {
+  it("drops v3 Eagle profiles and warns that re-enrollment is required", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     await writeFile(
       file,
       JSON.stringify({
-        version: 2,
+        version: 3,
         speakers: {
           Bob: {
-            voiceprints: [{ id: "t", embedding: [0.1, 0.2], enrolledAt: "t", source: "b.m4a" }],
+            voiceprints: [{ id: "t", profile: "AQID", enrolledAt: "t", source: "b.m4a" }],
           },
         },
       }),
     );
     const loaded = await loadProfiles(file);
     expect(loaded.speakers.Bob).toBeUndefined();
-    expect(loaded.version).toBe(3);
+    expect(loaded.version).toBe(4);
+    expect(stderr).toHaveBeenCalledWith(
+      "dropped 1 Eagle speaker profile(s) incompatible with the ONNX backend; re-enroll to restore.\n",
+    );
   });
 
-  it("returns an empty v3 store when no file exists", async () => {
+  it("keeps valid embeddings while dropping Eagle voiceprints from a mixed store", async () => {
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    await writeFile(
+      file,
+      JSON.stringify({
+        version: 4,
+        speakers: {
+          Alice: {
+            voiceprints: [
+              { id: "onnx", embedding: [1, 0], enrolledAt: "t", source: "new.m4a" },
+              { id: "eagle", profile: "AQID", enrolledAt: "t", source: "old.m4a" },
+            ],
+          },
+        },
+      }),
+    );
+
     const loaded = await loadProfiles(file);
-    expect(loaded.version).toBe(3);
+
+    expect(loaded.speakers.Alice.voiceprints).toEqual([
+      { id: "onnx", embedding: [1, 0], enrolledAt: "t", source: "new.m4a" },
+    ]);
+    expect(stderr).toHaveBeenCalledWith(
+      "dropped 1 Eagle speaker profile(s) incompatible with the ONNX backend; re-enroll to restore.\n",
+    );
+  });
+
+  it("loads only non-empty numeric embedding arrays", async () => {
+    await writeFile(
+      file,
+      JSON.stringify({
+        version: 4,
+        speakers: {
+          Alice: {
+            voiceprints: [
+              { id: "valid", embedding: [1, 0], enrolledAt: "t", source: "a.m4a" },
+              { id: "empty", embedding: [], enrolledAt: "t", source: "b.m4a" },
+              { id: "string", embedding: [1, "0"], enrolledAt: "t", source: "c.m4a" },
+            ],
+          },
+        },
+      }),
+    );
+
+    const loaded = await loadProfiles(file);
+
+    expect(loaded.speakers.Alice.voiceprints.map(({ id }) => id)).toEqual(["valid"]);
+  });
+
+  it("returns an empty v4 store when no file exists", async () => {
+    const loaded = await loadProfiles(file);
+    expect(loaded.version).toBe(4);
     expect(loaded.speakers).toEqual({});
   });
 });

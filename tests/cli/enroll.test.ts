@@ -17,33 +17,33 @@ import {
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { enrollSpeaker, EnrollError } from "../../src/cli/enroll.js";
-import { decodeProfile, type SpeakerStore } from "../../src/pipeline/speakers.js";
+import type { SpeakerStore } from "../../src/pipeline/speakers.js";
 import type { HistoryRecord } from "../../src/pipeline/history.js";
 
-const ACCESS_KEY = "pv-test-key";
-
-// Mock the Eagle wrapper so tests run without a native engine or AccessKey.
-// isEagleAvailable keeps its real (key-presence) semantics; enrollProfile is a
-// spy; InsufficientSpeechError is a real class so enroll.ts `instanceof` works.
-vi.mock("../../src/pipeline/eagle.js", () => {
+// Mock the ONNX wrapper so tests run offline without downloading the model.
+// InsufficientSpeechError is a real class so enroll.ts `instanceof` works.
+vi.mock("../../src/pipeline/embed.js", () => {
   class InsufficientSpeechError extends Error {
     constructor() {
-      super("Not enough speech to enroll a voice profile");
+      super("Not enough speech to compute a speaker embedding");
       this.name = "InsufficientSpeechError";
     }
   }
   return {
-    isEagleAvailable: (k?: string) => Boolean(k && k.trim()),
-    enrollProfile: vi.fn(),
+    isIdentityAvailable: vi.fn(),
+    computeEmbedding: vi.fn(),
     InsufficientSpeechError,
   };
 });
 
-const eagle = await import("../../src/pipeline/eagle.js");
-const mockEnrollProfile = eagle.enrollProfile as MockedFunction<
-  typeof eagle.enrollProfile
+const embed = await import("../../src/pipeline/embed.js");
+const mockIsIdentityAvailable = embed.isIdentityAvailable as MockedFunction<
+  typeof embed.isIdentityAvailable
 >;
-const { InsufficientSpeechError } = eagle;
+const mockComputeEmbedding = embed.computeEmbedding as MockedFunction<
+  typeof embed.computeEmbedding
+>;
+const { InsufficientSpeechError } = embed;
 
 function makeHistoryRecord(overrides: Partial<HistoryRecord> = {}): HistoryRecord {
   return {
@@ -95,7 +95,8 @@ beforeEach(() => {
   mkdirSync(historyDir, { recursive: true });
   storePath = path.join(tempDir, "speakers.json");
   stderrSpy = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
-  mockEnrollProfile.mockResolvedValue(new Uint8Array([1, 2, 3, 4]));
+  mockIsIdentityAvailable.mockResolvedValue(true);
+  mockComputeEmbedding.mockResolvedValue(new Float32Array([0.6, 0.8]));
 });
 
 afterEach(() => {
@@ -105,22 +106,21 @@ afterEach(() => {
 });
 
 describe("enrollSpeaker – happy path", () => {
-  it("creates a profile and stores the base64 Eagle voiceprint", async () => {
+  it("creates a profile and stores the ONNX embedding voiceprint", async () => {
     const record = makeHistoryRecord();
     writeHistory(record);
     writeClip(record, "Speaker 1");
-    writeStore({ version: 3, speakers: {} });
+    writeStore({ version: 4, speakers: {} });
 
     await enrollSpeaker(record.id, "Speaker 1", "Alice", {
       storePath,
       historyDir,
-      accessKey: ACCESS_KEY,
     });
 
     const store = readStore();
     expect(store.speakers.Alice.voiceprints).toHaveLength(1);
     const vp = store.speakers.Alice.voiceprints[0];
-    expect(Array.from(decodeProfile(vp.profile))).toEqual([1, 2, 3, 4]);
+    expect(vp.embedding).toEqual([0.6000000238418579, 0.800000011920929]);
     expect(vp.source).toBe("nota-test-audio.mp3");
   });
 
@@ -129,16 +129,15 @@ describe("enrollSpeaker – happy path", () => {
     writeHistory(record);
     writeClip(record, "Speaker 1");
     writeStore({
-      version: 3,
+      version: 4,
       speakers: {
-        Alice: { voiceprints: [{ id: "old", profile: "AAA=", enrolledAt: "old", source: "o.m4a" }] },
+        Alice: { voiceprints: [{ id: "old", embedding: [1, 0], enrolledAt: "old", source: "o.m4a" }] },
       },
     });
 
     await enrollSpeaker(record.id, "Speaker 1", "Alice", {
       storePath,
       historyDir,
-      accessKey: ACCESS_KEY,
     });
 
     expect(readStore().speakers.Alice.voiceprints).toHaveLength(2);
@@ -146,40 +145,40 @@ describe("enrollSpeaker – happy path", () => {
 });
 
 describe("enrollSpeaker – error exit codes", () => {
-  it("exit 4 when no AccessKey is available", async () => {
+  it("exit 4 with actionable guidance when ONNX identity is unavailable", async () => {
     const record = makeHistoryRecord();
     writeHistory(record);
     writeClip(record, "Speaker 1");
-    writeStore({ version: 3, speakers: {} });
-    delete process.env.PICOVOICE_ACCESS_KEY;
+    writeStore({ version: 4, speakers: {} });
+    mockIsIdentityAvailable.mockResolvedValueOnce(false);
 
-    await expect(
-      enrollSpeaker(record.id, "Speaker 1", "Alice", { storePath, historyDir, accessKey: undefined }),
-    ).rejects.toMatchObject({ exitCode: 4 });
+    const promise = enrollSpeaker(record.id, "Speaker 1", "Alice", { storePath, historyDir });
+    await expect(promise).rejects.toMatchObject({ exitCode: 4 });
+    await expect(promise).rejects.toThrow(/model download.*onnxruntime-node/i);
   });
 
   it("exit 2 when the history record does not exist", async () => {
-    writeStore({ version: 3, speakers: {} });
+    writeStore({ version: 4, speakers: {} });
     await expect(
-      enrollSpeaker("nonexistent-id", "Speaker 1", "Alice", { storePath, historyDir, accessKey: ACCESS_KEY }),
+      enrollSpeaker("nonexistent-id", "Speaker 1", "Alice", { storePath, historyDir }),
     ).rejects.toMatchObject({ exitCode: 2 });
   });
 
   it("exit 3 when the speaker has no stored clip", async () => {
     const record = makeHistoryRecord({ speakerClips: {} });
     writeHistory(record);
-    writeStore({ version: 3, speakers: {} });
+    writeStore({ version: 4, speakers: {} });
     await expect(
-      enrollSpeaker(record.id, "Speaker 1", "Alice", { storePath, historyDir, accessKey: ACCESS_KEY }),
+      enrollSpeaker(record.id, "Speaker 1", "Alice", { storePath, historyDir }),
     ).rejects.toMatchObject({ exitCode: 3 });
   });
 
   it("exit 3 when the clip pointer exists but the file is missing", async () => {
     const record = makeHistoryRecord();
     writeHistory(record); // note: no writeClip — file absent
-    writeStore({ version: 3, speakers: {} });
+    writeStore({ version: 4, speakers: {} });
     await expect(
-      enrollSpeaker(record.id, "Speaker 1", "Alice", { storePath, historyDir, accessKey: ACCESS_KEY }),
+      enrollSpeaker(record.id, "Speaker 1", "Alice", { storePath, historyDir }),
     ).rejects.toMatchObject({ exitCode: 3 });
   });
 
@@ -187,23 +186,23 @@ describe("enrollSpeaker – error exit codes", () => {
     const record = makeHistoryRecord();
     writeHistory(record);
     writeClip(record, "Speaker 1");
-    writeStore({ version: 3, speakers: {} });
-    mockEnrollProfile.mockRejectedValueOnce(new InsufficientSpeechError());
+    writeStore({ version: 4, speakers: {} });
+    mockComputeEmbedding.mockRejectedValueOnce(new InsufficientSpeechError());
 
     await expect(
-      enrollSpeaker(record.id, "Speaker 1", "Alice", { storePath, historyDir, accessKey: ACCESS_KEY }),
+      enrollSpeaker(record.id, "Speaker 1", "Alice", { storePath, historyDir }),
     ).rejects.toMatchObject({ exitCode: 5 });
   });
 
-  it("exit 1 on any other Eagle failure", async () => {
+  it("exit 1 on any other ONNX failure", async () => {
     const record = makeHistoryRecord();
     writeHistory(record);
     writeClip(record, "Speaker 1");
-    writeStore({ version: 3, speakers: {} });
-    mockEnrollProfile.mockRejectedValueOnce(new Error("boom"));
+    writeStore({ version: 4, speakers: {} });
+    mockComputeEmbedding.mockRejectedValueOnce(new Error("boom"));
 
     await expect(
-      enrollSpeaker(record.id, "Speaker 1", "Alice", { storePath, historyDir, accessKey: ACCESS_KEY }),
+      enrollSpeaker(record.id, "Speaker 1", "Alice", { storePath, historyDir }),
     ).rejects.toMatchObject({ exitCode: 1 });
   });
 });

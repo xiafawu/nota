@@ -11,7 +11,6 @@ type KeySource = "env" | "file" | "absent";
 const KNOWN_KEYS = [
   "OPENAI_API_KEY",
   "ASSEMBLYAI_API_KEY",
-  "PICOVOICE_ACCESS_KEY",
   "HUGGINGFACE_TOKEN",
   "GEMINI_API_KEY",
 ];

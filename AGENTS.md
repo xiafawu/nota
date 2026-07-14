@@ -23,7 +23,7 @@ npm run dev -- <audio-file> -v
 npm run dev -- <audio-file> -v -o output.md
 
 # Remember recurring speakers by voice
-PYTHON_BIN=python3.11 npm run dev -- <audio-file> -v --identify
+npm run dev -- <audio-file> -v --identify
 
 # Whisper fallback with pyannote diarization
 PYTHON_BIN=python3.11 npm run dev -- <audio-file> -v --provider whisper
@@ -36,10 +36,13 @@ npm run dev -- <audio-file> -v --provider whisper --no-diarize
 
 | Variable | Required | Purpose |
 |---|---|---|
-| `OPENAI_API_KEY` | Always | GPT-4o summarization; Whisper transcription when `--provider whisper` |
+| `OPENAI_API_KEY` | Resolved OpenAI model | OpenAI transcription or summarization |
 | `ASSEMBLYAI_API_KEY` | Default provider | AssemblyAI transcription + diarization |
-| `HUGGINGFACE_TOKEN` | Whisper diarization or `--identify` | pyannote.audio model access (gated models) |
-| `PYTHON_BIN` | If python3 != 3.11 for pyannote flows | Path to Python with pyannote installed (default: `python3`) |
+| `HUGGINGFACE_TOKEN` | Whisper diarization only | pyannote.audio model access (gated models) |
+| `PYTHON_BIN` | If python3 != 3.11 for Whisper diarization | Path to Python with pyannote installed (default: `python3`) |
+
+Speaker identity needs no API key or Python. On first use, Nota downloads the
+checksum-pinned ONNX model and caches it under `~/.nota/models/`.
 
 ## Common Pitfalls
 
@@ -47,7 +50,7 @@ npm run dev -- <audio-file> -v --provider whisper --no-diarize
 Running without `--provider` uses AssemblyAI, so `ASSEMBLYAI_API_KEY` must be set. Use `--provider whisper` to use OpenAI Whisper instead.
 
 ### Python version mismatch
-The owner's system has `python3` → Python 3.14 but pyannote is installed under `python3.11`. Always set `PYTHON_BIN=python3.11` when running `--provider whisper` with diarization or when using `--identify`.
+The owner's system has `python3` → Python 3.14 but pyannote is installed under `python3.11`. Set `PYTHON_BIN=python3.11` when running `--provider whisper` with diarization. `--identify` does not use Python.
 
 ### HuggingFace gated model access
 The pyannote flows require accepting licenses for gated models on huggingface.co:
@@ -57,6 +60,9 @@ The pyannote flows require accepting licenses for gated models on huggingface.co
 4. `pyannote/embedding`
 
 Fine-grained HuggingFace tokens also need the **"Access public gated repos"** permission enabled.
+
+These gated models are used only for Whisper-path diarization. ONNX speaker
+identity does not use Hugging Face credentials.
 
 ### Voice Memos files
 macOS Voice Memos temp paths (`.com.apple.uikit.itemprovider.temporary.*`) are ephemeral — they disappear when the share sheet closes. Copy files to `audio/` before processing. The `audio/` directory is gitignored.
@@ -104,11 +110,13 @@ Audio File
 | `src/pipeline/transcribe.ts` | Whisper API calls (parallel via p-limit) |
 | `src/pipeline/diarize.ts` | Spawns Python subprocess, aligns speakers |
 | `src/pipeline/merge.ts` | Transcript merging with overlap dedup |
-| `src/pipeline/speakers.ts` | Persistent speaker voiceprint matching |
+| `src/pipeline/embed.ts` | Pure-Node ONNX d-vector inference and cosine similarity |
+| `src/pipeline/speakers.ts` | Schema-v4 persistent speaker voiceprint matching |
 | `src/pipeline/summarize.ts` | GPT-4o summarization with speaker awareness |
 | `src/pipeline/write.ts` | Markdown output generation |
+| `src/utils/model.ts` | Checksum-verified ONNX model download/cache |
+| `src/utils/pcm.ts` | 16 kHz mono PCM decoding and clip helpers |
 | `scripts/diarize.py` | Python script for pyannote speaker diarization |
-| `scripts/embeddings.py` | Python script for pyannote speaker embeddings |
 | `scripts/nota-share.sh` | macOS Shortcuts/Automator share handler |
 | `scripts/meetingsum-share.sh` | Backward-compatible wrapper for existing shortcuts |
 

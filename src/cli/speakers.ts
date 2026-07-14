@@ -1,6 +1,5 @@
 import {
   DEFAULT_SPEAKERS_FILE,
-  decodeProfile,
   loadProfiles,
   saveProfiles,
   type SpeakerProfile,
@@ -74,7 +73,7 @@ export async function listSpeakers(
         vp.id,
         vp.enrolledAt,
         vp.source,
-        String(decodeProfile(vp.profile).length),
+        String(vp.embedding.length),
       ].join("\t");
       process.stdout.write(`${line}\n`);
     }
@@ -213,7 +212,7 @@ export async function showSpeaker(
       id: vp.id,
       enrolledAt: vp.enrolledAt,
       source: vp.source,
-      profileBytes: decodeProfile(vp.profile).length,
+      embeddingDimension: vp.embedding.length,
     })),
   };
   process.stdout.write(`${JSON.stringify(view, null, 2)}\n`);

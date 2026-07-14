@@ -1,7 +1,6 @@
 import { access, readFile } from "node:fs/promises";
 import {
   DEFAULT_SPEAKERS_FILE,
-  encodeProfile,
   loadProfiles,
   saveProfiles,
 } from "../pipeline/speakers.js";
@@ -12,23 +11,21 @@ import {
   type HistoryRecord,
 } from "../pipeline/history.js";
 import {
-  isEagleAvailable,
-  enrollProfile,
+  isIdentityAvailable,
+  computeEmbedding,
   InsufficientSpeechError,
-} from "../pipeline/eagle.js";
+} from "../pipeline/embed.js";
 
 export interface EnrollOptions {
   storePath?: string;
   historyDir?: string;
-  /** Picovoice AccessKey; falls back to PICOVOICE_ACCESS_KEY. */
-  accessKey?: string;
 }
 
 // Exit codes (the macOS EnrollQueue maps these to chip indicators):
 //   0 success
 //   2 history record not found
 //   3 stored speaker clip missing
-//   4 Eagle unavailable (no AccessKey)
+//   4 ONNX speaker identity unavailable
 //   5 insufficient speech to enroll
 //   1 other
 
@@ -59,13 +56,12 @@ export async function enrollSpeaker(
 ): Promise<void> {
   const storePath = options?.storePath ?? DEFAULT_SPEAKERS_FILE;
   const historyDir = options?.historyDir ?? DEFAULT_HISTORY_DIR;
-  const accessKey = options?.accessKey ?? process.env.PICOVOICE_ACCESS_KEY;
 
-  // 0. Eagle must be available (exit 4).
-  if (!isEagleAvailable(accessKey)) {
+  // 0. The ONNX model and runtime must be available (exit 4).
+  if (!(await isIdentityAvailable())) {
     throw new EnrollError(
-      "PICOVOICE_ACCESS_KEY is required for Eagle enrollment. " +
-        "Get a free key at https://console.picovoice.ai.",
+      "ONNX speaker identity is unavailable. Check the model download and " +
+        "onnxruntime-node installation, then retry.",
       4,
     );
   }
@@ -95,15 +91,15 @@ export async function enrollSpeaker(
     );
   }
 
-  // 3. Decode the stored PCM and build an Eagle profile (exit 5 if too little
-  //    speech, exit 1 for any other Eagle failure).
+  // 3. Decode the stored PCM and compute its ONNX d-vector (exit 5 if too
+  //    little speech, exit 1 for any other model/runtime failure).
   const buf = await readFile(clipPath);
   const pcm = new Int16Array(buf.length / 2);
   for (let i = 0; i < pcm.length; i++) pcm[i] = buf.readInt16LE(i * 2);
 
-  let profileBytes: Uint8Array;
+  let embedding: Float32Array;
   try {
-    profileBytes = await enrollProfile(accessKey!, pcm);
+    embedding = await computeEmbedding(pcm);
   } catch (error) {
     if (error instanceof InsufficientSpeechError) {
       throw new EnrollError(error.message, 5);
@@ -114,12 +110,12 @@ export async function enrollSpeaker(
     );
   }
 
-  // 4. Append the voiceprint to the named profile (v3 pointer model).
+  // 4. Append the voiceprint to the named profile (v4 embedding model).
   const store = await loadProfiles(storePath);
   const now = new Date().toISOString();
   const voiceprint = {
     id: now,
-    profile: encodeProfile(profileBytes),
+    embedding: Array.from(embedding),
     enrolledAt: now,
     source: record.sourceName,
   };

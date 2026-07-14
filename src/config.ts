@@ -49,8 +49,6 @@ export interface AppConfig {
   history: boolean;
   /** Reprocess even when an identical audio file is already in history. */
   force: boolean;
-  /** Picovoice AccessKey for on-device Eagle speaker recognition (identity). */
-  picovoiceAccessKey?: string;
 }
 
 function parseProviderAlias(provider?: string): Provider {
@@ -141,6 +139,5 @@ export function loadConfig(
     identify: options.identify ?? false,
     history: options.history ?? true,
     force: options.force ?? false,
-    picovoiceAccessKey: process.env.PICOVOICE_ACCESS_KEY,
   };
 }

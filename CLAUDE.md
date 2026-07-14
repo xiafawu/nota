@@ -51,8 +51,10 @@ Two pipeline paths controlled by `--provider`:
   - `merge.ts` — concatenates transcripts, deduplicates overlap regions (whisper only)
   - `summarize.ts` — sends transcript to the resolved summary model (OpenAI or Gemini via the OpenAI-compatible endpoint); for >100k tokens, does section-by-section then roll-up
   - `diarize.ts` — calls Python pyannote script, aligns speaker labels (whisper only)
+  - `embed.ts` — computes ONNX WeSpeaker d-vectors in Node and compares them by cosine similarity
+  - `speakers.ts` — loads the persistent v4 voiceprint store and matches diarized labels to enrolled speakers
   - `write.ts` — generates markdown output file; header carries **Captured** (recording time from container metadata, fs-birthtime fallback) and **Transcribed** (processing time) dates
-- **src/utils/** — Shared helpers: ffmpeg wrapper (`ffmpeg.ts`), token estimation (`tokens.ts`), capture-date resolution (`capture-date.ts`).
+- **src/utils/** — Shared helpers: ffmpeg wrapper (`ffmpeg.ts`), PCM decoding/slicing (`pcm.ts`), ONNX model download/cache (`model.ts`), token estimation (`tokens.ts`), capture-date resolution (`capture-date.ts`).
 
 ## CLI Flags
 
@@ -77,11 +79,13 @@ summary instead of re-running paid transcription. See Key Design Decisions.
 Manage enrolled speaker voiceprints (`~/.nota/speakers.json`, with legacy
 fallback to `~/.meetingsum/speakers.json`):
 
-- `nota speakers list` — print one tab-separated row per voiceprint (name, voiceprint id, enrolledAt, source, profile size in bytes) on stdout
-- `nota speakers show <name>` — print profile JSON (each voiceprint's Eagle profile shown as a byte size)
+- `nota speakers list` — print one tab-separated row per voiceprint (name, voiceprint id, enrolledAt, source, embedding dimension) on stdout
+- `nota speakers show <name>` — print profile JSON with each voiceprint's metadata and embedding dimension (not the full vector)
 - `nota speakers rename <old> <new>` — rename a profile key
 - `nota speakers delete <name>` — remove a profile
 - `nota speakers merge <src> <dst>` — concatenate `<src>`'s voiceprints into `<dst>` (dedup by id), drop `<src>`
+- `nota speakers reassign <vp-id> <new-name>` — move one voiceprint to another speaker profile
+- `nota enroll <history-id> <speaker-label> <name>` — enroll a stored per-speaker history clip
 
 Commands exit non-zero if a referenced profile is missing. Confirmation lines
 are written to stderr so stdout stays scriptable.
@@ -114,7 +118,8 @@ management; it mirrors the registry in `macos/Nota/App/ModelRegistry.swift`.
 - AssemblyAI as default provider: transcription + diarization in one API call ($0.15/hr)
 - Whisper retained as fallback via `--provider whisper`
 - `.qta` files auto-converted to `.m4a` via ffmpeg before AssemblyAI upload
-- Speaker identity uses on-device Picovoice Eagle (`@picovoice/eagle-node`), not pyannote. Voice embeddings are captured **during** the pipeline run (the source audio is often a temp file deleted afterward): a short per-speaker PCM clip is saved under `~/.nota/history/<id>.assets/<label>.pcm`, and naming a speaker later enrolls an Eagle profile from that stored clip — so it works without the original audio. Store schema v3 holds base64 Eagle profiles under `~/.nota/speakers.json`; legacy pyannote `embedding` records are dropped on load (re-enroll to restore). Requires `PICOVOICE_ACCESS_KEY`; without it, identity no-ops with a clear message.
+- Speaker identity is a pure-Node ONNX d-vector pipeline: `onnxruntime-node` runs the WeSpeaker ResNet34-LM model over JavaScript-computed Kaldi fbank features, and stored L2-normalized embeddings are matched by cosine similarity. It needs no Python, hosted API, or identity-specific API key. The pinned model is downloaded on first use, checksum-verified, and cached at `~/.nota/models/wespeaker_en_voxceleb_resnet34_LM.onnx`; if the model or native runtime cannot load, identity no-ops with a clear message while the rest of the pipeline continues.
+- Voice audio is captured **during** the pipeline run (the source audio is often a temp file deleted afterward): a short per-speaker PCM clip is saved under `~/.nota/history/<id>.assets/<label>.pcm`, and naming a speaker later enrolls an ONNX embedding from that stored clip, so enrollment works without the original audio. Speaker store schema v4 holds numeric d-vector arrays under `~/.nota/speakers.json`; incompatible v3 Eagle voiceprints are dropped with a warning and must be re-enrolled.
 - Optional `--identify` recognizes enrolled speakers automatically and prompts for unknown ones (interactive TTY); freshly-typed names are enrolled inline from the captured clip
 - Long transcripts (>100k tokens) are summarized in sections then rolled up
 - Output saved as markdown file next to input by default
@@ -128,8 +133,8 @@ management; it mirrors the registry in `macos/Nota/App/ModelRegistry.swift`.
 - Environment variable: `OPENAI_API_KEY` — required only when a resolved model is an OpenAI model (any `gpt-*`/`whisper-1` transcription or summary model). Not needed for, e.g., AssemblyAI transcription + Gemini summary.
 - Environment variable: `ASSEMBLYAI_API_KEY` — required when the resolved transcription model is an AssemblyAI model (`universal`/`slam-1`/`nano`, the default)
 - Environment variable: `GEMINI_API_KEY` — required when the resolved summary model is a Gemini model
-- Environment variable: `PICOVOICE_ACCESS_KEY` (required for `--identify` / speaker identity; free at https://console.picovoice.ai)
-- For `--provider whisper` only: Python 3.8+ with `pyannote.audio`, `HUGGINGFACE_TOKEN` (pyannote is used only for whisper-path diarization now, not speaker identity)
+- Speaker identity (`--identify` and `nota enroll`) needs no API key or Python. It uses `onnxruntime-node` and auto-downloads its checksum-pinned ONNX model on first use.
+- For `--provider whisper` with diarization only: Python 3.8+ with `pyannote.audio`, plus `HUGGINGFACE_TOKEN` (pyannote is not used for speaker identity)
 
 ### API-key config file
 

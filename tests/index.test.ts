@@ -35,6 +35,16 @@ describe("CLI", () => {
     expect(output).toContain("show");
   });
 
+  it("describes speaker show output as embedding metadata", () => {
+    const output = execFileSync(
+      "npx",
+      ["tsx", "src/index.ts", "speakers", "show", "--help"],
+      { encoding: "utf-8" },
+    );
+    expect(output).toContain("embedding dimension");
+    expect(output).not.toContain("truncated");
+  });
+
   it("shows version with --version flag", () => {
     const output = execFileSync("npx", ["tsx", "src/index.ts", "--version"], {
       encoding: "utf-8",

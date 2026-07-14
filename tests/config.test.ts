@@ -199,10 +199,10 @@ describe("loadConfig", () => {
     expect(loadConfig({ history: false }, NO_SETTINGS).history).toBe(false);
   });
 
-  it("reads PICOVOICE_ACCESS_KEY into config", () => {
+  it("does not expose the legacy Picovoice key in config", () => {
     process.env.ASSEMBLYAI_API_KEY = "aai-test";
     process.env.OPENAI_API_KEY = "sk-test";
     process.env.PICOVOICE_ACCESS_KEY = "pv-test";
-    expect(loadConfig({}, NO_SETTINGS).picovoiceAccessKey).toBe("pv-test");
+    expect(loadConfig({}, NO_SETTINGS)).not.toHaveProperty("picovoiceAccessKey");
   });
 });

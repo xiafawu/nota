@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import path from "node:path";
 import { createInterface } from "node:readline";
 import type { TranscriptSegment } from "./transcribe.js";
-import { recognize, MATCH_THRESHOLD, TENTATIVE_THRESHOLD } from "./eagle.js";
+import { cosine, MATCH_THRESHOLD, TENTATIVE_THRESHOLD } from "./embed.js";
 
 const SPEAKERS_DIR = path.join(homedir(), ".nota");
 const LEGACY_SPEAKERS_FILE = path.join(homedir(), ".meetingsum", "speakers.json");
@@ -14,18 +14,14 @@ export const DEFAULT_LEGACY_SPEAKERS_FILE = LEGACY_SPEAKERS_FILE;
 
 export type MatchResult = { name: string; confidence: number; tentative?: boolean };
 
-// Schema v3: a profile is a *pointer* — one name maps to N voiceprints (one
-// per enrollment event). Each voiceprint stores a base64-encoded Picovoice
-// Eagle speaker profile (opaque bytes), not a float embedding. Recognition
-// scores a recording's speaker against every voiceprint and takes the max, so
-// adding voiceprints can only help recall. Legacy v1/v2 records carried a
-// pyannote `embedding: number[]`; those cannot be converted to an Eagle
-// profile and are dropped on load (see `loadProfiles`).
+// Schema v4: one name maps to N ONNX d-vector voiceprints (one per enrollment
+// event). Matching scores a label embedding against every voiceprint, so
+// adding voiceprints can only help recall.
 export interface Voiceprint {
   /** ISO timestamp of enrollment — also serves as stable CLI handle. */
   id: string;
-  /** base64-encoded Eagle speaker profile bytes. */
-  profile: string;
+  /** L2-normalized ONNX speaker embedding. */
+  embedding: number[];
   enrolledAt: string;
   source: string;
 }
@@ -39,12 +35,7 @@ export interface SpeakerStore {
   speakers: Record<string, SpeakerProfile>;
 }
 
-const STORE_VERSION = 3;
-
-export const encodeProfile = (bytes: Uint8Array): string =>
-  Buffer.from(bytes).toString("base64");
-export const decodeProfile = (b64: string): Uint8Array =>
-  new Uint8Array(Buffer.from(b64, "base64"));
+const STORE_VERSION = 4;
 
 export async function loadProfiles(
   filePath: string = SPEAKERS_FILE,
@@ -68,25 +59,32 @@ export async function loadProfiles(
     return { version: STORE_VERSION, speakers: {} };
   }
 
-  // Keep only v3-shaped voiceprints (those carrying a string `profile`). A
-  // legacy record carrying only `embedding` cannot be converted to an Eagle
-  // profile, so it is dropped — the user re-enrolls with Eagle.
+  // Keep only v4-shaped voiceprints carrying a non-empty numeric embedding.
   const speakersRaw = (raw as { speakers?: Record<string, unknown> }).speakers ?? {};
   const speakers: Record<string, SpeakerProfile> = {};
   let dropped = 0;
   for (const [name, profile] of Object.entries(speakersRaw)) {
-    const vps = ((profile as { voiceprints?: unknown[] })?.voiceprints ?? []).filter(
-      (vp): vp is Voiceprint => typeof (vp as Voiceprint)?.profile === "string",
+    const rawVoiceprints = (profile as { voiceprints?: unknown })?.voiceprints;
+    const voiceprints = Array.isArray(rawVoiceprints) ? rawVoiceprints : [];
+    dropped += voiceprints.filter(
+      (vp) => typeof (vp as { profile?: unknown })?.profile === "string",
+    ).length;
+    const vps = voiceprints.filter(
+      (vp): vp is Voiceprint => {
+        const embedding = (vp as Partial<Voiceprint>)?.embedding;
+        return (
+          Array.isArray(embedding) &&
+          embedding.length > 0 &&
+          embedding.every((value) => typeof value === "number" && Number.isFinite(value))
+        );
+      },
     );
-    if (vps.length === 0) {
-      dropped++;
-      continue;
-    }
+    if (vps.length === 0) continue;
     speakers[name] = { voiceprints: vps };
   }
   if (dropped > 0) {
     process.stderr.write(
-      `Note: dropped ${dropped} legacy pyannote speaker profile(s) incompatible with Eagle; re-enroll to restore them.\n`,
+      `dropped ${dropped} Eagle speaker profile(s) incompatible with the ONNX backend; re-enroll to restore.\n`,
     );
   }
   return { version: STORE_VERSION, speakers };
@@ -102,7 +100,7 @@ export async function saveProfiles(
 
 /**
  * Assign enrolled names to diarized labels from a per-label score vector.
- * `scoredByLabel[label][i]` is the mean Eagle score of `label` against the
+ * `scoredByLabel[label][i]` is the cosine score of `label` against the
  * i-th enrolled voiceprint; `names[i]` is the speaker name that voiceprint
  * belongs to. Greedy global assignment: sort every (label, voiceprint)
  * candidate at/above the tentative floor by score, then claim each label and
@@ -137,25 +135,29 @@ export function rankMatches(
 }
 
 /**
- * Recognize enrolled speakers in a recording. Flattens the store into a
- * parallel (name, profile-bytes) list, scores each label's PCM against all
- * profiles via Eagle, then resolves names with `rankMatches`.
+ * Match label embeddings against all enrolled voiceprints, then resolve names
+ * with `rankMatches`. Duplicate names in the flattened candidates make the
+ * highest-scoring voiceprint for that name win effectively.
  */
 export function matchProfiles(
-  accessKey: string,
-  pcmByLabel: Record<string, Int16Array>,
+  labelEmbeddings: Record<string, number[]>,
   store: SpeakerStore,
 ): Record<string, MatchResult> {
   const names: string[] = [];
-  const bytes: Uint8Array[] = [];
+  const embeddings: number[][] = [];
   for (const [name, profile] of Object.entries(store.speakers)) {
     for (const vp of profile.voiceprints) {
       names.push(name);
-      bytes.push(decodeProfile(vp.profile));
+      embeddings.push(vp.embedding);
     }
   }
-  if (bytes.length === 0) return {};
-  return rankMatches(recognize(accessKey, pcmByLabel, bytes), names);
+  if (embeddings.length === 0) return {};
+
+  const scoredByLabel: Record<string, number[]> = {};
+  for (const [label, embedding] of Object.entries(labelEmbeddings)) {
+    scoredByLabel[label] = embeddings.map((voiceprint) => cosine(embedding, voiceprint));
+  }
+  return rankMatches(scoredByLabel, names);
 }
 
 export interface TentativeMatch {

@@ -54,7 +54,7 @@ export PATH="/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PAT
 load_user_environment
 
 # Pull all keys from the user's secrets file generically so new providers
-# (PICOVOICE_ACCESS_KEY, GEMINI_API_KEY, ...) need no edit to the harvest list above.
+# (for example, GEMINI_API_KEY) need no edit to the harvest list above.
 if [ -f "$HOME/.secrets" ]; then
   set +u; set -a
   . "$HOME/.secrets" 2>/dev/null || true

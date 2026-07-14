@@ -31,11 +31,14 @@ import {
   loadProfiles,
   saveProfiles,
   matchProfiles,
-  encodeProfile,
   promptForSpeakerNames,
   applySpeakerNames,
 } from "./pipeline/speakers.js";
-import { isEagleAvailable, enrollProfile } from "./pipeline/eagle.js";
+import {
+  computeEmbedding,
+  computeEmbeddings,
+  isIdentityAvailable,
+} from "./pipeline/embed.js";
 import { decodePcm, slicePcm, concatToSeconds, SAMPLE_RATE } from "./utils/pcm.js";
 import type { TranscriptSegment } from "./pipeline/transcribe.js";
 
@@ -324,8 +327,8 @@ export const CLIP_MIN_SEC = 5;
 
 /**
  * Pick a speaker's longest utterances, in descending duration, until their
- * total covers `targetSec`. Longest-first maximizes clean speech for Eagle
- * enrollment within a bounded clip.
+ * total covers `targetSec`. Longest-first maximizes clean speech for ONNX
+ * embedding within a bounded clip.
  */
 export function selectClipRanges(
   segments: TranscriptSegment[],
@@ -352,22 +355,28 @@ interface IdentifyOutput {
   clips: Record<string, Int16Array>;
 }
 
-async function identifySpeakers(
+export async function identifySpeakers(
   inputPath: string,
   segments: TranscriptSegment[],
   config: AppConfig,
   verbose: boolean,
 ): Promise<IdentifyOutput> {
-  if (!isEagleAvailable(config.picovoiceAccessKey)) {
+  let identityAvailable = false;
+  try {
+    identityAvailable = await isIdentityAvailable();
+  } catch {
+    // Availability is a soft gate: native runtime/model failures must never
+    // abort transcription or summarization.
+  }
+  if (!identityAvailable) {
     console.error(
-      "Speaker identity unavailable: set PICOVOICE_ACCESS_KEY (free at " +
-        "https://console.picovoice.ai) to recognize speakers across " +
-        "recordings. Using generic labels.",
+      "Speaker identity unavailable: the ONNX model or onnxruntime-node could " +
+        "not be loaded. Check the model download and installation, then retry. " +
+        "Using generic labels.",
     );
     return { segments, clips: {} };
   }
-  const accessKey = config.picovoiceAccessKey!;
-  const spinner = log(verbose, "Identifying speakers (Eagle)...");
+  const spinner = log(verbose, "Identifying speakers (ONNX)...");
   try {
     const pcm = await decodePcm(inputPath);
     const labels = [
@@ -388,8 +397,11 @@ async function identifySpeakers(
       if (clip.length >= CLIP_MIN_SEC * SAMPLE_RATE) clips[label] = clip;
     }
 
+    // Compute each label vector once for the run. The same vector is reused
+    // below if the user assigns a fresh name interactively.
+    const labelEmbeddings = await computeEmbeddings(pcmByLabel);
     const store = await loadProfiles();
-    const matches = matchProfiles(accessKey, pcmByLabel, store);
+    const matches = matchProfiles(labelEmbeddings, store);
     spinner?.succeed("Speaker identification complete");
 
     const nameMap: Record<string, string> = {};
@@ -432,11 +444,12 @@ async function identifySpeakers(
         const clip = clips[label];
         if (!clip) continue; // too little speech — skip, don't fail
         try {
-          const bytes = await enrollProfile(accessKey, clip);
+          const embedding =
+            labelEmbeddings[label] ?? Array.from(await computeEmbedding(clip));
           const now = new Date().toISOString();
           const vp = {
             id: now,
-            profile: encodeProfile(bytes),
+            embedding,
             enrolledAt: now,
             source: path.basename(inputPath),
           };
@@ -457,6 +470,10 @@ async function identifySpeakers(
     return { segments: applySpeakerNames(segments, nameMap), clips };
   } catch (error) {
     spinner?.fail("Speaker identification unavailable (using generic labels)");
+    console.error(
+      "Speaker identity unavailable: the ONNX model or onnxruntime-node failed. " +
+        "Check the model download and installation. Using generic labels.",
+    );
     if (verbose) {
       console.error(
         `  ${error instanceof Error ? error.message : String(error)}`,
