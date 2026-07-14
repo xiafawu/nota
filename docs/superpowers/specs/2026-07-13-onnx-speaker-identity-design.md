@@ -139,13 +139,13 @@ audio -> decodePcm (16kHz Int16, EXISTS)
 
 ## 11. Model selection record (implementer fills in task 1)
 
-- Model: _TBD_
-- Download URL: _TBD_
-- SHA-256: _TBD_
-- License: _TBD_
-- Output dim: _TBD_
-- Featurization: _in-graph | JS-fbank_
-- Calibrated MATCH / TENTATIVE cosine: _TBD_
+- Model: WeSpeaker ResNet34-LM (`wespeaker_en_voxceleb_resnet34_LM.onnx`), trained on VoxCeleb2 Dev; ONNX deployment artifact published by sherpa-onnx
+- Download URL: `https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx`
+- SHA-256: `e9848563da86f263117134dfd7ad63c92355b37de492b55e325400c9d9c39012` (also published in the release's `checksum.txt`)
+- License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+- Output dim: 256 (`feats` float32 `[B,T,80]` → `embs` float32 `[B,256]`)
+- Featurization: JS-fbank, matching the official WeSpeaker evaluation frontend: mono 16 kHz; 80-bin Kaldi fbank; 25 ms frames; 10 ms shift; 512-point FFT; Hamming window; 20–8000 Hz; pre-emphasis 0.97; per-frame DC removal; no dither; natural-log power; utterance cepstral mean normalization (CMN), no variance normalization. `scripts/validate-embed.ts` measured maximum absolute feature error `3.075600e-4` and mean absolute error `3.105458e-6` against `torchaudio.compliance.kaldi.fbank` over 4098 frames.
+- Calibrated MATCH / TENTATIVE cosine: `0.50` / `0.35`. On the local two-speaker validation clips, same-speaker cosine was `0.873221`; different-speaker cosines were `0.331195` and `0.263530` (minimum separation margin `0.542026`).
 
 ## 12. Testing
 
@@ -157,6 +157,18 @@ audio -> decodePcm (16kHz Int16, EXISTS)
 
 **Model-gated integration (skipped when model absent so offline `npm test` stays green; document how to run):**
 - 2-speaker fixture wav → embed → enroll speaker A → re-run: A recognized (≥ MATCH), B rejected (< TENTATIVE).
+
+Run the integration test locally after the model has been installed at
+`~/.nota/models/wespeaker_en_voxceleb_resnet34_LM.onnx`. Provide two separate
+clips of speaker A and one clip of speaker B; these paths are intentionally not
+committed so private voice data never enters the repository:
+
+```bash
+NOTA_SPEAKER_TEST_ENROLL_WAV=/path/to/speaker-a-enroll.wav \
+NOTA_SPEAKER_TEST_SAME_WAV=/path/to/speaker-a-second.wav \
+NOTA_SPEAKER_TEST_DIFFERENT_WAV=/path/to/speaker-b.wav \
+npx vitest run tests/pipeline/embed.integration.test.ts
+```
 
 **Validation harness (task 1, the risk-killer):** `scripts/validate-embed.ts` — embed two clips of the *same* speaker + one of a *different* speaker; assert same-pair cosine ≫ diff-pair. Proves model + featurization before any wiring. This gates all downstream tasks.
 

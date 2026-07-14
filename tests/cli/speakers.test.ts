@@ -22,9 +22,7 @@ let stderrSpy: ReturnType<typeof vi.spyOn>;
 let stdoutChunks: string[];
 let stderrChunks: string[];
 
-// A 4-byte Eagle profile blob, base64-encoded. `decodeProfile(PROFILE).length`
-// is 4, which the list/show surfaces report as the profile size.
-const PROFILE = Buffer.from([1, 2, 3, 4]).toString("base64");
+const EMBEDDING = [1, 0, 0, 0];
 
 function writeStore(store: SpeakerStore): void {
   writeFileSync(storePath, JSON.stringify(store), "utf-8");
@@ -34,8 +32,8 @@ function readStore(): SpeakerStore {
   return JSON.parse(readFileSync(storePath, "utf-8")) as SpeakerStore;
 }
 
-function vp(id: string, source = "demo.mp3", profile = PROFILE): Voiceprint {
-  return { id, profile, enrolledAt: id, source };
+function vp(id: string, source = "demo.mp3", embedding = EMBEDDING): Voiceprint {
+  return { id, embedding, enrolledAt: id, source };
 }
 
 beforeEach(() => {
@@ -70,7 +68,7 @@ describe("listSpeakers", () => {
     expect(stderrChunks.join("")).toContain("No speakers enrolled.");
   });
 
-  it("prints one tab-separated row per voiceprint with profile byte size", async () => {
+  it("prints one tab-separated row per voiceprint with embedding dimension", async () => {
     writeStore({
       version: 3,
       speakers: {
@@ -91,22 +89,20 @@ describe("listSpeakers", () => {
     expect(vpId).toBe("2026-01-01T00:00:00.000Z");
     expect(enrolledAt).toBe("2026-01-01T00:00:00.000Z");
     expect(source).toBe("demo.mp3");
-    expect(bytes).toBe("4"); // 4-byte profile blob
+    expect(bytes).toBe("4");
 
     expect(lines[1].split("\t")[1]).toBe("2026-02-15T00:00:00.000Z");
   });
 
-  it("drops legacy embedding-only records (no Eagle profile) on load", async () => {
-    // Pre-Eagle stores held pyannote `embedding` vectors with no `profile`.
-    // Those cannot be converted to an Eagle profile and are dropped on load.
+  it("drops legacy Eagle profile records on load", async () => {
     writeFileSync(
       storePath,
       JSON.stringify({
-        version: 2,
+        version: 3,
         speakers: {
           Alice: {
             voiceprints: [
-              { id: "x", embedding: [1, 0, 0, 0], enrolledAt: "x", source: "legacy.mp3" },
+              { id: "x", profile: "AQIDBA==", enrolledAt: "x", source: "legacy.mp3" },
             ],
           },
         },
@@ -136,7 +132,7 @@ describe("renameSpeaker", () => {
     const after = readStore();
     expect(after.speakers.Alice).toBeUndefined();
     expect(after.speakers.Alicia).toBeDefined();
-    expect(after.speakers.Alicia.voiceprints[0].profile).toBe(PROFILE);
+    expect(after.speakers.Alicia.voiceprints[0].embedding).toEqual(EMBEDDING);
   });
 
   it("refuses to overwrite an existing destination", async () => {
@@ -201,7 +197,7 @@ describe("mergeSpeakers", () => {
     const first = after.speakers.Alice.voiceprints.find(
       (v) => v.id === "2026-01-01T00:00:00.000Z",
     );
-    expect(first?.profile).toBe(PROFILE);
+    expect(first?.embedding).toEqual(EMBEDDING);
   });
 
   it("dedupes voiceprints with the same id (idempotent re-merge)", async () => {
@@ -319,7 +315,7 @@ describe("reassignVoiceprint", () => {
 });
 
 describe("showSpeaker", () => {
-  it("prints a JSON view with the profile byte size per voiceprint", async () => {
+  it("prints a JSON view with the embedding dimension per voiceprint", async () => {
     writeStore({
       version: 3,
       speakers: {
@@ -337,7 +333,7 @@ describe("showSpeaker", () => {
     expect(parsed.name).toBe("Alice");
     expect(parsed.voiceprintCount).toBe(2);
     expect(parsed.voiceprints).toHaveLength(2);
-    expect(parsed.voiceprints[0].profileBytes).toBe(4);
+    expect(parsed.voiceprints[0].embeddingDimension).toBe(4);
     expect(parsed.voiceprints[0].id).toBe("2026-01-01T00:00:00.000Z");
   });
 

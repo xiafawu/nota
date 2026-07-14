@@ -256,7 +256,7 @@ speakers
 
 speakers
   .command("show")
-  .description("Show a speaker profile (embedding truncated to first 8 dims)")
+  .description("Show a speaker profile with voiceprint embedding dimensions")
   .argument("<name>", "Speaker name")
   .action(async (name: string) => {
     try {

@@ -3,7 +3,7 @@ import { promisify } from "node:util";
 
 const execFileAsync = promisify(execFile);
 
-/** Eagle operates on 16 kHz, mono, 16-bit signed little-endian PCM. */
+/** Speaker embedding operates on 16 kHz, mono, 16-bit signed little-endian PCM. */
 export const SAMPLE_RATE = 16000;
 
 /**
