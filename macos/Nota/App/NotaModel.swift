@@ -25,6 +25,10 @@ final class NotaModel: ObservableObject {
   /// Speaker chips derived from the current document's label set + sidecar.
   @Published var speakerChips: [SpeakerChip] = []
 
+  /// Preflight health for the home screen. `nil` until the first check returns.
+  @Published var preflight: PreflightResult?
+  @Published var isCheckingPreflight = false
+
   private let projectDirectory = URL(fileURLWithPath: ProcessInfo.processInfo.environment["NOTA_PROJECT_DIR"] ?? "/Users/xiafawu/Developer/Nota")
   private let outputDirectory = notaOutputDirectory()
 
@@ -64,6 +68,28 @@ final class NotaModel: ObservableObject {
       }
     }
     refreshHistory()
+    // Run the readiness check on launch so the home shows health immediately.
+    runPreflight()
+  }
+
+  /// Run the preflight readiness check and publish the result for the home
+  /// screen. `refresh` bypasses the CLI's short-lived cache. A failure to run
+  /// the checker keeps any prior result (the home shows "Not checked yet" only
+  /// when nothing has ever returned) rather than interrupting the user.
+  func runPreflight(refresh: Bool = false) {
+    guard !isCheckingPreflight else { return }
+    isCheckingPreflight = true
+    Task { [projectDirectory] in
+      defer { self.isCheckingPreflight = false }
+      do {
+        self.preflight = try await PreflightRunner.run(
+          projectDirectory: projectDirectory,
+          refresh: refresh
+        )
+      } catch {
+        NSLog("Nota preflight failed: \(error.localizedDescription)")
+      }
+    }
   }
 
   func chooseFile() {

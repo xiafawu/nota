@@ -18,10 +18,18 @@ struct ContentView: View {
     if model.hasContent {
       return .rich(DocumentRender(meta: parseDocumentMeta(model.markdown), body: model.richText))
     }
-    return .empty(EmptyMainState(
-      isRunning: model.isRunning,
-      displayName: model.displayName,
-      displayPath: model.displayPath
+    // While a run is in flight the empty pane shows the waveform/progress state;
+    // otherwise the home is the preflight health dashboard.
+    if model.isRunning {
+      return .empty(EmptyMainState(
+        isRunning: true,
+        displayName: model.displayName,
+        displayPath: model.displayPath
+      ))
+    }
+    return .preflight(PreflightHomeState(
+      result: model.preflight,
+      isChecking: model.isCheckingPreflight
     ))
   }
 
@@ -63,6 +71,9 @@ struct ContentView: View {
         },
         onRename: { label, newName in
           model.renameChip(label: label, newName: newName)
+        },
+        onRefreshPreflight: {
+          model.runPreflight(refresh: true)
         }
       )
       .navigationSplitViewColumnWidth(min: Metrics.detailMin, ideal: Metrics.detailIdeal)
