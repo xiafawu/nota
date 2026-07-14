@@ -127,7 +127,7 @@ describe("transcribeWithAssemblyAI", () => {
     );
   });
 
-  it("passes the selected speech_model", async () => {
+  it("passes the selected speech model via speech_models", async () => {
     mockTranscribe.mockResolvedValue({
       status: "completed",
       text: "",
@@ -140,7 +140,7 @@ describe("transcribeWithAssemblyAI", () => {
     });
 
     expect(mockTranscribe).toHaveBeenCalledWith(
-      expect.objectContaining({ speech_model: "slam-1" }),
+      expect.objectContaining({ speech_models: ["slam-1"] }),
     );
   });
 
