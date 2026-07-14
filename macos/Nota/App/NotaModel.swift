@@ -20,6 +20,9 @@ final class NotaModel: ObservableObject {
   @Published var lastOutputURL: URL?
   @Published var displayName = "Drop Audio"
   @Published var displayPath = "MP3, M4A, WAV, CAF, QTA, MOV, MP4"
+  /// Live pipeline stage shown under the title while a run is in flight,
+  /// parsed from the CLI's `##NOTA_PHASE:` markers (see runNota). Empty when idle.
+  @Published var phase = ""
   @Published var history: [HistoryEntry] = []
   @Published var selectedHistoryID: HistoryEntry.ID?
   /// Speaker chips derived from the current document's label set + sidecar.
@@ -116,6 +119,11 @@ final class NotaModel: ObservableObject {
     // so it hands the staged copy over as nota://import?path=<abs path>.
     // Normalise that back to a file URL; plain file opens pass through.
     let fileURL = Self.resolveSharedURL(url)
+    // Shared files arrive as a synthetic ".nota-share-<epoch>-<uuid>" staging
+    // copy; the share extension forwards the real filename via the URL's `name`
+    // query item. Prefer that for display, falling back to the basename for
+    // plain drag-drop (where it's already the real name).
+    let friendlyName = Self.sharedDisplayName(from: url) ?? fileURL.lastPathComponent
 
     guard isSupportedAudio(fileURL) else {
       status = "Unsupported file type"
@@ -124,7 +132,7 @@ final class NotaModel: ObservableObject {
 
     markdown = ""
     lastOutputURL = nil
-    displayName = fileURL.lastPathComponent
+    displayName = friendlyName
     displayPath = fileURL.path
     status = "Copying audio..."
 
@@ -153,10 +161,13 @@ final class NotaModel: ObservableObject {
     markdown = ""
     lastOutputURL = nil
     status = "Preparing audio..."
+    phase = "Preparing…"
 
     Task {
       do {
-        let result = try await runNota(for: selectedURL, displayURL: displayURL)
+        let result = try await runNota(for: selectedURL, displayURL: displayURL) { [weak self] label in
+          Task { @MainActor in self?.phase = label }
+        }
         markdown = result.markdown
         lastOutputURL = result.outputURL
         status = "Complete"
@@ -169,6 +180,7 @@ final class NotaModel: ObservableObject {
         markdown = failureMarkdown("Transcription failed", details: error.localizedDescription)
         status = "Transcription failed"
       }
+      phase = ""
       isRunning = false
     }
   }
@@ -316,7 +328,11 @@ final class NotaModel: ObservableObject {
     NSWorkspace.shared.activateFileViewerSelecting([lastOutputURL])
   }
 
-  private func runNota(for url: URL, displayURL: URL) async throws -> NotaResult {
+  private func runNota(
+    for url: URL,
+    displayURL: URL,
+    onPhase: @escaping @Sendable (String) -> Void
+  ) async throws -> NotaResult {
     try await Task.detached(priority: .userInitiated) { [identifySpeakers, projectDirectory, outputDirectory] in
       let fileManager = FileManager.default
       try fileManager.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
@@ -340,16 +356,37 @@ final class NotaModel: ObservableObject {
       }
       process.arguments = arguments
 
+      // Ask the CLI to emit `##NOTA_PHASE:` markers (env-gated so plain CLI runs
+      // stay clean). Inherit the parent environment so the runner script still
+      // finds PATH etc. before it re-derives the login shell's values.
+      var environment = ProcessInfo.processInfo.environment
+      environment["NOTA_PROGRESS"] = "1"
+      process.environment = environment
+
       let outputPipe = Pipe()
       let errorPipe = Pipe()
       process.standardOutput = outputPipe
       process.standardError = errorPipe
 
       try process.run()
-      process.waitUntilExit()
 
-      let stdout = String(data: outputPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-      let stderr = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+      // Drain both pipes concurrently. stderr carries the phase markers that
+      // drive the live label; both streams are captured in full for the final
+      // error report. Reading to EOF completes when the process closes the
+      // pipes on exit, so waitUntilExit then returns without blocking.
+      async let stdoutData = Self.collect(outputPipe.fileHandleForReading)
+      async let stderrData = Self.collect(errorPipe.fileHandleForReading) { @Sendable line in
+        // Consume `##NOTA_PHASE:` markers: drive the live label, keep them out
+        // of the captured text so they never leak into a failure's error report.
+        guard let range = line.range(of: "##NOTA_PHASE:") else { return false }
+        let stage = String(line[range.upperBound...]).trimmingCharacters(in: .whitespaces)
+        if let label = Self.phaseLabel(stage) { onPhase(label) }
+        return true
+      }
+      let stdout = String(data: await stdoutData, encoding: .utf8) ?? ""
+      let stderr = String(data: await stderrData, encoding: .utf8) ?? ""
+
+      process.waitUntilExit()
       let succeeded = process.terminationStatus == 0
 
       if shouldRemoveSharedInput && succeeded {
@@ -370,6 +407,56 @@ final class NotaModel: ObservableObject {
     }.value
   }
 
+  /// Stream a process pipe to EOF, delivering each complete line to `onLine` as
+  /// its OS chunk arrives. Uses `readabilityHandler` rather than
+  /// `FileHandle.bytes.lines`: the async-bytes sequence buffers, withholding a
+  /// slow producer's lines until a large read fills or the pipe closes — which
+  /// made live phase markers arrive only at the very end. `onLine` returns true
+  /// to consume a line (kept out of the returned Data); the full text minus
+  /// consumed lines is returned for the final error report.
+  private static func collect(
+    _ handle: FileHandle,
+    onLine: (@Sendable (String) -> Bool)? = nil
+  ) async -> Data {
+    final class Box: @unchecked Sendable {
+      var captured = Data()
+      var pending = Data()
+    }
+    let box = Box()
+    return await withCheckedContinuation { (continuation: CheckedContinuation<Data, Never>) in
+      handle.readabilityHandler = { fh in
+        let chunk = fh.availableData
+        guard !chunk.isEmpty else {
+          fh.readabilityHandler = nil
+          if !box.pending.isEmpty { box.captured.append(box.pending) }
+          continuation.resume(returning: box.captured)
+          return
+        }
+        box.pending.append(chunk)
+        while let newline = box.pending.firstIndex(of: 0x0A) {
+          let lineData = box.pending.subdata(in: box.pending.startIndex..<newline)
+          box.pending.removeSubrange(box.pending.startIndex...newline)
+          let line = String(data: lineData, encoding: .utf8) ?? ""
+          if onLine?(line) == true { continue }
+          box.captured.append(lineData)
+          box.captured.append(0x0A)
+        }
+      }
+    }
+  }
+
+  /// Map a pipeline stage id to the label shown under the title during a run.
+  /// `nonisolated` so the background readability handler can call it directly.
+  private nonisolated static func phaseLabel(_ stage: String) -> String? {
+    switch stage {
+    case "validating": return "Validating…"
+    case "transcribing": return "Transcribing…"
+    case "summarizing": return "Summarizing…"
+    case "writing": return "Writing…"
+    default: return nil
+    }
+  }
+
   /// Map an incoming open request to a file URL. Plain file URLs pass through;
   /// the share extension's `nota://import?path=<abs path>` is decoded back to
   /// the staged file in ~/Documents/Nota.
@@ -383,6 +470,22 @@ final class NotaModel: ObservableObject {
       return url
     }
     return URL(fileURLWithPath: path)
+  }
+
+  /// Original user-facing filename forwarded by the share extension as the
+  /// `name` query item of `nota://import?path=…&name=…`. Display-only — it is
+  /// never used to touch the filesystem, so a hostile value can only affect the
+  /// title label. Returns nil for plain file URLs (drag-drop keeps its name).
+  private static func sharedDisplayName(from url: URL) -> String? {
+    guard !url.isFileURL,
+          url.scheme == "nota",
+          let comps = URLComponents(url: url, resolvingAgainstBaseURL: false),
+          let name = comps.queryItems?.first(where: { $0.name == "name" })?.value,
+          !name.isEmpty
+    else {
+      return nil
+    }
+    return name
   }
 
   private func isSupportedAudio(_ url: URL) -> Bool {

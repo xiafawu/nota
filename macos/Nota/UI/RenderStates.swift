@@ -41,6 +41,8 @@ struct EmptyMainState {
   var isRunning: Bool
   var displayName: String
   var displayPath: String
+  /// Live stage label shown while running (e.g. "Transcribing…"). Empty when idle.
+  var phase: String = ""
 }
 
 struct ToolbarStatusPillState {

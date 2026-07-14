@@ -24,7 +24,8 @@ struct ContentView: View {
       return .empty(EmptyMainState(
         isRunning: true,
         displayName: model.displayName,
-        displayPath: model.displayPath
+        displayPath: model.displayPath,
+        phase: model.phase
       ))
     }
     return .preflight(PreflightHomeState(
@@ -37,7 +38,11 @@ struct ContentView: View {
     guard model.isRunning || model.status != "Drop audio to transcribe" else {
       return nil
     }
-    return ToolbarStatusPillState(isRunning: model.isRunning, text: model.status)
+    // While running, mirror the live pipeline phase so the pill and the main
+    // view never disagree; fall back to `status` for terminal states (Complete,
+    // failures) and the brief pre-phase window.
+    let text = model.isRunning && !model.phase.isEmpty ? model.phase : model.status
+    return ToolbarStatusPillState(isRunning: model.isRunning, text: text)
   }
 
   var body: some View {
@@ -86,7 +91,10 @@ struct ContentView: View {
       }
 
       ToolbarItem(placement: .primaryAction) {
-        Menu {
+        // Only surface the Copy/Export/Reveal menu once there's a transcript to
+        // act on. Showing it disabled during processing read as a dead control.
+        if !model.markdown.isEmpty || model.lastOutputURL != nil {
+          Menu {
           Section("Copy") {
             Button {
               model.copyRichText()
@@ -130,7 +138,7 @@ struct ContentView: View {
         .menuIndicator(.hidden)
         .help("Copy, export, or reveal transcript")
         .liquidGlassButton()
-        .disabled(model.markdown.isEmpty && model.lastOutputURL == nil)
+        }
       }
     }
     .animation(Tokens.animFast, value: model.isRunning)

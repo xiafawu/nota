@@ -59,6 +59,20 @@ function log(verbose: boolean, message: string) {
   return null;
 }
 
+/**
+ * Emit a machine-readable phase marker for GUI progress. Gated behind
+ * NOTA_PROGRESS so plain CLI/test runs stay clean, and written to stderr so it
+ * never collides with ora's stdout spinner frames. The macOS app streams these
+ * lines live to drive its phase label; ora only reports a stage once it has
+ * *finished*, and suppresses `.start()` text in a non-TTY pipe, so an explicit
+ * "about to start <stage>" marker is the only accurate real-time signal.
+ */
+function emitPhase(stage: string) {
+  if (process.env.NOTA_PROGRESS) {
+    process.stderr.write(`##NOTA_PHASE:${stage}\n`);
+  }
+}
+
 function historyOptions(config: AppConfig): HistoryOptions {
   return {
     language: config.language,
@@ -75,6 +89,7 @@ export async function runPipeline(options: PipelineOptions): Promise<string> {
   const verbose = config.verbose;
 
   // 1. Validate and get duration
+  emitPhase("validating");
   let spinner = log(verbose, "Validating input...");
   await validateInput(inputPath);
   let durationMinutes: number;
@@ -267,6 +282,7 @@ async function runAssemblyAIPipelineInner(
   const verbose = config.verbose;
 
   // 2. Transcribe + diarize (single API call)
+  emitPhase("transcribing");
   let spinner = log(verbose, "Transcribing and diarizing with AssemblyAI...");
   const result = await transcribeWithAssemblyAI(inputPath, {
     apiKey: config.transcriptionApiKey,
@@ -317,6 +333,7 @@ async function runAssemblyAIPipelineInner(
   }
 
   // 3. Summarize
+  emitPhase("summarizing");
   spinner = log(verbose, `Summarizing with ${config.summaryModel}...`);
   const summary = await summarizeTranscript(
     result.text,
@@ -328,6 +345,7 @@ async function runAssemblyAIPipelineInner(
   spinner?.succeed("Summary generated");
 
   // 4. Write
+  emitPhase("writing");
   spinner = log(verbose, "Writing output...");
   const transcribedDate = new Date().toISOString().split("T")[0];
   const capturedDate = capturedAt

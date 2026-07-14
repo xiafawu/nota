@@ -22,6 +22,7 @@ enum Metrics {
   static let emptyMainOuterPadding: CGFloat = 40
   static let emptyMainSpacing: CGFloat = 24
   static let emptyTextSpacing: CGFloat = 10
+  static let emptyProgressWidth: CGFloat = 220
 
   static let windowMinWidth: CGFloat = 780
   static let windowMinHeight: CGFloat = 560

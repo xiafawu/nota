@@ -20,11 +20,20 @@ struct EmptyMainView: View {
           .foregroundStyle(.primary)
           .multilineTextAlignment(.center)
 
-        Text(state.displayPath)
+        // While running, the subtitle is the live pipeline stage; the raw
+        // file path (a synthetic staging path for shared files) is never shown.
+        Text(state.isRunning ? state.phase : state.displayPath)
           .font(Tokens.emptyMainPathFont)
           .foregroundStyle(.secondary)
           .multilineTextAlignment(.center)
           .padding(.horizontal, Metrics.emptySubtextHorizontalPadding)
+
+        if state.isRunning {
+          ProgressView()
+            .progressViewStyle(.linear)
+            .frame(maxWidth: Metrics.emptyProgressWidth)
+            .padding(.top, Metrics.emptyTextSpacing)
+        }
       }
 
       Spacer()
