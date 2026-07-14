@@ -186,9 +186,16 @@ async function callGPT(
   model: string,
   prompt: string
 ): Promise<string> {
+  // OpenAI chat models (incl. the gpt-5 reasoning family) require
+  // `max_completion_tokens`; `max_tokens` is rejected outright by gpt-5*.
+  // Gemini's OpenAI-compatible shim only understands `max_tokens`
+  // (it maps to Google's maxOutputTokens), so branch on provider.
+  const tokenLimit = isGeminiModel(model)
+    ? { max_tokens: 4096 }
+    : { max_completion_tokens: 4096 };
   const response = await client.chat.completions.create({
     model,
-    max_tokens: 4096,
+    ...tokenLimit,
     messages: [{ role: "user", content: prompt }],
   });
 
