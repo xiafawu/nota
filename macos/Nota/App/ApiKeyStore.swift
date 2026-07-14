@@ -30,7 +30,6 @@ enum ApiKeyStore {
     "OPENAI_API_KEY",
     "ASSEMBLYAI_API_KEY",
     "GEMINI_API_KEY",
-    "PICOVOICE_ACCESS_KEY",
   ]
 
   static func status(for env: String) -> ApiKeyStatus {
