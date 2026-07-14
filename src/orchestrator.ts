@@ -21,6 +21,7 @@ import { tmpdir } from "node:os";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { transcribeWithAssemblyAI } from "./pipeline/assemblyai.js";
+import { resolvePreflight } from "./cli/preflight.js";
 import {
   completeHistoryRecord,
   createHistoryRecord,
@@ -130,6 +131,38 @@ export async function runPipeline(options: PipelineOptions): Promise<string> {
         }
       }
       spinner?.succeed("No duplicate found");
+    }
+  }
+
+  // 1d. Preflight gate. Runs the readiness checks (tools, keys, model request
+  //     shapes) right before the paid transcription so a deterministic failure
+  //     — e.g. a summary model that will reject every request — aborts here
+  //     instead of after money is spent. `unverified` (offline / couldn't
+  //     reach a service) is a soft warning: this is a non-interactive path, so
+  //     it proceeds. `--skip-preflight` bypasses the gate.
+  if (!config.skipPreflight) {
+    spinner = log(verbose, "Running preflight checks...");
+    const preflight = await resolvePreflight(config);
+    if (preflight.overall === "blocked") {
+      spinner?.fail("Preflight failed");
+      const failed = preflight.checks
+        .filter((c) => c.blocking && c.status === "fail")
+        .map((c) => `  ✖ ${c.label}: ${c.detail}`)
+        .join("\n");
+      throw new Error(
+        `Preflight blocked this run (nothing was transcribed):\n${failed}\n` +
+          `Fix the above, or pass --skip-preflight to bypass.`,
+      );
+    }
+    if (preflight.overall === "unverified") {
+      spinner?.warn("Preflight could not verify everything — continuing");
+      for (const c of preflight.checks) {
+        if (c.status === "unverified") {
+          console.error(`Warning: ${c.label}: ${c.detail}`);
+        }
+      }
+    } else {
+      spinner?.succeed("Preflight passed");
     }
   }
 

@@ -18,6 +18,7 @@ import {
 } from "./cli/speakers.js";
 import { enrollSpeaker, EnrollError } from "./cli/enroll.js";
 import { printConfig } from "./cli/config.js";
+import { preflightCommand } from "./cli/preflight.js";
 import { applyEnvFile } from "./utils/env-file.js";
 import { summarizeHistory } from "./cli/summarize-history.js";
 import {
@@ -83,6 +84,10 @@ program
     "--force",
     "Reprocess even if an identical audio file is already in history",
   )
+  .option(
+    "--skip-preflight",
+    "Bypass the readiness gate that runs before transcription",
+  )
   .action(async (audioFile: string, options) => {
     try {
       const config = loadConfig({
@@ -93,6 +98,7 @@ program
         identify: options.identify,
         history: options.history,
         force: options.force,
+        skipPreflight: options.skipPreflight,
       });
       const outputPath = await runPipeline({
         inputPath: audioFile,
@@ -354,6 +360,53 @@ program
     "Show which API keys resolve and from where (masked value, secrets never printed)",
   )
   .action(printConfig);
+
+program
+  .command("preflight")
+  .description(
+    "Check readiness (tools, keys, model request shapes) before transcribing",
+  )
+  .option("--json", "Emit machine-readable JSON (consumed by the macOS app)")
+  .option("--refresh", "Bypass the short-lived cache and re-run every check")
+  .option(
+    "-m, --model <model>",
+    "Summary model id to check (defaults to settings, then the built-in default)",
+  )
+  .option(
+    "--transcribe-model <model>",
+    "Transcription model id to check (defaults to settings/provider)",
+  )
+  .option(
+    "--provider <name>",
+    "Back-compat alias seeding the transcription model: assemblyai or whisper",
+  )
+  .option("--identify", "Include speaker-identity readiness as configured")
+  .action(async (options) => {
+    try {
+      // requireKeys:false so a missing key is reported as a failed check,
+      // not thrown before preflight can render it.
+      const config = loadConfig(
+        {
+          model: options.model,
+          transcribeModel: options.transcribeModel,
+          provider: options.provider,
+          identify: options.identify,
+        },
+        undefined,
+        { requireKeys: false },
+      );
+      const code = await preflightCommand(config, {
+        json: options.json,
+        refresh: options.refresh,
+      });
+      process.exit(code);
+    } catch (error) {
+      console.error(
+        `\nError: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      process.exit(1);
+    }
+  });
 
 // Load ~/.nota/config once at bootstrap so every subcommand (run, history,
 // speakers, config) sees file-provided keys. Real env vars still win.

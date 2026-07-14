@@ -39,6 +39,19 @@ export interface AssemblyAIOptions {
   language?: string;
 }
 
+/**
+ * Preflight canary for AssemblyAI: a free authenticated read
+ * (`GET /v2/transcript?limit=1`) that confirms the key is valid and the service
+ * is reachable without submitting (or paying for) a transcription. A paid POST
+ * is the only thing that would exercise the transcribe request body, so the
+ * `speech_models` shape is covered by unit tests rather than this canary.
+ * Throws the SDK error on failure; the caller classifies it.
+ */
+export async function canaryAssemblyAI(apiKey: string): Promise<void> {
+  const client = new AssemblyAI({ apiKey });
+  await client.transcripts.list({ limit: 1 });
+}
+
 export async function transcribeWithAssemblyAI(
   inputPath: string,
   options: AssemblyAIOptions
