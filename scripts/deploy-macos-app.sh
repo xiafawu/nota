@@ -111,10 +111,26 @@ if command -v codesign >/dev/null 2>&1; then
 fi
 
 if [ -x "$LSREGISTER" ]; then
+  # Deregister every OTHER bundle sharing this bundle id before registering the
+  # deployed one. Xcode/xcodebuild register each build product (Debug, Release,
+  # worktree, DerivedData copies) under com.xiafawu.nota; LaunchServices can then
+  # resolve `open`/Spotlight/`open -b` to an ad-hoc build-dir copy instead of
+  # this one. Because those copies are ad-hoc, macOS TCC grants (Accessibility,
+  # Input Monitoring) reset every relaunch. Keep exactly one registered bundle.
+  "$LSREGISTER" -dump 2>/dev/null \
+    | grep -iE "path:.*Nota\.app \(" \
+    | sed -E 's/.*path: *//; s/ \(0x.*//' \
+    | grep -v "appex" | sort -u \
+    | while read -r other; do
+        [ "$other" = "$DEST_APP" ] && continue
+        "$LSREGISTER" -u "$other" 2>/dev/null || true
+      done
   "$LSREGISTER" -f "$DEST_APP" || true
 fi
 
 if [ "${NOTA_OPEN_AFTER_DEPLOY:-1}" = "1" ]; then
+  # Launch by full path (not `open -b <id>`) so we run the deployed bundle even
+  # if a build-dir copy re-registers later.
   open "$DEST_APP" || true
 fi
 
