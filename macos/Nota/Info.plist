@@ -24,8 +24,14 @@
   <string>1</string>
   <key>LSMinimumSystemVersion</key>
   <string>26.0</string>
+  <key>LSUIElement</key>
+  <false/>
   <key>NSHighResolutionCapable</key>
   <true/>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>Nota listens only while you hold the Fn/Globe dictation key.</string>
+  <key>NSSpeechRecognitionUsageDescription</key>
+  <string>Nota uses on-device speech recognition for future dictation phases.</string>
   <key>NSPrincipalClass</key>
   <string>NSApplication</string>
   <key>CFBundleDocumentTypes</key>

@@ -181,6 +181,23 @@ export function parseSummaryResponse(response: string): MeetingSummary {
   return sections;
 }
 
+/**
+ * The output-token cap parameter for a summary model, keyed correctly for its
+ * provider. OpenAI chat models (incl. the gpt-5 reasoning family) require
+ * `max_completion_tokens`; `max_tokens` is rejected outright by gpt-5*. Gemini's
+ * OpenAI-compatible shim only understands `max_tokens` (it maps to Google's
+ * maxOutputTokens), so branch on provider. Shared by the real summary call and
+ * the preflight canary so the two request shapes can never drift.
+ */
+export function summaryTokenLimit(
+  model: string,
+  max: number,
+): { max_tokens: number } | { max_completion_tokens: number } {
+  return isGeminiModel(model)
+    ? { max_tokens: max }
+    : { max_completion_tokens: max };
+}
+
 async function callGPT(
   client: OpenAI,
   model: string,
@@ -188,13 +205,63 @@ async function callGPT(
 ): Promise<string> {
   const response = await client.chat.completions.create({
     model,
-    max_tokens: 4096,
+    ...summaryTokenLimit(model, 4096),
     messages: [{ role: "user", content: prompt }],
   });
 
   const content = response.choices[0]?.message?.content;
   if (!content) throw new Error("Empty response from GPT");
   return content;
+}
+
+/**
+ * Preflight canary for the summary model: the smallest possible real request
+ * through the exact same client + params builder as {@link callGPT}, capped at
+ * one output token. It exercises the request shape (the `max_completion_tokens`
+ * vs `max_tokens` branch, model id, key, base URL) so a config-shape bug is
+ * caught here — for ~free — instead of after a paid transcription. Throws the
+ * provider's error on failure; the caller classifies it.
+ */
+export async function canarySummaryModel(
+  apiKey: string,
+  model: string,
+  baseURL?: string,
+): Promise<void> {
+  const client = new OpenAI({
+    apiKey,
+    baseURL: baseURL ?? (isGeminiModel(model) ? GEMINI_OPENAI_BASE_URL : undefined),
+    maxRetries: 0,
+  });
+  try {
+    await client.chat.completions.create({
+      model,
+      ...summaryTokenLimit(model, 16),
+      messages: [{ role: "user", content: "ping" }],
+    });
+  } catch (err) {
+    // A reasoning model (gpt-5*) can exhaust a tiny output cap on reasoning
+    // tokens and return a 400 "output limit reached". That means the request
+    // shape, key, and reachability all passed — the call just truncated — so it
+    // is a canary PASS. Only a genuine *shape/param/auth* rejection is a
+    // failure, so rethrow everything that is not a truncation/length stop.
+    if (isOutputLimitError(err)) return;
+    throw err;
+  }
+}
+
+/**
+ * True when an OpenAI error signals the response was cut off by the token cap
+ * (as opposed to the request being rejected). Distinguished from the real
+ * "unsupported parameter" shape error, which must still fail the canary.
+ */
+export function isOutputLimitError(err: unknown): boolean {
+  const message = err instanceof Error ? err.message : String(err);
+  if (/unsupported parameter|is not supported|invalid|incorrect|authentica/i.test(message)) {
+    return false;
+  }
+  return /output limit|could not finish|max_tokens.*reached|reached.*max_tokens|length limit|maximum context/i.test(
+    message,
+  );
 }
 
 export async function summarizeTranscript(

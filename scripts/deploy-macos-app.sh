@@ -90,15 +90,47 @@ fi
 
 ditto "$BUILD_APP" "$DEST_APP"
 
+# Re-sign with a STABLE identity so macOS TCC grants (Accessibility, Input
+# Monitoring) survive redeploys. xcodebuild ad-hoc signs with no stable
+# Designated Requirement, so every rebuild changes the cdhash and silently
+# invalidates the Accessibility grant (toggle stays ON but app reads "not
+# granted"). See scripts/create-signing-cert.sh. Override with NOTA_SIGN_ID.
+SIGN_ID="${NOTA_SIGN_ID:-Nota Local Signing}"
 if command -v codesign >/dev/null 2>&1; then
-  codesign --verify --deep --strict "$DEST_APP"
+  if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_ID"; then
+    # Sign inner code (frameworks, NotaShare.appex) then the outer app.
+    codesign --force --deep --sign "$SIGN_ID" "$DEST_APP"
+    codesign --verify --deep --strict "$DEST_APP"
+    echo "Signed with stable identity: \"$SIGN_ID\""
+  else
+    echo "WARNING: stable signing identity \"$SIGN_ID\" not found — leaving the" >&2
+    echo "         ad-hoc signature in place. Accessibility/Input Monitoring grants" >&2
+    echo "         will NOT persist across redeploys. Run scripts/create-signing-cert.sh once." >&2
+    codesign --verify --deep --strict "$DEST_APP" || true
+  fi
 fi
 
 if [ -x "$LSREGISTER" ]; then
+  # Deregister every OTHER bundle sharing this bundle id before registering the
+  # deployed one. Xcode/xcodebuild register each build product (Debug, Release,
+  # worktree, DerivedData copies) under com.xiafawu.nota; LaunchServices can then
+  # resolve `open`/Spotlight/`open -b` to an ad-hoc build-dir copy instead of
+  # this one. Because those copies are ad-hoc, macOS TCC grants (Accessibility,
+  # Input Monitoring) reset every relaunch. Keep exactly one registered bundle.
+  "$LSREGISTER" -dump 2>/dev/null \
+    | grep -iE "path:.*Nota\.app \(" \
+    | sed -E 's/.*path: *//; s/ \(0x.*//' \
+    | grep -v "appex" | sort -u \
+    | while read -r other; do
+        [ "$other" = "$DEST_APP" ] && continue
+        "$LSREGISTER" -u "$other" 2>/dev/null || true
+      done
   "$LSREGISTER" -f "$DEST_APP" || true
 fi
 
 if [ "${NOTA_OPEN_AFTER_DEPLOY:-1}" = "1" ]; then
+  # Launch by full path (not `open -b <id>`) so we run the deployed bundle even
+  # if a build-dir copy re-registers later.
   open "$DEST_APP" || true
 fi
 

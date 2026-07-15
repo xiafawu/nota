@@ -58,9 +58,10 @@ final class ShareViewController: NSViewController {
         return
       }
 
+      let originalName = url.lastPathComponent
       let copiedURL = try copyForNota(url)
       await MainActor.run {
-        self.openInNota(copiedURL)
+        self.openInNota(copiedURL, originalName: originalName)
       }
     } catch {
       await MainActor.run {
@@ -74,11 +75,18 @@ final class ShareViewController: NSViewController {
   /// which is restricted in extensions), and a `nota://` URL guarantees the
   /// file opens in Nota rather than the system default audio handler.
   @MainActor
-  private func openInNota(_ fileURL: URL) {
+  private func openInNota(_ fileURL: URL, originalName: String) {
     var components = URLComponents()
     components.scheme = "nota"
     components.host = "import"
-    components.queryItems = [URLQueryItem(name: "path", value: fileURL.path)]
+    // `name` carries the user-facing original filename (e.g. "Voice Memo.qta")
+    // for display only — the host reads `path` for the actual file. The staged
+    // copy's basename is a synthetic ".nota-share-<epoch>-<uuid>" that must not
+    // reach the UI. URLComponents percent-encodes both values.
+    components.queryItems = [
+      URLQueryItem(name: "path", value: fileURL.path),
+      URLQueryItem(name: "name", value: originalName)
+    ]
 
     guard let url = components.url else {
       finish(with: "Could not open in Nota", error: ShareError.openFailed)

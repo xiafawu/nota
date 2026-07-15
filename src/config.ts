@@ -29,6 +29,7 @@ export interface CLIOptions {
   identify?: boolean;
   history?: boolean;
   force?: boolean;
+  skipPreflight?: boolean;
 }
 
 export interface AppConfig {
@@ -49,6 +50,8 @@ export interface AppConfig {
   history: boolean;
   /** Reprocess even when an identical audio file is already in history. */
   force: boolean;
+  /** Skip the inline preflight gate before transcription. */
+  skipPreflight: boolean;
 }
 
 function parseProviderAlias(provider?: string): Provider {
@@ -84,6 +87,7 @@ function requireKey(entry: ModelEntry): string {
 export function loadConfig(
   options: CLIOptions,
   settings: NotaSettings = loadSettings(),
+  { requireKeys = true }: { requireKeys?: boolean } = {},
 ): AppConfig {
   // Fill unset API keys from ~/.nota/config before reading them (env wins).
   applyEnvFile();
@@ -121,9 +125,14 @@ export function loadConfig(
   const provider: Provider =
     transcriptionEntry.provider === "assemblyai" ? "assemblyai" : "whisper";
 
-  // Require only the keys the resolved models need.
-  const transcriptionApiKey = requireKey(transcriptionEntry);
-  const summaryApiKey = requireKey(summaryEntry);
+  // Require only the keys the resolved models need. Preflight passes
+  // `requireKeys: false` so it can *report* a missing key as a failed check
+  // instead of throwing before any check runs; the key is then an empty string
+  // and the relevant check surfaces it.
+  const readKey = (entry: ModelEntry): string =>
+    requireKeys ? requireKey(entry) : (process.env[entry.apiKeyEnv] ?? "");
+  const transcriptionApiKey = readKey(transcriptionEntry);
+  const summaryApiKey = readKey(summaryEntry);
 
   return {
     provider,
@@ -139,5 +148,6 @@ export function loadConfig(
     identify: options.identify ?? false,
     history: options.history ?? true,
     force: options.force ?? false,
+    skipPreflight: options.skipPreflight ?? false,
   };
 }
