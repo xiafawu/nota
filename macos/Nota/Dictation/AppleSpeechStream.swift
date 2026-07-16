@@ -141,20 +141,50 @@ final class AppleSpeechStream: SpeechStream {
     }
 
     if let analyzer {
-      // SpeechAnalyzer path: end input, finalize, wait for final result
+      // SpeechAnalyzer path: end input, then finalize in a child task.
+      // finalizeAndFinishThroughEndOfInput() is the documented teardown;
+      // finalize(through: nil) never returns when the session produced no
+      // results (short/silent hold). Not awaited inline so the watchdog
+      // below can still unstick finish() if the OS call stalls.
       inputContinuation?.finish()
       stateLock.withLock { _ in
         didFinalize = true
       }
-      do {
-        try await analyzer.finalize(through: nil)
-      } catch {
-        throw error
+      Task { [weak self] in
+        do {
+          try await analyzer.finalizeAndFinishThroughEndOfInput()
+        } catch {
+          guard let self else { return }
+          let fc = self.stateLock.withLock { _ in
+            self.streamError = error
+            let fc = self.finishContinuation
+            self.finishContinuation = nil
+            return fc
+          }
+          fc?.resume(throwing: error)
+        }
       }
     } else if recognitionRequest != nil {
       // SFSpeechRecognizer fallback
       recognitionRequest?.endAudio()
     }
+
+    // Watchdog: if neither a final result nor stream teardown resumes us,
+    // return whatever text we have instead of wedging the UI in "Stopping".
+    let watchdog = Task { [weak self] in
+      try? await Task.sleep(nanoseconds: 5_000_000_000)
+      guard let self, !Task.isCancelled else { return }
+      let (fc, text) = self.stateLock.withLock { _ -> (CheckedContinuation<String, any Error>?, String) in
+        let fc = self.finishContinuation
+        self.finishContinuation = nil
+        return (fc, self.finalText ?? "")
+      }
+      if fc != nil {
+        self.logger.error("finish() watchdog fired — analyzer finalize stalled; returning partial text")
+      }
+      fc?.resume(returning: text)
+    }
+    defer { watchdog.cancel() }
 
     return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, any Error>) in
       let handled = stateLock.withLock { _ in
@@ -245,6 +275,16 @@ final class AppleSpeechStream: SpeechStream {
             fc?.resume(returning: text)
           }
         }
+        // Results stream ended (analyzer finished). A short or silent session
+        // yields zero results — resume finish() with what we have (possibly
+        // "") or it waits forever.
+        let (fc, text) = self.stateLock.withLock { _ -> (CheckedContinuation<String, any Error>?, String) in
+          if self.finalText == nil { self.finalText = "" }
+          let fc = self.finishContinuation
+          self.finishContinuation = nil
+          return (fc, self.finalText ?? "")
+        }
+        fc?.resume(returning: text)
       } catch {
         let fc = self.stateLock.withLock { _ in
           self.streamError = error
