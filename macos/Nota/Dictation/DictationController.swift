@@ -247,12 +247,30 @@ final class DictationController: ObservableObject {
         // Inject if we have text
         if !finalText.isEmpty {
           self.state = .injecting
-          self.injector.inject(finalText)
-          self.logger.info("Paste injection completed for \"\(finalText, privacy: .public)\"")
-        }
+          let target = FocusedTarget.capture()
+          self.logger.info("Focused target: bundle=\(target.bundleID ?? "nil", privacy: .public) secure=\(target.isSecureInput)")
 
-        self.state = .idle
-        self.speechStream = nil
+          // Spawn async injection off the main thread.
+          Task {
+            await self.injector.inject(finalText, target: target)
+            await MainActor.run {
+              if let notice = self.injector.lastSecureFieldNotice {
+                self.state = .failed(message: notice)
+                // Auto-reset to idle after a brief pause so the user sees the notice.
+                Task {
+                  try? await Task.sleep(nanoseconds: 2_000_000_000)
+                  await MainActor.run { self.state = .idle }
+                }
+              } else {
+                self.state = .idle
+              }
+              self.speechStream = nil
+            }
+          }
+        } else {
+          self.state = .idle
+          self.speechStream = nil
+        }
       }
     }
   }

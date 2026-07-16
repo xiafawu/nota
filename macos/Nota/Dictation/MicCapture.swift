@@ -7,14 +7,11 @@ final class MicCapture: ObservableObject {
   var onPCMBuffer: ((AVAudioPCMBuffer) -> Void)?
 
   private let audioEngine = AVAudioEngine()
-  private let stateLock = NSLock()
+  private let stateLock = OSAllocatedUnfairLock(initialState: false)
   private let logger = Logger(subsystem: "com.xiafawu.nota", category: "dictation.capture")
-  private var capturing = false
 
   var isCapturing: Bool {
-    stateLock.lock()
-    defer { stateLock.unlock() }
-    return capturing
+    stateLock.withLock { $0 }
   }
 
   func start() throws {
@@ -43,9 +40,7 @@ final class MicCapture: ObservableObject {
     }
 
     let sessionID = UUID()
-    stateLock.lock()
-    capturing = true
-    stateLock.unlock()
+    stateLock.withLock { $0 = true }
     diagnostics = CaptureDiagnostics(
       sessionID: sessionID,
       startedAt: Date(),
@@ -66,9 +61,7 @@ final class MicCapture: ObservableObject {
       logger.info("capture session started: \(sessionID.uuidString, privacy: .public)")
     } catch {
       inputNode.removeTap(onBus: 0)
-      stateLock.lock()
-      capturing = false
-      stateLock.unlock()
+      stateLock.withLock { $0 = false }
       diagnostics = nil
       throw MicCaptureError.engineStartFailed(error.localizedDescription)
     }
@@ -79,9 +72,7 @@ final class MicCapture: ObservableObject {
     audioEngine.inputNode.removeTap(onBus: 0)
     audioEngine.stop()
 
-    stateLock.lock()
-    capturing = false
-    stateLock.unlock()
+    stateLock.withLock { $0 = false }
 
     guard var diagnostics else { return }
     diagnostics.stoppedAt = Date()
