@@ -4,86 +4,59 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
   @ObservedObject var model: NotaModel
+  @StateObject private var usageProvider: UsageStatsProvider
 
-  private var historyState: HistoryPaneState {
-    HistoryPaneState(
-      isRunning: model.isRunning,
-      rows: model.history.map { entry in
-        HistoryRowState(id: entry.id, title: entry.title, relativeDate: entry.relativeDate, tags: entry.tags)
-      }
+  init(model: NotaModel) {
+    self.model = model
+    let projectDir = URL(
+      fileURLWithPath: ProcessInfo.processInfo.environment["NOTA_PROJECT_DIR"]
+        ?? "/Users/xiafawu/Developer/Nota"
     )
-  }
-
-  private var mainContent: MainPaneContent {
-    if model.hasContent {
-      return .rich(DocumentRender(meta: parseDocumentMeta(model.markdown), body: model.richText))
-    }
-    // While a run is in flight the empty pane shows the waveform/progress state;
-    // otherwise the home is the preflight health dashboard.
-    if model.isRunning {
-      return .empty(EmptyMainState(
-        isRunning: true,
-        displayName: model.displayName,
-        displayPath: model.displayPath,
-        phase: model.phase
-      ))
-    }
-    return .preflight(PreflightHomeState(
-      result: model.preflight,
-      isChecking: model.isCheckingPreflight
-    ))
+    _usageProvider = StateObject(wrappedValue: UsageStatsProvider(projectDirectory: projectDir))
   }
 
   private var toolbarStatusPillState: ToolbarStatusPillState? {
     guard model.isRunning || model.status != "Drop audio to transcribe" else {
       return nil
     }
-    // While running, mirror the live pipeline phase so the pill and the main
-    // view never disagree; fall back to `status` for terminal states (Complete,
-    // failures) and the brief pre-phase window.
     let text = model.isRunning && !model.phase.isEmpty ? model.phase : model.status
     return ToolbarStatusPillState(isRunning: model.isRunning, text: text)
   }
 
   var body: some View {
-    NavigationSplitView {
-      HistoryPaneView(
-        state: historyState,
-        selectedID: $model.selectedHistoryID,
-        onNewTranscription: { model.newTranscription() },
-        onOpen: { id in
-          if let entry = model.history.first(where: { $0.id == id }) {
-            model.openHistory(entry)
-          }
-        },
-        onReveal: { id in
-          NSWorkspace.shared.activateFileViewerSelecting([id])
-        },
-        onDelete: { id in
-          if let entry = model.history.first(where: { $0.id == id }) {
-            model.deleteHistory(entry)
-          }
-        }
-      )
-      .navigationSplitViewColumnWidth(min: Metrics.sidebarMin, ideal: Metrics.sidebarIdeal, max: Metrics.sidebarMax)
-    } detail: {
-      MainPaneView(
-        content: mainContent,
-        isDropTargeted: $model.isDropTargeted,
-        speakerChips: $model.speakerChips,
-        onDropURL: { url in
-          model.accept(url)
-        },
-        onRename: { label, newName in
-          model.renameChip(label: label, newName: newName)
-        },
-        onRefreshPreflight: {
-          model.runPreflight(refresh: true)
-        }
-      )
-      .navigationSplitViewColumnWidth(min: Metrics.detailMin, ideal: Metrics.detailIdeal)
+    if model.hasContent {
+      documentView
+    } else if model.isRunning {
+      runningView
+    } else {
+      homeView
     }
+  }
+
+  // MARK: - Document (rich content)
+
+  private var documentView: some View {
+    MainPaneView(
+      content: .rich(DocumentRender(
+        meta: parseDocumentMeta(model.markdown),
+        body: model.richText
+      )),
+      isDropTargeted: $model.isDropTargeted,
+      speakerChips: $model.speakerChips,
+      onDropURL: { url in model.accept(url) },
+      onRename: { label, newName in model.renameChip(label: label, newName: newName) },
+      onRefreshPreflight: { model.runPreflight(refresh: true) }
+    )
     .toolbar {
+      ToolbarItem(placement: .navigation) {
+        Button {
+          model.newTranscription()
+        } label: {
+          Label("Home", systemImage: "chevron.left")
+        }
+        .help("Back to home")
+      }
+
       ToolbarItemGroup(placement: .status) {
         if let pillState = toolbarStatusPillState {
           ToolbarStatusPill(state: pillState)
@@ -91,65 +64,150 @@ struct ContentView: View {
       }
 
       ToolbarItem(placement: .primaryAction) {
-        // Only surface the Copy/Export/Reveal menu once there's a transcript to
-        // act on. Showing it disabled during processing read as a dead control.
         if !model.markdown.isEmpty || model.lastOutputURL != nil {
-          Menu {
-          Section("Copy") {
-            Button {
-              model.copyRichText()
-            } label: {
-              Label("Copy Rich Text", systemImage: "doc.on.clipboard")
-            }
-            .liquidGlassButton()
-            Button {
-              model.copyMarkdown()
-            } label: {
-              Label("Copy Markdown", systemImage: "chevron.left.forwardslash.chevron.right")
-            }
-            .liquidGlassButton()
-          }
-          Section("Export") {
-            Button {
-              model.exportRichText()
-            } label: {
-              Label("Export Rich Text...", systemImage: "textformat")
-            }
-            .liquidGlassButton()
-            Button {
-              model.exportMarkdown()
-            } label: {
-              Label("Export Markdown...", systemImage: "number")
-            }
-            .liquidGlassButton()
-          }
-          Section {
-            Button {
-              model.revealOutput()
-            } label: {
-              Label("Reveal in Finder", systemImage: "finder")
-            }
-            .liquidGlassButton()
-            .disabled(model.lastOutputURL == nil)
-          }
-        } label: {
-          Label("Share", systemImage: "square.and.arrow.up")
-        }
-        .menuIndicator(.hidden)
-        .help("Copy, export, or reveal transcript")
-        .liquidGlassButton()
+          ShareMenu(model: model)
         }
       }
+    }
+    .toolbarBackground(.hidden, for: .windowToolbar)
+    .onChange(of: model.isRunning) { _, running in
+      if !running {
+        usageProvider.invalidateCache()
+      }
+    }
+  }
+
+  // MARK: - Running (progress)
+
+  private var runningView: some View {
+    MainPaneView(
+      content: .empty(EmptyMainState(
+        isRunning: true,
+        displayName: model.displayName,
+        displayPath: model.displayPath,
+        phase: model.phase
+      )),
+      isDropTargeted: $model.isDropTargeted,
+      speakerChips: $model.speakerChips,
+      onDropURL: { url in model.accept(url) },
+      onRename: { label, newName in model.renameChip(label: label, newName: newName) },
+      onRefreshPreflight: { model.runPreflight(refresh: true) }
+    )
+    .toolbar {
+      ToolbarItemGroup(placement: .status) {
+        if let pillState = toolbarStatusPillState {
+          ToolbarStatusPill(state: pillState)
+        }
+      }
+    }
+    .toolbarBackground(.hidden, for: .windowToolbar)
+    .animation(Tokens.animFast, value: model.isRunning)
+    .onChange(of: model.isRunning) { _, running in
+      if !running {
+        usageProvider.invalidateCache()
+      }
+    }
+  }
+
+  // MARK: - Home (dashboard)
+
+  private var homeView: some View {
+    HomeDashboardView(
+      model: model,
+      usageProvider: usageProvider
+    )
+    .toolbar {
+      ToolbarItem(placement: .primaryAction) {
+        Button {
+          model.newTranscription()
+        } label: {
+          Label("New Transcription", systemImage: "plus")
+        }
+        .help("Start a new transcription")
+      }
+
+      ToolbarItemGroup(placement: .status) {
+        if let pillState = toolbarStatusPillState {
+          ToolbarStatusPill(state: pillState)
+        }
+      }
+    }
+    .toolbarBackground(.hidden, for: .windowToolbar)
+    .onDrop(of: [UTType.fileURL.identifier], isTargeted: $model.isDropTargeted) { providers in
+      guard let provider = providers.first else { return false }
+      provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+        let url: URL?
+        if let data = item as? Data {
+          url = URL(dataRepresentation: data, relativeTo: nil)
+        } else if let nsURL = item as? NSURL {
+          url = nsURL as URL
+        } else {
+          url = nil
+        }
+        if let url {
+          Task { @MainActor in model.accept(url) }
+        }
+      }
+      return true
     }
     .animation(Tokens.animFast, value: model.isRunning)
-    .toolbarBackground(.hidden, for: .windowToolbar)
-    .onChange(of: model.selectedHistoryID) { _, newValue in
-      guard let newValue, let entry = model.history.first(where: { $0.id == newValue }) else {
-        return
-      }
-      if entry.url.standardizedFileURL != model.lastOutputURL?.standardizedFileURL {
-        model.openHistory(entry)
+    .onChange(of: model.isRunning) { _, running in
+      if !running {
+        usageProvider.invalidateCache()
       }
     }
+  }
+}
+
+// MARK: - Share menu (extracted for reuse)
+
+private struct ShareMenu: View {
+  @ObservedObject var model: NotaModel
+
+  var body: some View {
+    Menu {
+      Section("Copy") {
+        Button {
+          model.copyRichText()
+        } label: {
+          Label("Copy Rich Text", systemImage: "doc.on.clipboard")
+        }
+        .liquidGlassButton()
+        Button {
+          model.copyMarkdown()
+        } label: {
+          Label("Copy Markdown", systemImage: "chevron.left.forwardslash.chevron.right")
+        }
+        .liquidGlassButton()
+      }
+      Section("Export") {
+        Button {
+          model.exportRichText()
+        } label: {
+          Label("Export Rich Text...", systemImage: "textformat")
+        }
+        .liquidGlassButton()
+        Button {
+          model.exportMarkdown()
+        } label: {
+          Label("Export Markdown...", systemImage: "number")
+        }
+        .liquidGlassButton()
+      }
+      Section {
+        Button {
+          model.revealOutput()
+        } label: {
+          Label("Reveal in Finder", systemImage: "finder")
+        }
+        .liquidGlassButton()
+        .disabled(model.lastOutputURL == nil)
+      }
+    } label: {
+      Label("Share", systemImage: "square.and.arrow.up")
+    }
+    .menuIndicator(.hidden)
+    .help("Copy, export, or reveal transcript")
+    .liquidGlassButton()
   }
 }
