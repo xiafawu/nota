@@ -21,6 +21,7 @@ A handoff spec (CODEX-SPEC style) that locks every decision for a **per-model mo
 - [T1 Model pricing](tickets/T1-pricing-rates.md) — rates verified 2026-07-14 ([pricing.md](pricing.md)): summary per-token in/out, transcription per-duration; gemini-2.5-pro tiered by prompt size. Store snapshot `costUSD` at run time (not recompute-on-read); rates live in a `pricing.ts` + `pricedAsOf`, not the registry. Registry pins a stale model generation (out of scope).
 - [T4 History schema](tickets/T4-history-schema.md) — `HistoryRecord.usage?: UsageEntry[]` (additive, undefined=legacy). Entry per (model,task): `{modelId, task, provider, calls, tokensIn?, tokensOut?, durationMin?, costUSD|null, estimated}`. Cost snapshotted at write from `pricing.ts` (gemini-pro tiered branch). Two-phase write (transcription→create, summary→complete). Legacy: reclaim transcription cost via duration×rate (estimated), summary cost `null`/unknown.
 - [T5 Aggregation grain](tickets/T5-aggregation-grain.md) — two views: (1) per-model summary, rollup per `modelId`, cost-desc, columns model·provider·runs·calls·tokensIn·tokensOut·$, windowed (all-time/30d/month); (2) per-run cost log. Estimated rows `~`-marked; unknown cost shows `—`, excluded from total + "N unknown" footnote.
+- [T3 CLI scope](tickets/T3-cli-scope.md) — CLI too: `nota usage` renders the T5 contract (per-model default, per-run log, `--window`), tab-separated stdout / stderr header per existing CLI conventions. Thin renderer over the already-merged `src/usage-stats.ts` aggregators.
 
 ## Not yet specified
 
@@ -42,7 +43,7 @@ A handoff spec (CODEX-SPEC style) that locks every decision for a **per-model mo
 |---|---|---|---|
 | [T1 Model pricing: rates + billing basis](tickets/T1-pricing-rates.md) | research | closed | — |
 | [T2 Per-call usage capture audit](tickets/T2-usage-capture.md) | research | closed | — |
-| [T3 CLI scope: macOS-only or `nota usage` too](tickets/T3-cli-scope.md) | grilling | open | — (frontier) |
+| [T3 CLI scope: macOS-only or `nota usage` too](tickets/T3-cli-scope.md) | grilling | closed | — |
 | [T4 History schema: per-run per-model usage + migration](tickets/T4-history-schema.md) | grilling | closed | T1 ✅, T2 ✅ |
 | [T5 Aggregation grain for the stats view](tickets/T5-aggregation-grain.md) | grilling | closed | T4 ✅ |
-| [T6 Home-page stats panel design](tickets/T6-homepage-prototype.md) | prototype | open | T3, T5 ✅ (still blocked by T3) |
+| [T6 Home-page stats panel design](tickets/T6-homepage-prototype.md) | prototype | open | T3 ✅, T5 ✅ → **frontier (last ticket)** |
