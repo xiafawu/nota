@@ -34,6 +34,7 @@ targets:
         excludes:
           - "Info.plist"
           - "Dictation/Tests"
+          - "UI/Tests"
           - "Assets/.gitignore"
           - "Assets/AppIcon.iconset"
           - "Assets/AppIcon.svg"
@@ -86,6 +87,18 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.xiafawu.nota.dictation-tests
         GENERATE_INFOPLIST_FILE: YES
+  NotaUITests:
+    type: bundle.unit-test
+    platform: macOS
+    deploymentTarget: "26.0"
+    sources:
+      - path: Nota/UI/Tests
+    dependencies:
+      - target: Nota
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.xiafawu.nota.ui-tests
+        GENERATE_INFOPLIST_FILE: YES
 
 schemes:
   Nota:
@@ -95,6 +108,7 @@ schemes:
     test:
       targets:
         - name: NotaDictationTests
+        - name: NotaUITests
     run:
       config: Debug
     archive:

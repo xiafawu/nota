@@ -41,6 +41,23 @@ function formatCost(usd: number): string {
 
 
 /**
+ * `nota usage --json` — per-model summary as a JSON document.
+ *
+ * Returns the full JSON string. The caller (index.ts) writes it to stdout;
+ * notes and errors remain on stderr.
+ *
+ * NOTE: --json with the `runs` subcommand is out of scope for T6:
+ *   - `nota usage runs --json` → Commander errors (unknown option on subcommand)
+ *   - `nota usage --json runs` → silently ignored (Commander consumes parent
+ *     options then routes to subcommand, never executing this function)
+ * Both forms are documented as unsupported; no code paths handle them.
+ */
+export async function usageSummaryJSON(window?: AggregateWindow, historyDir?: string): Promise<string> {
+  const records = await listHistoryRecords(historyDir);
+  const rows = records.length === 0 ? [] : perModelSummary(records, window);
+  return JSON.stringify({ window: window ?? "all", rows });
+}
+/**
  * `nota usage` — per-model summary.
  * Tab-separated rows to stdout; headers, totals, and notes to stderr.
  */
