@@ -94,21 +94,42 @@ struct DictationHUDContentView: View {
   let state: HUDState
 
   var body: some View {
-    Group {
-      switch state {
-      case .hidden:
-        Color.clear.frame(width: 0, height: 0)
-      case .listening(let level):
-        ListeningView(level: level)
-      case .processing(let step):
-        ProcessingView(step: step)
-      case .success(let snippet):
-        SuccessView(snippet: snippet)
-      case .warning(let message):
-        WarningView(message: message)
-      case .error(let message):
-        ErrorView(message: message)
-      }
+    if case .hidden = state {
+      Color.clear.frame(width: 0, height: 0)
+    } else {
+      content
+        .padding(.horizontal, 16)
+        .padding(.vertical, 10)
+        .liquidGlass(glass, in: Capsule())
+    }
+  }
+
+  /// One shared Liquid Glass capsule for every state; error/warning states
+  /// tint the glass itself (HIG: tint the material, don't paint a color
+  /// behind it) while the glyph carries the saturated semantic color.
+  private var glass: Glass {
+    switch state {
+    case .error: return .regular.tint(.red.opacity(0.35))
+    case .warning: return .regular.tint(.orange.opacity(0.3))
+    default: return .regular
+    }
+  }
+
+  @ViewBuilder
+  private var content: some View {
+    switch state {
+    case .hidden:
+      EmptyView()
+    case .listening(let level):
+      ListeningView(level: level)
+    case .processing(let step):
+      ProcessingView(step: step)
+    case .success(let snippet):
+      SuccessView(snippet: snippet)
+    case .warning(let message):
+      WarningView(message: message)
+    case .error(let message):
+      ErrorView(message: message)
     }
   }
 }
@@ -127,14 +148,12 @@ private struct ListeningView: View {
       HStack(spacing: 3) {
         ForEach(0..<8, id: \.self) { i in
           RoundedRectangle(cornerRadius: 1.5)
-            .fill(barColor(for: i))
+            .fill(barStyle(for: i))
             .frame(width: 4, height: barHeight(for: i))
         }
       }
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 10)
-    .background(.ultraThinMaterial, in: Capsule())
+    .frame(height: 24)
   }
 
   private func barHeight(for index: Int) -> CGFloat {
@@ -150,11 +169,12 @@ private struct ListeningView: View {
     return base
   }
 
-  private func barColor(for index: Int) -> Color {
+  /// Monochrome level bars (system voice-HUD style): lit bars use vibrant
+  /// primary, unlit stay quiet secondary — the red mic glyph alone signals
+  /// recording. Traffic-light bars read as alerts, not levels, on macOS.
+  private func barStyle(for index: Int) -> HierarchicalShapeStyle {
     let fraction = Float(index + 1) / 8.0
-    if fraction <= 0.4 { return .green }
-    if fraction <= 0.65 { return .yellow }
-    return .red
+    return level >= fraction * 0.6 ? .primary : .tertiary
   }
 }
 
@@ -169,9 +189,6 @@ private struct ProcessingView: View {
       Text(step)
         .font(.subheadline)
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 10)
-    .background(.ultraThinMaterial, in: Capsule())
   }
 }
 
@@ -190,9 +207,6 @@ private struct SuccessView: View {
           .lineLimit(1)
       }
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 10)
-    .background(.ultraThinMaterial, in: Capsule())
   }
 }
 
@@ -210,9 +224,6 @@ private struct WarningView: View {
         .lineLimit(2)
         .fixedSize(horizontal: false, vertical: true)
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 10)
-    .background(.ultraThinMaterial, in: Capsule())
   }
 }
 
@@ -230,8 +241,5 @@ private struct ErrorView: View {
         .lineLimit(2)
         .fixedSize(horizontal: false, vertical: true)
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 10)
-    .background(.ultraThinMaterial, in: Capsule())
   }
 }
