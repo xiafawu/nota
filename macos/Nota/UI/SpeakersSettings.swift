@@ -312,6 +312,33 @@ struct SpeakersSettingsView: View {
         }
       }
 
+      Section("Description") {
+        if let desc = entry.profile.description {
+          Text(desc.text)
+            .font(.callout)
+            .foregroundStyle(.secondary)
+          if let date = Self.isoFormatter.date(from: desc.updatedAt) {
+            Text("Updated \(Self.displayDateFormatter.string(from: date))")
+              .font(.caption)
+              .foregroundStyle(.tertiary)
+          }
+        } else {
+          Text("No description yet. Generate one from transcript excerpts.")
+            .font(.callout)
+            .foregroundStyle(.tertiary)
+        }
+        HStack {
+          Spacer()
+          Button("Refresh Description") {
+            // TODO: invoke `nota speakers describe <name>` via shell command
+            // (see shellMergeSpeakers pattern in SpeakerProfileStore).
+            // The CLI verb exists: `nota speakers describe <name>`.
+          }
+          .disabled(true)
+          .help("Generate entity description from transcript excerpts")
+        }
+      }
+
       Section("Merge") {
         HStack {
           Picker("Merge into", selection: $mergeTarget) {

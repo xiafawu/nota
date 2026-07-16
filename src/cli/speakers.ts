@@ -6,6 +6,9 @@ import {
   type SpeakerStore,
   type Voiceprint,
 } from "../pipeline/speakers.js";
+import { listHistoryRecords } from "../pipeline/history.js";
+import { loadConfig } from "../config.js";
+import { generateDescription } from "../pipeline/describe-speaker.js";
 
 export interface SpeakerCommandOptions {
   storePath?: string;
@@ -216,4 +219,50 @@ export async function showSpeaker(
     })),
   };
   process.stdout.write(`${JSON.stringify(view, null, 2)}\n`);
+}
+
+export async function describeSpeaker(
+  name: string,
+  historyIds?: string[],
+  options?: SpeakerCommandOptions,
+): Promise<void> {
+  const storePath = resolveStorePath(options);
+  const store = await loadProfiles(storePath);
+  const profile = requireProfile(store, name);
+
+  // Resolve summary model config for the LLM call.
+  const config = loadConfig({}, undefined, { requireKeys: false });
+
+  // Collect segments from history records where this speaker appears.
+  const records = await listHistoryRecords();
+  const filtered = historyIds
+    ? records.filter((r) => historyIds.includes(r.id))
+    : records;
+  const segments = filtered.flatMap((r) =>
+    r.segments.filter((s) => s.speaker === name),
+  );
+
+  if (segments.length === 0) {
+    process.stderr.write(`No transcript segments found for speaker "${name}".\n`);
+    process.exit(1);
+  }
+
+  const descriptionText = await generateDescription(
+    name,
+    segments,
+    config.summaryApiKey,
+    config.summaryModel,
+    config.summaryBaseURL,
+  );
+
+  // Update the stored profile.
+  profile.description = {
+    text: descriptionText,
+    updatedAt: new Date().toISOString(),
+    sourceHistoryIds: filtered.map((r) => r.id),
+  };
+  await saveProfiles(store, storePath);
+
+  process.stderr.write(`Description generated for "${name}".\n`);
+  process.stdout.write(`${descriptionText}\n`);
 }

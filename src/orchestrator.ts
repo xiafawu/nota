@@ -12,7 +12,7 @@ import { runDiarization, alignSpeakers } from "./pipeline/diarize.js";
 import { chunkAudio } from "./pipeline/chunk.js";
 import { transcribeChunks } from "./pipeline/transcribe.js";
 import { mergeTranscriptions } from "./pipeline/merge.js";
-import { summarizeTranscript } from "./pipeline/summarize.js";
+import { summarizeTranscript, type MeetingSummary } from "./pipeline/summarize.js";
 import { writeOutput, defaultOutputPath } from "./pipeline/write.js";
 import { getAudioDuration } from "./utils/ffmpeg.js";
 import { hashFile } from "./utils/audio-hash.js";
@@ -37,6 +37,7 @@ import {
   promptForSpeakerNames,
   applySpeakerNames,
 } from "./pipeline/speakers.js";
+import { applyVerdicts, verifySpeakers } from "./pipeline/verify-speakers.js";
 import {
   computeEmbedding,
   computeEmbeddings,
@@ -348,18 +349,23 @@ async function runAssemblyAIPipelineInner(
     spinner?.succeed(`History saved as ${history.id}`);
   }
 
-  // 3. Summarize
-  emitPhase("summarizing");
-  spinner = log(verbose, `Summarizing with ${config.summaryModel}...`);
-  const { summary, tokenUsage } = await summarizeTranscript(
-    result.text,
-    config.summaryApiKey,
-    config.summaryModel,
-    segments,
-    config.summaryBaseURL,
-  );
-  const summaryUsage = makeSummaryUsage(config.summaryModel, config.provider, tokenUsage);
-  spinner?.succeed("Summary generated");
+  // 3. Summarize (optional — --no-summary skips; when run, capture token usage)
+  let summary: MeetingSummary | undefined;
+  let summaryUsage: UsageEntry | undefined;
+  if (config.summary) {
+    emitPhase("summarizing");
+    spinner = log(verbose, `Summarizing with ${config.summaryModel}...`);
+    const summarized = await summarizeTranscript(
+      result.text,
+      config.summaryApiKey,
+      config.summaryModel,
+      segments,
+      config.summaryBaseURL,
+    );
+    summary = summarized.summary;
+    summaryUsage = makeSummaryUsage(config.summaryModel, config.provider, summarized.tokenUsage);
+    spinner?.succeed("Summary generated");
+  }
 
   // 4. Write
   emitPhase("writing");
@@ -381,8 +387,12 @@ async function runAssemblyAIPipelineInner(
     },
     outputPath,
   );
-  if (historyId) {
-    await completeHistoryRecord(historyId, { summary, outputPath, usage: [summaryUsage] });
+  if (config.summary && historyId) {
+    await completeHistoryRecord(historyId, {
+      summary: summary!,
+      outputPath,
+      usage: summaryUsage ? [summaryUsage] : undefined,
+    });
   }
   spinner?.succeed(`Output written to ${outputPath}`);
 
@@ -488,6 +498,45 @@ export async function identifySpeakers(
           console.log(
             `  Matched ${label} → ${match.name} (${Math.round(match.confidence * 100)}%)`,
           );
+        }
+      }
+    }
+
+    // 2c. LLM cross-check: verify confident matches against speaker descriptions
+    //     (gated behind --verify-speakers, which defaults to on with --identify).
+    if (
+      config.verifySpeakers &&
+      Object.keys(nameMap).length > 0 &&
+      config.summaryApiKey
+    ) {
+      if (verbose) console.log("  Verifying speaker labels...");
+      const speakerContexts: Record<
+        string,
+        { name: string; description?: typeof store.speakers[string]["description"] }
+      > = {};
+      for (const [label, name] of Object.entries(nameMap)) {
+        const profile = store.speakers[name];
+        speakerContexts[label] = {
+          name,
+          description: profile?.description,
+        };
+      }
+      const verdicts = await verifySpeakers(
+        { segments, matches: Object.fromEntries(Object.entries(matches).filter(([, m]) => !m.tentative)), speakerContexts },
+        config.summaryApiKey,
+        config.summaryModel,
+        config.summaryBaseURL,
+      );
+      const updated = applyVerdicts(matches, verdicts);
+      for (const [label, match] of Object.entries(updated)) {
+        const prev = matches[label];
+        if (prev && prev.tentative !== match.tentative && match.tentative) {
+          // Demoted: move from nameMap to tentative.
+          if (nameMap[label]) {
+            if (verbose) console.log(`  Demoted ${label}: "${nameMap[label]}" marked tentative after LLM cross-check`);
+            delete nameMap[label];
+            tentative[label] = { name: match.name, confidence: match.confidence };
+          }
         }
       }
     }
@@ -654,17 +703,22 @@ async function runWhisperPipeline(
     spinner?.succeed(`History saved as ${history.id}`);
   }
 
-  // 5. Summarize
-  spinner = log(verbose, `Summarizing with ${config.summaryModel}...`);
-  const { summary, tokenUsage } = await summarizeTranscript(
-    merged.text,
-    config.summaryApiKey,
-    config.summaryModel,
-    diarization ? merged.segments : undefined,
-    config.summaryBaseURL,
-  );
-  const summaryUsageW = makeSummaryUsage(config.summaryModel, config.provider, tokenUsage);
-  spinner?.succeed("Summary generated");
+  // 5. Summarize (optional — --no-summary skips; when run, capture token usage)
+  let summary: MeetingSummary | undefined;
+  let summaryUsageW: UsageEntry | undefined;
+  if (config.summary) {
+    spinner = log(verbose, `Summarizing with ${config.summaryModel}...`);
+    const summarized = await summarizeTranscript(
+      merged.text,
+      config.summaryApiKey,
+      config.summaryModel,
+      diarization ? merged.segments : undefined,
+      config.summaryBaseURL,
+    );
+    summary = summarized.summary;
+    summaryUsageW = makeSummaryUsage(config.summaryModel, config.provider, summarized.tokenUsage);
+    spinner?.succeed("Summary generated");
+  }
 
   // 6. Write
   spinner = log(verbose, "Writing output...");
@@ -685,8 +739,12 @@ async function runWhisperPipeline(
     },
     outputPath,
   );
-  if (historyId) {
-    await completeHistoryRecord(historyId, { summary, outputPath, usage: [summaryUsageW] });
+  if (config.summary && historyId) {
+    await completeHistoryRecord(historyId, {
+      summary: summary!,
+      outputPath,
+      usage: summaryUsageW ? [summaryUsageW] : undefined,
+    });
   }
   spinner?.succeed(`Output written to ${outputPath}`);
 

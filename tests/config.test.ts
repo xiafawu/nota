@@ -199,6 +199,13 @@ describe("loadConfig", () => {
     expect(loadConfig({ history: false }, NO_SETTINGS).history).toBe(false);
   });
 
+  it("generates summary by default and respects --no-summary", () => {
+    process.env.ASSEMBLYAI_API_KEY = "aai-test";
+    process.env.OPENAI_API_KEY = "sk-test";
+    expect(loadConfig({}, NO_SETTINGS).summary).toBe(true);
+    expect(loadConfig({ summary: false }, NO_SETTINGS).summary).toBe(false);
+  });
+
   it("does not expose the legacy Picovoice key in config", () => {
     process.env.ASSEMBLYAI_API_KEY = "aai-test";
     process.env.OPENAI_API_KEY = "sk-test";

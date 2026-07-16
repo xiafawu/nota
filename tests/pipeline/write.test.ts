@@ -85,4 +85,24 @@ describe("buildMarkdown", () => {
     expect(md).toContain("**Captured:** —");
     expect(md).toContain("**Transcribed:** 2026-03-10");
   });
+
+  it("renders transcript-only output when summary is omitted", () => {
+    const segments: TranscriptSegment[] = [
+      { start: 0, end: 5, text: "Hello world", speaker: "Speaker 1" },
+    ];
+    const md = buildMarkdown({
+      segments,
+      capturedDate: null,
+      transcribedDate: "2026-07-15",
+      duration: 3,
+      source: "test.m4a",
+    });
+    expect(md).toContain("# Transcript");
+    expect(md).not.toContain("## Summary");
+    expect(md).not.toContain("## Key Topics");
+    expect(md).not.toContain("## Decisions Made");
+    expect(md).not.toContain("## Action Items");
+    expect(md).toContain("## Full Transcript");
+    expect(md).toContain("Hello world");
+  });
 });

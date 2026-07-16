@@ -42,7 +42,9 @@ struct SpeakerChip: Identifiable, Equatable {
   var id: String { label }
 
   var displayText: String {
-    name.isEmpty ? "\(label) → ?" : "\(label) → \(name)"
+    if name.isEmpty { return "\(label) → ?" }
+    if name == label { return name }
+    return "\(label) → \(name)"
   }
 }
 

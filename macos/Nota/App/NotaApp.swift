@@ -5,6 +5,7 @@ import SwiftUI
 struct NotaApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
   @StateObject private var model = NotaModel()
+  @StateObject private var dictationController = DictationController()
 
   init() {
     if let exitCode = runHeadlessSmokeTestIfRequested(arguments: Array(ProcessInfo.processInfo.arguments.dropFirst())) {
@@ -13,7 +14,14 @@ struct NotaApp: App {
   }
 
   var body: some Scene {
-    WindowGroup {
+    MenuBarExtra {
+      DictationMenuBarView(controller: dictationController)
+    } label: {
+      DictationStatusLabel(controller: dictationController)
+    }
+    .menuBarExtraStyle(.window)
+
+    WindowGroup("Nota", id: "document") {
       ContentView(model: model)
         .frame(minWidth: Metrics.windowMinWidth, minHeight: Metrics.windowMinHeight)
         .onOpenURL { url in
@@ -42,7 +50,7 @@ struct NotaApp: App {
     }
 
     Settings {
-      SettingsView(identifySpeakers: $model.identifySpeakers)
+      SettingsView(identifySpeakers: $model.identifySpeakers, skipSummary: $model.skipSummary)
     }
 
     #if DEBUG
@@ -69,7 +77,12 @@ private struct OpenTuningWindowButton: View {
 #endif
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+  func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
+    false
+  }
+
   func application(_ application: NSApplication, open urls: [URL]) {
+    application.activate(ignoringOtherApps: true)
     NotificationCenter.default.post(name: .notaOpenURLs, object: urls)
   }
 }

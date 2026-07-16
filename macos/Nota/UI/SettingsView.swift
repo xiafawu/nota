@@ -2,6 +2,7 @@ import SwiftUI
 
 struct SettingsView: View {
   @Binding var identifySpeakers: Bool
+  @Binding var skipSummary: Bool
   @StateObject private var speakers = SpeakersModel()
 
   var body: some View {
@@ -32,7 +33,14 @@ struct SettingsView: View {
               .foregroundStyle(.secondary)
           }
         }
-      }
+        Toggle(isOn: $skipSummary) {
+          VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
+            Text("Transcribe only")
+            Text("Skip the LLM summary. Produces a transcript-only output.")
+              .font(Tokens.settingsCaptionFont)
+              .foregroundStyle(.secondary)
+          }
+        }
     }
     .formStyle(.grouped)
   }
@@ -214,10 +222,10 @@ struct ApiKeysSettingsView: View {
 
 #if DEBUG
 #Preview("on") {
-  SettingsView(identifySpeakers: .constant(true))
+  SettingsView(identifySpeakers: .constant(true), skipSummary: .constant(false))
 }
 
 #Preview("off") {
-  SettingsView(identifySpeakers: .constant(false))
+  SettingsView(identifySpeakers: .constant(false), skipSummary: .constant(false))
 }
 #endif
