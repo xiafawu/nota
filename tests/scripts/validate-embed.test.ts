@@ -25,15 +25,15 @@ describe("validation-harness arguments", () => {
 
 describe("validation-harness cosine gates", () => {
   it("rejects a same-speaker score below the operational MATCH threshold", () => {
-    expect(() => assertCosineValidation(0.49, 0.2, 0.2)).toThrow(/MATCH.*0\.50/);
+    expect(() => assertCosineValidation(0.49, 0.2, 0.2)).toThrow(/MATCH.*0\.65/);
   });
 
   it("requires both different-speaker scores below the TENTATIVE threshold", () => {
-    expect(() => assertCosineValidation(0.8, 0.35, 0.2)).toThrow(
-      /TENTATIVE.*0\.35/,
+    expect(() => assertCosineValidation(0.8, 0.55, 0.3)).toThrow(
+      /TENTATIVE.*0\.50/,
     );
-    expect(() => assertCosineValidation(0.8, 0.2, 0.35)).toThrow(
-      /TENTATIVE.*0\.35/,
+    expect(() => assertCosineValidation(0.8, 0.3, 0.55)).toThrow(
+      /TENTATIVE.*0\.50/,
     );
   });
 });
