@@ -204,8 +204,8 @@ describe("ONNX inference", () => {
 
 describe("speaker model configuration", () => {
   it("exposes the validation-calibrated model and thresholds", () => {
-    expect(MATCH_THRESHOLD).toBe(0.5);
-    expect(TENTATIVE_THRESHOLD).toBe(0.35);
+    expect(MATCH_THRESHOLD).toBe(0.65);
+    expect(TENTATIVE_THRESHOLD).toBe(0.5);
     expect(MODEL_SPEC).toEqual({
       name: "wespeaker_en_voxceleb_resnet34_LM.onnx",
       url: "https://github.com/k2-fsa/sherpa-onnx/releases/download/speaker-recongition-models/wespeaker_en_voxceleb_resnet34_LM.onnx",

@@ -50,7 +50,7 @@ struct NotaApp: App {
     }
 
     Settings {
-      SettingsView(identifySpeakers: $model.identifySpeakers)
+      SettingsView(identifySpeakers: $model.identifySpeakers, skipSummary: $model.skipSummary)
     }
 
     #if DEBUG

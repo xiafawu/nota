@@ -22,18 +22,18 @@ describe("rankMatches", () => {
     expect(out["Speaker 2"]).toEqual({ name: "Bob", confidence: 0.8 });
   });
 
-  it("flags the tentative band [0.35, 0.5)", () => {
-    const out = rankMatches({ "Speaker 1": [0.49, 0.0] }, names);
-    expect(out["Speaker 1"]).toEqual({ name: "Alice", confidence: 0.49, tentative: true });
+  it("flags the tentative band [0.5, 0.65)", () => {
+    const out = rankMatches({ "Speaker 1": [0.55, 0.0] }, names);
+    expect(out["Speaker 1"]).toEqual({ name: "Alice", confidence: 0.55, tentative: true });
   });
 
-  it("treats exactly 0.5 as confident (boundary)", () => {
-    const out = rankMatches({ "Speaker 1": [0.5, 0.0] }, names);
+  it("treats exactly 0.65 as confident (boundary)", () => {
+    const out = rankMatches({ "Speaker 1": [0.65, 0.0] }, names);
     expect(out["Speaker 1"].tentative).toBeUndefined();
   });
 
-  it("drops scores below the tentative floor 0.35", () => {
-    const out = rankMatches({ "Speaker 1": [0.34, 0.1] }, names);
+  it("drops scores below the tentative floor 0.5", () => {
+    const out = rankMatches({ "Speaker 1": [0.49, 0.1] }, names);
     expect(out["Speaker 1"]).toBeUndefined();
   });
 
@@ -47,7 +47,7 @@ describe("rankMatches", () => {
 
   it("resolves a conflict globally by score, not iteration order", () => {
     // Speaker 2 prefers Alice (0.95) over Speaker 1 (Alice 0.8); Speaker 1
-    // then falls back to its Bob candidate (0.65, tentative).
+    // then falls back to its Bob candidate (0.65, confident).
     const out = rankMatches({ "Speaker 1": [0.8, 0.65], "Speaker 2": [0.95, 0.1] }, names);
     expect(out["Speaker 2"]).toEqual({ name: "Alice", confidence: 0.95 });
     expect(out["Speaker 1"]).toEqual({ name: "Bob", confidence: 0.65 });
@@ -56,6 +56,26 @@ describe("rankMatches", () => {
   it("returns empty for no candidates", () => {
     expect(rankMatches({}, names)).toEqual({});
   });
+
+  // --- margin gate (open-set rejection) ---
+  it("rejects a label when the margin to second-best is below threshold", () => {
+    // top1=0.7 (Alice), top2=0.68 (Bob), margin=0.02 < 0.06 → no match
+    const out = rankMatches({ "Speaker 1": [0.7, 0.68] }, names);
+    expect(out["Speaker 1"]).toBeUndefined();
+  });
+
+  it("accepts a label with sufficient margin", () => {
+    // top1=0.8 (Alice), top2=0.1 (Bob), margin=0.7 >= 0.06 → match
+    const out = rankMatches({ "Speaker 1": [0.8, 0.1] }, names);
+    expect(out["Speaker 1"]).toEqual({ name: "Alice", confidence: 0.8 });
+  });
+
+  it("drops an unenrolled speaker whose scores straddle the threshold with low margin", () => {
+    // top1=0.66 (Alice), top2=0.64 (Bob), margin=0.02 < 0.06 → no match
+    const out = rankMatches({ "Speaker 1": [0.66, 0.64] }, names);
+    expect(out["Speaker 1"]).toBeUndefined();
+  });
+
 });
 
 describe("matchProfiles", () => {

@@ -26,8 +26,15 @@ export interface Voiceprint {
   source: string;
 }
 
+export interface SpeakerDescription {
+  text: string;
+  updatedAt: string;
+  sourceHistoryIds: string[];
+}
+
 export interface SpeakerProfile {
   voiceprints: Voiceprint[];
+  description?: SpeakerDescription;
 }
 
 export interface SpeakerStore {
@@ -97,6 +104,12 @@ export async function saveProfiles(
   await mkdir(path.dirname(filePath), { recursive: true });
   await writeFile(filePath, JSON.stringify(store, null, 2), "utf-8");
 }
+/**
+ * Minimum gap between top-1 and top-2 for the same label to claim a match
+ * (open-set rejection). Prevents an unenrolled speaker from being absorbed
+ * into the nearest enrolled profile. Overridable via NOTA_MATCH_MARGIN.
+ */
+export const MATCH_MARGIN = parseFloat(process.env.NOTA_MATCH_MARGIN ?? "") || 0.06;
 
 /**
  * Assign enrolled names to diarized labels from a per-label score vector.
@@ -106,6 +119,13 @@ export async function saveProfiles(
  * candidate at/above the tentative floor by score, then claim each label and
  * each name at most once. A claim at/above MATCH_THRESHOLD is confident; in
  * `[TENTATIVE_THRESHOLD, MATCH_THRESHOLD)` it is tentative (caller confirms).
+ *
+ * ### Open-set rejection (margin gate)
+ * A label is only claimed if the top-1 score exceeds the second-best by at
+ * least {@link MATCH_MARGIN}. This prevents an unenrolled speaker from being
+ * absorbed into the nearest enrolled profile — without this gate, any
+ * embedding above threshold gets a name even if it is nearly equidistant from
+ * two profiles, which produces false positive matches for out-of-set voices.
  */
 export function rankMatches(
   scoredByLabel: Record<string, number[]>,
@@ -113,6 +133,27 @@ export function rankMatches(
 ): Record<string, MatchResult> {
   const candidates: { label: string; name: string; score: number }[] = [];
   for (const [label, scores] of Object.entries(scoredByLabel)) {
+    // Find top-2 scores for this label to apply the margin gate
+    let top1 = -Infinity;
+    let top1Name = "";
+    let top2 = -Infinity;
+    for (let i = 0; i < scores.length; i++) {
+      if (scores[i] < TENTATIVE_THRESHOLD) continue;
+      if (names[i] === undefined) continue;
+      if (scores[i] > top1) {
+        top2 = top1;
+        top1 = scores[i];
+        top1Name = names[i];
+      } else if (scores[i] > top2) {
+        top2 = scores[i];
+      }
+    }
+
+    // Margin gate: skip this label if the gap to second-best is too small
+    // (open-set rejection — no single profile is clearly the match).
+    if (top1 - top2 < MATCH_MARGIN) continue;
+
+    // Emit all qualified candidates above threshold for this label
     for (let i = 0; i < scores.length; i++) {
       if (scores[i] >= TENTATIVE_THRESHOLD && names[i] !== undefined) {
         candidates.push({ label, name: names[i], score: scores[i] });

@@ -1,8 +1,17 @@
 import { SAMPLE_RATE } from "../utils/pcm.js";
 import { resolveModel, type ModelSpec } from "../utils/model.js";
 
-export const MATCH_THRESHOLD = 0.5;
-export const TENTATIVE_THRESHOLD = 0.35;
+/**
+ * Confident match threshold. Can be overridden via NOTA_MATCH_THRESHOLD env var
+ * (parsed as float; invalid values fall back to the built-in default).
+ */
+export const MATCH_THRESHOLD = parseFloat(process.env.NOTA_MATCH_THRESHOLD ?? "") || 0.65;
+
+/**
+ * Tentative match threshold. Can be overridden via NOTA_TENTATIVE_THRESHOLD.
+ * Scores below this floor are ignored.
+ */
+export const TENTATIVE_THRESHOLD = parseFloat(process.env.NOTA_TENTATIVE_THRESHOLD ?? "") || 0.5;
 
 export const MODEL_SPEC: ModelSpec = {
   name: "wespeaker_en_voxceleb_resnet34_LM.onnx",
