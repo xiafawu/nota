@@ -1,3 +1,6 @@
+import AppKit
+import ApplicationServices
+import CoreGraphics
 import Foundation
 
 enum DictationState: Equatable {
@@ -155,4 +158,102 @@ enum MicCaptureError: LocalizedError {
       return "Microphone capture could not start: " + detail
     }
   }
+}
+
+// MARK: - P3 Hybrid injection types
+
+/// Snapshot of the OS-focused input target, captured immediately before injection.
+struct FocusedTarget: Equatable {
+  let bundleID: String?
+  let isSecureInput: Bool
+  let accessibilityElement: AXUIElement?
+
+  /// Captures the current OS-focused UI element and its metadata.
+  static func capture() -> FocusedTarget {
+    guard let frontApp = NSWorkspace.shared.frontmostApplication else {
+      return FocusedTarget(
+        bundleID: nil,
+        isSecureInput: false,
+        accessibilityElement: nil
+      )
+    }
+
+    let bundleID = frontApp.bundleIdentifier
+    let appElement = AXUIElementCreateApplication(frontApp.processIdentifier)
+    var focusedValue: CFTypeRef?
+    let axResult = AXUIElementCopyAttributeValue(
+      appElement,
+      kAXFocusedUIElementAttribute as CFString,
+      &focusedValue
+    )
+
+    let axElement: AXUIElement?
+    if axResult == .success, let element = focusedValue {
+      axElement = (element as! AXUIElement)
+    } else {
+      axElement = nil
+    }
+
+    let isSecure: Bool
+    if let element = axElement {
+      isSecure = element.hasSecureRole
+    } else {
+      isSecure = false
+    }
+
+    return FocusedTarget(
+      bundleID: bundleID,
+      isSecureInput: isSecure,
+      accessibilityElement: axElement
+    )
+  }
+}
+extension AXUIElement {
+  /// Checks whether this AX element is a secure / password text field.
+  var hasSecureRole: Bool {
+    var roleValue: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(self, kAXRoleAttribute as CFString, &roleValue) == .success,
+          let role = roleValue as? String else {
+      return false
+    }
+    if role == "AXSecureTextField" {
+      return true
+    }
+    // Some password fields use a subrole on regular text fields.
+    var subroleValue: CFTypeRef?
+    if AXUIElementCopyAttributeValue(self, kAXSubroleAttribute as CFString, &subroleValue) == .success,
+       let subrole = subroleValue as? String,
+       subrole == "AXSecureTextField" {
+      return true
+    }
+    return false
+  }
+}
+
+/// Strategy for injecting text into the focused field.
+enum InjectionStrategy: Equatable, CustomStringConvertible {
+  /// AXUIElementSetAttributeValue (value or selected-text replacement).
+  case accessibility
+  /// Per-character CGEvent keyboard events.
+  case keyEvents
+  /// Clipboard save → Cmd-V → clipboard restore.
+  case paste
+
+  var description: String {
+    switch self {
+    case .accessibility: return "AX"
+    case .keyEvents: return "CGEvent"
+    case .paste: return "paste"
+    }
+  }
+}
+
+/// Per-bundle-ID injection override.
+struct PerAppOverride: Equatable {
+  /// Force a specific strategy instead of the default AX→CGEvent→paste chain.
+  /// `nil` means use the default chain starting from `.accessibility`.
+  let forceStrategy: InjectionStrategy?
+  /// Extra delay in milliseconds before restoring the pasteboard after Cmd-V.
+  /// `nil` means use the default (80 ms).
+  let pasteRestoreDelayMs: UInt?
 }

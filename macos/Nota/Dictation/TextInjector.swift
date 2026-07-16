@@ -1,48 +1,200 @@
 import AppKit
+import ApplicationServices
 import CoreGraphics
 import Foundation
 import os
 
 // MARK: - TextInjector
 
-/// Paste-only text injection: clipboard save → set text → synthetic Cmd-V → clipboard restore.
+/// Hybrid text injection with AX → CGEvent → paste fallback and a per-bundle override table.
 ///
-/// Uses `NSPasteboard` for clipboard manipulation and `CGEvent` for the Cmd-V keystroke.
-/// Does NOT use Accessibility AX APIs or CGEvent keystroke-by-keystroke typing (those are P3).
+/// Strategy selection per bundle:
+/// 1. Consult the per-app override table for a forced strategy.
+/// 2. Default: fallback chain `.accessibility` → `.keyEvents` → `.paste`.
+///
+/// Secure / password fields are refused with a nonfatal notice.
 final class TextInjector {
   private let logger = Logger(subsystem: "com.xiafawu.nota", category: "dictation.injector")
 
-  /// Injects `text` at the current keyboard focus using pasteboard + synthetic Cmd-V.
-  ///
-  /// Saves the full general pasteboard (all types with data), sets the string, posts Cmd-V,
-  /// then restores the original pasteboard contents in a `defer` block.
-  func inject(_ text: String) {
+  /// Per-bundle-ID injection overrides. Injectable for tests.
+  var overrides: [String: PerAppOverride]
+
+  /// Set when a secure/password field was refused on the last `inject` call.
+  private(set) var lastSecureFieldNotice: String?
+
+  init(overrides: [String: PerAppOverride]? = nil) {
+    self.overrides = overrides ?? Self.defaultOverrideTable
+  }
+
+  // MARK: - Public API
+
+  /// Inject `text` into the given `target` using the strategy table.
+  /// Runs off the main thread (uses `Task.sleep` instead of `Thread.sleep`).
+  func inject(_ text: String, target: FocusedTarget) async {
     guard !text.isEmpty else {
-      logger.info("TextInjector: skipping injection — empty text")
+      logger.info("Skipping injection — empty text")
       return
     }
 
+    lastSecureFieldNotice = nil
+
+    // Check secure / password fields.
+    guard !target.isSecureInput else {
+      lastSecureFieldNotice = "Cannot dictate into a password or secure field"
+      logger.notice("Refusing injection into secure field (bundle=\(target.bundleID ?? "nil", privacy: .public))")
+      return
+    }
+
+    // Resolve strategy.
+    let strategy = resolveStrategy(for: target.bundleID)
+    logger.info("Injection strategy for \(target.bundleID ?? "nil", privacy: .public): \(String(describing: strategy))")
+
+    // Fallback chain.
+    switch strategy {
+    case .accessibility:
+      if tryAXInject(text, target: target) {
+        logResolved(target.bundleID, strategy: "AX")
+        return
+      }
+      logger.debug("AX failed, falling back to CGEvent")
+      if tryCGEventInject(text, target: target) {
+        logResolved(target.bundleID, strategy: "CGEvent")
+        return
+      }
+      logger.debug("CGEvent failed, falling back to paste")
+      await tryPasteInject(text, for: target)
+      logResolved(target.bundleID, strategy: "paste")
+
+    case .keyEvents:
+      if tryCGEventInject(text, target: target) {
+        logResolved(target.bundleID, strategy: "CGEvent")
+        return
+      }
+      logger.debug("CGEvent failed, falling back to paste")
+      await tryPasteInject(text, for: target)
+      logResolved(target.bundleID, strategy: "paste")
+
+    case .paste:
+      await tryPasteInject(text, for: target)
+      logResolved(target.bundleID, strategy: "paste")
+    }
+  }
+
+  // MARK: - Strategy resolution
+
+  /// Returns the injection strategy for a given bundle ID based on the override table.
+  /// Used by tests — also used internally.
+  func resolveStrategy(for bundleID: String?) -> InjectionStrategy {
+    guard let bundleID, let override = overrides[bundleID], let forced = override.forceStrategy else {
+      return .accessibility
+    }
+    return forced
+  }
+
+  /// Returns the pasteboard restore delay in nanoseconds for a bundle ID.
+  private func pasteRestoreDelayNs(for bundleID: String?) -> UInt64 {
+    guard let bundleID, let override = overrides[bundleID], let custom = override.pasteRestoreDelayMs else {
+      return 80_000_000 // default 80 ms
+    }
+    return UInt64(custom) * 1_000_000
+  }
+
+  // MARK: - AX injection
+
+  /// Attempt to inject via AXUIElementSetAttributeValue on the focused element.
+  private func tryAXInject(_ text: String, target: FocusedTarget) -> Bool {
+    guard let element = target.accessibilityElement else {
+      logger.debug("AX: no accessibility element available")
+      return false
+    }
+
+    // Set AXValue attribute directly.
+    let result = AXUIElementSetAttributeValue(
+      element,
+      kAXValueAttribute as CFString,
+      text as CFTypeRef
+    )
+
+    if result == .success {
+      logger.debug("AX: set value directly — success")
+      return true
+    }
+
+    logger.debug("AX: set value failed with error \(result.rawValue)")
+    return false
+  }
+
+  // MARK: - CGEvent keystroke injection
+
+  /// Attempt to inject by posting a single CGEvent with UTF-16 string to the frontmost PID.
+  private func tryCGEventInject(_ text: String, target: FocusedTarget) -> Bool {
+    guard target.bundleID != nil,
+          let pid = frontmostAppPID() else {
+      logger.debug("CGEvent: no bundle ID or frontmost PID")
+      return false
+    }
+
+    guard let source = CGEventSource(stateID: .combinedSessionState) else {
+      logger.debug("CGEvent: failed to create event source")
+      return false
+    }
+
+    let utf16 = Array(text.utf16)
+    guard !utf16.isEmpty else {
+      logger.debug("CGEvent: empty text")
+      return false
+    }
+
+    // Key-down event with Unicode string payload.
+    guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true) else {
+      logger.debug("CGEvent: failed to create key-down event")
+      return false
+    }
+    utf16.withUnsafeBufferPointer { ptr in
+      keyDown.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: ptr.baseAddress)
+    }
+    keyDown.postToPid(pid)
+
+    // Key-up event with the same payload.
+    guard let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: false) else {
+      logger.debug("CGEvent: failed to create key-up event")
+      return false
+    }
+    utf16.withUnsafeBufferPointer { ptr in
+      keyUp.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: ptr.baseAddress)
+    }
+    usleep(15_000) // 15 ms inter-event delay
+    keyUp.postToPid(pid)
+
+    logger.debug("CGEvent: posted \(utf16.count) UTF-16 code units to pid \(pid)")
+    return true
+  }
+
+  // MARK: - Paste injection
+
+  /// Inject via clipboard save → Cmd-V → clipboard restore with per-app delay.
+  private func tryPasteInject(_ text: String, for target: FocusedTarget) async {
     let pasteboard = NSPasteboard.general
     let snapshot = capturePasteboard(pasteboard)
 
+    // Defer restore with per-app delay.
+    let restoreDelayNs = pasteRestoreDelayNs(for: target.bundleID)
     defer {
-      // Small delay so the target app has time to process Cmd-V
-      Thread.sleep(forTimeInterval: 0.08)
-      restorePasteboard(pasteboard, from: snapshot)
+      Task {
+        try? await Task.sleep(nanoseconds: restoreDelayNs)
+        self.restorePasteboard(pasteboard, from: snapshot)
+      }
     }
 
-    // Set text on clipboard
     pasteboard.clearContents()
     guard pasteboard.setString(text, forType: .string) else {
-      logger.error("TextInjector: failed to set string on pasteboard")
+      logger.error("Paste: failed to set string on pasteboard")
       return
     }
 
-    // Brief settle for NSPasteboard to flush
-    Thread.sleep(forTimeInterval: 0.01)
-
-    // Synthetic Cmd-V
-    synthesizeCommandV()
+    // Brief settle for NSPasteboard to flush.
+    try? await Task.sleep(nanoseconds: 10_000_000) // 10 ms
+    await synthesizeCommandV()
   }
 
   // MARK: - Pasteboard save/restore
@@ -66,18 +218,19 @@ final class TextInjector {
       return item
     }
     pb.writeObjects(restoredItems)
+    logger.debug("Paste: restored \(snapshot.items.count) pasteboard items")
   }
 
   // MARK: - Synthetic Cmd-V
 
-  private func synthesizeCommandV() {
+  private func synthesizeCommandV() async {
     let source = CGEventSource(stateID: .combinedSessionState)
     let vKey = CGKeyCode(0x09) // kVK_ANSI_V
 
     guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: true),
           let keyUp = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: false)
     else {
-      logger.error("TextInjector: failed to create CGEvent for Cmd-V")
+      logger.error("Paste: failed to create CGEvent for Cmd-V")
       return
     }
 
@@ -85,17 +238,56 @@ final class TextInjector {
     keyUp.flags = .maskCommand
 
     keyDown.post(tap: .cghidEventTap)
-    usleep(30_000) // 30 ms between down and up
+    try? await Task.sleep(nanoseconds: 30_000_000) // 30 ms between down and up
     keyUp.post(tap: .cghidEventTap)
 
-    logger.debug("TextInjector: posted synthetic Cmd-V")
+    logger.debug("Paste: posted synthetic Cmd-V")
   }
+
+  // MARK: - Helpers
+
+  private func frontmostAppPID() -> pid_t? {
+    NSWorkspace.shared.frontmostApplication?.processIdentifier
+  }
+
+  private func logResolved(_ bundleID: String?, strategy: String) {
+    logger.info("Injected via \(strategy, privacy: .public) into bundle=\(bundleID ?? "nil", privacy: .public)")
+  }
+}
+
+// MARK: - Default override table
+
+extension TextInjector {
+  /// Known bundle IDs with forced injection strategies.
+  ///
+  /// Default fallback: AX → CGEvent → paste.
+  /// An override may skip early strategies for unreliable targets.
+  static let defaultOverrideTable: [String: PerAppOverride] = [
+    // Electron / Chrome family — AX value fails silently.
+    "com.google.Chrome":           PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 150),
+    "com.google.Chrome.canary":    PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 150),
+    "org.chromium.Chromium":       PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 150),
+    "com.microsoft.edgemac":       PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 150),
+    "com.slack.Slack":             PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 150),
+    "com.microsoft.VSCode":        PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 120),
+    "com.github.copilot.Copilot":  PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 120),
+    "com.spotify.client":          PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 120),
+
+    // Terminals — CGEvent works better than AX.
+    "com.apple.Terminal":          PerAppOverride(forceStrategy: .keyEvents, pasteRestoreDelayMs: nil),
+    "com.googlecode.iterm2":       PerAppOverride(forceStrategy: .keyEvents, pasteRestoreDelayMs: nil),
+    "com.mitchellh.ghostty":       PerAppOverride(forceStrategy: .keyEvents, pasteRestoreDelayMs: nil),
+    "com.knollsoft.Hyper":         PerAppOverride(forceStrategy: .keyEvents, pasteRestoreDelayMs: nil),
+    "net.kovidgoy.kitty":          PerAppOverride(forceStrategy: .keyEvents, pasteRestoreDelayMs: nil),
+    "co.zeit.hyper":               PerAppOverride(forceStrategy: .keyEvents, pasteRestoreDelayMs: nil),
+
+    // Standard Cocoa apps — no override (AX fallthrough).
+    // "com.apple.TextEdit", "com.apple.Notes", etc.
+  ]
 }
 
 // MARK: - PasteboardSnapshot
 
-/// Captures all pasteboard items with their declared types and data,
-/// preserving the multi-item structure for accurate restoration.
 private struct PasteboardSnapshot {
   /// Outer array = pasteboard items; inner = (type, data) for each item.
   let items: [[(NSPasteboard.PasteboardType, Data)]]

@@ -38,7 +38,7 @@ final class AppleSpeechStream: SpeechStream {
   private var finalText: String?
   private var finishContinuation: CheckedContinuation<String, any Error>?
   private var streamError: (any Error)?
-  private let stateLock = NSLock()
+  private let stateLock = OSAllocatedUnfairLock(initialState: ())
 
   // MARK: - SpeechStream
 
@@ -70,23 +70,26 @@ final class AppleSpeechStream: SpeechStream {
   }
 
   func finish() async throws -> String {
-    stateLock.lock()
-    if let error = streamError {
-      stateLock.unlock()
-      throw error
+    // Check for already-available results under lock.
+    let earlyResult: Result<String, any Error>? = stateLock.withLock { _ in
+      if let error = streamError {
+        return .failure(error)
+      }
+      if let text = finalText {
+        return .success(text)
+      }
+      return nil
     }
-    if let text = finalText {
-      stateLock.unlock()
-      return text
+    if let earlyResult {
+      return try earlyResult.get()
     }
-    stateLock.unlock()
 
     if let analyzer {
       // SpeechAnalyzer path: end input, finalize, wait for final result
       inputContinuation?.finish()
-      stateLock.lock()
-      didFinalize = true
-      stateLock.unlock()
+      stateLock.withLock { _ in
+        didFinalize = true
+      }
       do {
         try await analyzer.finalize(through: nil)
       } catch {
@@ -98,27 +101,27 @@ final class AppleSpeechStream: SpeechStream {
     }
 
     return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<String, any Error>) in
-      stateLock.lock()
-      if let error = streamError {
-        stateLock.unlock()
-        continuation.resume(throwing: error)
-        return
+      let handled = stateLock.withLock { _ in
+        if let error = streamError {
+          continuation.resume(throwing: error)
+          return true
+        }
+        if let text = finalText {
+          continuation.resume(returning: text)
+          return true
+        }
+        finishContinuation = continuation
+        return false
       }
-      if let text = finalText {
-        stateLock.unlock()
-        continuation.resume(returning: text)
-        return
-      }
-      finishContinuation = continuation
-      stateLock.unlock()
+      _ = handled
     }
   }
 
   func cancel() {
-    stateLock.lock()
-    finishContinuation?.resume(throwing: CancellationError())
-    finishContinuation = nil
-    stateLock.unlock()
+    stateLock.withLock { _ in
+      finishContinuation?.resume(throwing: CancellationError())
+      finishContinuation = nil
+    }
 
     inputContinuation?.finish()
     inputContinuation = nil
@@ -165,20 +168,22 @@ final class AppleSpeechStream: SpeechStream {
           self.hypothesisContinuation.yield(Hypothesis(text: text, isFinal: isFinal))
 
           if isFinal {
-            self.stateLock.lock()
-            self.finalText = text
-            let fc = self.finishContinuation
-            self.finishContinuation = nil
-            self.stateLock.unlock()
+            let fc = self.stateLock.withLock { _ in
+              self.finalText = text
+              let fc = self.finishContinuation
+              self.finishContinuation = nil
+              return fc
+            }
             fc?.resume(returning: text)
           }
         }
       } catch {
-        self.stateLock.lock()
-        self.streamError = error
-        let fc = self.finishContinuation
-        self.finishContinuation = nil
-        self.stateLock.unlock()
+        let fc = self.stateLock.withLock { _ in
+          self.streamError = error
+          let fc = self.finishContinuation
+          self.finishContinuation = nil
+          return fc
+        }
         fc?.resume(throwing: error)
       }
     }
@@ -216,11 +221,12 @@ final class AppleSpeechStream: SpeechStream {
       guard let self else { return }
 
       if let error = error {
-        self.stateLock.lock()
-        self.streamError = error
-        let fc = self.finishContinuation
-        self.finishContinuation = nil
-        self.stateLock.unlock()
+        let fc = self.stateLock.withLock { _ in
+          self.streamError = error
+          let fc = self.finishContinuation
+          self.finishContinuation = nil
+          return fc
+        }
         fc?.resume(throwing: error)
         return
       }
@@ -231,11 +237,12 @@ final class AppleSpeechStream: SpeechStream {
         self.hypothesisContinuation.yield(Hypothesis(text: text, isFinal: isFinal))
 
         if isFinal {
-          self.stateLock.lock()
-          self.finalText = text
-          let fc = self.finishContinuation
-          self.finishContinuation = nil
-          self.stateLock.unlock()
+          let fc = self.stateLock.withLock { _ in
+            self.finalText = text
+            let fc = self.finishContinuation
+            self.finishContinuation = nil
+            return fc
+          }
           fc?.resume(returning: text)
         }
       }
