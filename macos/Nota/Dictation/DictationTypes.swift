@@ -257,3 +257,43 @@ struct PerAppOverride: Equatable {
   /// `nil` means use the default (80 ms).
   let pasteRestoreDelayMs: UInt?
 }
+
+// MARK: - P4 Settings types
+
+// Recognition engine selection.
+enum EngineChoice: String, Codable, CaseIterable, Sendable {
+  case apple
+  case assemblyAIRealtime
+
+  var label: String {
+    switch self {
+    case .apple: return "Apple On-Device"
+    case .assemblyAIRealtime: return "AssemblyAI Realtime"
+    }
+  }
+}
+
+/// How dictation activation works: hold a key vs press/release to toggle.
+enum ActivationMode: String, Codable, CaseIterable, Sendable {
+  case hold
+  case toggle
+}
+
+/// Which key triggers dictation.
+struct TriggerKey: Codable, Equatable, Sendable {
+  enum Kind: String, Codable, CaseIterable, Sendable { case fnGlobe, keyCode }
+  var kind: Kind
+  /// Key code for the `.keyCode` kind; ignored for `.fnGlobe`.
+  var keyCode: UInt16?
+  static let fnGlobe = TriggerKey(kind: .fnGlobe, keyCode: nil)
+}
+
+/// Swift-only dictation preferences persisted via UserDefaults.
+struct DictationSettings: Codable, Equatable, Sendable {
+  var engine: EngineChoice = .apple
+  var trigger: TriggerKey = .fnGlobe
+  var activation: ActivationMode = .hold
+  var polishEnabled: Bool = false
+  /// Model id from ModelRegistry for polish; nil means use the default summary model.
+  var polishModelID: String? = nil
+}

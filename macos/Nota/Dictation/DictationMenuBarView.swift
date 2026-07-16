@@ -81,10 +81,10 @@ struct DictationMenuBarView: View {
 
   private var readyContent: some View {
     VStack(alignment: .leading, spacing: 10) {
-      Label("Hold Fn/Globe to dictate", systemImage: "globe")
+      Label(dictationInstruction, systemImage: "globe")
         .font(.callout)
 
-      if let text = controller.lastHypothesis, controller.state == .idle {
+      if let text = controller.lastProcessedText, controller.state == .idle {
         Text("Last: \"\(text)\"")
           .font(.caption)
           .foregroundStyle(.secondary)
@@ -95,6 +95,13 @@ struct DictationMenuBarView: View {
         Text("Latency: \(String(format: "%.2f", latency))s")
           .font(.caption)
           .foregroundStyle(.secondary)
+      }
+
+      if let warning = controller.lastPolishWarning, controller.state == .idle {
+        Label(warning, systemImage: "exclamationmark.triangle")
+          .font(.caption)
+          .foregroundStyle(.orange)
+          .fixedSize(horizontal: false, vertical: true)
       }
 
       if case .failed(let message) = controller.state {
@@ -130,6 +137,19 @@ struct DictationMenuBarView: View {
     openWindow(id: "document")
     DispatchQueue.main.async {
       NSApp.activate(ignoringOtherApps: true)
+    }
+  }
+
+  private var dictationInstruction: String {
+    let triggerLabel: String
+    switch controller.settings.trigger.kind {
+    case .fnGlobe: triggerLabel = "Fn/Globe"
+    case .keyCode: triggerLabel = "custom key"
+    }
+
+    switch controller.settings.activation {
+    case .hold: return "Hold \(triggerLabel) to dictate"
+    case .toggle: return "Press \(triggerLabel) to toggle dictation"
     }
   }
 }

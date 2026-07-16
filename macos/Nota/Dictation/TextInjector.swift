@@ -176,13 +176,12 @@ final class TextInjector {
   private func tryPasteInject(_ text: String, for target: FocusedTarget) async {
     let pasteboard = NSPasteboard.general
     let snapshot = capturePasteboard(pasteboard)
-
-    // Defer restore with per-app delay.
     let restoreDelayNs = pasteRestoreDelayNs(for: target.bundleID)
+
     defer {
-      Task {
+      Task { [weak self] in
         try? await Task.sleep(nanoseconds: restoreDelayNs)
-        self.restorePasteboard(pasteboard, from: snapshot)
+        self?.restorePasteboard(pasteboard, from: snapshot)
       }
     }
 

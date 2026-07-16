@@ -8,9 +8,25 @@ final class DictationController: ObservableObject {
   @Published private(set) var lastCaptureDiagnostics: CaptureDiagnostics?
   @Published private(set) var lastLatency: TimeInterval?
   @Published private(set) var lastHypothesis: String?
+  @Published private(set) var lastProcessedText: String?
+
+  /// The last rules-only result before polish (for diagnostics).
+  @Published private(set) var lastRulesResult: String?
+  /// Non-nil when polish produced a different result than rules.
+  @Published private(set) var lastPolishResult: String?
+  /// Set when polish was skipped or failed.
+  @Published private(set) var lastPolishWarning: String?
 
   let permissions: PermissionsCoordinator
   let capture: MicCapture
+
+  /// Current settings — accessible by views for display.
+  private(set) var settings: DictationSettings {
+    didSet {
+      DictationSettingsStore.save(settings)
+      applySettings()
+    }
+  }
 
   private let hotkeyMonitor: HotkeyMonitor
   private let logger = Logger(subsystem: "com.xiafawu.nota", category: "dictation.controller")
@@ -21,7 +37,7 @@ final class DictationController: ObservableObject {
   // P2: speech + injection session state
   private var speechStream: (any SpeechStream)?
   private var holdBeganAt: Date?
-  private var isSessionPending = false  // true while awaiting speech.start()
+  private var isSessionPending = false
   private let injector = TextInjector()
 
   init(
@@ -29,9 +45,13 @@ final class DictationController: ObservableObject {
     capture: MicCapture? = nil,
     hotkeyMonitor: HotkeyMonitor? = nil
   ) {
+    self.settings = DictationSettingsStore.load()
     self.permissions = permissions ?? PermissionsCoordinator()
     self.capture = capture ?? MicCapture()
-    self.hotkeyMonitor = hotkeyMonitor ?? HotkeyMonitor()
+    self.hotkeyMonitor = hotkeyMonitor ?? HotkeyMonitor(
+      triggerKey: self.settings.trigger,
+      activationMode: self.settings.activation
+    )
 
     self.permissions.onStatusChange = { [weak self] in
       self?.applyPermissionGate()
@@ -87,6 +107,27 @@ final class DictationController: ObservableObject {
     applyPermissionGate()
   }
 
+  /// Reload settings from the store and re-apply (e.g. after the Settings UI saves).
+  func reloadSettings() {
+    settings = DictationSettingsStore.load()
+    applySettings()
+  }
+
+  // MARK: - Private helpers
+
+  private func applySettings() {
+    hotkeyMonitor.triggerKey = settings.trigger
+    hotkeyMonitor.activationMode = settings.activation
+
+    // If the hotkey monitor is already running, restart it with the new config.
+    if hotkeyMonitor.isRunning {
+      hotkeyMonitor.stop()
+      if state.isPermissionBlocked == false {
+        hotkeyMonitor.start()
+      }
+    }
+  }
+
   private func applyPermissionGate() {
     guard permissions.isReady else {
       if capture.isCapturing {
@@ -104,7 +145,7 @@ final class DictationController: ObservableObject {
     guard hasStarted, !hotkeyMonitor.isRunning else { return }
     guard hotkeyMonitor.start() else {
       let reason = hotkeyMonitor.unavailableReason
-        ?? "The Fn/Globe hotkey monitor is unavailable."
+        ?? "The hotkey monitor is unavailable."
       state = .disabled(reason: reason)
       return
     }
@@ -145,6 +186,10 @@ final class DictationController: ObservableObject {
     let stream = AppleSpeechStream()
     speechStream = stream
     lastHypothesis = nil
+    lastProcessedText = nil
+    lastRulesResult = nil
+    lastPolishResult = nil
+    lastPolishWarning = nil
 
     // Observe partial hypotheses for diagnostics
     Task { [weak self] in
@@ -173,7 +218,6 @@ final class DictationController: ObservableObject {
 
       // Speech is ready — now start microphone capture
       await MainActor.run {
-        // Guard: user may have released the key while we were awaiting start
         guard self.isSessionPending else {
           stream.cancel()
           self.speechStream = nil
@@ -183,7 +227,8 @@ final class DictationController: ObservableObject {
           try self.capture.start()
           self.isSessionPending = false
           self.state = .listening
-          self.logger.info("Fn/Globe hold started dictation session")
+          let modeLabel = self.settings.activation == .hold ? "Hold" : "Toggle"
+          self.logger.info("\(modeLabel) \(self.settings.trigger.kind == .fnGlobe ? "Fn/Globe" : "keyCode") started dictation session")
         } catch {
           stream.cancel()
           self.isSessionPending = false
@@ -240,38 +285,76 @@ final class DictationController: ObservableObject {
         self.lastLatency = latency
         self.lastHypothesis = finalText
 
-        self.logger.info(
-          "Dictation session: latency=\(String(format: "%.2f", latency))s text=\"\(finalText, privacy: .public)\""
-        )
+        // --- P4: Formatter pipeline (rules → optional polish) ---
+        let rulesResult = Formatter.applyRules(finalText)
+        self.lastRulesResult = rulesResult
+        self.lastPolishResult = nil
+        self.lastPolishWarning = nil
 
-        // Inject if we have text
-        if !finalText.isEmpty {
-          self.state = .injecting
-          let target = FocusedTarget.capture()
-          self.logger.info("Focused target: bundle=\(target.bundleID ?? "nil", privacy: .public) secure=\(target.isSecureInput)")
+        let textToInject: String
 
-          // Spawn async injection off the main thread.
+        if self.settings.polishEnabled, !rulesResult.isEmpty {
+          let modelID = self.settings.polishModelID
+            ?? ModelRegistry.defaultModel(for: .summary)
+
+          self.logger.info("Polishing with model=\(modelID, privacy: .public)")
+
           Task {
-            await self.injector.inject(finalText, target: target)
-            await MainActor.run {
-              if let notice = self.injector.lastSecureFieldNotice {
-                self.state = .failed(message: notice)
-                // Auto-reset to idle after a brief pause so the user sees the notice.
-                Task {
-                  try? await Task.sleep(nanoseconds: 2_000_000_000)
-                  await MainActor.run { self.state = .idle }
-                }
-              } else {
-                self.state = .idle
-              }
-              self.speechStream = nil
+            let polished: String
+            do {
+              polished = try await PolishClient.polish(rulesResult, modelID: modelID)
+              self.lastPolishResult = polished
+              self.lastPolishWarning = nil
+              self.logger.info("Polish succeeded")
+            } catch {
+              self.lastPolishResult = nil
+              self.lastPolishWarning = "Polish failed: \(error.localizedDescription). Using rules-only result."
+              self.logger.warning("Polish failed: \(error.localizedDescription, privacy: .public)")
+              // Fall back to rules-only.
+              self.doInject(rulesResult, latency: latency)
+              return
             }
+
+            self.doInject(polished, latency: latency)
           }
         } else {
-          self.state = .idle
+          textToInject = rulesResult
+          self.doInject(textToInject, latency: latency)
+        }
+      }
+    }
+  }
+
+  /// Shared injection step after formatting/polish is resolved.
+  private func doInject(_ text: String, latency: TimeInterval) {
+    lastProcessedText = text
+    self.logger.info(
+      "Dictation session: latency=\(String(format: "%.2f", latency))s text=\"\(text, privacy: .public)\""
+    )
+
+    if !text.isEmpty {
+      self.state = .injecting
+      let target = FocusedTarget.capture()
+      self.logger.info("Focused target: bundle=\(target.bundleID ?? "nil", privacy: .public) secure=\(target.isSecureInput)")
+
+      Task {
+        await self.injector.inject(text, target: target)
+        await MainActor.run {
+          if let notice = self.injector.lastSecureFieldNotice {
+            self.state = .failed(message: notice)
+            Task {
+              try? await Task.sleep(nanoseconds: 2_000_000_000)
+              await MainActor.run { self.state = .idle }
+            }
+          } else {
+            self.state = .idle
+          }
           self.speechStream = nil
         }
       }
+    } else {
+      self.state = .idle
+      self.speechStream = nil
     }
   }
 
@@ -289,8 +372,5 @@ final class DictationController: ObservableObject {
     if let activationObserver {
       NotificationCenter.default.removeObserver(activationObserver)
     }
-    hotkeyMonitor.stop()
-    capture.stop()
-    speechStream?.cancel()
   }
 }
