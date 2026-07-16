@@ -32,13 +32,13 @@ enum PolishClient {
   /// - Throws: `PolishError` when the key is missing, the network fails, or
   ///   the response is malformed.
   static func polish(_ text: String, modelID: String) async throws -> String {
-    guard let entry = ModelRegistry.model(id: modelID) else {
+    guard let entry = ModelRegistry.model(id: modelID), entry.task == .summary else {
       throw PolishError.invalidModel(modelID)
     }
 
     let keyEnv = entry.provider.apiKeyEnv
 
-    guard let key = keyValue(env: keyEnv) else {
+    guard let key = ApiKeyStore.value(for: keyEnv) else {
       throw PolishError.missingKey(entry.provider.displayName)
     }
 
@@ -102,26 +102,6 @@ enum PolishClient {
     return content
   }
 
-  // MARK: - Helpers
-
-  /// Resolve the key value from env or ~/.nota/config.
-  private static func keyValue(env: String) -> String? {
-    if let envValue = ProcessInfo.processInfo.environment[env], !envValue.isEmpty {
-      return envValue
-    }
-    let configURL = FileManager.default.homeDirectoryForCurrentUser
-      .appendingPathComponent(".nota", isDirectory: true)
-      .appendingPathComponent("config")
-    guard let data = try? String(contentsOf: configURL, encoding: .utf8) else {
-      return nil
-    }
-    for line in data.components(separatedBy: .newlines) {
-      let trimmed = line.trimmingCharacters(in: .whitespaces)
-      guard trimmed.hasPrefix("\(env)=") else { continue }
-      return String(trimmed.dropFirst(env.count + 1))
-    }
-    return nil
-  }
 }
 
 // MARK: - Errors

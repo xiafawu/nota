@@ -43,6 +43,19 @@ enum ApiKeyStore {
     return ApiKeyStatus(env: env, source: .absent, masked: nil)
   }
 
+  /// Resolve the actual key value (env first, then ~/.nota/config), or nil.
+  /// The single read path for secrets — callers must not parse the config
+  /// file themselves.
+  static func value(for env: String) -> String? {
+    if let value = ProcessInfo.processInfo.environment[env], !value.isEmpty {
+      return value
+    }
+    if let value = fileMap()[env], !value.isEmpty {
+      return value
+    }
+    return nil
+  }
+
   /// Write (or overwrite) a key in ~/.nota/config, preserving other lines.
   /// Passing an empty/whitespace value removes the key.
   static func setKey(_ env: String, value rawValue: String) throws {
