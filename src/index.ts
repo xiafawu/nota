@@ -28,7 +28,7 @@ import {
   settingsSet,
   settingsUnset,
 } from "./cli/settings.js";
-import { parseWindow, usageRuns, usageSummary } from "./cli/usage.js";
+import { parseWindow, usageRuns, usageSummary, usageSummaryJSON } from "./cli/usage.js";
 
 const program = new Command();
 
@@ -368,13 +368,19 @@ settings
 
 const usage = program
   .command("usage")
-  .description("Show model usage and cost statistics")
+  .description("Show model usage and cost statistics (--json for machine output)")
+  .option("-j, --json", "Output as JSON")
   .option("--window <window>", "Time window: all, 30d, month", "all")
   // `nota usage` (no subcommand) = per-model summary
   .action(async (options) => {
     try {
       const window = parseWindow(options.window);
-      await usageSummary(window);
+      if (options.json) {
+        const json = await usageSummaryJSON(window);
+        process.stdout.write(json + "\n");
+      } else {
+        await usageSummary(window);
+      }
     } catch (error) {
       process.stderr.write(
         `Error: ${error instanceof Error ? error.message : String(error)}\n`,

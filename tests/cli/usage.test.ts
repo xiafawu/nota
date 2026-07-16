@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import type { HistoryRecord, UsageEntry } from "../../src/pipeline/history.js";
-import { parseWindow, usageRuns, usageSummary } from "../../src/cli/usage.js";
+import { parseWindow, usageRuns, usageSummary, usageSummaryJSON } from "../../src/cli/usage.js";
 
 let dir: string;
 let stdout: string[];
@@ -283,5 +283,122 @@ describe("usageRuns", () => {
 
     expect(stdout).toEqual([]);
     expect(stderr.join("")).toContain("No usage data for the requested window");
+  });
+});
+
+// ── usageSummaryJSON ──────────────────────────────────────────
+
+describe("usageSummaryJSON", () => {
+  it("returns empty rows for empty history", async () => {
+    const json = await usageSummaryJSON(undefined, dir);
+    const parsed = JSON.parse(json);
+    expect(parsed).toEqual({ window: "all", rows: [] });
+  });
+
+  it("includes all ModelSummaryRow fields for populated history", async () => {
+    writeRecord(
+      recordWithUsage("r1", [
+        {
+          modelId: "gpt-4o",
+          task: "summary",
+          provider: "assemblyai",
+          calls: 2,
+          tokensIn: 200,
+          tokensOut: 100,
+          costUSD: 0.03,
+          estimated: false,
+        },
+      ]),
+    );
+
+    const json = await usageSummaryJSON(undefined, dir);
+    const parsed = JSON.parse(json);
+
+    expect(parsed.window).toBe("all");
+    expect(parsed.rows).toHaveLength(1);
+
+    const row = parsed.rows[0];
+    expect(row).toHaveProperty("modelId", "gpt-4o");
+    expect(row).toHaveProperty("provider", "assemblyai");
+    expect(row).toHaveProperty("runs", 1);
+    expect(row).toHaveProperty("calls", 2);
+    expect(row).toHaveProperty("tokensIn", 200);
+    expect(row).toHaveProperty("tokensOut", 100);
+    expect(row).toHaveProperty("costUSD");
+    expect(typeof row.costUSD).toBe("number");
+    expect(row).toHaveProperty("hasUnknown", false);
+    expect(row).toHaveProperty("hasEstimated", false);
+  });
+
+  it("preserves hasUnknown=true for null-cost usage entries", async () => {
+    writeRecord(
+      recordWithUsage("r-unk", [
+        {
+          modelId: "whisper-1",
+          task: "transcription",
+          provider: "assemblyai",
+          calls: 1,
+          costUSD: null,
+          estimated: true,
+        },
+      ]),
+    );
+
+    const json = await usageSummaryJSON(undefined, dir);
+    const parsed = JSON.parse(json);
+
+    expect(parsed.rows).toHaveLength(1);
+    expect(parsed.rows[0].hasUnknown).toBe(true);
+  });
+
+  it("preserves hasEstimated=true for estimated non-null costs", async () => {
+    writeRecord(
+      recordWithUsage("r-est", [
+        {
+          modelId: "universal",
+          task: "transcription",
+          provider: "assemblyai",
+          calls: 1,
+          costUSD: 0.10,
+          estimated: true,
+        },
+      ]),
+    );
+
+    const json = await usageSummaryJSON(undefined, dir);
+    const parsed = JSON.parse(json);
+
+    expect(parsed.rows).toHaveLength(1);
+    expect(parsed.rows[0].hasEstimated).toBe(true);
+  });
+
+  it("writes window as default 'all' when no window argument", async () => {
+    const json = await usageSummaryJSON(undefined, dir);
+    const parsed = JSON.parse(json);
+    expect(parsed.window).toBe("all");
+  });
+
+  it("filters by 30d window returning empty rows", async () => {
+    writeRecord(
+      recordWithUsage("old", [
+        {
+          modelId: "gpt-4o",
+          task: "summary",
+          provider: "assemblyai",
+          calls: 1,
+          tokensIn: 100,
+          tokensOut: 50,
+          costUSD: 0.01,
+          estimated: false,
+        },
+      ],
+      { createdAt: "2025-07-15T12:00:00.000Z" }),
+    );
+
+    const json = await usageSummaryJSON("30d", dir);
+    const parsed = JSON.parse(json);
+
+    expect(parsed.window).toBe("30d");
+    expect(parsed.rows).toHaveLength(0);
   });
 });
