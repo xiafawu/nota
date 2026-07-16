@@ -5,10 +5,26 @@ struct SettingsView: View {
   @Binding var skipSummary: Bool
   @StateObject private var speakers = SpeakersModel()
 
+  /// The dictation controller, used to reload settings after changes.
+  let dictationController: DictationController?
+
+  init(
+    identifySpeakers: Binding<Bool>,
+    skipSummary: Binding<Bool>,
+    dictationController: DictationController? = nil
+  ) {
+    self._identifySpeakers = identifySpeakers
+    self._skipSummary = skipSummary
+    self.dictationController = dictationController
+  }
+
   var body: some View {
     TabView {
       generalTab
         .tabItem { Label("General", systemImage: "gearshape") }
+
+      DictationSettingsView(controller: dictationController)
+        .tabItem { Label("Dictation", systemImage: "mic") }
 
       ModelsSettingsView()
         .tabItem { Label("Models", systemImage: "cpu") }
