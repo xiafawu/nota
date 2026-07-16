@@ -12,6 +12,8 @@ export interface TranscriptSegment {
 export interface TranscriptionResult {
   segments: TranscriptSegment[];
   text: string;
+  /** Duration of the audio in seconds from the API response (per-chunk for chunked runs). */
+  durationSeconds?: number;
 }
 
 export function formatTimestamp(seconds: number): string {
@@ -51,6 +53,7 @@ export async function transcribeChunks(
         return {
           segments,
           text: response.text,
+          durationSeconds: response.duration,
         };
       })
     )

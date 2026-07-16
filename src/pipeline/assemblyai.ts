@@ -95,6 +95,7 @@ export async function transcribeWithAssemblyAI(
     return {
       segments,
       text: transcript.text ?? "",
+      durationSeconds: transcript.audio_duration ?? undefined,
     };
   } finally {
     if (tmpFile) {

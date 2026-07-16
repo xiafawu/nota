@@ -202,7 +202,7 @@ async function callGPT(
   client: OpenAI,
   model: string,
   prompt: string
-): Promise<string> {
+): Promise<{ content: string; usage: { promptTokens: number; completionTokens: number } }> {
   const response = await client.chat.completions.create({
     model,
     ...summaryTokenLimit(model, 4096),
@@ -211,7 +211,17 @@ async function callGPT(
 
   const content = response.choices[0]?.message?.content;
   if (!content) throw new Error("Empty response from GPT");
-  return content;
+
+  const usage = response.usage;
+  if (!usage) throw new Error("No usage data in GPT response");
+
+  return {
+    content,
+    usage: {
+      promptTokens: usage.prompt_tokens,
+      completionTokens: usage.completion_tokens,
+    },
+  };
 }
 
 /**
@@ -270,7 +280,7 @@ export async function summarizeTranscript(
   model: string,
   segments?: TranscriptSegment[],
   baseURL?: string
-): Promise<MeetingSummary> {
+): Promise<{ summary: MeetingSummary; tokenUsage: { calls: number; tokensIn: number; tokensOut: number } }> {
   const client = new OpenAI({
     apiKey,
     baseURL: baseURL ?? (isGeminiModel(model) ? GEMINI_OPENAI_BASE_URL : undefined),
@@ -282,21 +292,35 @@ export async function summarizeTranscript(
 
   if (!shouldChunkTranscript(textToSummarize)) {
     const prompt = buildSummaryPrompt(textToSummarize, !!segments);
-    const response = await callGPT(client, model, prompt);
-    return parseSummaryResponse(response);
+    const { content, usage } = await callGPT(client, model, prompt);
+    return {
+      summary: parseSummaryResponse(content),
+      tokenUsage: { calls: 1, tokensIn: usage.promptTokens, tokensOut: usage.completionTokens },
+    };
   }
 
   // Long transcript: section-by-section then roll up
   const sections = splitTranscriptIntoSections(textToSummarize);
   const sectionSummaries: string[] = [];
+  let totalTokensIn = 0;
+  let totalTokensOut = 0;
 
   for (const section of sections) {
     const prompt = buildSummaryPrompt(section, !!segments);
-    const response = await callGPT(client, model, prompt);
-    sectionSummaries.push(response);
+    const { content, usage } = await callGPT(client, model, prompt);
+    totalTokensIn += usage.promptTokens;
+    totalTokensOut += usage.completionTokens;
+    sectionSummaries.push(content);
   }
 
   const rollupPrompt = buildRollupPrompt(sectionSummaries);
-  const finalResponse = await callGPT(client, model, rollupPrompt);
-  return parseSummaryResponse(finalResponse);
+  const { content: rollupContent, usage: rollupUsage } = await callGPT(client, model, rollupPrompt);
+  totalTokensIn += rollupUsage.promptTokens;
+  totalTokensOut += rollupUsage.completionTokens;
+  const calls = sections.length + 1;
+
+  return {
+    summary: parseSummaryResponse(rollupContent),
+    tokenUsage: { calls, tokensIn: totalTokensIn, tokensOut: totalTokensOut },
+  };
 }

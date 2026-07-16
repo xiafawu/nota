@@ -1,6 +1,7 @@
 import path from "node:path";
 import ora from "ora";
 import type { AppConfig } from "./config.js";
+import { costForUsage, makeSummaryUsage } from "./pricing.js";
 import { OVERLAP_DURATION } from "./constants.js";
 import {
   validateInput,
@@ -27,6 +28,7 @@ import {
   createHistoryRecord,
   findHistoryByHash,
   type HistoryOptions,
+  type UsageEntry,
 } from "./pipeline/history.js";
 import {
   loadProfiles,
@@ -292,6 +294,19 @@ async function runAssemblyAIPipelineInner(
     language: config.language,
   });
   spinner?.succeed("Transcription and diarization complete");
+  const transcriptionDurationMin = result.durationSeconds
+    ? result.durationSeconds / 60
+    : durationMinutes;
+  const transcriptionUsage: UsageEntry = {
+    modelId: config.transcriptionModel,
+    task: "transcription",
+    provider: config.provider,
+    calls: 1,
+    durationMin: transcriptionDurationMin,
+    costUSD: null,
+    estimated: false,
+  };
+  transcriptionUsage.costUSD = costForUsage(transcriptionUsage);
 
   // 2b. Identify speakers by voice (if enabled)
   let segments = result.segments;
@@ -328,22 +343,27 @@ async function runAssemblyAIPipelineInner(
       capturedAt: capturedAt ? capturedAt.toISOString() : null,
       contentHash,
       speakerClipsPcm,
+      usage: [transcriptionUsage],
     });
     historyId = history.id;
     spinner?.succeed(`History saved as ${history.id}`);
   }
-  // 3. Summarize (optional — --no-summary skips)
+
+  // 3. Summarize (optional — --no-summary skips; when run, capture token usage)
   let summary: MeetingSummary | undefined;
+  let summaryUsage: UsageEntry | undefined;
   if (config.summary) {
     emitPhase("summarizing");
     spinner = log(verbose, `Summarizing with ${config.summaryModel}...`);
-    summary = await summarizeTranscript(
+    const summarized = await summarizeTranscript(
       result.text,
       config.summaryApiKey,
       config.summaryModel,
       segments,
       config.summaryBaseURL,
     );
+    summary = summarized.summary;
+    summaryUsage = makeSummaryUsage(config.summaryModel, config.provider, summarized.tokenUsage);
     spinner?.succeed("Summary generated");
   }
 
@@ -368,7 +388,11 @@ async function runAssemblyAIPipelineInner(
     outputPath,
   );
   if (config.summary && historyId) {
-    await completeHistoryRecord(historyId, { summary: summary!, outputPath });
+    await completeHistoryRecord(historyId, {
+      summary: summary!,
+      outputPath,
+      usage: summaryUsage ? [summaryUsage] : undefined,
+    });
   }
   spinner?.succeed(`Output written to ${outputPath}`);
 
@@ -624,6 +648,22 @@ async function runWhisperPipeline(
       ? "Transcription and diarization complete"
       : "Transcription complete",
   );
+  const transcriptionTotalSeconds = transcriptions.reduce(
+    (sum, t) => sum + (t.durationSeconds ?? 0), 0
+  );
+  const whisperDurationMin = transcriptionTotalSeconds > 0
+    ? transcriptionTotalSeconds / 60
+    : durationMinutes;
+  const transcriptionUsageW: UsageEntry = {
+    modelId: config.transcriptionModel,
+    task: "transcription",
+    provider: config.provider,
+    calls: 1,
+    durationMin: whisperDurationMin,
+    costUSD: null,
+    estimated: false,
+  };
+  transcriptionUsageW.costUSD = costForUsage(transcriptionUsageW);
 
   // 4. Merge
   spinner = log(verbose, "Merging transcripts...");
@@ -657,22 +697,26 @@ async function runWhisperPipeline(
       outputPath,
       capturedAt: capturedAt ? capturedAt.toISOString() : null,
       contentHash,
+      usage: [transcriptionUsageW],
     });
     historyId = history.id;
     spinner?.succeed(`History saved as ${history.id}`);
   }
 
-  // 5. Summarize (optional — --no-summary skips)
+  // 5. Summarize (optional — --no-summary skips; when run, capture token usage)
   let summary: MeetingSummary | undefined;
+  let summaryUsageW: UsageEntry | undefined;
   if (config.summary) {
     spinner = log(verbose, `Summarizing with ${config.summaryModel}...`);
-    summary = await summarizeTranscript(
+    const summarized = await summarizeTranscript(
       merged.text,
       config.summaryApiKey,
       config.summaryModel,
       diarization ? merged.segments : undefined,
       config.summaryBaseURL,
     );
+    summary = summarized.summary;
+    summaryUsageW = makeSummaryUsage(config.summaryModel, config.provider, summarized.tokenUsage);
     spinner?.succeed("Summary generated");
   }
 
@@ -696,7 +740,11 @@ async function runWhisperPipeline(
     outputPath,
   );
   if (config.summary && historyId) {
-    await completeHistoryRecord(historyId, { summary: summary!, outputPath });
+    await completeHistoryRecord(historyId, {
+      summary: summary!,
+      outputPath,
+      usage: summaryUsageW ? [summaryUsageW] : undefined,
+    });
   }
   spinner?.succeed(`Output written to ${outputPath}`);
 
