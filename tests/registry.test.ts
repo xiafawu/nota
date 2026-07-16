@@ -1,5 +1,6 @@
 import { describe, it, expect } from "vitest";
 import {
+  DEEPSEEK_BASE_URL,
   DEFAULT_SUMMARY_MODEL,
   DEFAULT_TRANSCRIPTION_MODEL,
   GEMINI_OPENAI_BASE_URL,
@@ -63,7 +64,24 @@ describe("model registry", () => {
       "gpt-4.1",
       "gemini-2.5-flash",
       "gemini-2.5-pro",
+      "deepseek-v4-flash",
+      "deepseek-v4-pro",
     ]);
+  });
+
+  it("routes deepseek summary models through the OpenAI-compatible base URL", () => {
+    expect(getModel("deepseek-v4-flash")).toMatchObject({
+      task: "summary",
+      provider: "deepseek",
+      apiKeyEnv: "DEEPSEEK_API_KEY",
+      baseURL: DEEPSEEK_BASE_URL,
+    });
+    expect(getModel("deepseek-v4-pro")).toMatchObject({
+      provider: "deepseek",
+      apiKeyEnv: "DEEPSEEK_API_KEY",
+      baseURL: DEEPSEEK_BASE_URL,
+    });
+    expect(isGeminiModel("deepseek-v4-flash")).toBe(false);
   });
 
   it("requireModel rejects unknown ids, listing valid ones", () => {

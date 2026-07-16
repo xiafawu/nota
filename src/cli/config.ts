@@ -13,6 +13,7 @@ const KNOWN_KEYS = [
   "ASSEMBLYAI_API_KEY",
   "HUGGINGFACE_TOKEN",
   "GEMINI_API_KEY",
+  "DEEPSEEK_API_KEY",
 ];
 
 function resolveSource(
