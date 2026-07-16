@@ -22,6 +22,13 @@ final class AppleSpeechStream: SpeechStream {
   private var analyzerTask: Task<Void, any Error>?
   private var didFinalize = false
 
+  /// Format negotiated via `SpeechAnalyzer.bestAvailableAudioFormat`. Feeding
+  /// `AnalyzerInput` any other format traps inside the Speech framework
+  /// (EXC_BREAKPOINT in `AnalyzerInput.data(from:)`), so every buffer is
+  /// converted to this format first.
+  private var analyzerFormat: AVAudioFormat?
+  private var converter: AVAudioConverter?
+
   // MARK: - SFSpeechRecognizer fallback
 
   private var recognizer: SFSpeechRecognizer?
@@ -61,12 +68,61 @@ final class AppleSpeechStream: SpeechStream {
 
   func feed(_ pcm: AVAudioPCMBuffer) throws {
     if let continuation = inputContinuation {
-      // SpeechAnalyzer path
-      continuation.yield(AnalyzerInput(buffer: pcm))
+      // SpeechAnalyzer path — must match the negotiated analyzer format.
+      guard let analyzerFormat, let converted = convertBuffer(pcm, to: analyzerFormat) else {
+        return
+      }
+      continuation.yield(AnalyzerInput(buffer: converted))
     } else {
       // SFSpeechRecognizer fallback
       recognitionRequest?.append(pcm)
     }
+  }
+
+  /// Convert `pcm` to `target` format, reusing the cached converter when the
+  /// source format is unchanged. Returns the input buffer untouched when it is
+  /// already in the target format; returns nil (dropping the buffer) when
+  /// conversion is impossible — dropped audio degrades transcription, a
+  /// mismatched `AnalyzerInput` kills the process.
+  func convertBuffer(_ pcm: AVAudioPCMBuffer, to target: AVAudioFormat) -> AVAudioPCMBuffer? {
+    guard pcm.frameLength > 0 else { return nil }
+    if pcm.format.isEqual(target) { return pcm }
+
+    if converter == nil
+      || converter?.inputFormat.isEqual(pcm.format) != true
+      || converter?.outputFormat.isEqual(target) != true {
+      converter = AVAudioConverter(from: pcm.format, to: target)
+    }
+    guard let converter else {
+      logger.error("No AVAudioConverter from \(pcm.format, privacy: .public) to analyzer format")
+      return nil
+    }
+
+    let ratio = target.sampleRate / pcm.format.sampleRate
+    let capacity = AVAudioFrameCount((Double(pcm.frameLength) * ratio).rounded(.up)) + 16
+    guard let output = AVAudioPCMBuffer(pcmFormat: target, frameCapacity: capacity) else {
+      return nil
+    }
+
+    var suppliedInput = false
+    var conversionError: NSError?
+    let status = converter.convert(to: output, error: &conversionError) { _, inputStatus in
+      guard !suppliedInput else {
+        inputStatus.pointee = .noDataNow
+        return nil
+      }
+      suppliedInput = true
+      inputStatus.pointee = .haveData
+      return pcm
+    }
+
+    guard status == .haveData || status == .inputRanDry,
+          output.frameLength > 0,
+          conversionError == nil else {
+      logger.error("Analyzer format conversion failed: \(conversionError?.localizedDescription ?? String(describing: status), privacy: .public)")
+      return nil
+    }
+    return output
   }
 
   func finish() async throws -> String {
@@ -136,6 +192,8 @@ final class AppleSpeechStream: SpeechStream {
     recognizer = nil
     finalText = nil
     streamError = nil
+    analyzerFormat = nil
+    converter = nil
   }
 
   // MARK: - SpeechAnalyzer path
@@ -146,6 +204,16 @@ final class AppleSpeechStream: SpeechStream {
       locale: Locale(identifier: "en-US"),
       preset: .progressiveLongDictation
     )
+
+    // Negotiate the input format the analyzer actually accepts (Int16 on
+    // current macOS 26 builds). nil means no compatible assets — fall back to
+    // SFSpeechRecognizer instead of trapping on the first buffer.
+    guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [t]) else {
+      throw AppleSpeechError.unavailable
+    }
+    analyzerFormat = format
+    logger.info("SpeechAnalyzer negotiated format: \(format, privacy: .public)")
+
     let a = SpeechAnalyzer(modules: [t])
     transcriber = t
     analyzer = a
