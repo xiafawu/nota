@@ -28,6 +28,7 @@ import {
   settingsSet,
   settingsUnset,
 } from "./cli/settings.js";
+import { parseWindow, usageRuns, usageSummary } from "./cli/usage.js";
 
 const program = new Command();
 
@@ -364,6 +365,39 @@ settings
     }
   });
 
+
+const usage = program
+  .command("usage")
+  .description("Show model usage and cost statistics")
+  .option("--window <window>", "Time window: all, 30d, month", "all")
+  // `nota usage` (no subcommand) = per-model summary
+  .action(async (options) => {
+    try {
+      const window = parseWindow(options.window);
+      await usageSummary(window);
+    } catch (error) {
+      process.stderr.write(
+        `Error: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      process.exit(1);
+    }
+  });
+
+usage
+  .command("runs")
+  .description("Per-run cost log")
+  .option("--window <window>", "Time window: all, 30d, month", "all")
+  .action(async (options) => {
+    try {
+      const window = parseWindow(options.window);
+      await usageRuns(window);
+    } catch (error) {
+      process.stderr.write(
+        `Error: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      process.exit(1);
+    }
+  });
 program
   .command("config")
   .description(
