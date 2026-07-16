@@ -14,8 +14,17 @@ struct Voiceprint: Codable, Hashable {
 /// A speaker profile is a *pointer*: one name → N voiceprints (one per
 /// enrollment event). Matching takes the max score across all voiceprints so
 /// adding more can only help recall. Mirrors `SpeakerProfile` in speakers.ts.
+/// LLM-generated entity description used by the identify cross-check.
+/// Mirrors `SpeakerDescription` in src/pipeline/speakers.ts.
+struct SpeakerDescription: Codable, Hashable {
+  var text: String
+  var updatedAt: String
+  var sourceHistoryIds: [String]
+}
+
 struct SpeakerProfile: Codable, Hashable {
   var voiceprints: [Voiceprint]
+  var description: SpeakerDescription?
 
   // MARK: - v1 → v2 migration decoder
   //
@@ -27,6 +36,8 @@ struct SpeakerProfile: Codable, Hashable {
 
   init(from decoder: Decoder) throws {
     let container = try decoder.container(keyedBy: CodingKeys.self)
+
+    self.description = try container.decodeIfPresent(SpeakerDescription.self, forKey: .description)
 
     // v2 path
     if let voiceprints = try container.decodeIfPresent([Voiceprint].self, forKey: .voiceprints) {
@@ -46,10 +57,14 @@ struct SpeakerProfile: Codable, Hashable {
   func encode(to encoder: Encoder) throws {
     var container = encoder.container(keyedBy: CodingKeys.self)
     try container.encode(voiceprints, forKey: .voiceprints)
+    // Round-trip the description: dropping it here would erase CLI-written
+    // descriptions whenever the app saves the store.
+    try container.encodeIfPresent(description, forKey: .description)
   }
 
   private enum CodingKeys: String, CodingKey {
     case voiceprints
+    case description
     // Legacy v1 field names
     case legacyEmbedding = "embedding"
     case legacyEnrolledAt = "enrolledAt"
