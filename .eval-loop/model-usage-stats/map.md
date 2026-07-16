@@ -46,4 +46,4 @@ A handoff spec (CODEX-SPEC style) that locks every decision for a **per-model mo
 | [T3 CLI scope: macOS-only or `nota usage` too](tickets/T3-cli-scope.md) | grilling | closed | — |
 | [T4 History schema: per-run per-model usage + migration](tickets/T4-history-schema.md) | grilling | closed | T1 ✅, T2 ✅ |
 | [T5 Aggregation grain for the stats view](tickets/T5-aggregation-grain.md) | grilling | closed | T4 ✅ |
-| [T6 Home-page stats panel design](tickets/T6-homepage-prototype.md) | prototype | open | T3 ✅, T5 ✅ → **frontier (last ticket)** |
+| [T6 Home-page stats panel design](tickets/T6-homepage-prototype.md) | prototype | closed | — (PR #59; **effort complete**) |
