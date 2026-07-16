@@ -61,7 +61,11 @@ enum PolishClient {
         ["role": "user", "content": text],
       ],
       "temperature": 0.3,
-      "max_tokens": text.count * 2,
+      // Fixed generous cap, NOT proportional to input length: reasoning models
+      // (deepseek-v4-flash) spend completion tokens on reasoning_content
+      // before any visible content — a tight cap yields content:"" with
+      // finish_reason:"length".
+      "max_tokens": 2048,
     ]
 
     var request = URLRequest(url: url)
@@ -99,7 +103,13 @@ enum PolishClient {
       throw PolishError.invalidResponse("unexpected response shape")
     }
 
-    return content
+    let trimmed = content.trimmingCharacters(in: .whitespacesAndNewlines)
+    // Empty content is a failure, not a success — the controller must fall
+    // back to the rules-only text instead of silently injecting nothing.
+    guard !trimmed.isEmpty else {
+      throw PolishError.invalidResponse("empty content (finish_reason likely 'length')")
+    }
+    return trimmed
   }
 
 }
