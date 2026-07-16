@@ -3,8 +3,8 @@ import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
 import type { Provider } from "../config.js";
-import type { TranscriptSegment } from "./transcribe.js";
 import type { MeetingSummary } from "./summarize.js";
+import type { TranscriptSegment } from "./transcribe.js";
 
 export type HistoryStatus = "transcribed" | "completed";
 
@@ -14,6 +14,24 @@ export interface HistoryOptions {
   identify: boolean;
   numSpeakers?: number;
   model: string;
+}
+
+/**
+ * Token / duration usage for a single processing step (transcription or
+ * summary). Emitted at capture time; cost is computed via costForUsage.
+ * `costUSD` is null when the model is unknown or inputs are absent (never
+ * zero — "free" is semantically different from "unknown").
+ */
+export interface UsageEntry {
+  modelId: string;
+  task: "transcription" | "summary";
+  provider: Provider;
+  calls: number;
+  tokensIn?: number;
+  tokensOut?: number;
+  durationMin?: number;
+  costUSD: number | null;
+  estimated: boolean;
 }
 
 export interface HistoryRecord {
@@ -40,6 +58,11 @@ export interface HistoryRecord {
    * later, after the original (often temp) audio has been deleted.
    */
   speakerClips?: Record<string, string>;
+  /**
+   * Per-step usage entries (transcription + summary). Optional because
+   * records written before the feature shipped predate the field.
+   */
+  usage?: UsageEntry[];
   summary?: MeetingSummary;
   outputPath?: string;
   status: HistoryStatus;
@@ -60,12 +83,19 @@ export interface CreateHistoryInput {
    * record's `speakerClips`.
    */
   speakerClipsPcm?: Record<string, Int16Array>;
+  /**
+   * Transcription usage to persist on the record at creation time.
+   * Present when usage tracking is enabled.
+   */
+  usage?: UsageEntry[];
   outputPath?: string;
 }
 
 export interface CompleteHistoryInput {
   summary: MeetingSummary;
   outputPath: string;
+  /** Summary usage entries to append to the record's usage array on completion. */
+  usage?: UsageEntry[];
 }
 
 export const DEFAULT_HISTORY_DIR = path.join(homedir(), ".nota", "history");
@@ -131,6 +161,7 @@ export async function createHistoryRecord(
     transcriptText: input.transcriptText,
     segments: input.segments,
     outputPath: input.outputPath,
+    usage: input.usage,
     status: "transcribed",
   };
 
@@ -166,6 +197,7 @@ export async function completeHistoryRecord(
     updatedAt: new Date().toISOString(),
     summary: input.summary,
     outputPath: input.outputPath,
+    usage: [...(record.usage ?? []), ...(input.usage ?? [])],
     status: "completed",
   };
 

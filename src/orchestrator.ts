@@ -1,6 +1,7 @@
 import path from "node:path";
 import ora from "ora";
 import type { AppConfig } from "./config.js";
+import { costForUsage, makeSummaryUsage } from "./pricing.js";
 import { OVERLAP_DURATION } from "./constants.js";
 import {
   validateInput,
@@ -27,6 +28,7 @@ import {
   createHistoryRecord,
   findHistoryByHash,
   type HistoryOptions,
+  type UsageEntry,
 } from "./pipeline/history.js";
 import {
   loadProfiles,
@@ -291,6 +293,19 @@ async function runAssemblyAIPipelineInner(
     language: config.language,
   });
   spinner?.succeed("Transcription and diarization complete");
+  const transcriptionDurationMin = result.durationSeconds
+    ? result.durationSeconds / 60
+    : durationMinutes;
+  const transcriptionUsage: UsageEntry = {
+    modelId: config.transcriptionModel,
+    task: "transcription",
+    provider: config.provider,
+    calls: 1,
+    durationMin: transcriptionDurationMin,
+    costUSD: null,
+    estimated: false,
+  };
+  transcriptionUsage.costUSD = costForUsage(transcriptionUsage);
 
   // 2b. Identify speakers by voice (if enabled)
   let segments = result.segments;
@@ -327,6 +342,7 @@ async function runAssemblyAIPipelineInner(
       capturedAt: capturedAt ? capturedAt.toISOString() : null,
       contentHash,
       speakerClipsPcm,
+      usage: [transcriptionUsage],
     });
     historyId = history.id;
     spinner?.succeed(`History saved as ${history.id}`);
@@ -335,13 +351,14 @@ async function runAssemblyAIPipelineInner(
   // 3. Summarize
   emitPhase("summarizing");
   spinner = log(verbose, `Summarizing with ${config.summaryModel}...`);
-  const summary = await summarizeTranscript(
+  const { summary, tokenUsage } = await summarizeTranscript(
     result.text,
     config.summaryApiKey,
     config.summaryModel,
     segments,
     config.summaryBaseURL,
   );
+  const summaryUsage = makeSummaryUsage(config.summaryModel, config.provider, tokenUsage);
   spinner?.succeed("Summary generated");
 
   // 4. Write
@@ -365,7 +382,7 @@ async function runAssemblyAIPipelineInner(
     outputPath,
   );
   if (historyId) {
-    await completeHistoryRecord(historyId, { summary, outputPath });
+    await completeHistoryRecord(historyId, { summary, outputPath, usage: [summaryUsage] });
   }
   spinner?.succeed(`Output written to ${outputPath}`);
 
@@ -582,6 +599,22 @@ async function runWhisperPipeline(
       ? "Transcription and diarization complete"
       : "Transcription complete",
   );
+  const transcriptionTotalSeconds = transcriptions.reduce(
+    (sum, t) => sum + (t.durationSeconds ?? 0), 0
+  );
+  const whisperDurationMin = transcriptionTotalSeconds > 0
+    ? transcriptionTotalSeconds / 60
+    : durationMinutes;
+  const transcriptionUsageW: UsageEntry = {
+    modelId: config.transcriptionModel,
+    task: "transcription",
+    provider: config.provider,
+    calls: 1,
+    durationMin: whisperDurationMin,
+    costUSD: null,
+    estimated: false,
+  };
+  transcriptionUsageW.costUSD = costForUsage(transcriptionUsageW);
 
   // 4. Merge
   spinner = log(verbose, "Merging transcripts...");
@@ -615,6 +648,7 @@ async function runWhisperPipeline(
       outputPath,
       capturedAt: capturedAt ? capturedAt.toISOString() : null,
       contentHash,
+      usage: [transcriptionUsageW],
     });
     historyId = history.id;
     spinner?.succeed(`History saved as ${history.id}`);
@@ -622,13 +656,14 @@ async function runWhisperPipeline(
 
   // 5. Summarize
   spinner = log(verbose, `Summarizing with ${config.summaryModel}...`);
-  const summary = await summarizeTranscript(
+  const { summary, tokenUsage } = await summarizeTranscript(
     merged.text,
     config.summaryApiKey,
     config.summaryModel,
     diarization ? merged.segments : undefined,
     config.summaryBaseURL,
   );
+  const summaryUsageW = makeSummaryUsage(config.summaryModel, config.provider, tokenUsage);
   spinner?.succeed("Summary generated");
 
   // 6. Write
@@ -651,7 +686,7 @@ async function runWhisperPipeline(
     outputPath,
   );
   if (historyId) {
-    await completeHistoryRecord(historyId, { summary, outputPath });
+    await completeHistoryRecord(historyId, { summary, outputPath, usage: [summaryUsageW] });
   }
   spinner?.succeed(`Output written to ${outputPath}`);
 

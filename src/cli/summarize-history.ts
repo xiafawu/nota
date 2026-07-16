@@ -2,7 +2,9 @@ import {
   DEFAULT_HISTORY_DIR,
   completeHistoryRecord,
   loadHistoryRecord,
+  type UsageEntry,
 } from "../pipeline/history.js";
+import { makeSummaryUsage } from "../pricing.js";
 import { summarizeTranscript } from "../pipeline/summarize.js";
 import { defaultOutputPath, writeOutput } from "../pipeline/write.js";
 import { DEFAULT_SUMMARY_MODEL, getModel, requireModel } from "../registry.js";
@@ -63,13 +65,14 @@ export async function summarizeHistory(
   const segments =
     record.segments && record.segments.length > 0 ? record.segments : undefined;
 
-  const summary = await summarizeTranscript(
+  const { summary, tokenUsage } = await summarizeTranscript(
     record.transcriptText,
     apiKey,
     entry.id,
     segments,
     entry.baseURL,
   );
+  const summaryUsage = makeSummaryUsage(entry.id, record.provider, tokenUsage);
 
   const transcribedDate = new Date().toISOString().split("T")[0];
   const capturedDate = record.capturedAt
@@ -92,7 +95,7 @@ export async function summarizeHistory(
     outputPath,
   );
 
-  await completeHistoryRecord(record.id, { summary, outputPath }, historyDir);
+  await completeHistoryRecord(record.id, { summary, outputPath, usage: [summaryUsage] }, historyDir);
 
   process.stderr.write(`Summarized ${record.id} → ${outputPath}\n`);
   return outputPath;

@@ -69,7 +69,10 @@ beforeEach(() => {
   originalApiKey = process.env.OPENAI_API_KEY;
   originalGeminiKey = process.env.GEMINI_API_KEY;
   vi.mocked(summarizeTranscript).mockReset();
-  vi.mocked(summarizeTranscript).mockResolvedValue(FIXED_SUMMARY);
+  vi.mocked(summarizeTranscript).mockResolvedValue({
+    summary: FIXED_SUMMARY,
+    tokenUsage: { calls: 1, tokensIn: 500, tokensOut: 200 },
+  });
   stderrSpy = vi
     .spyOn(process.stderr, "write")
     .mockImplementation(() => true);
