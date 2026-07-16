@@ -17,6 +17,9 @@ final class NotaModel: ObservableObject {
   @Published var identifySpeakers: Bool = (UserDefaults.standard.object(forKey: "identifySpeakers") as? Bool) ?? true {
     didSet { UserDefaults.standard.set(identifySpeakers, forKey: "identifySpeakers") }
   }
+  @Published var skipSummary: Bool = (UserDefaults.standard.object(forKey: "skipSummary") as? Bool) ?? false {
+    didSet { UserDefaults.standard.set(skipSummary, forKey: "skipSummary") }
+  }
   @Published var lastOutputURL: URL?
   @Published var displayName = "Drop Audio"
   @Published var displayPath = "MP3, M4A, WAV, CAF, QTA, MOV, MP4"
@@ -165,8 +168,7 @@ final class NotaModel: ObservableObject {
 
     Task {
       do {
-        let result = try await runNota(for: selectedURL, displayURL: displayURL) { [weak self] label in
-          Task { @MainActor in self?.phase = label }
+        let result = try await runNota(for: selectedURL, displayURL: displayURL, skipSummary: skipSummary) { [weak self] label in
         }
         markdown = result.markdown
         lastOutputURL = result.outputURL
@@ -331,9 +333,9 @@ final class NotaModel: ObservableObject {
   private func runNota(
     for url: URL,
     displayURL: URL,
+    skipSummary: Bool,
     onPhase: @escaping @Sendable (String) -> Void
   ) async throws -> NotaResult {
-    try await Task.detached(priority: .userInitiated) { [identifySpeakers, projectDirectory, outputDirectory] in
       let fileManager = FileManager.default
       try fileManager.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
 

@@ -79,6 +79,10 @@ program
     "--identify",
     "Identify and remember speakers by voice across recordings",
   )
+  .option(
+    "--no-summary",
+    "Transcribe only; skip the LLM summary",
+  )
   .option("--no-history", "Do not save this transcript to ~/.nota/history")
   .option(
     "--force",
@@ -92,10 +96,14 @@ program
     try {
       const config = loadConfig({
         ...options,
+        output: options.output,
         transcribeModel: options.transcribeModel,
+        model: options.model,
+        verbose: options.verbose,
         diarize: options.diarize,
         numSpeakers: options.numSpeakers,
         identify: options.identify,
+        summary: options.summary,
         history: options.history,
         force: options.force,
         skipPreflight: options.skipPreflight,

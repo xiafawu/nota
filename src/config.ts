@@ -30,6 +30,7 @@ export interface CLIOptions {
   history?: boolean;
   force?: boolean;
   skipPreflight?: boolean;
+  summary?: boolean;
 }
 
 export interface AppConfig {
@@ -45,6 +46,7 @@ export interface AppConfig {
   language?: string;
   verbose: boolean;
   diarize: boolean;
+  summary: boolean;
   numSpeakers?: number;
   identify: boolean;
   history: boolean;
@@ -144,6 +146,7 @@ export function loadConfig(
     language: options.language,
     verbose: options.verbose ?? false,
     diarize: provider === "assemblyai" ? true : (options.diarize ?? true),
+    summary: options.summary ?? true,
     numSpeakers: options.numSpeakers,
     identify: options.identify ?? false,
     history: options.history ?? true,
