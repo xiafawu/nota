@@ -5,12 +5,16 @@ import SwiftUI
 struct NotaApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
   @StateObject private var model = NotaModel()
-  @StateObject private var dictationController = DictationController()
+  @StateObject private var dictationController: DictationController
+  private let hudController: DictationHUDController
 
   init() {
     if let exitCode = runHeadlessSmokeTestIfRequested(arguments: Array(ProcessInfo.processInfo.arguments.dropFirst())) {
       exit(exitCode)
     }
+    let controller = DictationController()
+    self._dictationController = StateObject(wrappedValue: controller)
+    self.hudController = DictationHUDController(controller: controller)
   }
 
   var body: some Scene {

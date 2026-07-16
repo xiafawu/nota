@@ -4,6 +4,7 @@ import os
 
 final class MicCapture: ObservableObject {
   @Published private(set) var diagnostics: CaptureDiagnostics?
+  @Published private(set) var rmsLevel: Float = 0
   var onPCMBuffer: ((AVAudioPCMBuffer) -> Void)?
 
   private let audioEngine = AVAudioEngine()
@@ -126,7 +127,6 @@ final class MicCapture: ObservableObject {
       }
       return
     }
-
     DispatchQueue.main.async { [weak self] in
       guard let self, self.isCapturing else { return }
       guard var diagnostics = self.diagnostics else { return }
@@ -134,6 +134,20 @@ final class MicCapture: ObservableObject {
       diagnostics.sampleCount += Int(outputBuffer.frameLength)
       diagnostics.lastBufferAt = Date()
       self.diagnostics = diagnostics
+
+      // Compute RMS level from the converted PCM buffer
+      if let channelData = outputBuffer.floatChannelData {
+        let samples = UnsafeBufferPointer(start: channelData[0], count: Int(outputBuffer.frameLength))
+        var sumSq: Float = 0
+        for i in 0..<samples.count {
+          let s = samples[i]
+          sumSq += s * s
+        }
+        let rms = sqrt(sumSq / Float(samples.count))
+        // Scale for visual sensitivity: typical speech RMS is ~0.01-0.1
+        self.rmsLevel = min(rms * 3.0, 1.0)
+      }
+
       self.onPCMBuffer?(outputBuffer)
       self.logger.debug(
         "PCM buffer #\(diagnostics.bufferCount) frames=\(outputBuffer.frameLength) sampleRate=16000 channels=1"

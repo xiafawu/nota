@@ -22,6 +22,11 @@ final class TextInjector {
   /// Set when a secure/password field was refused on the last `inject` call.
   private(set) var lastSecureFieldNotice: String?
 
+  /// Clear the secure-field notice after it has been displayed.
+  func clearSecureFieldNotice() {
+    lastSecureFieldNotice = nil
+  }
+
   init(overrides: [String: PerAppOverride]? = nil) {
     self.overrides = overrides ?? Self.defaultOverrideTable
   }

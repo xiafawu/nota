@@ -16,13 +16,22 @@ final class DictationController: ObservableObject {
   @Published private(set) var lastPolishResult: String?
   /// Set when polish was skipped or failed.
   @Published private(set) var lastPolishWarning: String?
-
+  /// True while a polish LLM call is in flight.
+  @Published private(set) var isPolishInProgress: Bool = false
   let permissions: PermissionsCoordinator
   let capture: MicCapture
+
+  /// The last secure-field refusal message from the injector (nonfatal).
+  var lastSecureFieldNotice: String? {
+    injector.lastSecureFieldNotice
+  }
 
   /// Current settings — accessible by views for display.
   private(set) var settings: DictationSettings {
     didSet {
+      // Manual publish: `settings` is not @Published, but HUDController
+      // subscribes to objectWillChange to react to showHUD toggle changes.
+      objectWillChange.send()
       DictationSettingsStore.save(settings)
       applySettings()
     }
@@ -298,6 +307,7 @@ final class DictationController: ObservableObject {
             ?? ModelRegistry.defaultModel(for: .summary)
 
           self.logger.info("Polishing with model=\(modelID, privacy: .public)")
+          self.isPolishInProgress = true
 
           Task {
             let polished: String
@@ -328,6 +338,7 @@ final class DictationController: ObservableObject {
   /// Shared injection step after formatting/polish is resolved.
   private func doInject(_ text: String, latency: TimeInterval) {
     lastProcessedText = text
+    isPolishInProgress = false
     self.logger.info(
       "Dictation session: latency=\(String(format: "%.2f", latency))s text=\"\(text, privacy: .public)\""
     )
@@ -344,7 +355,10 @@ final class DictationController: ObservableObject {
             self.state = .failed(message: notice)
             Task {
               try? await Task.sleep(nanoseconds: 2_000_000_000)
-              await MainActor.run { self.state = .idle }
+              await MainActor.run {
+                self.injector.clearSecureFieldNotice()
+                self.state = .idle
+              }
             }
           } else {
             self.state = .idle

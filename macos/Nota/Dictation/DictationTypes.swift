@@ -296,4 +296,6 @@ struct DictationSettings: Codable, Equatable, Sendable {
   var polishEnabled: Bool = false
   /// Model id from ModelRegistry for polish; nil means use the default summary model.
   var polishModelID: String? = nil
+  /// Show floating HUD pill during dictation sessions.
+  var showHUD: Bool = true
 }
