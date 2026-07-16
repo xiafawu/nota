@@ -191,9 +191,10 @@ final class DictationController: ObservableObject {
 
     isSessionPending = true
 
-    // Create a fresh Apple speech stream for this session
-    let stream = AppleSpeechStream()
+    // Create a speech stream matching the current engine choice
+    let stream = makeDictationStream(for: settings.engine)
     speechStream = stream
+    logger.info("Using engine: \(self.settings.engine.label)")
     lastHypothesis = nil
     lastProcessedText = nil
     lastRulesResult = nil
@@ -220,7 +221,7 @@ final class DictationController: ObservableObject {
           self.isSessionPending = false
           self.speechStream = nil
           self.state = .failed(message: error.localizedDescription)
-          self.logger.error("AppleSpeechStream.start failed: \(error.localizedDescription, privacy: .public)")
+          self.logger.error("SpeechStream.start failed: \(error.localizedDescription, privacy: .public)")
         }
         return
       }
