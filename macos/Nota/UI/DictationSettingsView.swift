@@ -13,6 +13,7 @@ struct DictationSettingsView: View {
       triggerSection
       engineSection
       polishSection
+      hudSection
       privacySection
     }
     .formStyle(.grouped)
@@ -138,6 +139,23 @@ struct DictationSettingsView: View {
       }
     } header: {
       Text("Privacy")
+    }
+  }
+
+  // MARK: - HUD
+
+  private var hudSection: some View {
+    Section {
+      Toggle(isOn: $settings.showHUD) {
+        VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
+          Text("Show Dictation HUD")
+          Text("Display a floating pill during dictation showing microphone level and status.")
+            .font(Tokens.settingsCaptionFont)
+            .foregroundStyle(.secondary)
+        }
+      }
+    } header: {
+      Text("Heads-Up Display")
     }
   }
 }

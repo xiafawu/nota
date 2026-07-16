@@ -22,9 +22,27 @@ final class DictationSettingsStoreTests: XCTestCase {
     settings.activation = .toggle
     settings.polishEnabled = true
     settings.polishModelID = "deepseek-v4-flash"
+    settings.showHUD = false
 
     DictationSettingsStore.save(settings)
     XCTAssertEqual(DictationSettingsStore.load(), settings)
+  }
+
+  func testShowHUDRoundTrip() {
+    // Default is true
+    XCTAssertEqual(DictationSettings().showHUD, true)
+    XCTAssertEqual(DictationSettingsStore.load().showHUD, true)
+
+    // False -> save -> load
+    var settings = DictationSettingsStore.load()
+    settings.showHUD = false
+    DictationSettingsStore.save(settings)
+    XCTAssertEqual(DictationSettingsStore.load().showHUD, false)
+
+    // True -> save -> load
+    settings.showHUD = true
+    DictationSettingsStore.save(settings)
+    XCTAssertEqual(DictationSettingsStore.load().showHUD, true)
   }
 
   func testResetRevertsToDefaults() {
