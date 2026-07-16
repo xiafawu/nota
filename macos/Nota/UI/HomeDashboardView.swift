@@ -24,7 +24,6 @@ struct HomeDashboardView: View {
       .padding(24)
       .frame(maxWidth: .infinity, alignment: .leading)
     }
-    .scrollBounceBehavior(.basedOnSize)
     .onAppear {
       Task { await usageProvider.refresh(window: usageWindow) }
     }
