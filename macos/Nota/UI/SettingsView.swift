@@ -41,6 +41,7 @@ struct SettingsView: View {
               .foregroundStyle(.secondary)
           }
         }
+      }
     }
     .formStyle(.grouped)
   }

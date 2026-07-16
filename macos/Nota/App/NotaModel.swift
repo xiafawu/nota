@@ -169,6 +169,7 @@ final class NotaModel: ObservableObject {
     Task {
       do {
         let result = try await runNota(for: selectedURL, displayURL: displayURL, skipSummary: skipSummary) { [weak self] label in
+          Task { @MainActor in self?.phase = label }
         }
         markdown = result.markdown
         lastOutputURL = result.outputURL
@@ -336,6 +337,7 @@ final class NotaModel: ObservableObject {
     skipSummary: Bool,
     onPhase: @escaping @Sendable (String) -> Void
   ) async throws -> NotaResult {
+    try await Task.detached(priority: .userInitiated) { [identifySpeakers, projectDirectory, outputDirectory] in
       let fileManager = FileManager.default
       try fileManager.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
 
@@ -355,6 +357,9 @@ final class NotaModel: ObservableObject {
       var arguments = [runnerURL.path, url.path, outputURL.path, "-v"]
       if identifySpeakers {
         arguments.append("--identify")
+      }
+      if skipSummary {
+        arguments.append("--no-summary")
       }
       process.arguments = arguments
 
