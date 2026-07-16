@@ -85,6 +85,30 @@ private struct OpenTuningWindowButton: View {
 #endif
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+  func applicationDidFinishLaunching(_ notification: Notification) {
+    enforceSingleInstance()
+  }
+
+  /// Quit immediately if another Nota with the same bundle id is already
+  /// running (e.g. a stale DerivedData copy vs /Applications). The OLDER
+  /// instance wins: it already owns the CGEvent tap and TCC grants; two live
+  /// instances would each inject text on every dictation. Set
+  /// NOTA_ALLOW_MULTI=1 to bypass for debugging.
+  private func enforceSingleInstance() {
+    guard ProcessInfo.processInfo.environment["NOTA_ALLOW_MULTI"] != "1",
+          let bundleID = Bundle.main.bundleIdentifier else { return }
+
+    let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)
+      .filter { $0.processIdentifier != ProcessInfo.processInfo.processIdentifier }
+
+    guard let survivor = others.first else { return }
+    NSLog("Nota: another instance is already running (pid %d, %@) — quitting this one",
+          survivor.processIdentifier,
+          survivor.bundleURL?.path ?? "unknown path")
+    survivor.activate()
+    NSApp.terminate(nil)
+  }
+
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
     false
   }
