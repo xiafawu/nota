@@ -40,7 +40,8 @@ struct HomeDashboardView: View {
     PreflightHomeView(
       result: model.preflight,
       isChecking: model.isCheckingPreflight,
-      onRefresh: { model.runPreflight(refresh: true) }
+      onRefresh: { model.runPreflight(refresh: true) },
+      embedded: true
     )
   }
 
@@ -61,6 +62,7 @@ struct HomeDashboardView: View {
           Text("All").tag("all")
         }
         .pickerStyle(.segmented)
+        .labelsHidden()
         .frame(width: 120)
       }
 
@@ -198,7 +200,7 @@ private struct CostCardView: View {
         .padding(.vertical, 4)
 
       // Top models
-      ForEach(topRows, id: \.modelId) { row in
+      ForEach(viewModel.topModels, id: \.modelId) { row in
         HStack {
           VStack(alignment: .leading, spacing: 2) {
             Text(row.modelId)
@@ -212,7 +214,7 @@ private struct CostCardView: View {
 
           Spacer()
 
-          Text("$\(String(format: "%.4f", row.costUSD))")
+          Text(CostCardViewModel.formatUSD(row.costUSD))
             .font(.callout)
             .fontWeight(.medium)
         }
@@ -259,11 +261,6 @@ private struct CostCardView: View {
     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
   }
 
-  private var topRows: [ModelUsageRow] {
-    let sorted = rows.sorted { $0.costUSD > $1.costUSD }
-    return Array(sorted.prefix(5))
-  }
-
   @ViewBuilder
   private var expandedTable: some View {
     VStack(spacing: 0) {
@@ -292,7 +289,8 @@ private struct CostCardView: View {
           Text("\(row.calls)").frame(width: 40, alignment: .trailing)
           Text("\(row.tokensIn)").frame(width: 70, alignment: .trailing)
           Text("\(row.tokensOut)").frame(width: 70, alignment: .trailing)
-          Text("$\(String(format: "%.4f", row.costUSD))").frame(width: 70, alignment: .trailing)
+          Text(row.hasUnknown && row.costUSD == 0 ? "—" : CostCardViewModel.formatUSD(row.costUSD))
+            .frame(width: 70, alignment: .trailing)
         }
         .font(.caption)
         .padding(.vertical, 2)

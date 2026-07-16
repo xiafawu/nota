@@ -120,7 +120,10 @@ final class HomeDashboardStateTests: XCTestCase {
 
     XCTAssertTrue(vm.headlineCost.hasPrefix("~"))
     XCTAssertEqual(vm.unknownNote, "2 runs unknown cost")
-    XCTAssertEqual(vm.topModels.count, 3)
+    // The unknown-$0 row is excluded from the top list (T5: unknown never
+    // renders as zero dollars); the footnote above carries its runs.
+    XCTAssertEqual(vm.topModels.count, 2)
+    XCTAssertFalse(vm.topModels.contains { $0.modelId == "unk" })
   }
 
   func testCostCard_zeroCostNoRows() {
@@ -129,5 +132,30 @@ final class HomeDashboardStateTests: XCTestCase {
     XCTAssertEqual(vm.headlineCost, "$0.00")
     XCTAssertFalse(vm.hasEstimated)
     XCTAssertNil(vm.unknownNote)
+  }
+
+  // MARK: - USD formatting (shared semantics with the CLI's formatCost)
+
+  func testFormatUSD_twoDecimalsForNormalValues() {
+    XCTAssertEqual(CostCardViewModel.formatUSD(0.40), "$0.40")
+    XCTAssertEqual(CostCardViewModel.formatUSD(1.5), "$1.50")
+  }
+
+  func testFormatUSD_fourDecimalsForSubCentValues() {
+    XCTAssertEqual(CostCardViewModel.formatUSD(0.0042), "$0.0042")
+  }
+
+  func testFormatUSD_negativeClampsToZero() {
+    XCTAssertEqual(CostCardViewModel.formatUSD(-0.5), "$0.00")
+  }
+
+  func testCostCard_unknownZeroRowsStillCountTowardTotalModelCount() {
+    let rows = [
+      ModelUsageRow.fixture(modelId: "known", costUSD: 0.10),
+      ModelUsageRow.fixture(modelId: "unk", costUSD: 0.0, hasUnknown: true),
+    ]
+    let vm = CostCardViewModel(rows: rows, window: "all")
+    XCTAssertEqual(vm.topModels.count, 1)
+    XCTAssertEqual(vm.totalModelCount, 2)
   }
 }

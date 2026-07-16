@@ -283,7 +283,10 @@ final class UsageStatsProviderTests: XCTestCase {
 
     XCTAssertTrue(vm.headlineCost.hasPrefix("~")) // estimated present → ~ prefix
     XCTAssertEqual(vm.unknownNote, "2 runs unknown cost")
-    XCTAssertEqual(vm.topModels.count, 3)
+    // Unknown-$0 rows are excluded from the top list (T5: unknown never
+    // renders as zero dollars); the footnote carries their runs.
+    XCTAssertEqual(vm.topModels.count, 2)
+    XCTAssertFalse(vm.topModels.contains { $0.modelId == "unknown" })
   }
 
   // MARK: - ModelUsageRow Equatable conformance
