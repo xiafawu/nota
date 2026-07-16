@@ -35,6 +35,7 @@ import {
   promptForSpeakerNames,
   applySpeakerNames,
 } from "./pipeline/speakers.js";
+import { applyVerdicts, verifySpeakers } from "./pipeline/verify-speakers.js";
 import {
   computeEmbedding,
   computeEmbeddings,
@@ -473,6 +474,45 @@ export async function identifySpeakers(
           console.log(
             `  Matched ${label} → ${match.name} (${Math.round(match.confidence * 100)}%)`,
           );
+        }
+      }
+    }
+
+    // 2c. LLM cross-check: verify confident matches against speaker descriptions
+    //     (gated behind --verify-speakers, which defaults to on with --identify).
+    if (
+      config.verifySpeakers &&
+      Object.keys(nameMap).length > 0 &&
+      config.summaryApiKey
+    ) {
+      if (verbose) console.log("  Verifying speaker labels...");
+      const speakerContexts: Record<
+        string,
+        { name: string; description?: typeof store.speakers[string]["description"] }
+      > = {};
+      for (const [label, name] of Object.entries(nameMap)) {
+        const profile = store.speakers[name];
+        speakerContexts[label] = {
+          name,
+          description: profile?.description,
+        };
+      }
+      const verdicts = await verifySpeakers(
+        { segments, matches: Object.fromEntries(Object.entries(matches).filter(([, m]) => !m.tentative)), speakerContexts },
+        config.summaryApiKey,
+        config.summaryModel,
+        config.summaryBaseURL,
+      );
+      const updated = applyVerdicts(matches, verdicts);
+      for (const [label, match] of Object.entries(updated)) {
+        const prev = matches[label];
+        if (prev && prev.tentative !== match.tentative && match.tentative) {
+          // Demoted: move from nameMap to tentative.
+          if (nameMap[label]) {
+            if (verbose) console.log(`  Demoted ${label}: "${nameMap[label]}" marked tentative after LLM cross-check`);
+            delete nameMap[label];
+            tentative[label] = { name: match.name, confidence: match.confidence };
+          }
         }
       }
     }

@@ -26,8 +26,15 @@ export interface Voiceprint {
   source: string;
 }
 
+export interface SpeakerDescription {
+  text: string;
+  updatedAt: string;
+  sourceHistoryIds: string[];
+}
+
 export interface SpeakerProfile {
   voiceprints: Voiceprint[];
+  description?: SpeakerDescription;
 }
 
 export interface SpeakerStore {

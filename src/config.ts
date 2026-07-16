@@ -31,6 +31,7 @@ export interface CLIOptions {
   force?: boolean;
   skipPreflight?: boolean;
   summary?: boolean;
+  verifySpeakers?: boolean;
 }
 
 export interface AppConfig {
@@ -52,8 +53,8 @@ export interface AppConfig {
   history: boolean;
   /** Reprocess even when an identical audio file is already in history. */
   force: boolean;
-  /** Skip the inline preflight gate before transcription. */
   skipPreflight: boolean;
+  verifySpeakers: boolean;
 }
 
 function parseProviderAlias(provider?: string): Provider {
@@ -149,8 +150,9 @@ export function loadConfig(
     summary: options.summary ?? true,
     numSpeakers: options.numSpeakers,
     identify: options.identify ?? false,
-    history: options.history ?? true,
+    verifySpeakers: options.verifySpeakers ?? true,
     force: options.force ?? false,
+    history: options.history ?? true,
     skipPreflight: options.skipPreflight ?? false,
   };
 }

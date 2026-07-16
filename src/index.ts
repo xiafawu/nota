@@ -10,6 +10,7 @@ import {
 } from "./pipeline/history.js";
 import {
   deleteSpeaker,
+  describeSpeaker,
   listSpeakers,
   mergeSpeakers,
   reassignVoiceprint,
@@ -83,14 +84,14 @@ program
     "--no-summary",
     "Transcribe only; skip the LLM summary",
   )
+  .option(
+    "--no-verify-speakers",
+    "Skip the LLM cross-check on voiceprint speaker labels",
+  )
   .option("--no-history", "Do not save this transcript to ~/.nota/history")
   .option(
     "--force",
     "Reprocess even if an identical audio file is already in history",
-  )
-  .option(
-    "--skip-preflight",
-    "Bypass the readiness gate that runs before transcription",
   )
   .action(async (audioFile: string, options) => {
     try {
@@ -104,6 +105,7 @@ program
         numSpeakers: options.numSpeakers,
         identify: options.identify,
         summary: options.summary,
+        verifySpeakers: options.verifySpeakers,
         history: options.history,
         force: options.force,
         skipPreflight: options.skipPreflight,
