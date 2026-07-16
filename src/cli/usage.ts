@@ -69,7 +69,7 @@ export async function usageSummary(window?: AggregateWindow, historyDir?: string
   for (const row of rows) {
     const cost =
       row.hasUnknown && row.costUSD === 0 ? "—" : formatCost(row.costUSD);
-    const estMark = row.hasUnknown && row.costUSD > 0 ? "~" : "";
+    const estMark = row.hasEstimated ? "~" : "";
     const parts = [
       row.modelId,
       row.provider,
@@ -88,9 +88,10 @@ export async function usageSummary(window?: AggregateWindow, historyDir?: string
   const totalTokensIn = rows.reduce((s, r) => s + r.tokensIn, 0);
   const totalTokensOut = rows.reduce((s, r) => s + r.tokensOut, 0);
   const totalCost = rows.reduce((s, r) => s + r.costUSD, 0);
+  const totalEstMark = rows.some((r) => r.hasEstimated) ? "~" : "";
   process.stderr.write("──\n");
   process.stderr.write(
-    `total\t\t${totalRuns}\t${totalCalls}\t${totalTokensIn}\t${totalTokensOut}\t${formatCost(totalCost)}\n`,
+    `total\t\t${totalRuns}\t${totalCalls}\t${totalTokensIn}\t${totalTokensOut}\t${totalEstMark}${formatCost(totalCost)}\n`,
   );
 
   if (unknownCount > 0) {

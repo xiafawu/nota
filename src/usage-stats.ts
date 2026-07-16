@@ -22,6 +22,9 @@ export interface ModelSummaryRow {
   tokensOut: number;
   costUSD: number;
   hasUnknown: boolean;
+  /** True when any contribution to this row was estimated (e.g. legacy
+   *  duration×rate reclamation) rather than API-reported. Display as `~`. */
+  hasEstimated: boolean;
 }
 
 /** One row in the per-run log. */
@@ -79,12 +82,13 @@ export function perModelSummary(
         estimated: true,
       });
 
-      // Legacy transcription
+      // Legacy transcription — reclaimed via duration×rate, so estimated
       incrementRow(rows, transcriptionModel, record.provider, {
         runs: 1,
         calls: 1,
         costUSD: transcriptionCost ?? 0,
         hasUnknown: transcriptionCost === null,
+        hasEstimated: transcriptionCost !== null,
       });
 
       // Legacy summary — cost unknown
@@ -93,6 +97,7 @@ export function perModelSummary(
         calls: 0,
         costUSD: 0,
         hasUnknown: true,
+        hasEstimated: false,
       });
 
       continue;
@@ -111,6 +116,7 @@ export function perModelSummary(
         calls: u.calls,
         costUSD: u.costUSD ?? 0,
         hasUnknown: u.costUSD === null,
+        hasEstimated: u.estimated && u.costUSD !== null,
         tokensIn: u.tokensIn ?? 0,
         tokensOut: u.tokensOut ?? 0,
       });
@@ -126,6 +132,7 @@ interface IncrementOpts {
   calls: number;
   costUSD: number;
   hasUnknown: boolean;
+  hasEstimated: boolean;
   tokensIn?: number;
   tokensOut?: number;
 }
@@ -145,6 +152,7 @@ function incrementRow(
     existing.tokensOut += opts.tokensOut ?? 0;
     existing.costUSD += opts.costUSD;
     if (opts.hasUnknown) existing.hasUnknown = true;
+    if (opts.hasEstimated) existing.hasEstimated = true;
   } else {
     rows.set(key, {
       modelId,
@@ -155,6 +163,7 @@ function incrementRow(
       tokensOut: opts.tokensOut ?? 0,
       costUSD: opts.costUSD,
       hasUnknown: opts.hasUnknown,
+      hasEstimated: opts.hasEstimated,
     });
   }
 }

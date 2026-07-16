@@ -105,6 +105,29 @@ describe("usageSummary", () => {
     expect(stderr.join("")).toContain("No usage data found.");
   });
 
+  it("marks estimated costs with ~", async () => {
+    writeRecord(
+      recordWithUsage("r-est", [
+        {
+          modelId: "universal",
+          task: "transcription",
+          provider: "assemblyai",
+          calls: 1,
+          durationMin: 40,
+          costUSD: 0.1,
+          estimated: true,
+        },
+      ]),
+    );
+
+    await usageSummary(undefined, dir);
+
+    const outText = stdout.join("");
+    expect(outText).toContain("universal\tassemblyai\t1\t1\t0\t0\t~$0.10");
+    // estimated dollars propagate to the total marker too
+    expect(stderr.join("")).toContain("~$0.10");
+  });
+
   it("renders mixed known and unknown costs", async () => {
     // r1: known cost
     writeRecord(
@@ -139,9 +162,11 @@ describe("usageSummary", () => {
 
     await usageSummary(undefined, dir);
 
-    // stdout: data row has ~$0.03 (partial known cost with unknown entries)
+    // stdout: known cost renders plain — `~` is reserved for ESTIMATED dollars;
+    // the unknown entry contributes nothing to the number, and unknown-ness is
+    // reported via the stderr "runs have unknown cost" note instead.
     const outText = stdout.join("");
-    expect(outText).toContain("gpt-4o\tassemblyai\t2\t3\t250\t125\t~$0.03");
+    expect(outText).toContain("gpt-4o\tassemblyai\t2\t3\t250\t125\t$0.03");
 
     // stderr: header + totals
     const errText = stderr.join("");
