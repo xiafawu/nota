@@ -25,27 +25,40 @@ struct PreflightHomeView: View {
   let result: PreflightResult?
   let isChecking: Bool
   let onRefresh: () -> Void
+  /// True when hosted inside another scroll container (the dashboard home).
+  /// Nesting two vertical ScrollViews clips the inner content under the
+  /// window toolbar, so embedded mode renders the bare section and leaves
+  /// scrolling and padding to the host.
+  var embedded: Bool = false
 
   @State private var passingExpanded = false
 
   var body: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: 16) {
-        header
-        if let result {
-          ForEach(result.attention) { check in
-            AttentionRow(check: check)
-          }
-          if !result.passing.isEmpty {
-            passingFold(result.passing)
-          }
-        } else {
-          placeholder
-        }
+    if embedded {
+      sections
+    } else {
+      ScrollView {
+        sections
+          .padding(24)
+          .frame(maxWidth: 620, alignment: .leading)
+          .frame(maxWidth: .infinity)
       }
-      .padding(24)
-      .frame(maxWidth: 620, alignment: .leading)
-      .frame(maxWidth: .infinity)
+    }
+  }
+
+  private var sections: some View {
+    VStack(alignment: .leading, spacing: 16) {
+      header
+      if let result {
+        ForEach(result.attention) { check in
+          AttentionRow(check: check)
+        }
+        if !result.passing.isEmpty {
+          passingFold(result.passing)
+        }
+      } else {
+        placeholder
+      }
     }
   }
 

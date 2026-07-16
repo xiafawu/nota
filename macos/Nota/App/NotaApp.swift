@@ -95,7 +95,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   /// instances would each inject text on every dictation. Set
   /// NOTA_ALLOW_MULTI=1 to bypass for debugging.
   private func enforceSingleInstance() {
-    guard ProcessInfo.processInfo.environment["NOTA_ALLOW_MULTI"] != "1",
+    // Never enforce inside a unit-test host: xcodebuild launches this app as
+    // the test harness while the deployed copy may be running — terminating
+    // here kills the runner before it connects ("early unexpected exit").
+    let env = ProcessInfo.processInfo.environment
+    guard env["XCTestConfigurationFilePath"] == nil,
+          env["XCTestBundlePath"] == nil,
+          env["NOTA_ALLOW_MULTI"] != "1",
           let bundleID = Bundle.main.bundleIdentifier else { return }
 
     let others = NSRunningApplication.runningApplications(withBundleIdentifier: bundleID)

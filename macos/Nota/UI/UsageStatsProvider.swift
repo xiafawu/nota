@@ -169,7 +169,10 @@ struct CostCardViewModel: Equatable {
 
   /// Headline: sum of all costUSD. Prefix with ~ when any row hasEstimated.
   /// Unknown runs: footnote "N runs unknown cost" when any hasUnknown.
-  /// Top 5 by costUSD, remaining count.
+  /// Top 5 by costUSD, remaining count. Rows whose cost is entirely unknown
+  /// (hasUnknown with $0) are excluded from the top list — they carry no
+  /// dollar information and rendering them as $0 would violate the T5 rule
+  /// that unknown never displays as zero; the footnote already counts them.
   init(rows: [ModelUsageRow], window: String) {
     let totalCost = rows.reduce(0) { $0 + $1.costUSD }
     let anyEstimated = rows.contains(where: \.hasEstimated)
@@ -180,9 +183,20 @@ struct CostCardViewModel: Equatable {
     hasEstimated = anyEstimated
     unknownNote = unknownRuns > 0 ? "\(unknownRuns) run\(unknownRuns == 1 ? "" : "s") unknown cost" : nil
 
-    let sorted = rows.sorted { $0.costUSD > $1.costUSD }
+    let knownRows = rows.filter { !($0.hasUnknown && $0.costUSD == 0) }
+    let sorted = knownRows.sorted { $0.costUSD > $1.costUSD }
     topModels = Array(sorted.prefix(5))
     totalModelCount = rows.count
+  }
+
+  /// USD formatting shared with the CLI's formatCost: two decimals, but four
+  /// for sub-cent values so tiny costs don't render as $0.00.
+  static func formatUSD(_ usd: Double) -> String {
+    if usd < 0 { return "$0.00" }
+    if usd > 0 && usd < 0.01 {
+      return "$" + String(format: "%.4f", usd)
+    }
+    return "$" + String(format: "%.2f", usd)
   }
 }
 
