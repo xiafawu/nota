@@ -13,12 +13,14 @@ enum ModelProvider: String {
   case assemblyai
   case openai
   case gemini
+  case deepseek
 
   var displayName: String {
     switch self {
     case .assemblyai: return "AssemblyAI"
     case .openai: return "OpenAI"
     case .gemini: return "Gemini"
+    case .deepseek: return "DeepSeek"
     }
   }
 
@@ -28,6 +30,7 @@ enum ModelProvider: String {
     case .assemblyai: return "ASSEMBLYAI_API_KEY"
     case .openai: return "OPENAI_API_KEY"
     case .gemini: return "GEMINI_API_KEY"
+    case .deepseek: return "DEEPSEEK_API_KEY"
     }
   }
 }
@@ -58,6 +61,8 @@ enum ModelRegistry {
     ModelEntry(id: "gpt-4.1", task: .summary, provider: .openai, label: "GPT-4.1 (OpenAI)"),
     ModelEntry(id: "gemini-2.5-flash", task: .summary, provider: .gemini, label: "Gemini 2.5 Flash (Google)"),
     ModelEntry(id: "gemini-2.5-pro", task: .summary, provider: .gemini, label: "Gemini 2.5 Pro (Google)"),
+    ModelEntry(id: "deepseek-v4-flash", task: .summary, provider: .deepseek, label: "DeepSeek V4 Flash (DeepSeek)"),
+    ModelEntry(id: "deepseek-v4-pro", task: .summary, provider: .deepseek, label: "DeepSeek V4 Pro (DeepSeek)"),
   ]
 
   static func models(for task: ModelTask) -> [ModelEntry] {

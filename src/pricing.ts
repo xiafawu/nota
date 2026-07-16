@@ -50,6 +50,10 @@ export const PRICING: PricingSnapshot = {
       tierOutputPer1M: 15.00,
       tierThreshold: 200_000,
     },
+    // DeepSeek rates verified 2026-07-15 (cache-miss input rate; we don't
+    // model prompt caching, so this over- rather than under-states cost).
+    "deepseek-v4-flash": { inputPer1M: 0.14, outputPer1M: 0.28 },
+    "deepseek-v4-pro":   { inputPer1M: 0.435, outputPer1M: 0.87 },
     // ── Transcription models (per minute) ──
     "universal":             { ratePerMin: 0.15 / 60 }, // $0.15/hr
     "whisper-1":             { ratePerMin: 0.006 },

@@ -15,7 +15,7 @@
  */
 
 export type ModelTask = "transcription" | "summary";
-export type ModelProvider = "assemblyai" | "openai" | "gemini";
+export type ModelProvider = "assemblyai" | "openai" | "gemini" | "deepseek";
 
 export interface ModelEntry {
   /** Canonical model id (what callers pass and what we persist). */
@@ -39,10 +39,23 @@ export interface ModelEntry {
 export const GEMINI_OPENAI_BASE_URL =
   "https://generativelanguage.googleapis.com/v1beta/openai/";
 
+/**
+ * DeepSeek's API is OpenAI-compatible at this base URL.
+ * See https://api-docs.deepseek.com
+ */
+export const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
+
 const API_KEY_ENV: Record<ModelProvider, string> = {
   assemblyai: "ASSEMBLYAI_API_KEY",
   openai: "OPENAI_API_KEY",
   gemini: "GEMINI_API_KEY",
+  deepseek: "DEEPSEEK_API_KEY",
+};
+
+/** OpenAI-compatible base URL per provider, where one is needed. */
+const BASE_URL: Partial<Record<ModelProvider, string>> = {
+  gemini: GEMINI_OPENAI_BASE_URL,
+  deepseek: DEEPSEEK_BASE_URL,
 };
 
 /** Built-in defaults used when neither a CLI flag nor settings.json applies. */
@@ -61,7 +74,7 @@ function entry(
     provider,
     apiKeyEnv: API_KEY_ENV[provider],
     label,
-    baseURL: provider === "gemini" ? GEMINI_OPENAI_BASE_URL : undefined,
+    baseURL: BASE_URL[provider],
   };
 }
 
@@ -90,6 +103,11 @@ export const MODELS: readonly ModelEntry[] = [
   entry("gpt-4.1", "summary", "openai", "GPT-4.1 (OpenAI)"),
   entry("gemini-2.5-flash", "summary", "gemini", "Gemini 2.5 Flash (Google)"),
   entry("gemini-2.5-pro", "summary", "gemini", "Gemini 2.5 Pro (Google)"),
+  // DeepSeek: current model ids as of 2026-07 — the older `deepseek-chat` /
+  // `deepseek-reasoner` aliases are deprecated by DeepSeek on 2026-07-24, so
+  // they are intentionally not registered.
+  entry("deepseek-v4-flash", "summary", "deepseek", "DeepSeek V4 Flash (DeepSeek)"),
+  entry("deepseek-v4-pro", "summary", "deepseek", "DeepSeek V4 Pro (DeepSeek)"),
 ];
 
 const BY_ID = new Map(MODELS.map((m) => [m.id, m]));

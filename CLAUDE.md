@@ -106,7 +106,7 @@ are warned about on stderr and ignored.
 
 Valid model ids (from `src/registry.ts`):
 - Transcription: `universal`, `slam-1`, `nano` (AssemblyAI); `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` (OpenAI)
-- Summary: `gpt-5-mini`, `gpt-5`, `gpt-4o`, `gpt-4.1` (OpenAI); `gemini-2.5-flash`, `gemini-2.5-pro` (Gemini)
+- Summary: `gpt-5-mini`, `gpt-5`, `gpt-4o`, `gpt-4.1` (OpenAI); `gemini-2.5-flash`, `gemini-2.5-pro` (Gemini); `deepseek-v4-flash`, `deepseek-v4-pro` (DeepSeek)
 
 The macOS Settings window (Cmd+,) exposes the same pickers plus masked API-key
 management; it mirrors the registry in `macos/Nota/App/ModelRegistry.swift`.
@@ -133,6 +133,7 @@ management; it mirrors the registry in `macos/Nota/App/ModelRegistry.swift`.
 - Environment variable: `OPENAI_API_KEY` — required only when a resolved model is an OpenAI model (any `gpt-*`/`whisper-1` transcription or summary model). Not needed for, e.g., AssemblyAI transcription + Gemini summary.
 - Environment variable: `ASSEMBLYAI_API_KEY` — required when the resolved transcription model is an AssemblyAI model (`universal`/`slam-1`/`nano`, the default)
 - Environment variable: `GEMINI_API_KEY` — required when the resolved summary model is a Gemini model
+- Environment variable: `DEEPSEEK_API_KEY` — required when the resolved summary model is a DeepSeek model (`deepseek-v4-flash`/`deepseek-v4-pro`, reached via DeepSeek's OpenAI-compatible endpoint)
 - Speaker identity (`--identify` and `nota enroll`) needs no API key or Python. It uses `onnxruntime-node` and auto-downloads its checksum-pinned ONNX model on first use.
 - For `--provider whisper` with diarization only: Python 3.8+ with `pyannote.audio`, plus `HUGGINGFACE_TOKEN` (pyannote is not used for speaker identity)
 
