@@ -39,15 +39,32 @@ final class DictationHUDPanel: NSPanel {
 
     isOpaque = false
     backgroundColor = .clear
-    hasShadow = true
+    // Window shadow is a tight dark ring that reads as a cheap border. Drop it
+    // and draw a soft, diffuse shadow on a non-clipping container instead.
+    hasShadow = false
     level = .statusBar
     collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
     ignoresMouseEvents = true
     hidesOnDeactivate = false
     isFloatingPanel = true
 
-    contentView = glassView
+    let container = NSView(frame: rect)
+    container.wantsLayer = true
+    container.layer?.masksToBounds = false
+    if let layer = container.layer {
+      layer.shadowColor = NSColor.black.cgColor
+      layer.shadowOpacity = 0.18
+      layer.shadowRadius = 12
+      layer.shadowOffset = CGSize(width: 0, height: -4)
+    }
+    glassView.frame = container.bounds
+    glassView.autoresizingMask = [.width, .height]
+    container.addSubview(glassView)
+    self.shadowContainer = container
+    contentView = container
   }
+
+  private var shadowContainer: NSView?
 
   /// Update the HUD content and resize the panel to fit. Size changes are
   /// animated (center-anchored) so state swaps glide instead of snapping.
@@ -60,6 +77,12 @@ final class DictationHUDPanel: NSPanel {
     // warning/error states; glyphs carry the saturated color.
     glassView.cornerRadius = size.height / 2
     glassView.tintColor = Self.tint(for: state)
+
+    // Soft shadow silhouette follows the capsule.
+    shadowContainer?.layer?.shadowPath = CGPath(
+      roundedRect: CGRect(origin: .zero, size: size),
+      cornerWidth: size.height / 2, cornerHeight: size.height / 2, transform: nil
+    )
 
     var frame = self.frame
     guard size != frame.size else { return }
@@ -166,16 +189,14 @@ struct DictationHUDContentView: View {
       content
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
-        // Launcher-style restraint (Raycast / VS Code command bar): a bright
-        // adaptive wash inside the glass lifts the interior and absorbs the
-        // glass's dark lens rim; the only drawn optic is a hairline. Anything
-        // heavier reads as a cheap painted border.
-        .background {
-          Capsule().fill(.background.opacity(0.55))
-        }
+        // Transparent glass is the panel's NSGlassEffectView (.clear, adaptive).
+        // The only drawn optic is a single crisp hairline at the capsule edge,
+        // matching the macOS launcher/command-bar look — no fill (kills
+        // see-through), no gradient rim (reads as a thick cheap border).
         .overlay {
           Capsule()
-            .strokeBorder(Color.primary.opacity(0.08), lineWidth: 0.5)
+            .strokeBorder(Color.white.opacity(0.5), lineWidth: 0.5)
+            .blendMode(.overlay)
         }
         .contentTransition(.opacity)
         .animation(.easeOut(duration: 0.18), value: state)
