@@ -11,10 +11,19 @@ import SwiftUI
 @MainActor
 final class DictationHUDPanel: NSPanel {
   private let hostingView: NSHostingView<DictationHUDContentView>
+  /// Real Liquid Glass for a floating window: SwiftUI's `glassEffect` inside
+  /// an `NSHostingView` can only refract sibling SwiftUI content, and a
+  /// transparent panel has none — it degrades to a flat blur. AppKit's
+  /// `NSGlassEffectView` composites glass against whatever is behind the
+  /// WINDOW (desktop, other apps), which is the actual Liquid Glass look.
+  private let glassView: NSGlassEffectView
 
   init() {
     hostingView = NSHostingView(rootView: DictationHUDContentView(state: .hidden))
     hostingView.translatesAutoresizingMaskIntoConstraints = false
+
+    glassView = NSGlassEffectView()
+    glassView.contentView = hostingView
 
     let rect = NSRect(x: 0, y: 0, width: 200, height: 48)
     super.init(
@@ -33,7 +42,7 @@ final class DictationHUDPanel: NSPanel {
     hidesOnDeactivate = false
     isFloatingPanel = true
 
-    contentView = hostingView
+    contentView = glassView
   }
 
   /// Update the HUD content and resize the panel to fit. Size changes are
@@ -42,6 +51,12 @@ final class DictationHUDPanel: NSPanel {
     hostingView.rootView = DictationHUDContentView(state: state)
     hostingView.setFrameSize(hostingView.fittingSize)
     let size = hostingView.fittingSize
+
+    // Capsule: full-height rounding. Tint the glass itself for
+    // warning/error states; glyphs carry the saturated color.
+    glassView.cornerRadius = size.height / 2
+    glassView.tintColor = Self.tint(for: state)
+
     var frame = self.frame
     guard size != frame.size else { return }
     frame.origin.x -= (size.width - frame.size.width) / 2
@@ -55,6 +70,14 @@ final class DictationHUDPanel: NSPanel {
       }
     } else {
       setFrame(frame, display: true)
+    }
+  }
+
+  private static func tint(for state: HUDState) -> NSColor? {
+    switch state {
+    case .error: return NSColor.systemRed.withAlphaComponent(0.35)
+    case .warning: return NSColor.systemOrange.withAlphaComponent(0.3)
+    default: return nil
     }
   }
 
@@ -130,26 +153,17 @@ struct DictationHUDContentView: View {
   let state: HUDState
 
   var body: some View {
+    // Glass lives on the panel's NSGlassEffectView (see DictationHUDPanel);
+    // the SwiftUI layer is content-only so the glass refracts the desktop
+    // behind the window instead of an empty hierarchy.
     if case .hidden = state {
       Color.clear.frame(width: 0, height: 0)
     } else {
       content
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
-        .liquidGlass(glass, in: Capsule())
         .contentTransition(.opacity)
         .animation(.easeOut(duration: 0.18), value: state)
-    }
-  }
-
-  /// One shared Liquid Glass capsule for every state; error/warning states
-  /// tint the glass itself (HIG: tint the material, don't paint a color
-  /// behind it) while the glyph carries the saturated semantic color.
-  private var glass: Glass {
-    switch state {
-    case .error: return .regular.tint(.red.opacity(0.35))
-    case .warning: return .regular.tint(.orange.opacity(0.3))
-    default: return .regular
     }
   }
 
