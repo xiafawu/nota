@@ -23,6 +23,10 @@ final class DictationHUDPanel: NSPanel {
     hostingView.translatesAutoresizingMaskIntoConstraints = false
 
     glassView = NSGlassEffectView()
+    // .clear is the visibly-glassy variant (transparent, strong lensing);
+    // .regular renders as a frosted plate that reads as plain blur over
+    // typical light backdrops.
+    glassView.style = .clear
     glassView.contentView = hostingView
 
     let rect = NSRect(x: 0, y: 0, width: 200, height: 48)
