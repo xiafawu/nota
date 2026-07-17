@@ -166,6 +166,36 @@ struct DictationHUDContentView: View {
       content
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
+        // Hand-built optics over the glass: NSGlassEffectView transmits the
+        // backdrop but renders no specular highlights at HUD size — the
+        // bright top rim + sheen is what makes Apple's own OSDs read as
+        // "glass" rather than tinted blur.
+        .overlay(alignment: .top) {
+          Capsule()
+            .fill(
+              LinearGradient(
+                colors: [.white.opacity(0.28), .clear],
+                startPoint: .top, endPoint: .center
+              )
+            )
+            .blendMode(.plusLighter)
+            .padding(1)
+        }
+        .overlay {
+          Capsule()
+            .strokeBorder(
+              LinearGradient(
+                stops: [
+                  .init(color: .white.opacity(0.65), location: 0),
+                  .init(color: .white.opacity(0.15), location: 0.3),
+                  .init(color: .white.opacity(0.05), location: 0.6),
+                  .init(color: .white.opacity(0.3), location: 1),
+                ],
+                startPoint: .top, endPoint: .bottom
+              ),
+              lineWidth: 1
+            )
+        }
         .contentTransition(.opacity)
         .animation(.easeOut(duration: 0.18), value: state)
     }
