@@ -66,4 +66,26 @@ enum Metrics {
   static let tagTopPadding: CGFloat = 4
   static let tagToggleIconSpacing: CGFloat = 2
   static let maxVisibleTags: Int = 3
+
+  // One card vocabulary on the home surface: section cards vs. row elements.
+  static let cardCornerRadius: CGFloat = 12
+  static let rowCornerRadius: CGFloat = 8
+  static let cardPadding: CGFloat = 16
+  /// Fixed height the cost card keeps while loading/errored, so the section
+  /// doesn't jump when the loaded card replaces the skeleton.
+  static let costSkeletonHeight: CGFloat = 96
+
+  static let speakerDotSize: CGFloat = 6
+  static let speakerPopoverFieldWidth: CGFloat = 180
+
+  // Document header collapse + body top fade.
+  static let docBodyTopFadeHeight: CGFloat = 28
+  static let docHeaderCompactThreshold: CGFloat = 4
+  static let docHeaderCompactVerticalPadding: CGFloat = 8
+
+  // Staged run progress (validate → transcribe → summarize → write).
+  static let stageRowSpacing: CGFloat = 16
+  static let stageItemSpacing: CGFloat = 5
+  static let stageIndicatorSize: CGFloat = 13
+  static let mainSwapRise: CGFloat = 8
 }

@@ -15,21 +15,89 @@ struct ContentView: View {
     _usageProvider = StateObject(wrappedValue: UsageStatsProvider(projectDirectory: projectDir))
   }
 
-  private var toolbarStatusPillState: ToolbarStatusPillState? {
-    guard model.isRunning || model.status != "Drop audio to transcribe" else {
-      return nil
-    }
-    let text = model.isRunning && !model.phase.isEmpty ? model.phase : model.status
-    return ToolbarStatusPillState(isRunning: model.isRunning, text: text)
+  private enum Phase {
+    case document, running, home
   }
 
+  private var phase: Phase {
+    if model.hasContent { return .document }
+    if model.isRunning { return .running }
+    return .home
+  }
+
+  /// Transient run status only: the pill never persists into the completed
+  /// document view (the header carries the title there).
+  private var toolbarStatusPillState: ToolbarStatusPillState? {
+    guard model.isRunning else { return nil }
+    let text = model.phase.isEmpty ? model.status : model.phase
+    return ToolbarStatusPillState(isRunning: true, text: text)
+  }
+
+  /// Home/document swap matches the HUD show motion: fade + 8pt rise in,
+  /// plain fade out.
+  private static let swapTransition: AnyTransition = .asymmetric(
+    insertion: .opacity.combined(with: .offset(y: Metrics.mainSwapRise)),
+    removal: .opacity
+  )
+
   var body: some View {
-    if model.hasContent {
-      documentView
-    } else if model.isRunning {
-      runningView
-    } else {
-      homeView
+    ZStack {
+      switch phase {
+      case .document:
+        documentView.transition(Self.swapTransition)
+      case .running:
+        runningView.transition(Self.swapTransition)
+      case .home:
+        homeView.transition(Self.swapTransition)
+      }
+    }
+    .animation(Tokens.animFast, value: phase)
+    // No `.toolbarBackground(.hidden)`: the bar stays borderless at rest but
+    // regains its scroll-edge material once content scrolls beneath it.
+    .toolbar { toolbarContent }
+    .navigationTitle(phase == .running ? model.displayName : "Nota")
+    .onChange(of: model.isRunning) { _, running in
+      if !running {
+        usageProvider.invalidateCache()
+      }
+    }
+  }
+
+  @ToolbarContentBuilder
+  private var toolbarContent: some ToolbarContent {
+    if phase == .document {
+      ToolbarItem(placement: .navigation) {
+        Button {
+          model.newTranscription()
+        } label: {
+          Label("Home", systemImage: "chevron.left")
+        }
+        .help("Back to home")
+      }
+    }
+
+    ToolbarItemGroup(placement: .status) {
+      if let pillState = toolbarStatusPillState {
+        ToolbarStatusPill(state: pillState)
+      }
+    }
+
+    ToolbarItem(placement: .primaryAction) {
+      switch phase {
+      case .document:
+        if !model.markdown.isEmpty || model.lastOutputURL != nil {
+          ShareMenu(model: model)
+        }
+      case .home:
+        Button {
+          model.newTranscription()
+        } label: {
+          Label("New Transcription", systemImage: "plus")
+        }
+        .help("Start a new transcription")
+      case .running:
+        EmptyView()
+      }
     }
   }
 
@@ -47,34 +115,6 @@ struct ContentView: View {
       onRename: { label, newName in model.renameChip(label: label, newName: newName) },
       onRefreshPreflight: { model.runPreflight(refresh: true) }
     )
-    .toolbar {
-      ToolbarItem(placement: .navigation) {
-        Button {
-          model.newTranscription()
-        } label: {
-          Label("Home", systemImage: "chevron.left")
-        }
-        .help("Back to home")
-      }
-
-      ToolbarItemGroup(placement: .status) {
-        if let pillState = toolbarStatusPillState {
-          ToolbarStatusPill(state: pillState)
-        }
-      }
-
-      ToolbarItem(placement: .primaryAction) {
-        if !model.markdown.isEmpty || model.lastOutputURL != nil {
-          ShareMenu(model: model)
-        }
-      }
-    }
-    .toolbarBackground(.hidden, for: .windowToolbar)
-    .onChange(of: model.isRunning) { _, running in
-      if !running {
-        usageProvider.invalidateCache()
-      }
-    }
   }
 
   // MARK: - Running (progress)
@@ -93,20 +133,6 @@ struct ContentView: View {
       onRename: { label, newName in model.renameChip(label: label, newName: newName) },
       onRefreshPreflight: { model.runPreflight(refresh: true) }
     )
-    .toolbar {
-      ToolbarItemGroup(placement: .status) {
-        if let pillState = toolbarStatusPillState {
-          ToolbarStatusPill(state: pillState)
-        }
-      }
-    }
-    .toolbarBackground(.hidden, for: .windowToolbar)
-    .animation(Tokens.animFast, value: model.isRunning)
-    .onChange(of: model.isRunning) { _, running in
-      if !running {
-        usageProvider.invalidateCache()
-      }
-    }
   }
 
   // MARK: - Home (dashboard)
@@ -116,23 +142,6 @@ struct ContentView: View {
       model: model,
       usageProvider: usageProvider
     )
-    .toolbar {
-      ToolbarItem(placement: .primaryAction) {
-        Button {
-          model.newTranscription()
-        } label: {
-          Label("New Transcription", systemImage: "plus")
-        }
-        .help("Start a new transcription")
-      }
-
-      ToolbarItemGroup(placement: .status) {
-        if let pillState = toolbarStatusPillState {
-          ToolbarStatusPill(state: pillState)
-        }
-      }
-    }
-    .toolbarBackground(.hidden, for: .windowToolbar)
     .onDrop(of: [UTType.fileURL.identifier], isTargeted: $model.isDropTargeted) { providers in
       guard let provider = providers.first else { return false }
       provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
@@ -149,12 +158,6 @@ struct ContentView: View {
         }
       }
       return true
-    }
-    .animation(Tokens.animFast, value: model.isRunning)
-    .onChange(of: model.isRunning) { _, running in
-      if !running {
-        usageProvider.invalidateCache()
-      }
     }
   }
 }

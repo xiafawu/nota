@@ -7,6 +7,11 @@ enum Tokens {
   static let tagPillFillOpacity: Double = 0.12
   static let dropFallbackStrokeIdleOpacity: Double = 0.2
   static let emptyIconColorOpacity: Double = 0.85
+  static let rowHoverWashOpacity: Double = 0.06
+  static let rowPressedWashOpacity: Double = 0.12
+  /// Residual opacity of body text where it dissolves under the document
+  /// header once scrolled (0 = vanish, ~0.2 = ghost).
+  static let docBodyFadeGhostOpacity: Double = 0.15
 
   static let toolbarStatusTint: Color = .secondary.opacity(toolbarStatusTintOpacity)
   static let primaryActionTint: Color = .accentColor.opacity(primaryActionTintOpacity)
@@ -29,11 +34,29 @@ enum Tokens {
   static let settingsCaptionFont: Font = .caption
 
   static let docTitleFont: Font = .title2
+  static let docTitleCompactFont: Font = .headline
   static let docSubtitleFont: Font = .subheadline
 
   static let animFast: Animation = .easeInOut(duration: 0.2)
   static let animSnap: Animation = .easeInOut(duration: 0.15)
   static let hoverFadeDuration: Double = 0.18
+}
+
+/// Distinct per-speaker identity hues: the chip dot and the transcript speaker
+/// name share one palette entry, assigned by chip order within the document.
+enum SpeakerColors {
+  static let nsPalette: [NSColor] = [
+    .systemBlue, .systemGreen, .systemOrange, .systemPurple,
+    .systemPink, .systemTeal, .systemIndigo, .systemBrown,
+  ]
+
+  static func nsColor(at index: Int) -> NSColor {
+    nsPalette[((index % nsPalette.count) + nsPalette.count) % nsPalette.count]
+  }
+
+  static func color(at index: Int) -> Color {
+    Color(nsColor: nsColor(at: index))
+  }
 }
 
 enum NSFonts {
