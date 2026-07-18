@@ -34,6 +34,7 @@ capture-compare loop an implementer without eyes lacks. Foreground.
 
 - [A1 Audit: main window](tickets/A1-audit-main-window.md) — 17 defects ([catalog](assets/A1-catalog.md)); worst: transparent toolbar lets scrolled content collide with window chrome; clusters: inconsistent card materials, inert history rows, pinned document header clipping scroll, duplicating status pill, indeterminate run progress. Dark mode/resize/live-run deferred to W1.
 - [A2 Audit: Settings window](tickets/A2-audit-settings.md) — 13 defects, none jarring ([catalog](assets/A2-catalog.md)); structurally sound (grouped Forms, native toolbar); fixes cluster on header/label duplication, fixed-height-for-all-tabs, env-var-speak + always-armed fields in API Keys, dead controls + debug telemetry in Speakers. Four tabs code-audited only → W1.
+- [A3 Audit: dictation HUD live states](tickets/A3-audit-hud.md) — 12 defects, none jarring ([catalog](assets/A3-catalog.md)); clusters: wrong positioning anchor (Nota's own windows, not the dictation target), per-tick reposition fighting animations, linear RMS meter that underdrives and freezes, stale success/warning states that can resurrect the pill. Live driving vetoed (Space safety); 5 items → W1.
 
 ## Not yet specified
 
@@ -55,7 +56,7 @@ capture-compare loop an implementer without eyes lacks. Foreground.
 |---|---|---|---|
 | [A1 Audit: main window (dashboard, document, running)](tickets/A1-audit-main-window.md) | research | closed | — |
 | [A2 Audit: Settings window](tickets/A2-audit-settings.md) | research | closed | — |
-| [A3 Audit: dictation HUD live states](tickets/A3-audit-hud.md) | research | open | — |
+| [A3 Audit: dictation HUD live states](tickets/A3-audit-hud.md) | research | closed | — |
 | [A4 Audit: menu bar + onboarding/permissions](tickets/A4-audit-menubar-onboarding.md) | research | open | — |
 | [W1 User walkthrough: feel gaps](tickets/W1-user-walkthrough.md) | task | open | A1, A2, A3, A4 |
 | [D1 Adjudicate defect catalog](tickets/D1-adjudicate-catalog.md) | grilling | open | W1 |

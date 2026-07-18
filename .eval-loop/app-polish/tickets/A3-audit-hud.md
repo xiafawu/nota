@@ -1,7 +1,7 @@
 <!-- wayfinder:research -->
 # A3 — Audit: dictation HUD live states
 
-status: open
+status: closed (resolved 2026-07-18)
 blocked-by: none (frontier)
 
 ## Question
@@ -22,3 +22,19 @@ panel, `screencapture -R` its bounds); drive non-listening states via real flows
 debug hook if one exists — do not screenshot mockups.
 
 Deliverable: `assets/A3-catalog.md`, same entry shape as A1.
+
+## Resolution
+
+12 defects in [A3-catalog.md](../assets/A3-catalog.md): 0 jarring, 6 noticeable, 6
+nitpicks. Clusters: positioning (anchors to Nota's own windows instead of the dictation
+target app; repositions on every 15fps tick with unanimated origin snaps), level meter
+(linear ×3 RMS underdrives speech; no time phase so bars freeze at steady input), and
+state lifecycle (stale success/warning fields resurrect the HUD on unrelated controller
+ticks; 1s success auto-hide unreadable against a 40-char snippet).
+
+Deviation from ticket method: live driving vetoed — no Nota window on the active Space,
+and synthetic fn would start a real mic capture / possible injection into the user's
+focused app. Evidence = code + PR #62's verified live captures (same commit as
+deployed). Five items tagged → W1 for eyes-on verification (stale-state resurrect, dark-
+on-dark separation, warning-vs-error tint, two-line capsule shape, plus the general
+live-feel pass).
