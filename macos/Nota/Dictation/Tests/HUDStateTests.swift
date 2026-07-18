@@ -198,6 +198,29 @@ final class HUDStateTests: XCTestCase {
     XCTAssertFalse(msg.isEmpty)
   }
 
+  // MARK: - Auto-hide policy
+
+  func testSuccessAutoHidesAfterTwoSeconds() {
+    XCTAssertEqual(HUDState.success(snippet: "Hello world").autoHideDelay, 2.0)
+  }
+
+  func testWarningAutoHidesAfterThreeSeconds() {
+    XCTAssertEqual(HUDState.warning(message: "Polish failed").autoHideDelay, 3.0)
+  }
+
+  func testErrorPersistsLongerThanWarning() throws {
+    let error = HUDState.error(message: "Microphone unavailable").autoHideDelay
+    let warning = HUDState.warning(message: "Polish failed").autoHideDelay
+    XCTAssertEqual(error, 6.0)
+    XCTAssertGreaterThan(try XCTUnwrap(error), try XCTUnwrap(warning))
+  }
+
+  func testListeningAndProcessingNeverAutoHide() {
+    XCTAssertNil(HUDState.listening(level: 0.4).autoHideDelay)
+    XCTAssertNil(HUDState.processing(step: "Transcribing…").autoHideDelay)
+    XCTAssertNil(HUDState.hidden.autoHideDelay)
+  }
+
   // MARK: - Equatable conformance
 
   func testListeningLevelEquality() {

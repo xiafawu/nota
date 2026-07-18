@@ -5,6 +5,22 @@ import os
 final class MicCapture: ObservableObject {
   @Published private(set) var diagnostics: CaptureDiagnostics?
   @Published private(set) var rmsLevel: Float = 0
+
+  /// Map a raw RMS sample to a 0…1 meter level.
+  ///
+  /// Perceptual dB transfer (`20·log10`, −50 dB floor, normalized) instead of
+  /// a linear scale: conversational speech (RMS ~0.05–0.2) lands mid-meter
+  /// and whispers still register. A fast-attack / slow-release envelope
+  /// against the previous level makes peaks hit instantly and decay smoothly.
+  static func meterLevel(rms: Float, previous: Float) -> Float {
+    let floorDB: Float = -50
+    let db = 20 * log10(max(rms, .leastNormalMagnitude))
+    let normalized = min(max((db - floorDB) / -floorDB, 0), 1)
+    let attack: Float = 0.7
+    let release: Float = 0.15
+    let alpha = normalized > previous ? attack : release
+    return previous + alpha * (normalized - previous)
+  }
   var onPCMBuffer: ((AVAudioPCMBuffer) -> Void)?
 
   private let audioEngine = AVAudioEngine()
@@ -144,8 +160,7 @@ final class MicCapture: ObservableObject {
           sumSq += s * s
         }
         let rms = sqrt(sumSq / Float(samples.count))
-        // Scale for visual sensitivity: typical speech RMS is ~0.01-0.1
-        self.rmsLevel = min(rms * 3.0, 1.0)
+        self.rmsLevel = Self.meterLevel(rms: rms, previous: self.rmsLevel)
       }
 
       self.onPCMBuffer?(outputBuffer)

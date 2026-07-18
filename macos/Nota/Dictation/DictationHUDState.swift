@@ -19,12 +19,28 @@ enum HUDState: Equatable {
 }
 
 extension HUDState {
+  /// Seconds the HUD stays visible before auto-hiding, or nil to persist.
+  /// Success lingers long enough to read the snippet; fatal errors outlast
+  /// warnings so the user can act on them.
+  var autoHideDelay: TimeInterval? {
+    switch self {
+    case .success: return 2.0
+    case .warning: return 3.0
+    case .error: return 6.0
+    case .hidden, .listening, .processing: return nil
+    }
+  }
+
   /// Compute the HUD visual state from the current controller snapshot.
   ///
   /// Warning precedence:
-  ///   1. `lastPolishWarning` (stale until next session clears it)
-  ///   2. `lastSecureFieldNotice` (stale until next injection)
-  ///   3. `lastProcessedText` → success snippet (auto-hide after ~1s)
+  ///   1. `lastPolishWarning`
+  ///   2. `lastSecureFieldNotice`
+  ///   3. `lastProcessedText` → success snippet
+  ///
+  /// The controller fields stay set while idle; `DictationHUDController`
+  /// marks the shown state consumed when its auto-hide fires so a later
+  /// unrelated update cannot resurrect a stale notice.
   static func compute(
     controllerState: DictationState,
     isPolishInProgress: Bool,

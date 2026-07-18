@@ -1,4 +1,5 @@
 import AppKit
+import ApplicationServices
 import SwiftUI
 
 // MARK: - DictationHUDPanel
@@ -62,37 +63,99 @@ final class DictationHUDPanel: NSPanel {
     }
   }
 
-  /// Position the panel centered below the frontmost window.
-  /// Falls back to the main screen center when no window is available.
-  func reposition(belowFrontmostWindow: Bool = true) {
-    guard let screen = (belowFrontmostWindow ? NSApp.keyWindow?.screen : nil)
-            ?? NSApp.mainWindow?.screen
-            ?? NSScreen.main
+  /// Position the pill under the focused window of the frontmost app — the
+  /// app being dictated into, never Nota's own windows. Falls back to
+  /// bottom-center of the active screen (the anchor window's screen, else
+  /// the cursor's, else the main screen).
+  ///
+  /// All math is done on the *pill* rect (window frame inset by
+  /// `shadowMargin`) — the window frame includes the transparent shadow
+  /// margin, so treating frame edges as pill edges renders every gap 24pt
+  /// too large.
+  func reposition() {
+    let margin = DictationHUDContentView.shadowMargin
+    let pillSize = NSSize(
+      width: max(frame.width - margin * 2, 0),
+      height: max(frame.height - margin * 2, 0)
+    )
+
+    let anchorFrame = Self.frontmostAppFocusedWindowFrame()
+    guard let screen = anchorFrame.flatMap({ anchor in
+      NSScreen.screens.first { $0.frame.intersects(anchor) }
+    })
+      ?? NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) })
+      ?? NSScreen.main
     else { return }
-
     let screenFrame = screen.visibleFrame
-    let panelSize = frame.size
 
-    // Position: centered horizontally, just above the dock / below the frontmost window
-    let targetWindow = NSApp.keyWindow ?? NSApp.mainWindow
-    let windowFrame = targetWindow?.frame
+    let pillCenterX: CGFloat
+    let pillOriginY: CGFloat
 
-    let centerX: CGFloat
-    let originY: CGFloat
-
-    if let windowFrame {
-      centerX = windowFrame.midX
-      // Place 12pt below the window's bottom edge, or above the dock
-      originY = min(windowFrame.minY - panelSize.height - 12, screenFrame.maxY - panelSize.height - 8)
+    if let anchorFrame {
+      pillCenterX = anchorFrame.midX
+      // Pill top edge 12pt below the anchor window's bottom edge.
+      pillOriginY = anchorFrame.minY - 12 - pillSize.height
     } else {
-      centerX = screenFrame.midX
-      originY = screenFrame.minY + 60
+      pillCenterX = screenFrame.midX
+      pillOriginY = screenFrame.minY + 60
     }
 
-    let x = max(screenFrame.minX + 8, min(centerX - panelSize.width / 2, screenFrame.maxX - panelSize.width - 8))
-    let y = max(screenFrame.minY + 8, originY)
+    // Clamp the pill 8pt inside the visible screen, then convert back to a
+    // window-frame origin by re-adding the shadow margin.
+    let pillX = max(
+      screenFrame.minX + 8,
+      min(pillCenterX - pillSize.width / 2, screenFrame.maxX - pillSize.width - 8)
+    )
+    let pillY = max(
+      screenFrame.minY + 8,
+      min(pillOriginY, screenFrame.maxY - pillSize.height - 8)
+    )
 
-    setFrameOrigin(NSPoint(x: x, y: y))
+    setFrameOrigin(NSPoint(x: pillX - margin, y: pillY - margin))
+  }
+
+  /// Frame (Cocoa coordinates) of the focused window of the frontmost app,
+  /// via the Accessibility API. Returns nil when the frontmost app is Nota
+  /// itself or the window can't be read (no AX grant, no focused window).
+  private static func frontmostAppFocusedWindowFrame() -> NSRect? {
+    guard let app = NSWorkspace.shared.frontmostApplication,
+          app.processIdentifier != ProcessInfo.processInfo.processIdentifier
+    else { return nil }
+
+    let axApp = AXUIElementCreateApplication(app.processIdentifier)
+    var focusedRef: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(
+      axApp, kAXFocusedWindowAttribute as CFString, &focusedRef
+    ) == .success,
+      let focused = focusedRef,
+      CFGetTypeID(focused) == AXUIElementGetTypeID()
+    else { return nil }
+    let axWindow = focused as! AXUIElement
+
+    var positionRef: CFTypeRef?
+    var sizeRef: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(
+      axWindow, kAXPositionAttribute as CFString, &positionRef
+    ) == .success,
+      AXUIElementCopyAttributeValue(
+        axWindow, kAXSizeAttribute as CFString, &sizeRef
+      ) == .success,
+      let positionValue = positionRef, CFGetTypeID(positionValue) == AXValueGetTypeID(),
+      let sizeValue = sizeRef, CFGetTypeID(sizeValue) == AXValueGetTypeID()
+    else { return nil }
+
+    var topLeft = CGPoint.zero
+    var size = CGSize.zero
+    guard AXValueGetValue(positionValue as! AXValue, .cgPoint, &topLeft),
+          AXValueGetValue(sizeValue as! AXValue, .cgSize, &size),
+          size.width > 0, size.height > 0
+    else { return nil }
+
+    // AX positions are top-left-origin (y down from the primary screen's
+    // top); Cocoa is bottom-left-origin. Flip via the primary screen height.
+    guard let primary = NSScreen.screens.first else { return nil }
+    let cocoaY = primary.frame.maxY - topLeft.y - size.height
+    return NSRect(x: topLeft.x, y: cocoaY, width: size.width, height: size.height)
   }
 
   func show() {
@@ -147,15 +210,15 @@ struct DictationHUDContentView: View {
         .padding(.vertical, 12)
         .background {
           ZStack {
-            Capsule().fill(Color(white: 0.09).opacity(0.9))
+            pillShape.fill(Color(white: 0.09).opacity(0.9))
             if let tint = stateTint {
-              Capsule().fill(tint)
+              pillShape.fill(tint)
             }
           }
         }
         .overlay {
-          Capsule()
-            .strokeBorder(Color.white.opacity(0.16), lineWidth: 0.5)
+          pillShape
+            .strokeBorder(strokeColor, lineWidth: 0.5)
         }
         .environment(\.colorScheme, .dark)
         .shadow(color: .black.opacity(0.24), radius: 10, y: 3)
@@ -171,13 +234,36 @@ struct DictationHUDContentView: View {
   /// Transparent margin around the pill reserved for its drop shadow.
   static let shadowMargin: CGFloat = 24
 
+  /// Warning/error messages allow two lines; a Capsule's end-caps grow with
+  /// height and a two-line pill stretches into a lozenge. A fixed continuous
+  /// corner matches the capsule at single-line height but caps the growth.
+  private var pillShape: HUDPillShape {
+    switch state {
+    case .warning, .error:
+      return HUDPillShape(cappedCornerRadius: 20)
+    default:
+      return HUDPillShape(cappedCornerRadius: nil)
+    }
+  }
+
   /// Warning/error wash blended over the dark body; glyphs keep the
-  /// saturated semantic color.
+  /// saturated semantic color. Error reads clearly stronger than warning so
+  /// the tint carries the semantic at a glance, not the glyph alone.
   private var stateTint: Color? {
     switch state {
-    case .error: return .red.opacity(0.28)
-    case .warning: return .orange.opacity(0.24)
+    case .error: return .red.opacity(0.32)
+    case .warning: return .orange.opacity(0.2)
     default: return nil
+    }
+  }
+
+  /// Hairline carries the pill's separation on dark backgrounds; warning and
+  /// error tint it with their semantic color to reinforce the wash.
+  private var strokeColor: Color {
+    switch state {
+    case .error: return .red.opacity(0.55)
+    case .warning: return .orange.opacity(0.5)
+    default: return .white.opacity(0.25)
     }
   }
 
@@ -200,6 +286,29 @@ struct DictationHUDContentView: View {
   }
 }
 
+/// The pill background: a Capsule when `cappedCornerRadius` is nil, otherwise
+/// a continuous rounded rectangle whose corner radius never exceeds the
+/// capsule's (half the height) — identical to the capsule at single-line
+/// height, but flat-sided instead of lozenge-shaped when the content wraps.
+private struct HUDPillShape: InsettableShape {
+  var cappedCornerRadius: CGFloat?
+  var insetAmount: CGFloat = 0
+
+  func path(in rect: CGRect) -> Path {
+    let rect = rect.insetBy(dx: insetAmount, dy: insetAmount)
+    guard rect.width > 0, rect.height > 0 else { return Path() }
+    guard let cappedCornerRadius else { return Capsule().path(in: rect) }
+    let radius = min(cappedCornerRadius, min(rect.width, rect.height) / 2)
+    return Path(roundedRect: rect, cornerRadius: radius, style: .continuous)
+  }
+
+  func inset(by amount: CGFloat) -> HUDPillShape {
+    var shape = self
+    shape.insetAmount += amount
+    return shape
+  }
+}
+
 // MARK: - Sub-views
 
 private struct ListeningView: View {
@@ -217,27 +326,35 @@ private struct ListeningView: View {
         .foregroundStyle(.red)
         .font(.system(size: 15, weight: .medium))
 
-      HStack(spacing: 3) {
-        ForEach(0..<Self.barCount, id: \.self) { i in
-          Capsule()
-            .fill(.primary)
-            .frame(width: 3.5, height: barHeight(for: i))
+      // The timeline phase adds a slow low-amplitude breathing so the meter
+      // never freezes at steady input — a still meter reads as dead.
+      TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
+        let phase = timeline.date.timeIntervalSinceReferenceDate
+        HStack(spacing: 3) {
+          ForEach(0..<Self.barCount, id: \.self) { i in
+            Capsule()
+              .fill(.primary)
+              .frame(width: 3.5, height: barHeight(for: i, phase: phase))
+          }
         }
+        .frame(height: 26)
+        // One spring for all bars, driven by the level: overshoot + settle is
+        // what makes the meter feel alive instead of stepped.
+        .animation(.spring(response: 0.28, dampingFraction: 0.55), value: level)
       }
-      .frame(height: 26)
-      // One spring for all bars, driven by the level: overshoot + settle is
-      // what makes the meter feel alive instead of stepped.
-      .animation(.spring(response: 0.28, dampingFraction: 0.55), value: level)
     }
   }
 
-  private func barHeight(for index: Int) -> CGFloat {
+  private func barHeight(for index: Int, phase: TimeInterval) -> CGFloat {
     let base: CGFloat = 5
     let maxH: CGFloat = 24
     // Per-bar wobble keyed to index and level so neighbors never move in
     // lockstep — lockstep is the "cheap" tell.
     let wobble = 0.72 + 0.28 * sin(Double(index) * 1.7 + Double(level) * 21)
-    let h = base + (maxH - base) * CGFloat(level) * Self.profile[index] * CGFloat(wobble)
+    // Idle breathing: neighbors offset so the swell travels across the bars.
+    let breathe = 0.05 + 0.04 * sin(phase * 2.1 + Double(index) * 0.8)
+    let drive = CGFloat(level) * Self.profile[index] * CGFloat(wobble) + CGFloat(breathe)
+    let h = base + (maxH - base) * drive
     return min(maxH, max(base, h))
   }
 }
