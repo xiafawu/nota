@@ -11,23 +11,9 @@ import SwiftUI
 @MainActor
 final class DictationHUDPanel: NSPanel {
   private let hostingView: NSHostingView<DictationHUDContentView>
-  /// Real Liquid Glass for a floating window: SwiftUI's `glassEffect` inside
-  /// an `NSHostingView` can only refract sibling SwiftUI content, and a
-  /// transparent panel has none — it degrades to a flat blur. AppKit's
-  /// `NSGlassEffectView` composites glass against whatever is behind the
-  /// WINDOW (desktop, other apps), which is the actual Liquid Glass look.
-  private let glassView: NSGlassEffectView
 
   init() {
     hostingView = NSHostingView(rootView: DictationHUDContentView(state: .hidden))
-    hostingView.translatesAutoresizingMaskIntoConstraints = false
-
-    glassView = NSGlassEffectView()
-    // .clear is the visibly-glassy variant (transparent, strong lensing);
-    // .regular renders as a frosted plate that reads as plain blur over
-    // typical light backdrops.
-    glassView.style = .clear
-    glassView.contentView = hostingView
 
     let rect = NSRect(x: 0, y: 0, width: 200, height: 48)
     super.init(
@@ -39,8 +25,10 @@ final class DictationHUDPanel: NSPanel {
 
     isOpaque = false
     backgroundColor = .clear
-    // Window shadow is a tight dark ring that reads as a cheap border. Drop it
-    // and draw a soft, diffuse shadow on a non-clipping container instead.
+    // No window shadow: a layer/window shadow can only draw INSIDE the window
+    // frame, and a pill-sized window turns it into a dark rectangle behind
+    // the capsule. The pill draws its own SwiftUI shadow inside a margin
+    // (see DictationHUDContentView.shadowMargin).
     hasShadow = false
     level = .statusBar
     collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
@@ -48,23 +36,8 @@ final class DictationHUDPanel: NSPanel {
     hidesOnDeactivate = false
     isFloatingPanel = true
 
-    let container = NSView(frame: rect)
-    container.wantsLayer = true
-    container.layer?.masksToBounds = false
-    if let layer = container.layer {
-      layer.shadowColor = NSColor.black.cgColor
-      layer.shadowOpacity = 0.18
-      layer.shadowRadius = 12
-      layer.shadowOffset = CGSize(width: 0, height: -4)
-    }
-    glassView.frame = container.bounds
-    glassView.autoresizingMask = [.width, .height]
-    container.addSubview(glassView)
-    self.shadowContainer = container
-    contentView = container
+    contentView = hostingView
   }
-
-  private var shadowContainer: NSView?
 
   /// Update the HUD content and resize the panel to fit. Size changes are
   /// animated (center-anchored) so state swaps glide instead of snapping.
@@ -72,17 +45,6 @@ final class DictationHUDPanel: NSPanel {
     hostingView.rootView = DictationHUDContentView(state: state)
     hostingView.setFrameSize(hostingView.fittingSize)
     let size = hostingView.fittingSize
-
-    // Capsule: full-height rounding. Tint the glass itself for
-    // warning/error states; glyphs carry the saturated color.
-    glassView.cornerRadius = size.height / 2
-    glassView.tintColor = Self.tint(for: state)
-
-    // Soft shadow silhouette follows the capsule.
-    shadowContainer?.layer?.shadowPath = CGPath(
-      roundedRect: CGRect(origin: .zero, size: size),
-      cornerWidth: size.height / 2, cornerHeight: size.height / 2, transform: nil
-    )
 
     var frame = self.frame
     guard size != frame.size else { return }
@@ -97,14 +59,6 @@ final class DictationHUDPanel: NSPanel {
       }
     } else {
       setFrame(frame, display: true)
-    }
-  }
-
-  private static func tint(for state: HUDState) -> NSColor? {
-    switch state {
-    case .error: return NSColor.systemRed.withAlphaComponent(0.35)
-    case .warning: return NSColor.systemOrange.withAlphaComponent(0.3)
-    default: return nil
     }
   }
 
@@ -180,26 +134,50 @@ struct DictationHUDContentView: View {
   let state: HUDState
 
   var body: some View {
-    // Glass lives on the panel's NSGlassEffectView (see DictationHUDPanel);
-    // the SwiftUI layer is content-only so the glass refracts the desktop
-    // behind the window instead of an empty hierarchy.
+    // Solid dark capsule (Wispr Flow / macOS dictation indicator grammar):
+    // fixed dark translucent body, light content forced via dark color
+    // scheme — legible over any background, never washes out. Deliberate
+    // pivot away from adaptive Liquid Glass, which reads light-and-frosted
+    // over light content.
     if case .hidden = state {
       Color.clear.frame(width: 0, height: 0)
     } else {
       content
         .padding(.horizontal, 18)
         .padding(.vertical, 12)
-        // Transparent glass is the panel's NSGlassEffectView (.clear, adaptive).
-        // The only drawn optic is a single crisp hairline at the capsule edge,
-        // matching the macOS launcher/command-bar look — no fill (kills
-        // see-through), no gradient rim (reads as a thick cheap border).
+        .background {
+          ZStack {
+            Capsule().fill(Color(white: 0.09).opacity(0.9))
+            if let tint = stateTint {
+              Capsule().fill(tint)
+            }
+          }
+        }
         .overlay {
           Capsule()
-            .strokeBorder(Color.white.opacity(0.5), lineWidth: 0.5)
-            .blendMode(.overlay)
+            .strokeBorder(Color.white.opacity(0.16), lineWidth: 0.5)
         }
+        .environment(\.colorScheme, .dark)
+        .shadow(color: .black.opacity(0.24), radius: 10, y: 3)
+        // Margin gives the shadow room to fall off INSIDE the window — a
+        // window cannot draw outside its own frame, and without this the
+        // shadow renders as a dark rectangle filling the pill-sized window.
+        .padding(Self.shadowMargin)
         .contentTransition(.opacity)
         .animation(.easeOut(duration: 0.18), value: state)
+    }
+  }
+
+  /// Transparent margin around the pill reserved for its drop shadow.
+  static let shadowMargin: CGFloat = 24
+
+  /// Warning/error wash blended over the dark body; glyphs keep the
+  /// saturated semantic color.
+  private var stateTint: Color? {
+    switch state {
+    case .error: return .red.opacity(0.28)
+    case .warning: return .orange.opacity(0.24)
+    default: return nil
     }
   }
 
