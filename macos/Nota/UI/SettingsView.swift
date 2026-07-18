@@ -1,9 +1,29 @@
 import SwiftUI
 
+/// Settings tabs and their layout. Width is fixed; height fits each tab's
+/// content so sparse tabs don't float in blank space and dense tabs don't
+/// scroll inside a too-short window.
+private enum SettingsTab: Hashable {
+  case general, dictation, models, apiKeys, speakers
+
+  static let windowWidth: CGFloat = 720
+
+  var idealHeight: CGFloat {
+    switch self {
+    case .general: 220
+    case .dictation: 580
+    case .models: 300
+    case .apiKeys: 400
+    case .speakers: 520
+    }
+  }
+}
+
 struct SettingsView: View {
   @Binding var identifySpeakers: Bool
   @Binding var skipSummary: Bool
   @StateObject private var speakers = SpeakersModel()
+  @State private var selectedTab: SettingsTab = .general
 
   /// The dictation controller, used to reload settings after changes.
   let dictationController: DictationController?
@@ -19,23 +39,28 @@ struct SettingsView: View {
   }
 
   var body: some View {
-    TabView {
+    TabView(selection: $selectedTab) {
       generalTab
         .tabItem { Label("General", systemImage: "gearshape") }
+        .tag(SettingsTab.general)
 
       DictationSettingsView(controller: dictationController)
         .tabItem { Label("Dictation", systemImage: "mic") }
+        .tag(SettingsTab.dictation)
 
       ModelsSettingsView()
         .tabItem { Label("Models", systemImage: "cpu") }
+        .tag(SettingsTab.models)
 
       ApiKeysSettingsView()
         .tabItem { Label("API Keys", systemImage: "key") }
+        .tag(SettingsTab.apiKeys)
 
       SpeakersSettingsView(model: speakers)
         .tabItem { Label("Speakers", systemImage: "person.wave.2") }
+        .tag(SettingsTab.speakers)
     }
-    .frame(width: 720, height: 480)
+    .frame(width: SettingsTab.windowWidth, height: selectedTab.idealHeight)
   }
 
   private var generalTab: some View {
@@ -146,11 +171,13 @@ struct ModelsSettingsView: View {
 
 // MARK: - API Keys
 
-/// Masked status + paste-to-set for the provider API keys. Setting a key writes
+/// Provider-key status rows: masked value + source, with the secure field
+/// revealed only on Add/Replace. Setting or removing a key writes
 /// ~/.nota/config (dotenv, 0600). Full secrets are never shown.
 struct ApiKeysSettingsView: View {
   @State private var statuses: [ApiKeyStatus] = ApiKeyStore.keys.map(ApiKeyStore.status(for:))
-  @State private var drafts: [String: String] = [:]
+  @State private var editingEnv: String?
+  @State private var draft = ""
   @State private var errorMessage: String?
 
   var body: some View {
@@ -180,26 +207,46 @@ struct ApiKeysSettingsView: View {
   private func keyRow(_ status: ApiKeyStatus) -> some View {
     VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
       HStack {
-        Text(status.env)
-          .font(.callout)
-          .fontWeight(.medium)
+        VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
+          Text(Self.providerName(for: status.env))
+            .font(.callout)
+            .fontWeight(.medium)
+          Text(status.env)
+            .font(Tokens.settingsCaptionFont)
+            .foregroundStyle(.tertiary)
+        }
         Spacer()
         statusBadge(status)
+        rowActions(status)
       }
-      HStack {
-        SecureField(
-          "Paste to set",
-          text: Binding(
-            get: { drafts[status.env] ?? "" },
-            set: { drafts[status.env] = $0 }
-          )
-        )
-        .textFieldStyle(.roundedBorder)
-        Button("Save") { save(status.env) }
-          .disabled((drafts[status.env] ?? "").trimmingCharacters(in: .whitespaces).isEmpty)
+      if editingEnv == status.env {
+        HStack {
+          SecureField("Paste key", text: $draft)
+          Button("Save") { save(status.env) }
+            .disabled(draft.trimmingCharacters(in: .whitespaces).isEmpty)
+          Button("Cancel") { stopEditing() }
+        }
       }
     }
     .padding(.vertical, 2)
+  }
+
+  @ViewBuilder
+  private func rowActions(_ status: ApiKeyStatus) -> some View {
+    if editingEnv != status.env {
+      switch status.source {
+      case .env:
+        EmptyView()
+      case .file:
+        Button("Replace…") { beginEditing(status.env) }
+          .controlSize(.small)
+        Button("Remove") { remove(status.env) }
+          .controlSize(.small)
+      case .absent:
+        Button("Add…") { beginEditing(status.env) }
+          .controlSize(.small)
+      }
+    }
   }
 
   @ViewBuilder
@@ -209,6 +256,7 @@ struct ApiKeysSettingsView: View {
       Text("\(status.masked ?? "") · env")
         .font(Tokens.settingsCaptionFont)
         .foregroundStyle(.secondary)
+        .help("Set by an environment variable; change or remove it in your shell.")
     case .file:
       Text("\(status.masked ?? "") · config")
         .font(Tokens.settingsCaptionFont)
@@ -220,15 +268,39 @@ struct ApiKeysSettingsView: View {
     }
   }
 
+  private static func providerName(for env: String) -> String {
+    let providers: [ModelProvider] = [.openai, .assemblyai, .gemini, .deepseek]
+    return providers.first { $0.apiKeyEnv == env }?.displayName ?? env
+  }
+
+  private func beginEditing(_ env: String) {
+    editingEnv = env
+    draft = ""
+  }
+
+  private func stopEditing() {
+    editingEnv = nil
+    draft = ""
+  }
+
   private func save(_ env: String) {
-    let value = drafts[env] ?? ""
     do {
-      try ApiKeyStore.setKey(env, value: value)
-      drafts[env] = ""
+      try ApiKeyStore.setKey(env, value: draft)
+      stopEditing()
       errorMessage = nil
       reload()
     } catch {
-      errorMessage = "Could not save \(env): \(error.localizedDescription)"
+      errorMessage = "Could not save the \(Self.providerName(for: env)) key: \(error.localizedDescription)"
+    }
+  }
+
+  private func remove(_ env: String) {
+    do {
+      try ApiKeyStore.setKey(env, value: "")
+      errorMessage = nil
+      reload()
+    } catch {
+      errorMessage = "Could not remove the \(Self.providerName(for: env)) key: \(error.localizedDescription)"
     }
   }
 

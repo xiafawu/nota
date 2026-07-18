@@ -14,7 +14,6 @@ struct DictationSettingsView: View {
       engineSection
       polishSection
       hudSection
-      privacySection
     }
     .formStyle(.grouped)
     .onChange(of: settings) { _, _ in
@@ -32,10 +31,11 @@ struct DictationSettingsView: View {
         Text("Press to toggle").tag(ActivationMode.toggle)
       }
       .pickerStyle(.radioGroup)
+      .labelsHidden()
     } header: {
       Text("Activation")
     } footer: {
-      Text(settings.activation == .hold
+      footerText(settings.activation == .hold
         ? "Hold the trigger key while speaking; release to finalize."
         : "Press the trigger key to start; press again to stop."
       )
@@ -50,18 +50,17 @@ struct DictationSettingsView: View {
         Text("Fn / Globe").tag(TriggerKey.Kind.fnGlobe)
         Text("Custom Key Code").tag(TriggerKey.Kind.keyCode)
       }
+      .labelsHidden()
 
       if settings.trigger.kind == .keyCode {
-        HStack {
-          TextField("Key Code", value: triggerKeyCodeBinding, format: .number)
-            .frame(width: 80)
-          Text("Numeric key code (e.g. 49 for Space)")
-            .font(.caption)
-            .foregroundStyle(.secondary)
-        }
+        TextField("Key Code", value: triggerKeyCodeBinding, format: .number)
       }
     } header: {
       Text("Trigger Key")
+    } footer: {
+      if settings.trigger.kind == .keyCode {
+        footerText("Numeric key code of the trigger key — for example, 49 for Space.")
+      }
     }
   }
 
@@ -82,14 +81,13 @@ struct DictationSettingsView: View {
           Text(choice.label).tag(choice)
         }
       }
-
-      if settings.engine == .assemblyAIRealtime {
-        Text("AssemblyAI Realtime requires a valid AssemblyAI API key in Settings → API Keys.")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-      }
+      .labelsHidden()
     } header: {
       Text("Recognition Engine")
+    } footer: {
+      if settings.engine == .assemblyAIRealtime {
+        footerText("AssemblyAI Realtime requires an AssemblyAI API key, set in the API Keys tab.")
+      }
     }
   }
 
@@ -97,14 +95,7 @@ struct DictationSettingsView: View {
 
   private var polishSection: some View {
     Section {
-      Toggle(isOn: $settings.polishEnabled) {
-        VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
-          Text("LLM Polish")
-          Text("Apply an LLM to polish the formatted text before injection.")
-            .font(Tokens.settingsCaptionFont)
-            .foregroundStyle(.secondary)
-        }
-      }
+      Toggle("LLM Polish", isOn: $settings.polishEnabled)
 
       if settings.polishEnabled {
         let summaryModels = ModelRegistry.models(for: .summary)
@@ -119,26 +110,12 @@ struct DictationSettingsView: View {
       }
     } header: {
       Text("Polish")
-    }
-  }
-
-  // MARK: - Privacy
-
-  private var privacySection: some View {
-    Section {
+    } footer: {
       VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
-        Text("Polish may send the final text to the selected LLM provider for improvement.")
-          .font(Tokens.settingsCaptionFont)
-          .foregroundStyle(.secondary)
-        Text("Local formatting rules always run first and are the offline fallback if polish fails.")
-          .font(Tokens.settingsCaptionFont)
-          .foregroundStyle(.secondary)
-        Text("No audio or raw recognition data is sent to the polish provider — only the formatted text.")
-          .font(Tokens.settingsCaptionFont)
-          .foregroundStyle(.secondary)
+        footerText("Applies a language model to improve the formatted text before it is inserted.")
+        footerText("Only the formatted text is sent to the provider — never audio or raw recognition data.")
+        footerText("Local formatting always runs first and is the offline fallback if polish fails.")
       }
-    } header: {
-      Text("Privacy")
     }
   }
 
@@ -146,16 +123,19 @@ struct DictationSettingsView: View {
 
   private var hudSection: some View {
     Section {
-      Toggle(isOn: $settings.showHUD) {
-        VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
-          Text("Show Dictation HUD")
-          Text("Display a floating pill during dictation showing microphone level and status.")
-            .font(Tokens.settingsCaptionFont)
-            .foregroundStyle(.secondary)
-        }
-      }
+      Toggle("Show Dictation HUD", isOn: $settings.showHUD)
     } header: {
       Text("Heads-Up Display")
+    } footer: {
+      footerText("Shows a floating pill with microphone level and status while dictating.")
     }
+  }
+
+  // MARK: - Helpers
+
+  private func footerText(_ text: String) -> some View {
+    Text(text)
+      .font(Tokens.settingsCaptionFont)
+      .foregroundStyle(.secondary)
   }
 }

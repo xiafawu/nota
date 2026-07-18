@@ -167,24 +167,6 @@ struct SpeakersSettingsView: View {
       detail
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
-    .toolbar {
-      ToolbarItemGroup(placement: .automatic) {
-        Button {
-          // Reserved for future enrolment flow.
-        } label: {
-          Label("New", systemImage: "plus")
-        }
-        .disabled(true)
-        .help("Enrolment is available via nota --identify")
-
-        Button {
-          model.refresh()
-        } label: {
-          Label("Refresh", systemImage: "arrow.clockwise")
-        }
-        .help("Reload from ~/.nota/speakers.json")
-      }
-    }
     .onAppear { model.refresh() }
   }
 
@@ -199,11 +181,12 @@ struct SpeakersSettingsView: View {
           Text("No enrolled speakers")
             .font(.callout)
             .foregroundStyle(.secondary)
-          Text("Run nota --identify to enrol voices.")
+          Text("Speakers are remembered when you transcribe with speaker identification turned on.")
             .font(.caption)
             .foregroundStyle(.tertiary)
             .multilineTextAlignment(.center)
             .padding(.horizontal, 12)
+            .help("Voices can also be enrolled from the command line with nota --identify")
         }
         Spacer()
       } else {
@@ -219,8 +202,22 @@ struct SpeakersSettingsView: View {
               .tag(Optional(entry.id))
           }
         }
-        .listStyle(.sidebar)
+        .listStyle(.inset)
       }
+
+      Divider()
+      HStack {
+        Button {
+          model.refresh()
+        } label: {
+          Label("Refresh", systemImage: "arrow.clockwise")
+            .labelStyle(.iconOnly)
+        }
+        .buttonStyle(.borderless)
+        .help("Reload the speaker list")
+        Spacer()
+      }
+      .padding(6)
     }
   }
 
@@ -275,7 +272,9 @@ struct SpeakersSettingsView: View {
           get: { model.draftName },
           set: { model.draftName = $0 }
         ))
-        .textFieldStyle(.roundedBorder)
+        .onSubmit {
+          if model.canCommitRename { model.commitRename() }
+        }
         HStack {
           Spacer()
           Button("Rename") {
@@ -296,18 +295,20 @@ struct SpeakersSettingsView: View {
           LabeledContent("First Enrolled") {
             Text(formatEnrolledAt(first.enrolledAt))
           }
-          LabeledContent("Source") {
-            Text(first.source.isEmpty ? "Unknown" : first.source)
-              .font(.caption)
-              .foregroundStyle(.secondary)
-              .lineLimit(2)
-              .truncationMode(.middle)
-              .textSelection(.enabled)
-          }
-          LabeledContent("Embedding") {
-            Text("\(first.embedding.count) dims")
-              .font(.callout)
-              .foregroundStyle(.secondary)
+          DisclosureGroup("Details") {
+            LabeledContent("Source") {
+              Text(first.source.isEmpty ? "Unknown" : first.source)
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .lineLimit(2)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+            }
+            LabeledContent("Embedding") {
+              Text("\(first.embedding.count) dimensions")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+            }
           }
         }
       }
@@ -339,7 +340,7 @@ struct SpeakersSettingsView: View {
         }
       }
 
-      Section("Merge") {
+      Section {
         HStack {
           Picker("Merge into", selection: $mergeTarget) {
             Text("Select speaker").tag("")
@@ -355,7 +356,10 @@ struct SpeakersSettingsView: View {
           }
           .disabled(mergeTarget.isEmpty || model.isBusy)
         }
-        Text("Averages embeddings via nota speakers merge. The source speaker is removed.")
+      } header: {
+        Text("Merge")
+      } footer: {
+        Text("Combines this speaker's voiceprints into the selected speaker, then removes this speaker.")
           .font(.caption)
           .foregroundStyle(.secondary)
       }
@@ -399,7 +403,7 @@ struct SpeakersSettingsView: View {
         model.deleteSelected()
       }
     } message: {
-      Text("This removes the voiceprint from \(SpeakerStoreLocation.primary.path). It cannot be undone.")
+      Text("This permanently removes \(entry.name)'s voiceprints. It cannot be undone.")
     }
   }
 
