@@ -1,8 +1,8 @@
 <!-- wayfinder:task -->
 # W1 — User walkthrough: feel gaps (HITL)
 
-status: open
-blocked-by: A1, A2, A3, A4
+status: in-progress (claimed 2026-07-18, session 8a604a4b; collecting user reports)
+blocked-by: A1, A2, A3, A4 (all closed)
 
 ## Question
 

@@ -47,6 +47,7 @@ capture-compare loop an implementer without eyes lacks. Foreground.
 ## Out of scope
 
 - New features of any kind — polish only.
+- **Transcript enrichment features** (user-requested during W1, 2026-07-18; next effort candidate after polish ships): (1) on-demand summary generation from the document view — click → generate; (2) manual editing of summary and tags; (3) decoupled generation — tags without summary (today both come from one summarize pass). Touches pipeline + history schema + document UI; deserves its own map.
 - App icon, About window, Developer ID notarization ("ship-grade" option declined at charting).
 - Registry model refresh — separate effort (flagged on the usage-stats map).
 - TypeScript CLI output polish — this effort is the macOS app.
