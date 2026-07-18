@@ -1,0 +1,59 @@
+<!-- wayfinder:map -->
+# Map: App-wide fit-and-finish polish
+
+## Destination
+
+A locked fit-and-finish spec covering **every user-facing surface** of the macOS app
+(home dashboard, document/running views, Settings window, dictation HUD, menu bar,
+onboarding/permission flows): each adjudicated defect with its agreed fix direction,
+ready for Claude-direct implementation in per-surface PRs. No new features shipped by
+this map — structure changes (view merges/splits) ARE in scope when a defect demands.
+
+## Notes
+
+- **Domain:** Nota (`xiafawu/nota`). Swift/macOS app; polish targets `macos/**` only.
+- **Tracker:** local markdown (same as model-usage-stats effort; Linear writes blocked).
+- **Plan, don't do:** tickets produce catalogs and verdicts, not code.
+- **Locked decisions (charting session, 2026-07-18):**
+  - Evidence = **both**: AFK screenshot audits first, then user live walkthrough fills gaps (motion, latency, feel).
+  - Design authority = **Apple HIG base**; where HIG is silent (HUDs, dashboards), best-in-class macOS utilities: Raycast, Wispr Flow, Things, CleanShot.
+  - Scope fence = **structure allowed**: spacing/type/color/motion/copy plus view merges/splits when audit justifies; still no new features.
+  - Findings enter the spec only after user adjudication — audits propose, user disposes.
+- **Skills:** audits use the synthetic-fn HUD capture technique (see memory `liquid-glass-floating-panel-trap`); adjudication uses `/grilling`.
+- **HUD note:** dark-capsule design (PR #62) is a fresh, deliberate user decision — audit its *execution* (states, motion, sizing), not the dark-capsule direction itself.
+
+## Execution
+
+Claude direct (this session's model), worktree branches, per-surface PRs,
+screenshot-verified iterations — chosen over omp because visual work needs the
+capture-compare loop an implementer without eyes lacks. Foreground.
+
+## Decisions so far
+
+<!-- one line per closed ticket; detail lives in the ticket -->
+
+## Not yet specified
+
+- Per-surface fix directions — sharpen after adjudication; may split into per-surface decision tickets if verdicts disagree with audit recommendations.
+- Whether structure-level findings (view merges/splits) add a navigation/IA decision ticket — sharpens after audits land.
+- Cross-surface consistency system (shared spacing/type/color tokens in Swift) — only if audits find the surfaces drifting from each other, not just from the references.
+- Motion standards (durations, curves, when to animate) — sharpens if audits flag inconsistent animation vocabulary.
+
+## Out of scope
+
+- New features of any kind — polish only.
+- App icon, About window, Developer ID notarization ("ship-grade" option declined at charting).
+- Registry model refresh — separate effort (flagged on the usage-stats map).
+- TypeScript CLI output polish — this effort is the macOS app.
+
+## Tickets
+
+| Ticket | Type | Status | Blocked by |
+|---|---|---|---|
+| [A1 Audit: main window (dashboard, document, running)](tickets/A1-audit-main-window.md) | research | open | — |
+| [A2 Audit: Settings window](tickets/A2-audit-settings.md) | research | open | — |
+| [A3 Audit: dictation HUD live states](tickets/A3-audit-hud.md) | research | open | — |
+| [A4 Audit: menu bar + onboarding/permissions](tickets/A4-audit-menubar-onboarding.md) | research | open | — |
+| [W1 User walkthrough: feel gaps](tickets/W1-user-walkthrough.md) | task | open | A1, A2, A3, A4 |
+| [D1 Adjudicate defect catalog](tickets/D1-adjudicate-catalog.md) | grilling | open | W1 |
+| [S1 Assemble polish spec](tickets/S1-assemble-spec.md) | task | open | D1 |
