@@ -14,7 +14,6 @@ final class DictationHUDPanel: NSPanel {
 
   init() {
     hostingView = NSHostingView(rootView: DictationHUDContentView(state: .hidden))
-    hostingView.translatesAutoresizingMaskIntoConstraints = false
 
     let rect = NSRect(x: 0, y: 0, width: 200, height: 48)
     super.init(
@@ -26,7 +25,11 @@ final class DictationHUDPanel: NSPanel {
 
     isOpaque = false
     backgroundColor = .clear
-    hasShadow = true
+    // No window shadow: a layer/window shadow can only draw INSIDE the window
+    // frame, and a pill-sized window turns it into a dark rectangle behind
+    // the capsule. The pill draws its own SwiftUI shadow inside a margin
+    // (see DictationHUDContentView.shadowMargin).
+    hasShadow = false
     level = .statusBar
     collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
     ignoresMouseEvents = true
@@ -36,14 +39,27 @@ final class DictationHUDPanel: NSPanel {
     contentView = hostingView
   }
 
-  /// Update the HUD content and resize the panel to fit.
+  /// Update the HUD content and resize the panel to fit. Size changes are
+  /// animated (center-anchored) so state swaps glide instead of snapping.
   func update(state: HUDState) {
     hostingView.rootView = DictationHUDContentView(state: state)
     hostingView.setFrameSize(hostingView.fittingSize)
     let size = hostingView.fittingSize
+
     var frame = self.frame
+    guard size != frame.size else { return }
+    frame.origin.x -= (size.width - frame.size.width) / 2
     frame.size = size
-    setFrame(frame, display: true)
+
+    if isVisible {
+      NSAnimationContext.runAnimationGroup { context in
+        context.duration = 0.22
+        context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        animator().setFrame(frame, display: true)
+      }
+    } else {
+      setFrame(frame, display: true)
+    }
   }
 
   /// Position the panel centered below the frontmost window.
@@ -80,11 +96,35 @@ final class DictationHUDPanel: NSPanel {
   }
 
   func show() {
+    guard !isVisible else {
+      orderFrontRegardless()
+      return
+    }
+    // Fade in with a small rise — HUDs that blink into place read as cheap.
+    alphaValue = 0
+    var frame = self.frame
+    frame.origin.y -= 8
+    setFrame(frame, display: false)
     orderFrontRegardless()
+    frame.origin.y += 8
+    NSAnimationContext.runAnimationGroup { context in
+      context.duration = 0.2
+      context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+      animator().alphaValue = 1
+      animator().setFrame(frame, display: true)
+    }
   }
 
   func hide() {
-    orderOut(nil)
+    guard isVisible else { return }
+    NSAnimationContext.runAnimationGroup({ context in
+      context.duration = 0.18
+      context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+      animator().alphaValue = 0
+    }, completionHandler: { [weak self] in
+      self?.orderOut(nil)
+      self?.alphaValue = 1
+    })
   }
 }
 
@@ -94,21 +134,68 @@ struct DictationHUDContentView: View {
   let state: HUDState
 
   var body: some View {
-    Group {
-      switch state {
-      case .hidden:
-        Color.clear.frame(width: 0, height: 0)
-      case .listening(let level):
-        ListeningView(level: level)
-      case .processing(let step):
-        ProcessingView(step: step)
-      case .success(let snippet):
-        SuccessView(snippet: snippet)
-      case .warning(let message):
-        WarningView(message: message)
-      case .error(let message):
-        ErrorView(message: message)
-      }
+    // Solid dark capsule (Wispr Flow / macOS dictation indicator grammar):
+    // fixed dark translucent body, light content forced via dark color
+    // scheme — legible over any background, never washes out. Deliberate
+    // pivot away from adaptive Liquid Glass, which reads light-and-frosted
+    // over light content.
+    if case .hidden = state {
+      Color.clear.frame(width: 0, height: 0)
+    } else {
+      content
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .background {
+          ZStack {
+            Capsule().fill(Color(white: 0.09).opacity(0.9))
+            if let tint = stateTint {
+              Capsule().fill(tint)
+            }
+          }
+        }
+        .overlay {
+          Capsule()
+            .strokeBorder(Color.white.opacity(0.16), lineWidth: 0.5)
+        }
+        .environment(\.colorScheme, .dark)
+        .shadow(color: .black.opacity(0.24), radius: 10, y: 3)
+        // Margin gives the shadow room to fall off INSIDE the window — a
+        // window cannot draw outside its own frame, and without this the
+        // shadow renders as a dark rectangle filling the pill-sized window.
+        .padding(Self.shadowMargin)
+        .contentTransition(.opacity)
+        .animation(.easeOut(duration: 0.18), value: state)
+    }
+  }
+
+  /// Transparent margin around the pill reserved for its drop shadow.
+  static let shadowMargin: CGFloat = 24
+
+  /// Warning/error wash blended over the dark body; glyphs keep the
+  /// saturated semantic color.
+  private var stateTint: Color? {
+    switch state {
+    case .error: return .red.opacity(0.28)
+    case .warning: return .orange.opacity(0.24)
+    default: return nil
+    }
+  }
+
+  @ViewBuilder
+  private var content: some View {
+    switch state {
+    case .hidden:
+      EmptyView()
+    case .listening(let level):
+      ListeningView(level: level)
+    case .processing(let step):
+      ProcessingView(step: step)
+    case .success(let snippet):
+      SuccessView(snippet: snippet)
+    case .warning(let message):
+      WarningView(message: message)
+    case .error(let message):
+      ErrorView(message: message)
     }
   }
 }
@@ -118,43 +205,40 @@ struct DictationHUDContentView: View {
 private struct ListeningView: View {
   let level: Float
 
+  private static let barCount = 9
+  /// Center-weighted silhouette — Apple's voice UIs (Siri, Voice Memos)
+  /// peak in the middle and taper outward, rather than ramping left-to-right
+  /// like an equalizer.
+  private static let profile: [CGFloat] = [0.35, 0.55, 0.8, 0.95, 1.0, 0.95, 0.8, 0.55, 0.35]
+
   var body: some View {
     HStack(spacing: 8) {
       Image(systemName: "mic.fill")
         .foregroundStyle(.red)
-        .font(.system(size: 14, weight: .medium))
+        .font(.system(size: 15, weight: .medium))
 
       HStack(spacing: 3) {
-        ForEach(0..<8, id: \.self) { i in
-          RoundedRectangle(cornerRadius: 1.5)
-            .fill(barColor(for: i))
-            .frame(width: 4, height: barHeight(for: i))
+        ForEach(0..<Self.barCount, id: \.self) { i in
+          Capsule()
+            .fill(.primary)
+            .frame(width: 3.5, height: barHeight(for: i))
         }
       }
+      .frame(height: 26)
+      // One spring for all bars, driven by the level: overshoot + settle is
+      // what makes the meter feel alive instead of stepped.
+      .animation(.spring(response: 0.28, dampingFraction: 0.55), value: level)
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 10)
-    .background(.ultraThinMaterial, in: Capsule())
   }
 
   private func barHeight(for index: Int) -> CGFloat {
-    let fraction = Float(index + 1) / 8.0
-    let base: CGFloat = 4
-    let max: CGFloat = 24
-    if level >= fraction {
-      return base + (max - base) * CGFloat((level - fraction) / (1 - fraction) * 0.8 + 0.2)
-    }
-    if level >= fraction * 0.6 {
-      return base + (max - base) * 0.25
-    }
-    return base
-  }
-
-  private func barColor(for index: Int) -> Color {
-    let fraction = Float(index + 1) / 8.0
-    if fraction <= 0.4 { return .green }
-    if fraction <= 0.65 { return .yellow }
-    return .red
+    let base: CGFloat = 5
+    let maxH: CGFloat = 24
+    // Per-bar wobble keyed to index and level so neighbors never move in
+    // lockstep — lockstep is the "cheap" tell.
+    let wobble = 0.72 + 0.28 * sin(Double(index) * 1.7 + Double(level) * 21)
+    let h = base + (maxH - base) * CGFloat(level) * Self.profile[index] * CGFloat(wobble)
+    return min(maxH, max(base, h))
   }
 }
 
@@ -169,9 +253,6 @@ private struct ProcessingView: View {
       Text(step)
         .font(.subheadline)
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 10)
-    .background(.ultraThinMaterial, in: Capsule())
   }
 }
 
@@ -190,9 +271,6 @@ private struct SuccessView: View {
           .lineLimit(1)
       }
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 10)
-    .background(.ultraThinMaterial, in: Capsule())
   }
 }
 
@@ -210,9 +288,6 @@ private struct WarningView: View {
         .lineLimit(2)
         .fixedSize(horizontal: false, vertical: true)
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 10)
-    .background(.ultraThinMaterial, in: Capsule())
   }
 }
 
@@ -230,8 +305,5 @@ private struct ErrorView: View {
         .lineLimit(2)
         .fixedSize(horizontal: false, vertical: true)
     }
-    .padding(.horizontal, 16)
-    .padding(.vertical, 10)
-    .background(.ultraThinMaterial, in: Capsule())
   }
 }
