@@ -36,6 +36,8 @@ capture-compare loop an implementer without eyes lacks. Foreground.
 - [A2 Audit: Settings window](tickets/A2-audit-settings.md) — 13 defects, none jarring ([catalog](assets/A2-catalog.md)); structurally sound (grouped Forms, native toolbar); fixes cluster on header/label duplication, fixed-height-for-all-tabs, env-var-speak + always-armed fields in API Keys, dead controls + debug telemetry in Speakers. Four tabs code-audited only → W1.
 - [A3 Audit: dictation HUD live states](tickets/A3-audit-hud.md) — 12 defects, none jarring ([catalog](assets/A3-catalog.md)); clusters: wrong positioning anchor (Nota's own windows, not the dictation target), per-tick reposition fighting animations, linear RMS meter that underdrives and freezes, stale success/warning states that can resurrect the pill. Live driving vetoed (Space safety); 5 items → W1.
 - [A4 Audit: menu bar + onboarding/permissions](tickets/A4-audit-menubar-onboarding.md) — 13 defects ([catalog](assets/A4-catalog.md)); jarring: full "Nota Dictation — Idle" text permanently in the menu bar (icon-only is the convention); noticeable: status menu missing Settings…, buttons that don't read as menu rows, latency telemetry in the menu, notarization jargon in onboarding copy. Popover state visuals → W1.
+- [W1 User walkthrough: feel gaps](tickets/W1-user-walkthrough.md) — 2 defects, root-caused ([catalog](assets/W1-catalog.md)): missing home→document transition (animation lives below the swap site); jarring Speakers-tab chrome corruption (toolbar items merge into tab strip + sidebar material under chrome). Watch list unexercised — visual verification folds into implementation. Pool for D1: 57 findings.
+- [D1 Adjudicate the combined defect catalog](tickets/D1-adjudicate-catalog.md) — 56 of 57 accepted (only S8 key-capture recorder deferred); nine cluster verdicts, all "fix"; shipping order Chrome → Dashboard → HUD → Settings → Menu bar, one screenshot-verified PR per surface.
 
 ## Not yet specified
 
@@ -60,6 +62,6 @@ capture-compare loop an implementer without eyes lacks. Foreground.
 | [A2 Audit: Settings window](tickets/A2-audit-settings.md) | research | closed | — |
 | [A3 Audit: dictation HUD live states](tickets/A3-audit-hud.md) | research | closed | — |
 | [A4 Audit: menu bar + onboarding/permissions](tickets/A4-audit-menubar-onboarding.md) | research | closed | — |
-| [W1 User walkthrough: feel gaps](tickets/W1-user-walkthrough.md) | task | open | A1, A2, A3, A4 |
-| [D1 Adjudicate defect catalog](tickets/D1-adjudicate-catalog.md) | grilling | open | W1 |
+| [W1 User walkthrough: feel gaps](tickets/W1-user-walkthrough.md) | task | closed | A1, A2, A3, A4 |
+| [D1 Adjudicate defect catalog](tickets/D1-adjudicate-catalog.md) | grilling | closed | W1 |
 | [S1 Assemble polish spec](tickets/S1-assemble-spec.md) | task | open | D1 |

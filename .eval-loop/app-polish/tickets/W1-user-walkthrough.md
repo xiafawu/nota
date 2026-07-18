@@ -1,7 +1,7 @@
 <!-- wayfinder:task -->
 # W1 — User walkthrough: feel gaps (HITL)
 
-status: in-progress (claimed 2026-07-18, session 8a604a4b; collecting user reports)
+status: closed (resolved 2026-07-18)
 blocked-by: A1, A2, A3, A4 (all closed)
 
 ## Question
@@ -17,3 +17,17 @@ catalogs are read FIRST so the walkthrough targets what static capture can't see
 not what's already filed.
 
 Deliverable: `assets/W1-catalog.md`, appended to the combined defect pool for D1.
+
+## Resolution
+
+2 user-reported defects in [W1-catalog.md](../assets/W1-catalog.md), both root-caused:
+W1-1 (noticeable) missing home→document transition — swap happens above the view that
+owns the animation; W1-2 (jarring) Speakers tab corrupts settings chrome — window-toolbar
+items merge into the tab strip + sidebar list material runs under it. Confirms and
+upgrades A2-S5.
+
+User closed the walkthrough without exercising the audit watch list (dark mode, HUD
+resurrect, dark-pill separation, warning/error tint, General/Models/API-Keys visuals,
+back-click anomaly) — those A-catalog findings enter D1 as code-confirmed but visually
+unverified; any fix touching them verifies visually during implementation instead.
+Combined defect pool for D1: 57 findings (A1 17, A2 13, A3 12, A4 13, W1 2).
