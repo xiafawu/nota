@@ -117,7 +117,7 @@ final class HUDStateTests: XCTestCase {
         lastProcessedText: nil,
         rmsLevel: 0
       ),
-      .processing(step: "Injecting…")
+      .processing(step: "Inserting…")
     )
   }
 

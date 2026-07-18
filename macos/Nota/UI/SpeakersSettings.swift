@@ -328,16 +328,6 @@ struct SpeakersSettingsView: View {
             .font(.callout)
             .foregroundStyle(.tertiary)
         }
-        HStack {
-          Spacer()
-          Button("Refresh Description") {
-            // TODO: invoke `nota speakers describe <name>` via shell command
-            // (see shellMergeSpeakers pattern in SpeakerProfileStore).
-            // The CLI verb exists: `nota speakers describe <name>`.
-          }
-          .disabled(true)
-          .help("Generate entity description from transcript excerpts")
-        }
       }
 
       Section {

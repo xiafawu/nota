@@ -76,7 +76,7 @@ extension HUDState {
       return .processing(step: "Transcribing…")
 
     case .injecting:
-      return .processing(step: "Injecting…")
+      return .processing(step: "Inserting…")
 
     case .failed(let message):
       return .error(message: message)
