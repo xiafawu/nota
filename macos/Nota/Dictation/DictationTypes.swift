@@ -20,11 +20,11 @@ enum DictationState: Equatable {
     case .listening:
       return "Listening"
     case .finalizing:
-      return "Stopping"
+      return "Working…"
     case .injecting:
-      return "Injecting"
+      return "Inserting…"
     case .failed:
-      return "Unavailable"
+      return "Failed — Try Again"
     }
   }
 
@@ -37,9 +37,9 @@ enum DictationState: Equatable {
     case .listening:
       return "mic.fill"
     case .finalizing:
-      return "hourglass"
+      return "ellipsis.circle"
     case .injecting:
-      return "arrow.down.circle"
+      return "text.insert"
     case .failed:
       return "exclamationmark.triangle"
     }

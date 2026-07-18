@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 @testable import Nota
 
@@ -61,15 +62,24 @@ final class DictationStateTests: XCTestCase {
   }
 
   func testP2StateTransitions() {
-    // P2 adds .finalizing and .injecting states
-    XCTAssertEqual(DictationState.finalizing.statusTitle, "Stopping")
-    XCTAssertEqual(DictationState.injecting.statusTitle, "Injecting")
+    // P2 adds .finalizing and .injecting states; titles are user-facing
+    // progress wording, not pipeline jargon.
+    XCTAssertEqual(DictationState.finalizing.statusTitle, "Working…")
+    XCTAssertEqual(DictationState.injecting.statusTitle, "Inserting…")
+    XCTAssertEqual(
+      DictationState.failed(message: "Speech engine unavailable.").statusTitle,
+      "Failed — Try Again"
+    )
 
-    // .finalizing and .injecting should have blue tint
-    let finalizingSymbol = DictationState.finalizing.symbolName
-    let injectingSymbol = DictationState.injecting.symbolName
-    XCTAssertFalse(finalizingSymbol.isEmpty)
-    XCTAssertFalse(injectingSymbol.isEmpty)
+    // Transient states use progress-flavored symbols that resolve in SF Symbols.
+    XCTAssertEqual(DictationState.finalizing.symbolName, "ellipsis.circle")
+    XCTAssertEqual(DictationState.injecting.symbolName, "text.insert")
+    XCTAssertNotNil(
+      NSImage(systemSymbolName: DictationState.finalizing.symbolName, accessibilityDescription: nil)
+    )
+    XCTAssertNotNil(
+      NSImage(systemSymbolName: DictationState.injecting.symbolName, accessibilityDescription: nil)
+    )
   }
 
   func testAppleSpeechErrorDescriptions() {

@@ -5,27 +5,28 @@ struct DictationStatusLabel: View {
   @ObservedObject var controller: DictationController
 
   var body: some View {
-    Label {
-      Text("Nota Dictation — \(controller.state.statusTitle)")
-    } icon: {
-      Image(systemName: controller.state.symbolName)
-    }
-    .accessibilityLabel("Nota Dictation: \(controller.state.statusTitle)")
-    .onAppear {
-      controller.start()
-    }
+    // Icon-only status item; the full state text lives in the accessibility
+    // label and the popover, not the menu bar.
+    Image(systemName: controller.state.symbolName)
+      .accessibilityLabel("Nota Dictation: \(controller.state.statusTitle)")
+      .onAppear {
+        controller.start()
+      }
   }
 }
 
 struct DictationMenuBarView: View {
   @ObservedObject var controller: DictationController
   @Environment(\.openWindow) private var openWindow
+  @Environment(\.openSettings) private var openSettings
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
       statusHeader
 
-      if case .disabled(let reason) = controller.state {
+      // When permissions block dictation the onboarding below is the single
+      // source for that explanation; only non-permission reasons render here.
+      if case .disabled(let reason) = controller.state, controller.permissions.isReady {
         Text(reason)
           .font(.callout)
           .foregroundStyle(.secondary)
@@ -40,17 +41,27 @@ struct DictationMenuBarView: View {
 
       Divider()
 
-      Button {
-        openDocumentWindow()
-      } label: {
-        Label("Open Nota", systemImage: "rectangle.on.rectangle")
-      }
+      VStack(alignment: .leading, spacing: 1) {
+        Button("Open Nota") {
+          openDocumentWindow()
+        }
 
-      Button {
-        NSApp.terminate(nil)
-      } label: {
-        Label("Quit Nota", systemImage: "power")
+        Button("Settings…") {
+          openSettingsWindow()
+        }
+
+        Button("About Nota") {
+          openAboutPanel()
+        }
+
+        Button("Quit Nota") {
+          NSApp.terminate(nil)
+        }
       }
+      .buttonStyle(MenuRowButtonStyle())
+      // Let the hover wash extend past the text edge while the labels stay
+      // aligned with the content above.
+      .padding(.horizontal, -8)
     }
     .padding(16)
     .frame(width: 360)
@@ -88,13 +99,8 @@ struct DictationMenuBarView: View {
         Text("Last: \"\(text)\"")
           .font(.caption)
           .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
-      }
-
-      if let latency = controller.lastLatency, controller.state == .idle {
-        Text("Latency: \(String(format: "%.2f", latency))s")
-          .font(.caption)
-          .foregroundStyle(.secondary)
+          .lineLimit(2)
+          .truncationMode(.tail)
       }
 
       if let warning = controller.lastPolishWarning, controller.state == .idle {
@@ -128,16 +134,23 @@ struct DictationMenuBarView: View {
     }
   }
 
-  private func diagnosticsSummary(_ diagnostics: CaptureDiagnostics) -> String {
-    let duration = diagnostics.duration.map { String(format: "%.2fs", $0) } ?? "active"
-    return "Last capture: \(diagnostics.bufferCount) PCM buffers, \(diagnostics.sampleCount) samples, \(duration)"
-  }
-
   private func openDocumentWindow() {
     openWindow(id: "document")
     DispatchQueue.main.async {
       NSApp.activate(ignoringOtherApps: true)
     }
+  }
+
+  private func openSettingsWindow() {
+    openSettings()
+    DispatchQueue.main.async {
+      NSApp.activate(ignoringOtherApps: true)
+    }
+  }
+
+  private func openAboutPanel() {
+    NSApp.activate(ignoringOtherApps: true)
+    NSApp.orderFrontStandardAboutPanel(nil)
   }
 
   private var dictationInstruction: String {
@@ -154,8 +167,39 @@ struct DictationMenuBarView: View {
   }
 }
 
+/// Menu-row treatment for popover actions: full-width hit target with a hover
+/// wash and pressed state, matching how window-style extras present commands.
+private struct MenuRowButtonStyle: ButtonStyle {
+  func makeBody(configuration: Configuration) -> some View {
+    MenuRowLabel(configuration: configuration)
+  }
+
+  private struct MenuRowLabel: View {
+    let configuration: Configuration
+    @State private var isHovering = false
+
+    var body: some View {
+      configuration.label
+        .font(.callout)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 8)
+        .padding(.vertical, 5)
+        .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+        .background(
+          RoundedRectangle(cornerRadius: 6, style: .continuous)
+            .fill(Color.primary.opacity(configuration.isPressed ? 0.14 : (isHovering ? 0.07 : 0)))
+        )
+        .onHover { hovering in
+          isHovering = hovering
+        }
+    }
+  }
+}
+
 struct PermissionsOnboardingView: View {
   @ObservedObject var coordinator: PermissionsCoordinator
+
+  private static let permissionPollInterval: Duration = .seconds(2)
 
   var body: some View {
     VStack(alignment: .leading, spacing: 10) {
@@ -167,7 +211,7 @@ struct PermissionsOnboardingView: View {
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
 
-      Text("Paste injection is available once Accessibility permission is granted. Keystroke-by-keystroke injection requires a Developer ID signed, notarized direct-download build.")
+      Text("Some apps receive dictated text as a paste rather than typed keystrokes.")
         .font(.caption)
         .foregroundStyle(.secondary)
         .fixedSize(horizontal: false, vertical: true)
@@ -175,16 +219,16 @@ struct PermissionsOnboardingView: View {
       ForEach(DictationPermission.allCases) { permission in
         permissionRow(permission)
       }
-
-      Button {
-        coordinator.refresh()
-      } label: {
-        Label("Refresh Permissions", systemImage: "arrow.clockwise")
-      }
-      .buttonStyle(.bordered)
-      .padding(.top, 2)
     }
     .accessibilityElement(children: .contain)
+    // Poll while onboarding is visible so rows update after the user grants
+    // access in System Settings, without a manual refresh control.
+    .task {
+      while !Task.isCancelled {
+        try? await Task.sleep(for: Self.permissionPollInterval)
+        coordinator.refresh()
+      }
+    }
   }
 
   private func permissionRow(_ permission: DictationPermission) -> some View {
@@ -210,7 +254,7 @@ struct PermissionsOnboardingView: View {
           .fixedSize(horizontal: false, vertical: true)
 
         if !status.isGranted {
-          Button("Open Settings") {
+          Button("Grant in System Settings…") {
             coordinator.request(permission)
           }
           .buttonStyle(.link)
