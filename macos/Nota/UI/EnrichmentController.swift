@@ -298,6 +298,9 @@ final class EnrichmentController: ObservableObject {
     if activity != .idle {
       cancelGeneration()
     }
+    // Epoch bump: an edit-save still in flight for the PREVIOUS document must
+    // not install its result over the new document's record.
+    generationID += 1
     record = newRecord
     errorMessage = nil
   }
@@ -389,6 +392,7 @@ final class EnrichmentController: ObservableObject {
     guard let record, !isSavingEdit else { return nil }
     errorMessage = nil
     isSavingEdit = true
+    let id = generationID
 
     return Task { [runner] in
       do {
@@ -398,10 +402,16 @@ final class EnrichmentController: ObservableObject {
           stdinJSON: stdin
         )
         let updated = try EnrichmentRecord.decode(stdout)
-        self.record = updated
+        // The CLI wrote the right record for the right id either way; only the
+        // in-memory install must be skipped once the document has switched.
+        if self.generationID == id {
+          self.record = updated
+        }
         self.onRecordUpdated?(updated, .edited)
       } catch {
-        self.errorMessage = error.localizedDescription
+        if self.generationID == id {
+          self.errorMessage = error.localizedDescription
+        }
       }
       self.isSavingEdit = false
     }
