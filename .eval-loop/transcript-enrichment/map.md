@@ -40,13 +40,12 @@ Swift UI), full TS + Swift test gates, screenshot verification for the UI lane.
 
 <!-- one line per closed ticket; detail lives in the ticket -->
 
+- [E1 Split-generation contract](tickets/E1-split-generation.md) — configured summary model for all ops (key availability beats hardcoded-cheap); tags = one-line-reply prompt, 1024 cap, throw-on-empty; input ladder summary-text → transcript → sampled excerpt; usage reuses `task: "summary"` (zero schema ripple). [Contract](assets/E1-contract.md).
+
 ## Not yet specified
 
 - Surfacing un-summarized (`status: "transcribed"`) records on the dashboard (badge,
   filter, or nothing) — sharpens after E2's prototype reactions.
-- Exact prompt wording for split generation — E1 drafts; final wording locks in spec.
-- Whether the usage/cost pipeline needs a distinct task label for tags-only calls or
-  reuses `"summary"` — sharpens inside E1/E3.
 
 ## Out of scope
 
@@ -59,7 +58,7 @@ Swift UI), full TS + Swift test gates, screenshot verification for the UI lane.
 
 | Ticket | Type | Status | Blocked by |
 |---|---|---|---|
-| [E1 Split-generation contract: prompts, models, cost](tickets/E1-split-generation.md) | research | open | — |
+| [E1 Split-generation contract: prompts, models, cost](tickets/E1-split-generation.md) | research | closed | — |
 | [E2 Prototype: inline enrichment UI in document view](tickets/E2-ui-prototype.md) | prototype | open | — |
 | [E3 Storage & consistency contract for edits](tickets/E3-storage-contract.md) | grilling | open | — |
 | [E4 Assemble enrichment spec](tickets/E4-assemble-spec.md) | task | open | E1, E2, E3 |

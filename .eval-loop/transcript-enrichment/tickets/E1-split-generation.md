@@ -1,7 +1,7 @@
 <!-- wayfinder:research -->
 # E1 — Split-generation contract: prompts, models, cost
 
-status: open
+status: closed (resolved 2026-07-18)
 blocked-by: none (frontier)
 
 ## Question
@@ -23,3 +23,16 @@ failure, never success).
 
 Deliverable: `assets/E1-contract.md` — prompts, model recommendation with cost table,
 API shape for the three operations, usage-capture recommendation.
+
+## Resolution
+
+Contract in [E1-contract.md](../assets/E1-contract.md). Key recommendations:
+tags/summary-only use the **configured summary model** (decisive argument is API-key
+availability, not the ~$0.001 a hardcoded cheap model would save); tags prompt is a
+single-line-reply prompt with a **1024 token cap** (reasoning-burn headroom) and a
+**throw-on-empty** validation contract; tags-only input ladder — summary text when a
+summary exists (~$0.0002), whole transcript when it fits, evenly-sampled ≤50k excerpt
+for long un-summarized records (no section+rollup for a one-line answer); usage capture
+**reuses `task: "summary"`** via the existing `makeSummaryUsage` (zero schema ripple;
+tags spend folds into the model's rollup and the cost card automatically). All three
+ops share `callGPT`/`summaryTokenLimit` — no new request plumbing.
