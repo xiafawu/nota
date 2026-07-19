@@ -3,15 +3,21 @@ import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+  applyEnrichmentToRecord,
   completeHistoryRecord,
   createHistoryRecord,
   findHistoryByHash,
   formatHistoryList,
   listHistoryRecords,
   loadHistoryRecord,
+  mergeTags,
+  setRecordSummary,
+  setRecordTags,
   speakerClipPath,
   writeSpeakerClip,
 } from "../../src/pipeline/history.js";
+import type { CreateHistoryInput } from "../../src/pipeline/history.js";
+import type { MeetingSummary } from "../../src/pipeline/summarize.js";
 
 describe("history", () => {
   let historyDir: string;
@@ -254,6 +260,223 @@ describe("history", () => {
       );
       // Too short, and contains non-hex chars — must be rejected, not matched.
       expect(await findHistoryByHash("not-a-real-hash", historyDir)).toBeNull();
+    });
+  });
+
+  describe("enrichment helpers", () => {
+    const SUMMARY: MeetingSummary = {
+      title: "Planning Sync",
+      tags: ["planning"],
+      narrative: "We planned things.",
+      keyTopics: ["**Roadmap** — Q3"],
+      decisions: [],
+      actionItems: [],
+    };
+
+    function transcribedInput(
+      overrides: Partial<CreateHistoryInput> = {},
+    ): CreateHistoryInput {
+      return {
+        sourcePath: "/tmp/meeting.m4a",
+        provider: "assemblyai",
+        options: { diarize: true, identify: false, model: "gpt-4o" },
+        durationMinutes: 10,
+        transcriptText: "Hello world",
+        segments: [],
+        ...overrides,
+      };
+    }
+
+    describe("mergeTags", () => {
+      it("keeps manual tags first and appends generated ones", () => {
+        expect(mergeTags(["ops", "q3"], ["planning", "roadmap"])).toEqual([
+          "ops",
+          "q3",
+          "planning",
+          "roadmap",
+        ]);
+      });
+
+      it("dedups case-insensitively and lowercases the union", () => {
+        expect(mergeTags(["Planning", "OPS"], ["planning", "budget"])).toEqual([
+          "planning",
+          "ops",
+          "budget",
+        ]);
+      });
+
+      it("drops empty entries and caps the union at 8", () => {
+        const manual = ["a", "b", "c", "d", " "];
+        const generated = ["e", "f", "g", "h", "i", "j"];
+        expect(mergeTags(manual, generated)).toEqual([
+          "a",
+          "b",
+          "c",
+          "d",
+          "e",
+          "f",
+          "g",
+          "h",
+        ]);
+      });
+    });
+
+    describe("setRecordSummary", () => {
+      it("sets the summary, flips status to completed, and appends usage", async () => {
+        const record = await createHistoryRecord(transcribedInput(), historyDir);
+        expect(record.status).toBe("transcribed");
+
+        const updated = await setRecordSummary(
+          record.id,
+          {
+            summary: SUMMARY,
+            summaryEdited: false,
+            usage: [
+              {
+                modelId: "gpt-5-mini",
+                task: "summary",
+                provider: "assemblyai",
+                calls: 1,
+                tokensIn: 100,
+                tokensOut: 50,
+                costUSD: null,
+                estimated: false,
+              },
+            ],
+            outputPath: "/tmp/meeting.summary.md",
+          },
+          historyDir,
+        );
+
+        expect(updated.status).toBe("completed");
+        expect(updated.summary?.narrative).toBe("We planned things.");
+        expect(updated.summaryEdited).toBe(false);
+        expect(updated.usage).toHaveLength(1);
+        expect(updated.outputPath).toBe("/tmp/meeting.summary.md");
+
+        // Persisted, not just returned (record is truth).
+        const loaded = await loadHistoryRecord(record.id, historyDir);
+        expect(loaded.status).toBe("completed");
+        expect(loaded.summary?.title).toBe("Planning Sync");
+      });
+
+      it("leaves edited flags untouched when not provided", async () => {
+        const record = await createHistoryRecord(transcribedInput(), historyDir);
+        await applyEnrichmentToRecord(record.id, { tagsEdited: true }, historyDir);
+
+        const updated = await setRecordSummary(
+          record.id,
+          { summary: SUMMARY },
+          historyDir,
+        );
+        expect(updated.tagsEdited).toBe(true);
+      });
+    });
+
+    describe("setRecordTags", () => {
+      it("stores tags on a transcript-only record without completing it", async () => {
+        const record = await createHistoryRecord(transcribedInput(), historyDir);
+
+        const updated = await setRecordTags(
+          record.id,
+          { tags: ["planning", "roadmap"] },
+          historyDir,
+        );
+
+        // Tags live in a stub summary container; status is untouched — only
+        // a summary completes a record (E3-d).
+        expect(updated.summary?.tags).toEqual(["planning", "roadmap"]);
+        expect(updated.summary?.narrative).toBe("");
+        expect(updated.status).toBe("transcribed");
+      });
+
+      it("replaces tags on a completed record, keeping the summary intact", async () => {
+        const record = await createHistoryRecord(transcribedInput(), historyDir);
+        await completeHistoryRecord(
+          record.id,
+          { summary: SUMMARY, outputPath: "/tmp/meeting.summary.md" },
+          historyDir,
+        );
+
+        const updated = await setRecordTags(
+          record.id,
+          { tags: ["budget"], tagsEdited: false },
+          historyDir,
+        );
+        expect(updated.summary?.tags).toEqual(["budget"]);
+        expect(updated.summary?.narrative).toBe("We planned things.");
+        expect(updated.status).toBe("completed");
+        expect(updated.tagsEdited).toBe(false);
+      });
+    });
+
+    describe("applyEnrichmentToRecord", () => {
+      it("applies a summary edit, sets the flag as given, and completes the record", async () => {
+        const record = await createHistoryRecord(transcribedInput(), historyDir);
+
+        const updated = await applyEnrichmentToRecord(
+          record.id,
+          { summary: "Hand-edited narrative.", summaryEdited: true },
+          historyDir,
+        );
+
+        expect(updated.summary?.narrative).toBe("Hand-edited narrative.");
+        expect(updated.summaryEdited).toBe(true);
+        expect(updated.status).toBe("completed");
+
+        const loaded = await loadHistoryRecord(record.id, historyDir);
+        expect(loaded.summary?.narrative).toBe("Hand-edited narrative.");
+        expect(loaded.summaryEdited).toBe(true);
+      });
+
+      it("replaces tags verbatim (edits do not merge) and does not flip status", async () => {
+        const record = await createHistoryRecord(transcribedInput(), historyDir);
+        await setRecordTags(record.id, { tags: ["old", "tags"] }, historyDir);
+
+        const updated = await applyEnrichmentToRecord(
+          record.id,
+          { tags: ["only-this"], tagsEdited: true },
+          historyDir,
+        );
+
+        expect(updated.summary?.tags).toEqual(["only-this"]);
+        expect(updated.tagsEdited).toBe(true);
+        expect(updated.status).toBe("transcribed");
+      });
+
+      it("preserves existing summary fields when patching only the narrative", async () => {
+        const record = await createHistoryRecord(transcribedInput(), historyDir);
+        await completeHistoryRecord(
+          record.id,
+          { summary: SUMMARY, outputPath: "/tmp/meeting.summary.md" },
+          historyDir,
+        );
+
+        const updated = await applyEnrichmentToRecord(
+          record.id,
+          { summary: "Edited.", summaryEdited: true },
+          historyDir,
+        );
+        expect(updated.summary?.title).toBe("Planning Sync");
+        expect(updated.summary?.tags).toEqual(["planning"]);
+        expect(updated.summary?.keyTopics).toEqual(["**Roadmap** — Q3"]);
+      });
+
+      it("enriches legacy records that predate the enrichment fields", async () => {
+        // A legacy record has no contentHash, usage, or edited flags — only
+        // transcriptText is required for enrichment (E3-e).
+        const record = await createHistoryRecord(transcribedInput(), historyDir);
+        expect(record.summaryEdited).toBeUndefined();
+        expect(record.tagsEdited).toBeUndefined();
+
+        const updated = await applyEnrichmentToRecord(
+          record.id,
+          { tags: ["fresh"], tagsEdited: true },
+          historyDir,
+        );
+        expect(updated.summary?.tags).toEqual(["fresh"]);
+        expect(updated.tagsEdited).toBe(true);
+      });
     });
   });
 

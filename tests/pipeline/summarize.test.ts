@@ -1,10 +1,32 @@
-import { describe, it, expect } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
+
+// Mock the OpenAI client so generateTags/summarizeOnly never hit the network.
+// The prompt-builder and parser tests below are pure and unaffected.
+const createMock = vi.hoisted(() => vi.fn());
+vi.mock("openai", () => ({
+  default: class MockOpenAI {
+    chat = { completions: { create: createMock } };
+  },
+}));
+
 import {
   buildSummaryPrompt,
   buildSpeakerLabeledTranscript,
+  buildTagsPrompt,
+  generateTags,
   parseSummaryResponse,
+  parseTags,
+  sampleTranscriptForTags,
+  summarizeOnly,
 } from "../../src/pipeline/summarize.js";
 import type { TranscriptSegment } from "../../src/pipeline/transcribe.js";
+
+function gptResponse(content: string, promptTokens = 100, completionTokens = 20) {
+  return {
+    choices: [{ message: { content } }],
+    usage: { prompt_tokens: promptTokens, completion_tokens: completionTokens },
+  };
+}
 
 describe("buildSummaryPrompt", () => {
   it("includes the transcript in the prompt", () => {
@@ -19,6 +41,32 @@ describe("buildSummaryPrompt", () => {
     const prompt = buildSummaryPrompt("Some transcript.");
     expect(prompt).toContain("### Title");
     expect(prompt).toContain("### Tags");
+  });
+
+  it("omits the tags block when includeTags is false", () => {
+    const prompt = buildSummaryPrompt("Some transcript.", false, {
+      includeTags: false,
+    });
+    expect(prompt).not.toContain("### Tags");
+    // Everything else is intact.
+    expect(prompt).toContain("### Title");
+    expect(prompt).toContain("### Action Items");
+  });
+
+  it("includes the tags block when includeTags is explicitly true", () => {
+    const prompt = buildSummaryPrompt("Some transcript.", false, {
+      includeTags: true,
+    });
+    expect(prompt).toContain("### Tags");
+  });
+});
+
+describe("buildTagsPrompt", () => {
+  it("embeds the text and asks for a single comma-separated line", () => {
+    const prompt = buildTagsPrompt("We discussed hiring and the roadmap.");
+    expect(prompt).toContain("We discussed hiring and the roadmap.");
+    expect(prompt).toContain("3 to 6 short, lowercase topical tags");
+    expect(prompt).toContain("comma-separated");
   });
 });
 
@@ -72,6 +120,109 @@ Just a summary, no title.`;
     const result = parseSummaryResponse(response);
     expect(result.title).toBe("");
     expect(result.tags).toEqual([]);
+  });
+});
+
+describe("generateTags", () => {
+  beforeEach(() => {
+    createMock.mockReset();
+  });
+
+  it("parses tags from the model reply and reports usage", async () => {
+    createMock.mockResolvedValue(gptResponse("planning, roadmap, hiring", 40, 8));
+
+    const result = await generateTags("Some text.", "test-key", "gpt-5-mini");
+
+    expect(result.tags).toEqual(["planning", "roadmap", "hiring"]);
+    expect(result.tokenUsage).toEqual({ calls: 1, tokensIn: 40, tokensOut: 8 });
+    // The prompt is the tags prompt, capped at 1024 output tokens (reasoning
+    // models burn budget on reasoning tokens before emitting content).
+    const request = createMock.mock.calls[0][0];
+    expect(request.max_completion_tokens).toBe(1024);
+    expect(request.messages[0].content).toContain("topical tags");
+  });
+
+  it("throws when the reply parses to no tags (never writes empty tags)", async () => {
+    createMock.mockResolvedValue(gptResponse("   \n  "));
+
+    await expect(
+      generateTags("Some text.", "test-key", "gpt-5-mini"),
+    ).rejects.toThrow(/no usable tags/);
+  });
+
+  it("throws on an entirely empty completion", async () => {
+    createMock.mockResolvedValue(gptResponse(""));
+
+    await expect(
+      generateTags("Some text.", "test-key", "gpt-5-mini"),
+    ).rejects.toThrow(/Empty response/);
+  });
+});
+
+describe("summarizeOnly", () => {
+  beforeEach(() => {
+    createMock.mockReset();
+  });
+
+  it("uses the tag-less prompt and returns the parsed summary", async () => {
+    createMock.mockResolvedValue(
+      gptResponse("### Title\nSync\n\n### Summary\nWe met and decided things."),
+    );
+
+    const { summary } = await summarizeOnly("A transcript.", "test-key", "gpt-5-mini");
+
+    expect(summary.narrative).toBe("We met and decided things.");
+    const request = createMock.mock.calls[0][0];
+    expect(request.messages[0].content).not.toContain("### Tags");
+  });
+
+  it("throws when the response yields an empty narrative", async () => {
+    createMock.mockResolvedValue(gptResponse("### Title\nSync only, no summary."));
+
+    await expect(
+      summarizeOnly("A transcript.", "test-key", "gpt-5-mini"),
+    ).rejects.toThrow(/empty summary/);
+  });
+});
+
+describe("parseTags", () => {
+  it("returns [] for whitespace-only content", () => {
+    expect(parseTags("  \n ")).toEqual([]);
+  });
+
+  it("lowercases, dedupes, and caps at 8", () => {
+    expect(parseTags("A, a, B, c, d, e, f, g, h, i")).toEqual([
+      "a",
+      "b",
+      "c",
+      "d",
+      "e",
+      "f",
+      "g",
+      "h",
+    ]);
+  });
+});
+
+describe("sampleTranscriptForTags", () => {
+  it("returns short text unchanged", () => {
+    expect(sampleTranscriptForTags("short transcript")).toBe("short transcript");
+  });
+
+  it("samples head, middle, and tail of an over-long transcript", () => {
+    const head = "HEAD".repeat(30_000); // 120k chars
+    const middle = "MIDL".repeat(30_000);
+    const tail = "TAIL".repeat(30_000);
+    const text = head + middle + tail; // 360k chars ≈ 90k tokens
+
+    const sampled = sampleTranscriptForTags(text, 50_000);
+
+    // Fits the 50k-token (≈200k chars) budget and keeps material from all
+    // three regions.
+    expect(sampled.length).toBeLessThanOrEqual(50_000 * 4 + 20);
+    expect(sampled).toContain("HEAD");
+    expect(sampled).toContain("MIDL");
+    expect(sampled).toContain("TAIL");
   });
 });
 

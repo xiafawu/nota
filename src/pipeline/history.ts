@@ -64,6 +64,18 @@ export interface HistoryRecord {
    */
   usage?: UsageEntry[];
   summary?: MeetingSummary;
+  /**
+   * True when the summary narrative was last edited by hand (edited-is-
+   * protected: regeneration then requires --force). Optional because records
+   * written before enrichment shipped predate the field; absent means false.
+   */
+  summaryEdited?: boolean;
+  /**
+   * True when the tags were last touched by hand. Protected the same way;
+   * tag regeneration over edited tags merges rather than replaces, so manual
+   * tags are never silently dropped.
+   */
+  tagsEdited?: boolean;
   outputPath?: string;
   status: HistoryStatus;
 }
@@ -200,6 +212,150 @@ export async function completeHistoryRecord(
     usage: [...(record.usage ?? []), ...(input.usage ?? [])],
     status: "completed",
   };
+
+  await writeFile(filePath, JSON.stringify(updated, null, 2), "utf-8");
+  return updated;
+}
+
+/**
+ * Merge existing (manual-first) and freshly generated tags per E3-c:
+ * lowercase-normalized union — manual tags keep their order, generated tags
+ * append, case-insensitive dedup, capped at 8. Manual tags are never
+ * silently dropped by regeneration.
+ */
+export function mergeTags(manual: string[], generated: string[]): string[] {
+  const merged: string[] = [];
+  const seen = new Set<string>();
+  for (const tag of [...manual, ...generated]) {
+    const normalized = tag.trim().toLowerCase();
+    if (!normalized || seen.has(normalized)) continue;
+    seen.add(normalized);
+    merged.push(normalized);
+  }
+  return merged.slice(0, 8);
+}
+
+function emptySummary(): MeetingSummary {
+  return {
+    title: "",
+    tags: [],
+    narrative: "",
+    keyTopics: [],
+    decisions: [],
+    actionItems: [],
+  };
+}
+
+export interface SetSummaryInput {
+  summary: MeetingSummary;
+  /** New value for the edited flag (false after regeneration); omitted = keep. */
+  summaryEdited?: boolean;
+  tagsEdited?: boolean;
+  /** Usage entries to append (e.g. the generation's summary usage). */
+  usage?: UsageEntry[];
+  outputPath?: string;
+}
+
+/**
+ * Set (or replace) a record's summary. Record-first write ordering (E3-f):
+ * this persists the record; the caller rewrites the derived `.md` afterwards.
+ * A record that carries a summary is `completed` (E3-d).
+ */
+export async function setRecordSummary(
+  id: string,
+  input: SetSummaryInput,
+  historyDir = DEFAULT_HISTORY_DIR,
+): Promise<HistoryRecord> {
+  const filePath = historyPath(id, historyDir);
+  const record = await readHistoryFile(filePath);
+  const updated: HistoryRecord = {
+    ...record,
+    updatedAt: new Date().toISOString(),
+    summary: input.summary,
+    outputPath: input.outputPath ?? record.outputPath,
+    usage: input.usage ? [...(record.usage ?? []), ...input.usage] : record.usage,
+    status: "completed",
+  };
+  if (input.summaryEdited !== undefined) updated.summaryEdited = input.summaryEdited;
+  if (input.tagsEdited !== undefined) updated.tagsEdited = input.tagsEdited;
+
+  await writeFile(filePath, JSON.stringify(updated, null, 2), "utf-8");
+  return updated;
+}
+
+export interface SetTagsInput {
+  tags: string[];
+  /** New value for the edited flag; omitted = keep the current value. */
+  tagsEdited?: boolean;
+  /** Usage entries to append (e.g. the tags call's usage). */
+  usage?: UsageEntry[];
+}
+
+/**
+ * Set a record's tags (creating a stub summary container on a transcript-only
+ * record). Tags alone do not complete a record — `status` is untouched, only
+ * a summary flips it (E3-d). Record-first ordering as in
+ * {@link setRecordSummary}.
+ */
+export async function setRecordTags(
+  id: string,
+  input: SetTagsInput,
+  historyDir = DEFAULT_HISTORY_DIR,
+): Promise<HistoryRecord> {
+  const filePath = historyPath(id, historyDir);
+  const record = await readHistoryFile(filePath);
+  const updated: HistoryRecord = {
+    ...record,
+    updatedAt: new Date().toISOString(),
+    summary: { ...(record.summary ?? emptySummary()), tags: input.tags },
+    usage: input.usage ? [...(record.usage ?? []), ...input.usage] : record.usage,
+  };
+  if (input.tagsEdited !== undefined) updated.tagsEdited = input.tagsEdited;
+
+  await writeFile(filePath, JSON.stringify(updated, null, 2), "utf-8");
+  return updated;
+}
+
+/**
+ * Stdin payload of `nota history apply-enrichment` (the hidden plumbing verb
+ * the macOS app persists edits through). `summary` is the replacement
+ * narrative text; `tags` replace verbatim — an edit is the user's list,
+ * merging only applies to regeneration.
+ */
+export interface EnrichmentPatch {
+  summary?: string;
+  tags?: string[];
+  summaryEdited?: boolean;
+  tagsEdited?: boolean;
+}
+
+/**
+ * Apply a manual-edit patch to a record: record-first (E3-f), edited flags
+ * set exactly as given. A non-empty summary flips `status` to `completed`
+ * (E3-d); tags alone never do.
+ */
+export async function applyEnrichmentToRecord(
+  id: string,
+  patch: EnrichmentPatch,
+  historyDir = DEFAULT_HISTORY_DIR,
+): Promise<HistoryRecord> {
+  const filePath = historyPath(id, historyDir);
+  const record = await readHistoryFile(filePath);
+  const updated: HistoryRecord = {
+    ...record,
+    updatedAt: new Date().toISOString(),
+  };
+  if (patch.summary !== undefined || patch.tags !== undefined) {
+    const summary = { ...(record.summary ?? emptySummary()) };
+    if (patch.summary !== undefined) summary.narrative = patch.summary;
+    if (patch.tags !== undefined) summary.tags = patch.tags;
+    updated.summary = summary;
+  }
+  if (patch.summary !== undefined && patch.summary.trim().length > 0) {
+    updated.status = "completed";
+  }
+  if (patch.summaryEdited !== undefined) updated.summaryEdited = patch.summaryEdited;
+  if (patch.tagsEdited !== undefined) updated.tagsEdited = patch.tagsEdited;
 
   await writeFile(filePath, JSON.stringify(updated, null, 2), "utf-8");
   return updated;

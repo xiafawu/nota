@@ -2,6 +2,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { TranscriptSegment } from "./transcribe.js";
 import type { MeetingSummary } from "./summarize.js";
+import type { HistoryRecord } from "./history.js";
 import { formatTimestamp } from "./transcribe.js";
 
 export interface WriteInput {
@@ -67,4 +68,26 @@ export function defaultOutputPath(inputPath: string): string {
   const dir = path.dirname(inputPath);
   const name = path.basename(inputPath, path.extname(inputPath));
   return path.join(dir, `${name}.summary.md`);
+}
+
+/**
+ * Rewrite a record's markdown export from the record itself (record is truth,
+ * E3-a — the `.md` is a derived export). Returns the path written. Callers
+ * treat a failure here as a warning: the record was already persisted, and
+ * the next successful save repairs the file.
+ */
+export async function writeOutputFromRecord(record: HistoryRecord): Promise<string> {
+  const outputPath = record.outputPath ?? defaultOutputPath(record.sourcePath);
+  await writeOutput(
+    {
+      summary: record.summary,
+      segments: record.segments ?? [],
+      capturedDate: record.capturedAt ? record.capturedAt.split("T")[0] : null,
+      transcribedDate: record.createdAt.split("T")[0],
+      duration: record.durationMinutes,
+      source: record.sourceName,
+    },
+    outputPath,
+  );
+  return outputPath;
 }

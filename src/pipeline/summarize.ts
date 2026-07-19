@@ -27,7 +27,22 @@ export function buildSpeakerLabeledTranscript(
     .join("\n");
 }
 
-export function buildSummaryPrompt(transcript: string, hasSpeakers: boolean = false): string {
+/**
+ * The `### Tags` instruction block shared by the summary and rollup prompts.
+ * Omitted for summary-only regeneration (edited tags are protected, so the
+ * model is never asked for tags it would overwrite).
+ */
+const TAGS_PROMPT_BLOCK = `
+
+### Tags
+3 to 6 short, lowercase topical tags on a single line, comma-separated (for example: planning, roadmap, hiring).`;
+
+export function buildSummaryPrompt(
+  transcript: string,
+  hasSpeakers: boolean = false,
+  opts?: { includeTags?: boolean },
+): string {
+  const tagsBlock = opts?.includeTags === false ? "" : TAGS_PROMPT_BLOCK;
   return `You are an expert meeting summarizer. Analyze the following meeting transcript and produce a structured summary.
 
 ## Transcript
@@ -58,13 +73,23 @@ If no decisions were made, write "No explicit decisions were recorded."
 List each action item as a checkbox:
 - [ ] Action item — assigned to Person (if identifiable from the transcript)
 
-If no action items were identified, write "No action items were identified."
-
-### Tags
-3 to 6 short, lowercase topical tags on a single line, comma-separated (for example: planning, roadmap, hiring).`;
+If no action items were identified, write "No action items were identified."${tagsBlock}`;
 }
 
-function buildRollupPrompt(sectionSummaries: string[]): string {
+export function buildTagsPrompt(text: string): string {
+  return `You are labeling a meeting transcript with topical tags.
+
+## Transcript
+
+${text}
+
+## Instructions
+
+Reply with ONLY one line: 3 to 6 short, lowercase topical tags,
+comma-separated (for example: planning, roadmap, hiring). No other text.`;
+}
+
+function buildRollupPrompt(sectionSummaries: string[], includeTags: boolean): string {
   const combined = sectionSummaries
     .map((s, i) => `## Section ${i + 1}\n\n${s}`)
     .join("\n\n---\n\n");
@@ -93,10 +118,7 @@ Merge all decisions:
 
 ### Action Items
 Merge all action items, deduplicating:
-- [ ] Action item — assigned to Person
-
-### Tags
-3 to 6 short, lowercase topical tags on a single line, comma-separated (for example: planning, roadmap, hiring).`;
+- [ ] Action item — assigned to Person${includeTags ? TAGS_PROMPT_BLOCK : ""}`;
 }
 
 function cleanTitle(raw: string): string {
@@ -108,7 +130,7 @@ function cleanTitle(raw: string): string {
     .trim();
 }
 
-function parseTags(raw: string): string[] {
+export function parseTags(raw: string): string[] {
   const trimmed = raw.trim();
   if (!trimmed) return [];
   // Accept a comma-separated line or a bullet list.
@@ -201,11 +223,12 @@ export function summaryTokenLimit(
 async function callGPT(
   client: OpenAI,
   model: string,
-  prompt: string
+  prompt: string,
+  maxTokens: number = 4096
 ): Promise<{ content: string; usage: { promptTokens: number; completionTokens: number } }> {
   const response = await client.chat.completions.create({
     model,
-    ...summaryTokenLimit(model, 4096),
+    ...summaryTokenLimit(model, maxTokens),
     messages: [{ role: "user", content: prompt }],
   });
 
@@ -274,12 +297,13 @@ export function isOutputLimitError(err: unknown): boolean {
   );
 }
 
-export async function summarizeTranscript(
+async function runSummarization(
   transcript: string,
   apiKey: string,
   model: string,
-  segments?: TranscriptSegment[],
-  baseURL?: string
+  segments: TranscriptSegment[] | undefined,
+  baseURL: string | undefined,
+  includeTags: boolean
 ): Promise<{ summary: MeetingSummary; tokenUsage: { calls: number; tokensIn: number; tokensOut: number } }> {
   const client = new OpenAI({
     apiKey,
@@ -291,7 +315,7 @@ export async function summarizeTranscript(
     : transcript;
 
   if (!shouldChunkTranscript(textToSummarize)) {
-    const prompt = buildSummaryPrompt(textToSummarize, !!segments);
+    const prompt = buildSummaryPrompt(textToSummarize, !!segments, { includeTags });
     const { content, usage } = await callGPT(client, model, prompt);
     return {
       summary: parseSummaryResponse(content),
@@ -306,14 +330,14 @@ export async function summarizeTranscript(
   let totalTokensOut = 0;
 
   for (const section of sections) {
-    const prompt = buildSummaryPrompt(section, !!segments);
+    const prompt = buildSummaryPrompt(section, !!segments, { includeTags });
     const { content, usage } = await callGPT(client, model, prompt);
     totalTokensIn += usage.promptTokens;
     totalTokensOut += usage.completionTokens;
     sectionSummaries.push(content);
   }
 
-  const rollupPrompt = buildRollupPrompt(sectionSummaries);
+  const rollupPrompt = buildRollupPrompt(sectionSummaries, includeTags);
   const { content: rollupContent, usage: rollupUsage } = await callGPT(client, model, rollupPrompt);
   totalTokensIn += rollupUsage.promptTokens;
   totalTokensOut += rollupUsage.completionTokens;
@@ -323,4 +347,88 @@ export async function summarizeTranscript(
     summary: parseSummaryResponse(rollupContent),
     tokenUsage: { calls, tokensIn: totalTokensIn, tokensOut: totalTokensOut },
   };
+}
+
+export async function summarizeTranscript(
+  transcript: string,
+  apiKey: string,
+  model: string,
+  segments?: TranscriptSegment[],
+  baseURL?: string
+): Promise<{ summary: MeetingSummary; tokenUsage: { calls: number; tokensIn: number; tokensOut: number } }> {
+  return runSummarization(transcript, apiKey, model, segments, baseURL, true);
+}
+
+/**
+ * Summary-only regeneration: same call shape as {@link summarizeTranscript}
+ * but the prompt omits the `### Tags` block, so the record's (edited,
+ * protected) tags are never asked for or overwritten. Empty LLM content is a
+ * failure — the op throws rather than yield a blank narrative over data.
+ */
+export async function summarizeOnly(
+  transcript: string,
+  apiKey: string,
+  model: string,
+  segments?: TranscriptSegment[],
+  baseURL?: string
+): Promise<{ summary: MeetingSummary; tokenUsage: { calls: number; tokensIn: number; tokensOut: number } }> {
+  const result = await runSummarization(transcript, apiKey, model, segments, baseURL, false);
+  if (!result.summary.narrative.trim()) {
+    throw new Error("Summary model returned an empty summary");
+  }
+  return result;
+}
+
+/**
+ * Output-token cap for the tags-only call. Looks absurd for a one-line answer,
+ * but reasoning models (gpt-5*, deepseek) burn budget on reasoning tokens
+ * before emitting content; a tight cap yields `content: ""` +
+ * `finish_reason: "length"` (the PolishClient lesson, PR #54).
+ */
+const TAGS_TOKEN_CAP = 1024;
+
+/**
+ * Generate 3-6 topical tags for `text` via {@link buildTagsPrompt}. Throws
+ * when the model's reply parses to no tags — empty or malformed LLM content
+ * is a failure, never success, so callers can never write `tags: []` over
+ * existing data.
+ */
+export async function generateTags(
+  text: string,
+  apiKey: string,
+  model: string,
+  baseURL?: string
+): Promise<{ tags: string[]; tokenUsage: { calls: number; tokensIn: number; tokensOut: number } }> {
+  const client = new OpenAI({
+    apiKey,
+    baseURL: baseURL ?? (isGeminiModel(model) ? GEMINI_OPENAI_BASE_URL : undefined),
+  });
+  const { content, usage } = await callGPT(client, model, buildTagsPrompt(text), TAGS_TOKEN_CAP);
+  const tags = parseTags(content);
+  if (tags.length === 0) {
+    throw new Error("Tag generation returned no usable tags");
+  }
+  return {
+    tags,
+    tokenUsage: { calls: 1, tokensIn: usage.promptTokens, tokensOut: usage.completionTokens },
+  };
+}
+
+/**
+ * Evenly-sampled excerpts (head + middle + tail) of an over-long transcript,
+ * concatenated to fit a single ≤`maxTokens` tags call. Tags are topical gist —
+ * sampling is adequate, and it avoids running the section+rollup flow for a
+ * one-line answer.
+ */
+export function sampleTranscriptForTags(text: string, maxTokens: number = 50_000): string {
+  const approxCharsPerToken = 4; // matches estimateTokens in utils/tokens.ts
+  const maxChars = maxTokens * approxCharsPerToken;
+  if (text.length <= maxChars) return text;
+  const sliceLength = Math.floor(maxChars / 3);
+  const middleStart = Math.floor((text.length - sliceLength) / 2);
+  return [
+    text.slice(0, sliceLength),
+    text.slice(middleStart, middleStart + sliceLength),
+    text.slice(text.length - sliceLength),
+  ].join("\n\n[…]\n\n");
 }
