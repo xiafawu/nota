@@ -42,6 +42,7 @@ Swift UI), full TS + Swift test gates, screenshot verification for the UI lane.
 
 - [E1 Split-generation contract](tickets/E1-split-generation.md) — configured summary model for all ops (key availability beats hardcoded-cheap); tags = one-line-reply prompt, 1024 cap, throw-on-empty; input ladder summary-text → transcript → sampled excerpt; usage reuses `task: "summary"` (zero schema ripple). [Contract](assets/E1-contract.md).
 - [E2 Prototype: inline enrichment UI](tickets/E2-ui-prototype.md) — placeholder card with both generate actions in the summary slot; dual-entry summary edit (button + click-in, Esc/⌘Enter) with Edited badge; tag × on hover + "+ add tag" chip; confirm only when edited; in-flight row shows model + ~cost + Cancel; dashboard marks summary-less rows with a subtle "transcript" pill. [Decisions](assets/E2-mockups/decisions.md).
+- [E3 Storage & consistency contract](tickets/E3-storage-contract.md) — record is truth (.md derived, rewritten every change); per-field summaryEdited/tagsEdited flags; tag merge = lowercase union manual-first cap 8; on-demand summary flips status to completed; all legacy records enrichable; record-first-then-md atomicity; dup-detection serves edited summaries.
 
 ## Not yet specified
 
@@ -60,5 +61,5 @@ Swift UI), full TS + Swift test gates, screenshot verification for the UI lane.
 |---|---|---|---|
 | [E1 Split-generation contract: prompts, models, cost](tickets/E1-split-generation.md) | research | closed | — |
 | [E2 Prototype: inline enrichment UI in document view](tickets/E2-ui-prototype.md) | prototype | closed | — |
-| [E3 Storage & consistency contract for edits](tickets/E3-storage-contract.md) | grilling | open | — |
+| [E3 Storage & consistency contract for edits](tickets/E3-storage-contract.md) | grilling | closed | — |
 | [E4 Assemble enrichment spec](tickets/E4-assemble-spec.md) | task | open | E1, E2, E3 |

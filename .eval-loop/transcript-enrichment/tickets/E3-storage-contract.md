@@ -1,7 +1,7 @@
 <!-- wayfinder:grilling -->
 # E3 — Storage & consistency contract for edits
 
-status: open
+status: closed (resolved 2026-07-18)
 blocked-by: none (frontier)
 
 ## Question
@@ -22,3 +22,17 @@ detection's summary-reuse path serve the *edited* summary (recommended: yes, rec
 truth).
 
 Deliverable: resolution table in this ticket; feeds E4.
+
+## Resolution
+
+Grilled 2026-07-18; all seven decided:
+
+| # | Decision | Verdict |
+|---|---|---|
+| a | Source of truth | **HistoryRecord**; `.md` is a derived export, rewritten by `write.ts` on every change (hand-edits to the file are overwritten) |
+| b | Edited flags | **Per-field** `summaryEdited` + `tagsEdited`; `status` union unchanged (edited is orthogonal to lifecycle) |
+| c | Tag merge | **Lowercase-normalized union, manual first**: manual tags keep order, generated append, case-insensitive dedup, cap 8 |
+| d | Status flip | On-demand summary → **`completed`**; dashboard "transcript" pill clears; dup-reuse then applies |
+| e | Legacy records | **All enrichable** — only `transcriptText` is required and every record has it |
+| f | Atomicity | **Record first, `.md` second**; `.md` failure → warn, next save rewrites (always regenerable from truth); never reverse order |
+| g | Duplicate reuse | **Serves the edited summary** — record is truth, no special-casing |
