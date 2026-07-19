@@ -14,6 +14,11 @@ struct DocumentHeaderView: View {
   @Binding var chips: [SpeakerChip]
   var compact: Bool = false
   let onRename: (_ label: String, _ newName: String) -> Void
+  /// Non-nil when the open document has a history record: tags render as
+  /// editable chips driven by the record (×-on-hover removal plus an
+  /// always-visible "+ add tag" chip). Nil keeps the static pills for
+  /// imported markdown without a record.
+  var tagEditing: EnrichmentTagEditing?
 
   var body: some View {
     VStack(alignment: .leading, spacing: Metrics.docHeaderSpacing) {
@@ -37,7 +42,10 @@ struct DocumentHeaderView: View {
             .padding(.top, Metrics.tagTopPadding)
         }
 
-        if !meta.tags.isEmpty {
+        if let tagEditing {
+          EditableTagRow(state: tagEditing)
+            .padding(.top, Metrics.tagTopPadding)
+        } else if !meta.tags.isEmpty {
           FlowLayout(spacing: Metrics.tagSpacing, lineSpacing: Metrics.tagSpacing) {
             ForEach(meta.tags, id: \.self) { tag in
               Text(tag)
@@ -176,6 +184,131 @@ private struct SpeakerChipButton: View {
   private func commit() {
     showRenamePopover = false
     onRename(chip.label, draft.trimmingCharacters(in: .whitespacesAndNewlines))
+  }
+}
+
+// MARK: - Editable tags (record-driven)
+
+/// Inputs for the editable tag row: current record tags plus add/remove
+/// callbacks that persist through the CLI's apply-enrichment verb.
+struct EnrichmentTagEditing {
+  var tags: [String]
+  var onAdd: (String) -> Void
+  var onRemove: (String) -> Void
+}
+
+private struct EditableTagRow: View {
+  let state: EnrichmentTagEditing
+
+  var body: some View {
+    FlowLayout(spacing: Metrics.tagSpacing, lineSpacing: Metrics.tagSpacing) {
+      ForEach(state.tags, id: \.self) { tag in
+        RemovableTagChip(tag: tag, onRemove: { state.onRemove(tag) })
+      }
+      AddTagChip(onAdd: state.onAdd)
+    }
+  }
+}
+
+/// A tag pill whose × affordance appears only on hover (E2: chips clean at rest).
+private struct RemovableTagChip: View {
+  let tag: String
+  let onRemove: () -> Void
+
+  @State private var isHovering = false
+
+  var body: some View {
+    HStack(spacing: 3) {
+      Text(tag)
+        .font(Tokens.historyTagFont)
+        .foregroundStyle(.secondary)
+      if isHovering {
+        Button(action: onRemove) {
+          Image(systemName: "xmark")
+            .font(.system(size: 7, weight: .bold))
+            .foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help("Remove tag")
+      }
+    }
+    .padding(.horizontal, Metrics.tagPillH)
+    .padding(.vertical, Metrics.tagPillV)
+    .background(Tokens.tagPillFill, in: Capsule())
+    .onHover { isHovering = $0 }
+    .animation(Tokens.animSnap, value: isHovering)
+  }
+}
+
+/// Always-visible dashed "+ add tag" chip; clicking reveals an inline field
+/// (Enter commits, Esc or focus loss cancels).
+private struct AddTagChip: View {
+  let onAdd: (String) -> Void
+
+  @State private var isEditing = false
+  @State private var draft = ""
+  @FocusState private var fieldFocused: Bool
+
+  var body: some View {
+    Group {
+      if isEditing {
+        TextField("tag", text: $draft)
+          .font(Tokens.historyTagFont)
+          .textFieldStyle(.plain)
+          .frame(minWidth: 56, maxWidth: 110)
+          .focused($fieldFocused)
+          .onSubmit { commit() }
+          .onExitCommand { cancel() }
+          .onChange(of: fieldFocused) { _, focused in
+            if !focused { cancel() }
+          }
+          .padding(.horizontal, Metrics.tagPillH)
+          .padding(.vertical, Metrics.tagPillV)
+          .background(
+            Capsule().strokeBorder(.secondary.opacity(0.4), lineWidth: 1)
+          )
+          .onAppear { fieldFocused = true }
+      } else {
+        Button {
+          draft = ""
+          isEditing = true
+        } label: {
+          HStack(spacing: 2) {
+            Image(systemName: "plus")
+              .font(.system(size: 7, weight: .bold))
+            Text("add tag")
+              .font(Tokens.historyTagFont)
+          }
+          .foregroundStyle(.secondary)
+          .padding(.horizontal, Metrics.tagPillH)
+          .padding(.vertical, Metrics.tagPillV)
+        }
+        .buttonStyle(.plain)
+        .background(
+          Capsule()
+            .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+            .foregroundStyle(.secondary.opacity(0.5))
+        )
+        .help("Add a tag")
+      }
+    }
+    .animation(Tokens.animSnap, value: isEditing)
+  }
+
+  private func commit() {
+    let value = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    isEditing = false
+    fieldFocused = false
+    draft = ""
+    if !value.isEmpty {
+      onAdd(value)
+    }
+  }
+
+  private func cancel() {
+    isEditing = false
+    fieldFocused = false
+    draft = ""
   }
 }
 

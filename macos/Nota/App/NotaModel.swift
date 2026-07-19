@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -35,21 +36,48 @@ final class NotaModel: ObservableObject {
   @Published var preflight: PreflightResult?
   @Published var isCheckingPreflight = false
 
+  /// History-record status per output path (standardized), driving the
+  /// dashboard's "transcript" pill on transcript-only Recent rows.
+  @Published private(set) var historyStatuses: [String: String] = [:]
+
+  /// Enrichment state for the open document (summary slot, tag editing).
+  /// All of its mutations go through the CLI contract verbs.
+  let enrichment = EnrichmentController.shared
+
   private let projectDirectory = URL(fileURLWithPath: ProcessInfo.processInfo.environment["NOTA_PROJECT_DIR"] ?? "/Users/xiafawu/Developer/Nota")
   private let outputDirectory = notaOutputDirectory()
+
+  /// Enrichment generations append usage entries to the record; the dashboard
+  /// consumes this flag to invalidate the usage-stats cache on next show.
+  private var usageStatsStale = false
+  private var enrichmentSink: AnyCancellable?
 
   /// The history record whose `outputPath` matches the current `lastOutputURL`,
   /// cached on document open so the enroll queue can look up `historyId` and
   /// `sourcePath` without re-scanning history every rename.
   private var cachedHistoryRecord: HistoryRecordInfo?
 
+  /// Rich text for the document view. When the open record drives the summary
+  /// slot (record is truth), the `## Summary` narrative is stripped from the
+  /// body so it renders exactly once; copy/export use `fullRichText`.
   var richText: NSAttributedString {
-    let overrides = Dictionary(
+    let display = enrichment.record?.hasSummaryNarrative == true
+      ? strippingSummaryNarrativeSection(markdown)
+      : markdown
+    return renderMarkdownAsRichText(display, overrides: speakerNameOverrides)
+  }
+
+  /// The complete document (summary included) for copy and export.
+  private var fullRichText: NSAttributedString {
+    renderMarkdownAsRichText(markdown, overrides: speakerNameOverrides)
+  }
+
+  private var speakerNameOverrides: [String: String] {
+    Dictionary(
       uniqueKeysWithValues: speakerChips
         .filter { !$0.name.isEmpty }
         .map { ($0.label, $0.name) }
     )
-    return renderMarkdownAsRichText(markdown, overrides: overrides)
   }
 
   var hasContent: Bool {
@@ -73,9 +101,48 @@ final class NotaModel: ObservableObject {
         self.accept(first)
       }
     }
+    // Re-render whenever enrichment state changes: the document view's summary
+    // slot, header tag chips, and stripped body all derive from the controller.
+    enrichmentSink = enrichment.objectWillChange.sink { [weak self] in
+      self?.objectWillChange.send()
+    }
+    enrichment.onRecordUpdated = { [weak self] record, kind in
+      self?.handleEnrichmentUpdate(record, kind: kind)
+    }
     refreshHistory()
     // Run the readiness check on launch so the home shows health immediately.
     runPreflight()
+  }
+
+  /// After the CLI applied a generation or edit: the record was updated first
+  /// and the `.md` rewritten second, so reload the open document from disk,
+  /// refresh the dashboard (the "transcript" pill clears on completion), and
+  /// mark usage stats stale when new spend landed on the record.
+  private func handleEnrichmentUpdate(_ record: EnrichmentRecord, kind: EnrichmentController.UpdateKind) {
+    if kind == .generated {
+      usageStatsStale = true
+    }
+    if let outputPath = record.outputPath {
+      let outputURL = URL(fileURLWithPath: outputPath).standardizedFileURL
+      if lastOutputURL?.standardizedFileURL == outputURL,
+         let content = try? String(contentsOf: outputURL, encoding: .utf8) {
+        markdown = content
+      }
+    }
+    refreshHistory()
+  }
+
+  /// One-shot read of the usage-stale flag (dashboard invalidates its cache
+  /// when this returns true).
+  func consumeUsageStatsStale() -> Bool {
+    defer { usageStatsStale = false }
+    return usageStatsStale
+  }
+
+  /// History-record status ("transcribed"/"completed") for a dashboard entry,
+  /// nil when no record matches (e.g. imported markdown).
+  func recordStatus(for entry: HistoryEntry) -> String? {
+    historyStatuses[entry.url.standardizedFileURL.path]
   }
 
   /// Run the preflight readiness check and publish the result for the home
@@ -135,6 +202,7 @@ final class NotaModel: ObservableObject {
 
     markdown = ""
     lastOutputURL = nil
+    enrichment.setRecord(nil)
     displayName = friendlyName
     displayPath = fileURL.path
     status = "Copying audio..."
@@ -210,6 +278,19 @@ final class NotaModel: ObservableObject {
       return HistoryEntry.make(url: url, modifiedAt: date)
     }
     history = entries.sorted { $0.modifiedAt > $1.modifiedAt }
+    refreshHistoryStatuses()
+  }
+
+  /// Rebuild the outputPath → record-status map off the main thread (history
+  /// records carry full transcripts, so parsing them inline would jank).
+  private func refreshHistoryStatuses() {
+    let historyDir = notaHistoryDirectory()
+    Task { @MainActor [weak self] in
+      let statuses = await Task.detached(priority: .utility) {
+        HistoryRecordInfo.statusesByOutputPath(historyDir: historyDir)
+      }.value
+      self?.historyStatuses = statuses
+    }
   }
 
   func openHistory(_ entry: HistoryEntry) {
@@ -244,6 +325,7 @@ final class NotaModel: ObservableObject {
     status = "Drop audio to transcribe"
     speakerChips = []
     cachedHistoryRecord = nil
+    enrichment.setRecord(nil)
   }
 
   func deleteHistory(_ entry: HistoryEntry) {
@@ -272,7 +354,7 @@ final class NotaModel: ObservableObject {
       return
     }
 
-    let attributedText = richText
+    let attributedText = fullRichText
     let pasteboard = NSPasteboard.general
     pasteboard.clearContents()
     if let data = try? rtfData(from: attributedText) {
@@ -317,7 +399,7 @@ final class NotaModel: ObservableObject {
     }
 
     do {
-      try rtfData(from: richText).write(to: url, options: .atomic)
+      try rtfData(from: fullRichText).write(to: url, options: .atomic)
       status = "Exported Rich Text"
     } catch {
       status = "Export failed"
@@ -548,16 +630,22 @@ final class NotaModel: ObservableObject {
     let labels = Self.parseSpeakerLabels(from: markdown)
     let sidecar = SpeakerSidecar.load(for: documentURL)
 
-    // Cache history record (background task to avoid blocking main thread)
+    // Cache history record (background task to avoid blocking main thread).
+    // The same lookup loads the enrichment slice of the record, which drives
+    // the summary slot and editable tag chips for the open document.
     cachedHistoryRecord = nil
+    enrichment.setRecord(nil)
     let historyDir = notaHistoryDirectory()
     let docPath = documentURL.path
     Task { @MainActor [weak self] in
       guard let self else { return }
-      let info = await Task.detached(priority: .utility) {
-        HistoryRecordInfo.find(outputPath: docPath, historyDir: historyDir)
+      let (info, record) = await Task.detached(priority: .utility) { () -> (HistoryRecordInfo?, EnrichmentRecord?) in
+        let info = HistoryRecordInfo.find(outputPath: docPath, historyDir: historyDir)
+        let record = info.flatMap { EnrichmentRecord.load(from: $0.recordURL) }
+        return (info, record)
       }.value
       self.cachedHistoryRecord = info
+      self.enrichment.setRecord(record)
     }
 
     speakerChips = labels.map { label in
@@ -639,6 +727,9 @@ struct NotaResult {
 struct HistoryRecordInfo {
   let historyID: String
   let sourcePath: String
+  /// The `~/.nota/history/<id>.json` file the info was read from, so the
+  /// enrichment record can be decoded without re-scanning the directory.
+  let recordURL: URL
 
   /// Walk `~/.nota/history/*.json` and return the record whose `outputPath`
   /// matches `outputPath`. Returns nil when no match exists (imported .md).
@@ -663,9 +754,37 @@ struct HistoryRecordInfo {
       else {
         continue
       }
-      return HistoryRecordInfo(historyID: id, sourcePath: source)
+      return HistoryRecordInfo(historyID: id, sourcePath: source, recordURL: entry)
     }
     return nil
+  }
+
+  /// outputPath (standardized) → `status` for every history record. Feeds the
+  /// dashboard's "transcript" pill; records without an `outputPath` are
+  /// skipped (they have no row to badge).
+  static func statusesByOutputPath(historyDir: URL) -> [String: String] {
+    let fileManager = FileManager.default
+    guard let entries = try? fileManager.contentsOfDirectory(
+      at: historyDir,
+      includingPropertiesForKeys: nil,
+      options: []
+    ) else {
+      return [:]
+    }
+
+    var statuses: [String: String] = [:]
+    for entry in entries where entry.pathExtension == "json" {
+      guard
+        let data = try? Data(contentsOf: entry),
+        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let outputPath = json["outputPath"] as? String,
+        let status = json["status"] as? String
+      else {
+        continue
+      }
+      statuses[URL(fileURLWithPath: outputPath).standardizedFileURL.path] = status
+    }
+    return statuses
   }
 }
 

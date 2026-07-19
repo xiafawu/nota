@@ -85,6 +85,11 @@ struct HomeDashboardView: View {
       .frame(maxWidth: .infinity, alignment: .leading)
     }
     .onAppear {
+      // On-demand generation appends usage to the record while the dashboard
+      // is hidden; drop the cache so the new spend shows in the cost card.
+      if model.consumeUsageStatsStale() {
+        usageProvider.invalidateCache()
+      }
       Task { await usageProvider.refresh(window: usageWindow) }
     }
     .onChange(of: usageWindow) { _, newValue in
@@ -195,7 +200,11 @@ struct HomeDashboardView: View {
             Button {
               model.openHistory(entry)
             } label: {
-              HistoryDashboardRow(entry: entry, now: now)
+              HistoryDashboardRow(
+                entry: entry,
+                now: now,
+                showsTranscriptPill: showsTranscriptPill(recordStatus: model.recordStatus(for: entry))
+              )
             }
             .buttonStyle(HistoryRowButtonStyle())
             .disabled(model.isRunning)
@@ -415,6 +424,10 @@ private struct HistoryDashboardRow: View {
   let entry: HistoryEntry
   var now: Date = Date()
 
+  /// Subtle badge for transcript-only records; clears when the record
+  /// completes (driven by the history record's status, not the file).
+  var showsTranscriptPill: Bool = false
+
   /// Untitled runs fall back to the source filename instead of the generic
   /// "Transcript" heading (the date line below carries the rest).
   private var displayTitle: String {
@@ -444,6 +457,17 @@ private struct HistoryDashboardRow: View {
       }
 
       Spacer()
+
+      if showsTranscriptPill {
+        Text("transcript")
+          .font(.caption2)
+          .foregroundColor(.secondary)
+          .padding(.horizontal, 6)
+          .padding(.vertical, 2)
+          .overlay(
+            Capsule().strokeBorder(.secondary.opacity(0.35), lineWidth: 1)
+          )
+      }
 
       if !entry.tags.isEmpty {
         HStack(spacing: 4) {
