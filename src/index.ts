@@ -18,6 +18,14 @@ import {
   showSpeaker,
 } from "./cli/speakers.js";
 import { enrollSpeaker, EnrollError } from "./cli/enroll.js";
+import {
+  EnrichError,
+  applyEnrichment,
+  parseEnrichmentPayload,
+  readStdinText,
+  summarizeRecord,
+  tagRecord,
+} from "./cli/enrich.js";
 import { printConfig } from "./cli/config.js";
 import { preflightCommand } from "./cli/preflight.js";
 import { applyEnvFile } from "./utils/env-file.js";
@@ -190,6 +198,60 @@ history
         `\nError: ${error instanceof Error ? error.message : String(error)}`,
       );
       process.exit(1);
+    }
+  });
+
+// Hidden plumbing verb: the macOS app persists summary/tag edits through this
+// (spawned like `usage --json`), so there is exactly one markdown renderer and
+// one atomicity implementation. Not part of the user-facing CLI surface.
+history
+  .command("apply-enrichment <history-id>", { hidden: true })
+  .option("--json", "Read the enrichment payload as JSON from stdin")
+  .action(async (id: string) => {
+    try {
+      const patch = parseEnrichmentPayload(await readStdinText());
+      const record = await applyEnrichment(id, patch);
+      console.log(JSON.stringify(record, null, 2));
+    } catch (error) {
+      handleEnrichError(error);
+    }
+  });
+
+function handleEnrichError(error: unknown): never {
+  console.error(
+    `\nError: ${error instanceof Error ? error.message : String(error)}`,
+  );
+  process.exit(error instanceof EnrichError ? error.exitCode : 1);
+}
+
+program
+  .command("summarize")
+  .description("Generate (or regenerate) the summary for a saved transcript")
+  .argument("<history-id>", "History record id or unique prefix")
+  .option("--force", "Regenerate even if the summary was manually edited")
+  .action(async (id: string, options) => {
+    try {
+      const record = await summarizeRecord(id, { force: options.force });
+      console.log(JSON.stringify(record, null, 2));
+    } catch (error) {
+      handleEnrichError(error);
+    }
+  });
+
+program
+  .command("tag")
+  .description("Generate topical tags for a saved transcript (merged with existing tags)")
+  .argument("<history-id>", "History record id or unique prefix")
+  .option(
+    "--force",
+    "Regenerate even if tags were manually edited (manual tags are kept and merged)",
+  )
+  .action(async (id: string, options) => {
+    try {
+      const record = await tagRecord(id, { force: options.force });
+      console.log(JSON.stringify(record, null, 2));
+    } catch (error) {
+      handleEnrichError(error);
     }
   });
 
