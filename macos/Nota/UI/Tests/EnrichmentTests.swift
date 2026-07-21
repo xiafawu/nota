@@ -391,6 +391,47 @@ final class TopicChipPartsTests: XCTestCase {
   }
 }
 
+final class InlineMarkdownTests: XCTestCase {
+  func testStrippingBold() {
+    XCTAssertEqual(
+      strippingInlineMarkdown("**Build a simple prototype first**"),
+      "Build a simple prototype first"
+    )
+  }
+
+  func testStrippingMixedInline() {
+    XCTAssertEqual(
+      strippingInlineMarkdown("Use *iterators* and `Vec<T>` — **not** raw pointers"),
+      "Use iterators and Vec<T> — not raw pointers"
+    )
+  }
+
+  func testPlainTextPassesThrough() {
+    XCTAssertEqual(
+      strippingInlineMarkdown("Email Michael about availability"),
+      "Email Michael about availability"
+    )
+  }
+
+  func testAttributedKeepsBoldRun() {
+    let attributed = inlineMarkdownAttributed("**Lead** — rest")
+    XCTAssertEqual(String(attributed.characters), "Lead — rest")
+    let leadRun = attributed.runs.first
+    XCTAssertNotNil(leadRun?.inlinePresentationIntent)
+    XCTAssertTrue(
+      leadRun?.inlinePresentationIntent?.contains(.stronglyEmphasized) ?? false
+    )
+  }
+
+  func testUnclosedMarkerFallsBackToRawText() {
+    // Inline parser treats a dangling ** as literal; either way the text must
+    // never be lost.
+    XCTAssertTrue(
+      strippingInlineMarkdown("**Unclosed lead — rest").contains("Unclosed lead")
+    )
+  }
+}
+
 // MARK: - Controller (process layer mocked)
 
 @MainActor

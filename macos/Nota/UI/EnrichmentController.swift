@@ -158,6 +158,26 @@ func topicChipParts(_ topic: String) -> (term: String, detail: String?) {
   return (term, detail.isEmpty ? nil : detail)
 }
 
+/// Parse a summary list item's inline markdown (`**bold**`, `*italic*`,
+/// `` `code` ``) for slot display — the record stores the model's markdown
+/// verbatim, and rendering it raw leaks literal asterisks into the UI.
+/// Inline-only: block syntax stays literal, whitespace is preserved. Falls
+/// back to the raw string when parsing fails.
+func inlineMarkdownAttributed(_ text: String) -> AttributedString {
+  (try? AttributedString(
+    markdown: text,
+    options: AttributedString.MarkdownParsingOptions(
+      interpretedSyntax: .inlineOnlyPreservingWhitespace
+    )
+  )) ?? AttributedString(text)
+}
+
+/// Flatten inline markdown to plain text — for surfaces that can't carry
+/// formatting (chip faces, `.help` tooltips).
+func strippingInlineMarkdown(_ text: String) -> String {
+  String(inlineMarkdownAttributed(text).characters)
+}
+
 // MARK: - Errors
 
 enum EnrichmentCLIError: LocalizedError {

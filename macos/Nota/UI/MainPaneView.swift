@@ -472,7 +472,7 @@ private struct EnrichmentSlotView: View {
     // One line always: when FlowLayout clamps an over-wide chip to the row
     // width, the term truncates with an ellipsis instead of wrapping inside
     // the capsule.
-    let chip = Text(parts.term)
+    let chip = Text(strippingInlineMarkdown(parts.term))
       .font(.caption)
       .lineLimit(1)
       .padding(.horizontal, 9)
@@ -480,7 +480,7 @@ private struct EnrichmentSlotView: View {
       .background(.thinMaterial, in: Capsule())
       .overlay(Capsule().strokeBorder(.secondary.opacity(0.3)))
     if let detail = parts.detail {
-      chip.help(detail)
+      chip.help(strippingInlineMarkdown(detail))
     } else {
       chip
     }
@@ -493,8 +493,12 @@ private struct EnrichmentSlotView: View {
         HStack(alignment: .firstTextBaseline, spacing: 6) {
           Text("•")
             .foregroundStyle(.tertiary)
-          Text(item)
+          // fixedSize: after the stacked→two-column width flip, a plain Text
+          // can keep the narrower layout's cached 2-line height and truncate
+          // mid-word; forcing ideal vertical size always shows every line.
+          Text(inlineMarkdownAttributed(item))
             .font(.subheadline)
+            .fixedSize(horizontal: false, vertical: true)
         }
       }
     }
@@ -508,8 +512,9 @@ private struct EnrichmentSlotView: View {
           Image(systemName: "square")
             .font(.caption)
             .foregroundStyle(.secondary)
-          Text(displayActionItem(item))
+          Text(inlineMarkdownAttributed(displayActionItem(item)))
             .font(.subheadline)
+            .fixedSize(horizontal: false, vertical: true)
         }
       }
     }
