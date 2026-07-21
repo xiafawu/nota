@@ -377,6 +377,18 @@ final class TopicChipPartsTests: XCTestCase {
     XCTAssertEqual(parts.term, "cost-benefit - tradeoffs")
     XCTAssertNil(parts.detail)
   }
+
+  func testMultipleSeparators_splitsAtTheFirst() {
+    let parts = topicChipParts("A — B — C")
+    XCTAssertEqual(parts.term, "A")
+    XCTAssertEqual(parts.detail, "B — C")
+  }
+
+  func testEmptyRemainderAfterSeparator_detailIsNil() {
+    let parts = topicChipParts("Job search — ")
+    XCTAssertEqual(parts.term, "Job search")
+    XCTAssertNil(parts.detail)
+  }
 }
 
 // MARK: - Controller (process layer mocked)

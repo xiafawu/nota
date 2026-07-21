@@ -57,14 +57,25 @@ final class NotaModel: ObservableObject {
   /// `sourcePath` without re-scanning history every rename.
   private var cachedHistoryRecord: HistoryRecordInfo?
 
-  /// Rich text for the document view. When the open record drives the summary
-  /// slot (record is truth), the whole summary block (narrative + key topics +
-  /// decisions + action items) is stripped from the body — the slot renders it
-  /// and the body stays transcript-only; copy/export use `fullRichText`.
+  /// Rich text for the document view. While the slot actually renders the
+  /// summary section (record is truth), the whole summary block (narrative +
+  /// key topics + decisions + action items) is stripped from the body — the
+  /// slot renders it and the body stays transcript-only. During an in-flight
+  /// generation the slot shows only the progress row, so the body keeps the
+  /// full markdown rather than hiding the summary content everywhere.
+  /// Copy/export use `fullRichText`.
   var richText: NSAttributedString {
-    let display = enrichment.record?.hasSummaryNarrative == true
-      ? strippingEnrichmentSections(markdown)
-      : markdown
+    let slotState = enrichmentSlotState(
+      record: enrichment.record,
+      activity: enrichment.activity,
+      modelID: enrichment.generatingModelID
+    )
+    let display: String
+    if case .summary = slotState {
+      display = strippingEnrichmentSections(markdown)
+    } else {
+      display = markdown
+    }
     return renderMarkdownAsRichText(display, overrides: speakerNameOverrides)
   }
 

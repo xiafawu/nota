@@ -183,6 +183,14 @@ private struct EnrichmentSlotView: View {
   @State private var isEditingSummary = false
   @State private var summaryDraft = ""
   @State private var confirmTarget: EnrichmentField?
+  /// Measured width of the decisions/action-items block, driving the
+  /// two-columns-vs-stacked choice (see `structuredSummary`).
+  @State private var structuredColumnsWidth: CGFloat = 0
+
+  /// Minimum measured width at which decisions + action items render side by
+  /// side; below it they stack. Each column keeps a readable wrapped measure
+  /// (~28 characters of `.subheadline`) at this threshold.
+  private static let twoColumnMinWidth: CGFloat = 480
 
   private var slotState: EnrichmentSlotState {
     enrichmentSlotState(
@@ -406,18 +414,31 @@ private struct EnrichmentSlotView: View {
       topicsBlock
     }
     if !decisions.isEmpty && !actionItems.isEmpty {
-      // Two columns side by side when they fit, stacked when the pane is narrow.
-      ViewThatFits(in: .horizontal) {
-        HStack(alignment: .top, spacing: 18) {
-          decisionsColumn
-            .frame(maxWidth: .infinity, alignment: .leading)
-          actionItemsColumn
-            .frame(maxWidth: .infinity, alignment: .leading)
+      // Two wrapped columns when the pane is wide, stacked when it is narrow.
+      // Branches on the MEASURED container width, not ViewThatFits: that keys
+      // off ideal (unwrapped single-line) text width, which never fits for
+      // sentence-length items and still picks two cramped columns for short
+      // ones in a narrow pane.
+      Group {
+        if structuredColumnsWidth >= Self.twoColumnMinWidth {
+          HStack(alignment: .top, spacing: 18) {
+            decisionsColumn
+              .frame(maxWidth: .infinity, alignment: .leading)
+            actionItemsColumn
+              .frame(maxWidth: .infinity, alignment: .leading)
+          }
+        } else {
+          VStack(alignment: .leading, spacing: 12) {
+            decisionsColumn
+            actionItemsColumn
+          }
         }
-        VStack(alignment: .leading, spacing: 12) {
-          decisionsColumn
-          actionItemsColumn
-        }
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .onGeometryChange(for: CGFloat.self) { proxy in
+        proxy.size.width
+      } action: { width in
+        structuredColumnsWidth = width
       }
       .padding(.top, 4)
     } else if !decisions.isEmpty {
@@ -433,7 +454,9 @@ private struct EnrichmentSlotView: View {
     VStack(alignment: .leading, spacing: 6) {
       sectionLabel("Topics")
       FlowLayout(spacing: Metrics.tagSpacing, lineSpacing: Metrics.tagSpacing) {
-        ForEach(keyTopics, id: \.self) { topic in
+        // Positional identity: these arrays come verbatim from the LLM and are
+        // never deduplicated, so `id: \.self` could collide on a repeated item.
+        ForEach(Array(keyTopics.enumerated()), id: \.offset) { _, topic in
           topicChip(topic)
         }
       }
@@ -446,8 +469,12 @@ private struct EnrichmentSlotView: View {
   @ViewBuilder
   private func topicChip(_ topic: String) -> some View {
     let parts = topicChipParts(topic)
+    // One line always: when FlowLayout clamps an over-wide chip to the row
+    // width, the term truncates with an ellipsis instead of wrapping inside
+    // the capsule.
     let chip = Text(parts.term)
       .font(.caption)
+      .lineLimit(1)
       .padding(.horizontal, 9)
       .padding(.vertical, 3)
       .background(.thinMaterial, in: Capsule())
@@ -462,7 +489,7 @@ private struct EnrichmentSlotView: View {
   private var decisionsColumn: some View {
     VStack(alignment: .leading, spacing: 6) {
       sectionLabel("Decisions")
-      ForEach(decisions, id: \.self) { item in
+      ForEach(Array(decisions.enumerated()), id: \.offset) { _, item in
         HStack(alignment: .firstTextBaseline, spacing: 6) {
           Text("•")
             .foregroundStyle(.tertiary)
@@ -476,7 +503,7 @@ private struct EnrichmentSlotView: View {
   private var actionItemsColumn: some View {
     VStack(alignment: .leading, spacing: 6) {
       sectionLabel("Action Items")
-      ForEach(actionItems, id: \.self) { item in
+      ForEach(Array(actionItems.enumerated()), id: \.offset) { _, item in
         HStack(alignment: .firstTextBaseline, spacing: 6) {
           Image(systemName: "square")
             .font(.caption)
