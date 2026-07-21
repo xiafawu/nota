@@ -89,12 +89,10 @@ struct ContentView: View {
           ShareMenu(model: model)
         }
       case .home:
-        Button {
-          model.newTranscription()
-        } label: {
-          Label("New Transcription", systemImage: "plus")
+        SettingsLink {
+          Label("Settings", systemImage: "gearshape")
         }
-        .help("Start a new transcription")
+        .help("Open settings")
       case .running:
         EmptyView()
       }
