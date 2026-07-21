@@ -88,6 +88,12 @@ enum PreflightRunner {
       let errorPipe = Pipe()
       process.standardOutput = outputPipe
       process.standardError = errorPipe
+      // Never inherit stdin: when the app itself was launched from a terminal
+      // (e.g. as an xcodebuild test host), the child sees a pty slave and
+      // node's TTY bootstrap re-opens it via ttyname(), where open(2) can
+      // block forever — leaving an orphaned `nota preflight` process that
+      // keeps the app's ghost Dock icon alive after exit.
+      process.standardInput = FileHandle.nullDevice
 
       try process.run()
       // Drain before waitUntilExit so a large JSON payload can't deadlock the pipe.

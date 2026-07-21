@@ -130,6 +130,9 @@ final class UsageStatsProvider: ObservableObject {
     let errorPipe = Pipe()
     shell.standardOutput = outputPipe
     shell.standardError = errorPipe
+    // Never inherit stdin — a pty slave inherited from a terminal-launched
+    // host can hang node's TTY bootstrap in open(2) (see PreflightRunner).
+    shell.standardInput = FileHandle.nullDevice
 
     try shell.run()
 

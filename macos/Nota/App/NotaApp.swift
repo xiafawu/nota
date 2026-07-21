@@ -86,7 +86,20 @@ private struct OpenTuningWindowButton: View {
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
   func applicationDidFinishLaunching(_ notification: Notification) {
+    hideFromDockUnderTests()
     enforceSingleInstance()
+  }
+
+  /// xcodebuild launches this app as the unit-test host; a regular activation
+  /// policy gives every test run a Dock icon (and a lingering ghost one if a
+  /// spawned child outlives the host). Accessory keeps test hosts out of the
+  /// Dock entirely while still allowing windows for hosted UI tests.
+  private func hideFromDockUnderTests() {
+    let env = ProcessInfo.processInfo.environment
+    guard env["XCTestConfigurationFilePath"] != nil
+      || env["XCTestBundlePath"] != nil
+      || env["XCTestSessionIdentifier"] != nil else { return }
+    NSApp.setActivationPolicy(.accessory)
   }
 
   /// Quit immediately if another Nota with the same bundle id is already
