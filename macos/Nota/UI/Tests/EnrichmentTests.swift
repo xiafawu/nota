@@ -217,10 +217,10 @@ final class TranscriptPillTests: XCTestCase {
   }
 }
 
-// MARK: - Summary-narrative stripping (display only)
+// MARK: - Enrichment-section stripping (display only)
 
-final class SummaryStripTests: XCTestCase {
-  func testStrip_removesNarrativeKeepsOtherSections() {
+final class EnrichmentStripTests: XCTestCase {
+  func testStrip_removesSummaryAndTopics_keepsMetaAndTranscript() {
     let markdown = """
     # Title
 
@@ -239,18 +239,143 @@ final class SummaryStripTests: XCTestCase {
     [0:01] **Speaker 1:** hi
     """
 
-    let stripped = strippingSummaryNarrativeSection(markdown)
+    let stripped = strippingEnrichmentSections(markdown)
 
     XCTAssertFalse(stripped.contains("## Summary"))
     XCTAssertFalse(stripped.contains("The narrative paragraph."))
-    XCTAssertTrue(stripped.contains("## Key Topics"))
+    XCTAssertFalse(stripped.contains("## Key Topics"))
+    XCTAssertFalse(stripped.contains("- one"))
     XCTAssertTrue(stripped.contains("## Full Transcript"))
     XCTAssertTrue(stripped.contains("**Tags:** a, b"))
   }
 
   func testStrip_noSummarySection_unchanged() {
     let markdown = "# Title\n\n## Full Transcript\n\nhello"
-    XCTAssertEqual(strippingSummaryNarrativeSection(markdown), markdown)
+    XCTAssertEqual(strippingEnrichmentSections(markdown), markdown)
+  }
+
+  func testStrip_allFourSections_keepsRuleAndTranscript() {
+    let markdown = """
+    # Meeting Notes
+
+    **Captured:** 2026-07-18
+
+    ## Summary
+
+    The narrative paragraph.
+
+    ## Key Topics
+
+    - Array-to-vector conversion — replacing pointer arithmetic
+    - Job search
+
+    ## Decisions Made
+
+    - Ship variant B
+
+    ## Action Items
+
+    - [ ] File the PR
+
+    ---
+
+    ## Full Transcript
+
+    [0:01] **Speaker 1:** hi
+    """
+
+    let stripped = strippingEnrichmentSections(markdown)
+
+    XCTAssertTrue(stripped.contains("# Meeting Notes"))
+    XCTAssertTrue(stripped.contains("**Captured:** 2026-07-18"))
+    XCTAssertTrue(stripped.contains("---"))
+    XCTAssertTrue(stripped.contains("## Full Transcript"))
+    XCTAssertTrue(stripped.contains("[0:01] **Speaker 1:** hi"))
+    XCTAssertFalse(stripped.contains("## Summary"))
+    XCTAssertFalse(stripped.contains("## Key Topics"))
+    XCTAssertFalse(stripped.contains("## Decisions Made"))
+    XCTAssertFalse(stripped.contains("## Action Items"))
+    XCTAssertFalse(stripped.contains("The narrative paragraph."))
+    XCTAssertFalse(stripped.contains("Array-to-vector conversion"))
+    XCTAssertFalse(stripped.contains("Job search"))
+    XCTAssertFalse(stripped.contains("Ship variant B"))
+    XCTAssertFalse(stripped.contains("File the PR"))
+  }
+
+  func testStrip_summaryOnly_removesJustNarrative() {
+    let markdown = "# Title\n\n## Summary\n\nNarrative here.\n\n## Full Transcript\n\nhello"
+
+    XCTAssertEqual(
+      strippingEnrichmentSections(markdown),
+      "# Title\n\n## Full Transcript\n\nhello"
+    )
+  }
+
+  func testStrip_sectionsInDifferentOrder_allStripped() {
+    let markdown = """
+    # Title
+
+    ## Action Items
+
+    - [ ] File the PR
+
+    ## Key Topics
+
+    - Job search
+
+    ## Summary
+
+    The narrative paragraph.
+
+    ## Decisions Made
+
+    - Ship variant B
+
+    ## Full Transcript
+
+    hello
+    """
+
+    let stripped = strippingEnrichmentSections(markdown)
+
+    XCTAssertFalse(stripped.contains("## Summary"))
+    XCTAssertFalse(stripped.contains("## Key Topics"))
+    XCTAssertFalse(stripped.contains("## Decisions Made"))
+    XCTAssertFalse(stripped.contains("## Action Items"))
+    XCTAssertFalse(stripped.contains("File the PR"))
+    XCTAssertFalse(stripped.contains("Job search"))
+    XCTAssertFalse(stripped.contains("The narrative paragraph."))
+    XCTAssertFalse(stripped.contains("Ship variant B"))
+    XCTAssertTrue(stripped.contains("# Title"))
+    XCTAssertTrue(stripped.contains("## Full Transcript"))
+    XCTAssertTrue(stripped.contains("hello"))
+  }
+
+  func testStrip_noEnrichmentSections_byteIdentical() {
+    let markdown = "# Title\n\n## Notes\n\ntext\n\n---\n\n## Full Transcript\n\nhello"
+    XCTAssertEqual(strippingEnrichmentSections(markdown), markdown)
+  }
+}
+
+// MARK: - Topic chip parts (term + hover detail)
+
+final class TopicChipPartsTests: XCTestCase {
+  func testEmDashSeparator_splitsTermAndDetail() {
+    let parts = topicChipParts("Array-to-vector conversion — replacing pointer arithmetic")
+    XCTAssertEqual(parts.term, "Array-to-vector conversion")
+    XCTAssertEqual(parts.detail, "replacing pointer arithmetic")
+  }
+
+  func testNoSeparator_detailIsNil() {
+    let parts = topicChipParts("Job search")
+    XCTAssertEqual(parts.term, "Job search")
+    XCTAssertNil(parts.detail)
+  }
+
+  func testPlainHyphen_isNotASeparator() {
+    let parts = topicChipParts("cost-benefit - tradeoffs")
+    XCTAssertEqual(parts.term, "cost-benefit - tradeoffs")
+    XCTAssertNil(parts.detail)
   }
 }
 

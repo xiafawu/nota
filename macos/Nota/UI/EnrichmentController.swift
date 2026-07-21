@@ -116,23 +116,46 @@ func showsTranscriptPill(recordStatus: String?) -> Bool {
   recordStatus == "transcribed"
 }
 
-/// Remove the `## Summary` narrative section from a document's markdown.
-/// Used for display when the enrichment slot renders the summary from the
-/// record instead — the other sections (Key Topics, …, Full Transcript) keep
-/// rendering in the rich-text body. Copy/export always use the full markdown.
-func strippingSummaryNarrativeSection(_ markdown: String) -> String {
+/// Remove the enrichment sections (`## Summary`, `## Key Topics`,
+/// `## Decisions Made`, `## Action Items`) from a document's markdown.
+/// Used for display when the enrichment slot renders the whole summary block
+/// from the record instead — the body stays transcript-only. Each section is
+/// stripped independently (any order, any subset present) and spans from its
+/// heading up to the next `## ` heading or a `---` rule; the rule itself is
+/// kept. Copy/export always use the full markdown.
+func strippingEnrichmentSections(_ markdown: String) -> String {
+  let headings: Set<String> = [
+    "## Summary", "## Key Topics", "## Decisions Made", "## Action Items",
+  ]
   let lines = markdown.components(separatedBy: "\n")
-  guard let start = lines.firstIndex(where: {
-    $0.trimmingCharacters(in: .whitespaces) == "## Summary"
-  }) else {
-    return markdown
+  var kept: [String] = []
+  var index = 0
+  while index < lines.count {
+    guard headings.contains(lines[index].trimmingCharacters(in: .whitespaces)) else {
+      kept.append(lines[index])
+      index += 1
+      continue
+    }
+    index += 1
+    while index < lines.count {
+      let trimmed = lines[index].trimmingCharacters(in: .whitespaces)
+      if trimmed.hasPrefix("## ") || trimmed == "---" { break }
+      index += 1
+    }
   }
-  var end = start + 1
-  while end < lines.count,
-        !lines[end].trimmingCharacters(in: .whitespaces).hasPrefix("## ") {
-    end += 1
+  return kept.joined(separator: "\n")
+}
+
+/// Split a key-topic string into a chip term and optional hover detail at the
+/// FIRST ` — ` (space, em dash, space) separator. A plain hyphen is not a
+/// separator; a missing or empty remainder yields a nil detail.
+func topicChipParts(_ topic: String) -> (term: String, detail: String?) {
+  guard let separator = topic.range(of: " \u{2014} ") else {
+    return (topic.trimmingCharacters(in: .whitespaces), nil)
   }
-  return (lines[..<start] + lines[end...]).joined(separator: "\n")
+  let term = String(topic[..<separator.lowerBound]).trimmingCharacters(in: .whitespaces)
+  let detail = String(topic[separator.upperBound...]).trimmingCharacters(in: .whitespaces)
+  return (term, detail.isEmpty ? nil : detail)
 }
 
 // MARK: - Errors

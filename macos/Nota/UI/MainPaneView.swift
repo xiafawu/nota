@@ -383,11 +383,123 @@ private struct EnrichmentSlotView: View {
           .onTapGesture { beginSummaryEdit(narrative: narrative) }
           .help("Click to edit")
       }
+      structuredSummary
       errorCaption
     }
     .padding(.leading, Metrics.gutterWidth)
     .padding(.trailing, Metrics.richTextInsetX)
     .padding(.vertical, 10)
+  }
+
+  // MARK: Structured summary (topics / decisions / action items, read-only)
+
+  private var keyTopics: [String] { controller.record?.summary?.keyTopics ?? [] }
+  private var decisions: [String] { controller.record?.summary?.decisions ?? [] }
+  private var actionItems: [String] { controller.record?.summary?.actionItems ?? [] }
+
+  /// Compact rendering of the record's structured summary fields. Read-only —
+  /// the narrative above keeps the only edit affordances. Renders nothing when
+  /// all three arrays are empty, so the slot looks exactly as before.
+  @ViewBuilder
+  private var structuredSummary: some View {
+    if !keyTopics.isEmpty {
+      topicsBlock
+    }
+    if !decisions.isEmpty && !actionItems.isEmpty {
+      // Two columns side by side when they fit, stacked when the pane is narrow.
+      ViewThatFits(in: .horizontal) {
+        HStack(alignment: .top, spacing: 18) {
+          decisionsColumn
+            .frame(maxWidth: .infinity, alignment: .leading)
+          actionItemsColumn
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        VStack(alignment: .leading, spacing: 12) {
+          decisionsColumn
+          actionItemsColumn
+        }
+      }
+      .padding(.top, 4)
+    } else if !decisions.isEmpty {
+      decisionsColumn
+        .padding(.top, 4)
+    } else if !actionItems.isEmpty {
+      actionItemsColumn
+        .padding(.top, 4)
+    }
+  }
+
+  private var topicsBlock: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      sectionLabel("Topics")
+      FlowLayout(spacing: Metrics.tagSpacing, lineSpacing: Metrics.tagSpacing) {
+        ForEach(keyTopics, id: \.self) { topic in
+          topicChip(topic)
+        }
+      }
+    }
+    .padding(.top, 4)
+  }
+
+  /// One capsule per key topic: the term on the face, the ` — ` detail (when
+  /// present) as a hover tooltip.
+  @ViewBuilder
+  private func topicChip(_ topic: String) -> some View {
+    let parts = topicChipParts(topic)
+    let chip = Text(parts.term)
+      .font(.caption)
+      .padding(.horizontal, 9)
+      .padding(.vertical, 3)
+      .background(.thinMaterial, in: Capsule())
+      .overlay(Capsule().strokeBorder(.secondary.opacity(0.3)))
+    if let detail = parts.detail {
+      chip.help(detail)
+    } else {
+      chip
+    }
+  }
+
+  private var decisionsColumn: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      sectionLabel("Decisions")
+      ForEach(decisions, id: \.self) { item in
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+          Text("•")
+            .foregroundStyle(.tertiary)
+          Text(item)
+            .font(.subheadline)
+        }
+      }
+    }
+  }
+
+  private var actionItemsColumn: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      sectionLabel("Action Items")
+      ForEach(actionItems, id: \.self) { item in
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+          Image(systemName: "square")
+            .font(.caption)
+            .foregroundStyle(.secondary)
+          Text(displayActionItem(item))
+            .font(.subheadline)
+        }
+      }
+    }
+  }
+
+  private func sectionLabel(_ title: String) -> some View {
+    Text(title)
+      .kerning(0.8)
+      .textCase(.uppercase)
+      .font(.caption2.weight(.semibold))
+      .foregroundStyle(.secondary)
+  }
+
+  /// The pipeline writes action items as `[ ] …` checkboxes; the square icon
+  /// already carries that affordance here, so strip the textual prefix.
+  private func displayActionItem(_ item: String) -> String {
+    item.hasPrefix("[ ] ") ? String(item.dropFirst(4)) : item
   }
 
   @ViewBuilder

@@ -58,11 +58,12 @@ final class NotaModel: ObservableObject {
   private var cachedHistoryRecord: HistoryRecordInfo?
 
   /// Rich text for the document view. When the open record drives the summary
-  /// slot (record is truth), the `## Summary` narrative is stripped from the
-  /// body so it renders exactly once; copy/export use `fullRichText`.
+  /// slot (record is truth), the whole summary block (narrative + key topics +
+  /// decisions + action items) is stripped from the body — the slot renders it
+  /// and the body stays transcript-only; copy/export use `fullRichText`.
   var richText: NSAttributedString {
     let display = enrichment.record?.hasSummaryNarrative == true
-      ? strippingSummaryNarrativeSection(markdown)
+      ? strippingEnrichmentSections(markdown)
       : markdown
     return renderMarkdownAsRichText(display, overrides: speakerNameOverrides)
   }
