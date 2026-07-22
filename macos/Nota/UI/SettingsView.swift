@@ -12,7 +12,7 @@ private enum SettingsTab: Hashable {
     switch self {
     case .general: 220
     case .dictation: 580
-    case .models: 300
+    case .models: 400
     case .apiKeys: 400
     case .speakers: 520
     }
@@ -90,25 +90,41 @@ struct SettingsView: View {
 
 // MARK: - Models
 
-/// Transcription + summary model pickers, grouped by provider. Reads/writes
+/// Transcription + summary model pickers, grouped by provider. Transcription
+/// entries are the static registry list; summary entries come from the
+/// self-updating catalog store (cache → baked snapshot). Reads/writes
 /// ~/.nota/settings.json (the same schema the CLI uses).
 struct ModelsSettingsView: View {
+  @StateObject private var catalog = ModelCatalogModel()
   @State private var transcriptionModel = NotaSettingsStore.effectiveModel(for: .transcription)
   @State private var summaryModel = NotaSettingsStore.effectiveModel(for: .summary)
+  /// The stored summary pin when it is absent from the effective catalog
+  /// (a retired model the user still has pinned). Recomputed off disk on the
+  /// events that can change it, not on every render.
+  @State private var zombieID: String?
+  @State private var zombieDismissed = false
   @State private var errorMessage: String?
 
   var body: some View {
     Form {
       modelSection(
         title: "Transcription",
-        task: .transcription,
-        selection: $transcriptionModel
+        models: ModelRegistry.models(for: .transcription),
+        selection: $transcriptionModel,
+        task: .transcription
       )
       modelSection(
         title: "Summary",
-        task: .summary,
-        selection: $summaryModel
+        models: catalog.summaryEntries,
+        selection: $summaryModel,
+        task: .summary
       )
+
+      if let zombie = zombieID, !zombieDismissed {
+        zombieBanner(zombie)
+      }
+
+      catalogSection
 
       if let errorMessage {
         Section {
@@ -122,17 +138,33 @@ struct ModelsSettingsView: View {
     .onAppear {
       transcriptionModel = NotaSettingsStore.effectiveModel(for: .transcription)
       summaryModel = NotaSettingsStore.effectiveModel(for: .summary)
+      refreshZombieState()
+      catalog.refreshIfStale()
     }
+    .onChange(of: catalog.catalog.fetchedAt) {
+      // A refresh wrote a new cache: re-sync the selection and re-evaluate the
+      // zombie state against the fresh catalog.
+      summaryModel = NotaSettingsStore.effectiveModel(for: .summary)
+      zombieDismissed = false
+      refreshZombieState()
+    }
+  }
+
+  /// Recompute the zombie pin from disk + the current catalog (see zombieID).
+  private func refreshZombieState() {
+    let stored = NotaSettingsStore.rawStoredModel(for: .summary)
+    zombieID = ModelCatalogLoader.isZombie(storedID: stored, in: catalog.catalog) ? stored : nil
   }
 
   private func modelSection(
     title: String,
-    task: ModelTask,
-    selection: Binding<String>
+    models: [ModelEntry],
+    selection: Binding<String>,
+    task: ModelTask
   ) -> some View {
     Section(title) {
       Picker(title, selection: selection) {
-        ForEach(providerGroups(for: task), id: \.provider) { group in
+        ForEach(providerGroups(from: models), id: \.provider) { group in
           Section(group.provider.displayName) {
             ForEach(group.models) { model in
               Text(model.label).tag(model.id)
@@ -148,10 +180,57 @@ struct ModelsSettingsView: View {
     }
   }
 
+  @ViewBuilder
+  private func zombieBanner(_ id: String) -> some View {
+    Section {
+      HStack(alignment: .top, spacing: Metrics.statusHStackSpacing) {
+        Label {
+          Text("\(id) is no longer available; runs will use the default.")
+            .font(Tokens.settingsCaptionFont)
+        } icon: {
+          Image(systemName: "exclamationmark.triangle")
+        }
+        .foregroundStyle(.orange)
+        Spacer(minLength: Metrics.statusHStackSpacing)
+        Button {
+          zombieDismissed = true
+        } label: {
+          Image(systemName: "xmark")
+        }
+        .buttonStyle(.borderless)
+        .controlSize(.small)
+        .help("Dismiss")
+      }
+    }
+  }
+
+  private var catalogSection: some View {
+    Section {
+      HStack(spacing: Metrics.statusHStackSpacing) {
+        Text(catalog.footerText)
+          .font(Tokens.settingsCaptionFont)
+          .foregroundStyle(.secondary)
+        Spacer()
+        if catalog.isRefreshing {
+          ProgressView().controlSize(.small)
+        }
+        Button("Check for New Models") {
+          catalog.refresh(userInitiated: true)
+        }
+        .controlSize(.small)
+        .disabled(catalog.isRefreshing)
+      }
+      if let message = catalog.refreshMessage, !catalog.isRefreshing {
+        Text(message)
+          .font(Tokens.settingsCaptionFont)
+          .foregroundStyle(.secondary)
+      }
+    }
+  }
+
   private struct ProviderGroup { let provider: ModelProvider; let models: [ModelEntry] }
 
-  private func providerGroups(for task: ModelTask) -> [ProviderGroup] {
-    let models = ModelRegistry.models(for: task)
+  private func providerGroups(from models: [ModelEntry]) -> [ProviderGroup] {
     var order: [ModelProvider] = []
     for m in models where !order.contains(m.provider) { order.append(m.provider) }
     return order.map { provider in
@@ -163,6 +242,8 @@ struct ModelsSettingsView: View {
     do {
       try NotaSettingsStore.setModel(modelID, for: task)
       errorMessage = nil
+      // Picking a valid summary model clears any prior zombie pin.
+      if task == .summary { refreshZombieState() }
     } catch {
       errorMessage = "Could not save settings: \(error.localizedDescription)"
     }
