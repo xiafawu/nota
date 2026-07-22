@@ -53,8 +53,18 @@ export interface CatalogCache {
   etag: string;
   fetchedAt: string;
   costUnit: "usd_per_1m_tokens";
+  /**
+   * Version of the allowlist/mapping code that produced this cache. A cache
+   * written by an older filter must not be revalidated via etag: a 304 would
+   * re-bless entries filtered by buggy/outdated predicates. Absent (legacy
+   * caches) counts as stale.
+   */
+  filterVersion?: number;
   models: CatalogModelEntry[];
 }
+
+/** Bump whenever filterCatalog's predicates or field mapping change. */
+export const FILTER_VERSION = 2;
 
 // ── Cache / baked paths ──────────────────────────────────────────────────────
 
@@ -483,11 +493,13 @@ export async function refreshCatalog(opts?: {
   const prevCache = opts?.prevCache ?? readCache() ?? undefined;
   const configuredIds = opts?.configuredIds ?? [];
 
-  // Build headers
+  // Build headers. The etag shortcut is only valid when the previous cache
+  // was produced by the CURRENT filter code — a 304 skips refiltering, so a
+  // stale-filtered cache must take the full fetch path instead.
   const headers: Record<string, string> = {
     Accept: "application/json",
   };
-  if (opts?.etag) {
+  if (opts?.etag && prevCache?.filterVersion === FILTER_VERSION) {
     headers["If-None-Match"] = opts.etag;
   }
 
@@ -629,6 +641,7 @@ export async function refreshCatalog(opts?: {
     etag,
     fetchedAt: new Date().toISOString(),
     costUnit: "usd_per_1m_tokens",
+    filterVersion: FILTER_VERSION,
     models: filteredModels,
   };
 
