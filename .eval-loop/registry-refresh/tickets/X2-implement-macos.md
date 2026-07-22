@@ -1,8 +1,8 @@
 <!-- wayfinder:task -->
 # X2 — Implement macOS: shared cache + dynamic pickers
 
-status: open
-blocked-by: X1
+status: in-progress (Claude-direct, opus subagents)
+blocked-by: X1 ✅
 
 ## Question
 
