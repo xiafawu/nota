@@ -143,10 +143,13 @@ struct ModelsSettingsView: View {
     }
     .onChange(of: catalog.catalog.fetchedAt) {
       // A refresh wrote a new cache: re-sync the selection and re-evaluate the
-      // zombie state against the fresh catalog.
+      // zombie state against the fresh catalog. Dismissal survives no-op
+      // refreshes (fetchedAt bumps even on 304); it resets only when the
+      // zombie itself changed.
       summaryModel = NotaSettingsStore.effectiveModel(for: .summary)
-      zombieDismissed = false
+      let previousZombie = zombieID
       refreshZombieState()
+      if zombieID != previousZombie { zombieDismissed = false }
     }
   }
 
@@ -239,6 +242,14 @@ struct ModelsSettingsView: View {
   }
 
   private func persist(_ modelID: String, for task: ModelTask) {
+    // The picker's onChange also fires for PROGRAMMATIC re-syncs (onAppear and
+    // the post-refresh fetchedAt handler assign the effective model). Writing
+    // on those would silently overwrite a stored pin — e.g. a retired model's
+    // pin replaced by the chain default after a background refresh — or
+    // materialize a pin the user never set. A programmatic assignment is, by
+    // construction, the current effective model; only a genuine user pick
+    // differs from it, so a no-op write is skipped rather than persisted.
+    guard modelID != NotaSettingsStore.effectiveModel(for: task) else { return }
     do {
       try NotaSettingsStore.setModel(modelID, for: task)
       errorMessage = nil

@@ -70,7 +70,13 @@ final class ModelCatalogModel: ObservableObject {
       refresh(userInitiated: false)
       return
     }
-    if let date = fetchedDate, Date().timeIntervalSince(date) > Self.staleAfter {
+    // An unparseable fetchedAt counts as stale — otherwise a cache with a
+    // corrupted timestamp would never refresh again.
+    guard let date = fetchedDate else {
+      refresh(userInitiated: false)
+      return
+    }
+    if Date().timeIntervalSince(date) > Self.staleAfter {
       refresh(userInitiated: false)
     }
   }
@@ -93,8 +99,8 @@ final class ModelCatalogModel: ObservableObject {
         guard userInitiated else { return }
         switch result {
         case .failure:
-          // Silent in the UI; the footer keeps whatever date it had.
-          self.refreshMessage = nil
+          // Non-blocking feedback; the footer keeps whatever date it had.
+          self.refreshMessage = "Couldn't check for new models"
         case .success:
           let currentIDs = Set(self.catalog.models.map(\.id))
           let added = currentIDs.subtracting(previousIDs).count
@@ -146,7 +152,15 @@ enum CatalogRefreshError: LocalizedError {
 /// Run `nota models refresh` against the bundled CLI. Prefers the compiled
 /// dist/index.js, falling back to `npx tsx src/index.ts`. Mirrors
 /// shellMergeSpeakers in SpeakerProfileStore.swift.
-func shellRefreshCatalog(projectDirectory: URL) -> Result<Void, Error> {
+///
+/// The child is killed after `timeout` seconds — `npx` can otherwise block
+/// indefinitely resolving tsx with no network, which would pin the store's
+/// isRefreshing flag (and the refresh button's spinner) for the app's
+/// lifetime.
+func shellRefreshCatalog(
+  projectDirectory: URL,
+  timeout: TimeInterval = 120
+) -> Result<Void, Error> {
   let process = Process()
   process.currentDirectoryURL = projectDirectory
 
@@ -160,30 +174,51 @@ func shellRefreshCatalog(projectDirectory: URL) -> Result<Void, Error> {
   process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
   if FileManager.default.fileExists(atPath: distEntry.path) {
     process.arguments = ["node", distEntry.path, "models", "refresh"]
-  } else {
+  } else if FileManager.default.fileExists(atPath: srcEntry.path) {
     process.arguments = ["npx", "tsx", srcEntry.path, "models", "refresh"]
+  } else {
+    // Neither entry point exists (moved repo, shipped .app without the CLI):
+    // fail fast instead of letting npx grope at a missing file.
+    return .failure(CatalogRefreshError.failed(
+      "Nota CLI not found under \(projectDirectory.path)"
+    ))
   }
 
-  let outPipe = Pipe()
-  let errPipe = Pipe()
-  process.standardOutput = outPipe
-  process.standardError = errPipe
+  // One merged pipe: a single blocking read reaches EOF when the child exits
+  // (or is killed), so neither stream can fill its buffer and deadlock us.
+  let pipe = Pipe()
+  process.standardOutput = pipe
+  process.standardError = pipe
 
   do {
     try process.run()
-    process.waitUntilExit()
   } catch {
     return .failure(CatalogRefreshError.failed(error.localizedDescription))
   }
 
-  let stdout = String(data: outPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-  let stderr = String(data: errPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+  // Watchdog: SIGTERM the child at the deadline. Checking isRunning makes the
+  // fired-after-exit case a no-op; cancel() below makes the normal case free.
+  let watchdog = DispatchWorkItem { [weak process] in
+    if let process, process.isRunning { process.terminate() }
+  }
+  DispatchQueue.global().asyncAfter(deadline: .now() + timeout, execute: watchdog)
+
+  let output = String(
+    data: pipe.fileHandleForReading.readDataToEndOfFile(),
+    encoding: .utf8
+  ) ?? ""
+  process.waitUntilExit()
+  watchdog.cancel()
 
   if process.terminationStatus == 0 {
     return .success(())
   }
-  let detail = (stderr.isEmpty ? stdout : stderr)
-    .trimmingCharacters(in: .whitespacesAndNewlines)
+  if process.terminationReason == .uncaughtSignal {
+    return .failure(CatalogRefreshError.failed(
+      "timed out after \(Int(timeout))s"
+    ))
+  }
+  let detail = output.trimmingCharacters(in: .whitespacesAndNewlines)
   return .failure(CatalogRefreshError.failed(
     detail.isEmpty ? "exit code \(process.terminationStatus)" : detail
   ))
