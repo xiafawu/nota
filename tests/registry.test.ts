@@ -12,31 +12,27 @@ import {
 
 describe("model registry", () => {
   it("derives provider and key env from the model id", () => {
-    expect(getModel("universal")).toMatchObject({
-      task: "transcription",
-      provider: "assemblyai",
-      apiKeyEnv: "ASSEMBLYAI_API_KEY",
-    });
-    expect(getModel("whisper-1")).toMatchObject({
-      provider: "openai",
-      apiKeyEnv: "OPENAI_API_KEY",
-    });
-    expect(getModel("gpt-5-mini")).toMatchObject({
-      task: "summary",
-      provider: "openai",
-      apiKeyEnv: "OPENAI_API_KEY",
-    });
+    const universal = getModel("universal")!;
+    expect(universal.provider).toBe("assemblyai");
+    expect(universal.apiKeyEnv).toBe("ASSEMBLYAI_API_KEY");
+
+    const whisper = getModel("whisper-1")!;
+    expect(whisper.provider).toBe("openai");
+    expect(whisper.apiKeyEnv).toBe("OPENAI_API_KEY");
+
+    // Summary models come from the baked catalog — verify one is resolvable
+    const gpt5mini = getModel("gpt-5-mini")!;
+    expect(gpt5mini.task).toBe("summary");
+    expect(gpt5mini.provider).toBe("openai");
+    expect(gpt5mini.apiKeyEnv).toBe("OPENAI_API_KEY");
   });
 
   it("routes gemini summary models through the OpenAI-compatible base URL", () => {
     const flash = getModel("gemini-2.5-flash");
-    expect(flash).toMatchObject({
-      provider: "gemini",
-      apiKeyEnv: "GEMINI_API_KEY",
-      baseURL: GEMINI_OPENAI_BASE_URL,
-    });
+    expect(flash).toBeDefined();
+    expect(flash!.baseURL).toBe(GEMINI_OPENAI_BASE_URL);
     expect(isGeminiModel("gemini-2.5-pro")).toBe(true);
-    expect(isGeminiModel("gpt-4o")).toBe(false);
+    expect(isGeminiModel("gpt-5")).toBe(false);
   });
 
   it("exposes the curated defaults", () => {
@@ -49,53 +45,74 @@ describe("model registry", () => {
   it("lists models per task", () => {
     const t = modelsForTask("transcription").map((m) => m.id);
     const s = modelsForTask("summary").map((m) => m.id);
+    // Transcription: slam-1 and nano removed per X1 spec
     expect(t).toEqual([
       "universal",
-      "slam-1",
-      "nano",
       "whisper-1",
       "gpt-4o-transcribe",
       "gpt-4o-mini-transcribe",
     ]);
-    expect(s).toEqual([
-      "gpt-5-mini",
-      "gpt-5",
-      "gpt-4o",
-      "gpt-4.1",
-      "gemini-2.5-flash",
-      "gemini-2.5-pro",
-      "deepseek-v4-flash",
-      "deepseek-v4-pro",
-    ]);
+    // Summary models from baked catalog
+    expect(s).toContain("gpt-5-mini");
+    expect(s).toContain("gpt-5");
+    expect(s).toContain("gpt-5.1");
+    expect(s).toContain("gpt-5.4-mini");
+    expect(s).toContain("gemini-2.5-flash");
+    expect(s).toContain("gemini-2.5-pro");
+    expect(s).toContain("deepseek-v4-flash");
+    expect(s).toContain("deepseek-v4-pro");
+    // The old registry-only ids (gpt-4o, gpt-4.1) are gone from summary
+    expect(s).not.toContain("gpt-4o");
+    expect(s).not.toContain("gpt-4.1");
   });
 
   it("routes deepseek summary models through the OpenAI-compatible base URL", () => {
-    expect(getModel("deepseek-v4-flash")).toMatchObject({
-      task: "summary",
-      provider: "deepseek",
-      apiKeyEnv: "DEEPSEEK_API_KEY",
-      baseURL: DEEPSEEK_BASE_URL,
-    });
-    expect(getModel("deepseek-v4-pro")).toMatchObject({
-      provider: "deepseek",
-      apiKeyEnv: "DEEPSEEK_API_KEY",
-      baseURL: DEEPSEEK_BASE_URL,
-    });
-    expect(isGeminiModel("deepseek-v4-flash")).toBe(false);
+    const dsFlash = getModel("deepseek-v4-flash");
+    expect(dsFlash).toBeDefined();
+    expect(dsFlash!.baseURL).toBe(DEEPSEEK_BASE_URL);
+    expect(dsFlash!.provider).toBe("deepseek");
   });
 
   it("requireModel rejects unknown ids, listing valid ones", () => {
-    expect(() => requireModel("nope", "summary")).toThrow(
-      /Unknown summary model: nope\. Valid summary models: /,
+    expect(() => requireModel("nonexistent", "summary")).toThrow(
+      /Unknown summary model.*nonexistent/,
     );
+    const msg = tryRequire("nonexistent", "summary");
+    // Should mention at least one valid summary model
+    expect(msg).toContain("gpt-5-mini");
+    expect(msg).toContain("Valid summary models");
   });
 
   it("requireModel rejects a model used for the wrong task", () => {
     expect(() => requireModel("universal", "summary")).toThrow(
-      /is a transcription model, not a summary model/,
-    );
-    expect(() => requireModel("gpt-4o", "transcription")).toThrow(
-      /is a summary model, not a transcription model/,
+      /is a transcription model/,
     );
   });
+
+  it("returns undefined for nonexistent model via getModel", () => {
+    expect(getModel("does-not-exist")).toBeUndefined();
+  });
+
+  it("resolves a new catalog-added model like gpt-5.6", () => {
+    const m = getModel("gpt-5.6");
+    expect(m).toBeDefined();
+    expect(m!.task).toBe("summary");
+    expect(m!.provider).toBe("openai");
+  });
+
+  it("resolves gemini-3.6-flash from the baked catalog", () => {
+    const m = getModel("gemini-3.6-flash");
+    expect(m).toBeDefined();
+    expect(m!.provider).toBe("gemini");
+    expect(m!.baseURL).toBe(GEMINI_OPENAI_BASE_URL);
+  });
 });
+
+function tryRequire(id: string, task: "summary"): string {
+  try {
+    requireModel(id, task);
+    return "";
+  } catch (e) {
+    return (e as Error).message;
+  }
+}

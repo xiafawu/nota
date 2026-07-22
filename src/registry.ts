@@ -6,13 +6,17 @@
  * Rules enforced here:
  * - Only curated model ids are valid. There is no free-text model id and no
  *   user-chosen provider — the provider is ALWAYS derived from the model id.
+ * - Transcription model ids are statically curated in `MODELS`.
+ * - Summary model ids are sourced dynamically from the catalog
+ *   (`~/.nota/models-catalog.json` or baked snapshot). They are auto-admitted
+ *   weekly via `nota models refresh`.
  * - Gemini summarization is reached through the OpenAI-compatible endpoint
  *   (`GEMINI_OPENAI_BASE_URL`), so it uses the same OpenAI client with a
  *   swapped base URL and `GEMINI_API_KEY`.
- *
- * The macOS Settings window mirrors this list in
- * `macos/Nota/App/ModelRegistry.swift`; keep the two in sync.
  */
+
+import { effectiveCatalog, findCatalogEntry } from "./catalog.js";
+import type { CatalogModelEntry } from "./catalog.js";
 
 export type ModelTask = "transcription" | "summary";
 export type ModelProvider = "assemblyai" | "openai" | "gemini" | "deepseek";
@@ -78,11 +82,10 @@ function entry(
   };
 }
 
+// ── Static transcription entries ─────────────────────────────────────────────
+
 export const MODELS: readonly ModelEntry[] = [
-  // Transcription
   entry("universal", "transcription", "assemblyai", "Universal (AssemblyAI)"),
-  entry("slam-1", "transcription", "assemblyai", "Slam-1 (AssemblyAI)"),
-  entry("nano", "transcription", "assemblyai", "Nano (AssemblyAI)"),
   entry("whisper-1", "transcription", "openai", "Whisper (OpenAI)"),
   entry(
     "gpt-4o-transcribe",
@@ -96,30 +99,61 @@ export const MODELS: readonly ModelEntry[] = [
     "openai",
     "GPT-4o mini Transcribe (OpenAI)",
   ),
-  // Summary
-  entry("gpt-5-mini", "summary", "openai", "GPT-5 mini (OpenAI)"),
-  entry("gpt-5", "summary", "openai", "GPT-5 (OpenAI)"),
-  entry("gpt-4o", "summary", "openai", "GPT-4o (OpenAI)"),
-  entry("gpt-4.1", "summary", "openai", "GPT-4.1 (OpenAI)"),
-  entry("gemini-2.5-flash", "summary", "gemini", "Gemini 2.5 Flash (Google)"),
-  entry("gemini-2.5-pro", "summary", "gemini", "Gemini 2.5 Pro (Google)"),
-  // DeepSeek: current model ids as of 2026-07 — the older `deepseek-chat` /
-  // `deepseek-reasoner` aliases are deprecated by DeepSeek on 2026-07-24, so
-  // they are intentionally not registered.
-  entry("deepseek-v4-flash", "summary", "deepseek", "DeepSeek V4 Flash (DeepSeek)"),
-  entry("deepseek-v4-pro", "summary", "deepseek", "DeepSeek V4 Pro (DeepSeek)"),
 ];
 
 const BY_ID = new Map(MODELS.map((m) => [m.id, m]));
 
-/** Look up a model by id, or `undefined` if it is not in the registry. */
+// ── Catalog bridging ─────────────────────────────────────────────────────────
+
+function catalogEntryToModel(cat: CatalogModelEntry): ModelEntry {
+  const p = cat.provider as ModelProvider;
+  return {
+    id: cat.id,
+    task: "summary",
+    provider: p,
+    apiKeyEnv: API_KEY_ENV[p] ?? "OPENAI_API_KEY",
+    label: cat.label,
+    baseURL: BASE_URL[p],
+  };
+}
+
+/** Resolve summary model entries from the effective catalog. */
+function summaryModelsFromCatalog(): ModelEntry[] {
+  const { catalog } = effectiveCatalog();
+  return catalog.models.map(catalogEntryToModel);
+}
+
+/**
+ * Resolve summary model entries from the effective catalog, returned as catalog
+ * entries for cost/label/limit lookups. Used by pricing to read rates.
+ */
+export function summaryCatalogEntries(): CatalogModelEntry[] {
+  const { catalog } = effectiveCatalog();
+  return [...catalog.models];
+}
+
+/**
+ * Look up a model by id, or `undefined` if it is not in the registry.
+ * Checks the static transcription list first, then the catalog for summary
+ * models.
+ */
 export function getModel(id: string): ModelEntry | undefined {
-  return BY_ID.get(id);
+  const staticEntry = BY_ID.get(id);
+  if (staticEntry) return staticEntry;
+
+  const { catalog } = effectiveCatalog();
+  const catEntry = findCatalogEntry(catalog, id);
+  if (catEntry) return catalogEntryToModel(catEntry);
+
+  return undefined;
 }
 
 /** All models for a given task, in registry order. */
 export function modelsForTask(task: ModelTask): ModelEntry[] {
-  return MODELS.filter((m) => m.task === task);
+  if (task === "transcription") {
+    return MODELS.filter((m) => m.task === task);
+  }
+  return summaryModelsFromCatalog();
 }
 
 function validIdList(task: ModelTask): string {
@@ -133,7 +167,7 @@ function validIdList(task: ModelTask): string {
  * valid ids for that task) when the id is unknown or belongs to another task.
  */
 export function requireModel(id: string, task: ModelTask): ModelEntry {
-  const model = BY_ID.get(id);
+  const model = getModel(id);
   if (!model) {
     throw new Error(
       `Unknown ${task} model: ${id}. Valid ${task} models: ${validIdList(task)}`,

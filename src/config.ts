@@ -1,11 +1,11 @@
 import { applyEnvFile } from "./utils/env-file.js";
 import {
-  DEFAULT_SUMMARY_MODEL,
   DEFAULT_TRANSCRIPTION_MODEL,
   requireModel,
   type ModelEntry,
 } from "./registry.js";
 import { loadSettings, type NotaSettings } from "./utils/settings.js";
+import { effectiveCatalog } from "./catalog.js";
 
 /**
  * Which pipeline branch runs. Derived from the resolved transcription model's
@@ -76,12 +76,75 @@ function requireKey(entry: ModelEntry): string {
 }
 
 /**
+ * Key-aware default chain for the summary model:
+ * 1. deepseek-v4-flash if DEEPSEEK_API_KEY resolves
+ * 2. gpt-5.4-mini if OPENAI_API_KEY resolves
+ * 3. gemini-3.6-flash if GEMINI_API_KEY resolves
+ * 4. Error listing the three options
+ *
+ * Each chain entry is verified against the effective catalog; if a chain id is
+ * absent from the catalog, it falls to the next.
+ */
+function resolveDefaultSummaryId(): string {
+  const { catalog } = effectiveCatalog();
+  const catalogIds = new Set(catalog.models.map((m) => m.id));
+
+  const chain: Array<{ id: string; env: string; hint?: string }> = [
+    { id: "deepseek-v4-flash", env: "DEEPSEEK_API_KEY", hint: " (cheaper default — set DEEPSEEK_API_KEY)" },
+    { id: "gpt-5.4-mini", env: "OPENAI_API_KEY" },
+    { id: "gemini-3.6-flash", env: "GEMINI_API_KEY" },
+  ];
+
+  let suggestedDeepseek = false;
+  for (const link of chain) {
+    if (!catalogIds.has(link.id)) continue;
+    if (process.env[link.env]) {
+      return link.id;
+    }
+    if (link.hint && !suggestedDeepseek) {
+      suggestedDeepseek = true;
+    }
+  }
+
+  // None of the chain models are available via key — give a descriptive error
+  const options = chain
+    .filter((l) => catalogIds.has(l.id))
+    .map((l) => `${l.id} (needs ${l.env})`)
+    .join(", ");
+  throw new Error(
+    `No summary model available. Set one of: ${options}`,
+  );
+}
+
+/**
+ * Warn on stderr once per run when a configured summary model is absent from
+ * the effective catalog, and return the resolved default.
+ */
+function zombieFallback(
+  configuredId: string,
+): { id: string; warned: boolean } {
+  const { catalog } = effectiveCatalog();
+  const found = catalog.models.some((m) => m.id === configuredId);
+  if (!found) {
+    const resolved = resolveDefaultSummaryId();
+    process.stderr.write(
+      `warning: model "${configuredId}" is no longer available; using ${resolved}\n`,
+    );
+    return { id: resolved, warned: true };
+  }
+  return { id: configuredId, warned: false };
+}
+
+/**
  * Resolve effective settings and API keys.
  *
  * Precedence for each model: CLI flag > settings.json > built-in default.
  * `--provider` is a back-compat alias: it seeds the transcription default
  * (`whisper` → `whisper-1`, `assemblyai` → `universal`) but yields to an
  * explicit `--transcribe-model` flag or a `transcription.model` setting.
+ *
+ * Summary model now uses a key-aware default chain:
+ * deepseek-v4-flash > gpt-5.4-mini > gemini-3.6-flash.
  *
  * Only the API keys the resolved models actually need are required.
  *
@@ -119,19 +182,22 @@ export function loadConfig(
 
   const transcriptionEntry = requireModel(transcriptionId, "transcription");
 
-  // Summary model.
-  const summaryId =
-    options.model ?? settings.summary?.model ?? DEFAULT_SUMMARY_MODEL;
+  // Summary model: CLI flag > settings > key-aware chain.
+  // If the resolved id is a zombie (absent from catalog), warn and fall back.
+  let summaryId = options.model ?? settings.summary?.model;
+  if (summaryId) {
+    const fallback = zombieFallback(summaryId);
+    summaryId = fallback.id;
+  } else {
+    summaryId = resolveDefaultSummaryId();
+  }
   const summaryEntry = requireModel(summaryId, "summary");
 
   // Pipeline branch derives from the transcription provider.
   const provider: Provider =
     transcriptionEntry.provider === "assemblyai" ? "assemblyai" : "whisper";
 
-  // Require only the keys the resolved models need. Preflight passes
-  // `requireKeys: false` so it can *report* a missing key as a failed check
-  // instead of throwing before any check runs; the key is then an empty string
-  // and the relevant check surfaces it.
+  // Require only the keys the resolved models need.
   const readKey = (entry: ModelEntry): string =>
     requireKeys ? requireKey(entry) : (process.env[entry.apiKeyEnv] ?? "");
   const transcriptionApiKey = readKey(transcriptionEntry);

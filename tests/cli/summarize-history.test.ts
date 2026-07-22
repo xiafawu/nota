@@ -180,12 +180,17 @@ describe("summarizeHistory", () => {
     expect(summarizeTranscript).not.toHaveBeenCalled();
   });
 
-  it("rejects with a helpful error when OPENAI_API_KEY is missing", async () => {
+  it("rejects with a helpful error when OPENAI_API_KEY is missing for an OpenAI model", async () => {
+    process.env.OPENAI_API_KEY = "test-key"; // set then delete
     delete process.env.OPENAI_API_KEY;
     const record = await createHistoryRecord(transcribedInput(), historyDir);
 
     await expect(
-      summarizeHistory(record.id, { historyDir, output: outputPath }),
+      summarizeHistory(record.id, {
+        historyDir,
+        output: outputPath,
+        model: "gpt-5-mini",
+      }),
     ).rejects.toThrow(/OPENAI_API_KEY environment variable is required/);
     expect(summarizeTranscript).not.toHaveBeenCalled();
   });

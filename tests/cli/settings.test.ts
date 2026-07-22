@@ -49,10 +49,10 @@ describe("settingsList", () => {
   });
 
   it("marks configured entries as settings.json", () => {
-    writeFileSync(file, JSON.stringify({ summary: { model: "gpt-4o" } }));
+    writeFileSync(file, JSON.stringify({ summary: { model: "gpt-5" } }));
     settingsList(file);
     const rows = stdout.join("");
-    expect(rows).toContain("summary.model\tgpt-4o\tsettings.json");
+    expect(rows).toContain("summary.model\tgpt-5\tsettings.json");
     expect(rows).toContain("transcription.model\tuniversal\tdefault");
   });
 });
@@ -78,11 +78,11 @@ describe("settingsGet", () => {
 
 describe("settingsSet", () => {
   it("validates and persists a valid model", () => {
-    settingsSet("transcription.model", "slam-1", file);
+    settingsSet("transcription.model", "whisper-1", file);
     expect(loadSettings(file)).toMatchObject({
-      transcription: { model: "slam-1" },
+      transcription: { model: "whisper-1" },
     });
-    expect(stderr.join("")).toContain("Set transcription.model = slam-1");
+    expect(stderr.join("")).toContain('Set transcription.model = whisper-1');
   });
 
   it("rejects a model that is invalid for the task, listing valid ids", () => {
@@ -105,11 +105,11 @@ describe("settingsSet", () => {
       file,
       JSON.stringify({ summary: { model: "gpt-5" }, futureKey: 1 }),
     );
-    settingsSet("transcription.model", "nano", file);
+    settingsSet("transcription.model", "whisper-1", file);
     const raw = readRawSettings(file);
     expect(raw).toMatchObject({
       summary: { model: "gpt-5" },
-      transcription: { model: "nano" },
+      transcription: { model: "whisper-1" },
       futureKey: 1,
     });
   });
