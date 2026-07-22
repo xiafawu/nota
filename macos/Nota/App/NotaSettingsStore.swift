@@ -14,15 +14,38 @@ enum NotaSettingsStore {
       .appendingPathComponent("settings.json")
   }
 
-  /// Effective model id for a task: the value in settings.json when it is a
-  /// valid model for that task, else the built-in default.
+  /// Effective model id for a task.
+  ///
+  /// Transcription: the value in settings.json when it is a valid transcription
+  /// model, else the built-in default.
+  ///
+  /// Summary: the value in settings.json when it is present in the effective
+  /// catalog (cache → baked), else the key-aware default chain. A stored id
+  /// that is absent from the catalog (a zombie) is not resolved and not
+  /// rewritten — the UI surfaces it and runs fall back to the default.
   static func effectiveModel(for task: ModelTask) -> String {
-    if let stored = storedModel(for: task),
-       let entry = ModelRegistry.model(id: stored),
-       entry.task == task {
+    if task == .transcription {
+      if let stored = storedModel(for: task),
+         let entry = ModelRegistry.model(id: stored),
+         entry.task == task {
+        return stored
+      }
+      return ModelRegistry.defaultModel(for: task)
+    }
+
+    let catalog = ModelCatalogLoader.effective().catalog
+    if let stored = storedModel(for: .summary), catalog.contains(stored) {
       return stored
     }
-    return ModelRegistry.defaultModel(for: task)
+    return ModelRegistry.defaultSummaryModel(keyConfigured: { provider in
+      ApiKeyStore.value(for: provider.apiKeyEnv) != nil
+    })
+  }
+
+  /// The raw stored preference for a task without any validation — used to
+  /// detect a zombie summary pin. Returns nil when nothing is stored.
+  static func rawStoredModel(for task: ModelTask) -> String? {
+    storedModel(for: task)
   }
 
   /// True when settings.json explicitly pins this task's model.
