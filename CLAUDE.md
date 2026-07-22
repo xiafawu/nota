@@ -36,10 +36,10 @@ Two pipeline paths controlled by `--provider`:
 
 **Whisper (fallback):** `Audio → Validate → Chunk → Transcribe (Whisper) + Diarize (pyannote) → Merge → Align → Summarize (registry model) → Write`
 
-- **src/index.ts** — CLI entry point (commander). Parses args, calls orchestrator; hosts `nota settings` and `nota config`.
-- **src/config.ts** — Resolves transcription + summary models (CLI > settings.json > defaults) via the registry, requires only the needed API keys, and derives the pipeline branch.
-- **src/registry.ts** — Curated model registry (single source of truth): model id → task, provider, required key env, base URL, label.
-- **src/utils/settings.ts** — Load/validate/write `~/.nota/settings.json` (non-secret model preferences).
+- **src/index.ts** — CLI entry point (commander). Parses args, calls orchestrator; hosts `nota settings`, `nota config`, and `nota models` verbs; runs background catalog freshness check on startup.
+- **src/config.ts** — Resolves transcription + summary models (CLI > settings.json > key-aware default chain) via the registry, requires only the needed API keys, and derives the pipeline branch.
+- **src/registry.ts** — Model registry: transcription models are statically curated; summary models are sourced dynamically from the catalog (`src/catalog.ts`).
+- **src/catalog.ts** — Self-updating model catalog: fetches models.dev/api.json, filters through allowlist predicates, validates, and atomically caches to `~/.nota/models-catalog.json`. Baked snapshot fallback. Provides cost computation helpers.
 - **src/cli/settings.ts** — `nota settings list|get|set|unset` verbs.
 - **src/constants.ts** — Shared constants: `SEGMENT_DURATION`, `OVERLAP_DURATION`, `CHUNK_THRESHOLD_BYTES`.
 - **src/orchestrator.ts** — Branches on `provider` to run AssemblyAI or Whisper pipeline.
@@ -65,14 +65,20 @@ Two pipeline paths controlled by `--provider`:
 - `--identify` — identify and remember recurring speakers by voice
 - `-o, --output <path>` — output file path
 - `-l, --language <lang>` — audio language hint
-- `-m, --model <model>` — summary model id from the registry. Precedence: this flag > `settings.json` > built-in default (`gpt-5-mini`).
-- `-v, --verbose` — show progress spinners
+- `-m, --model <model>` — summary model id. Precedence: this flag > `settings.json` > key-aware default chain (`deepseek-v4-flash` > `gpt-5.4-mini` > `gemini-3.6-flash` based on available API keys).
 - `--no-history` — do not save this transcript to `~/.nota/history` (also disables duplicate detection, which relies on the history store)
 - `--force` — reprocess even if an identical audio file is already in history (overrides duplicate detection)
+
+- `-v, --verbose` — show progress spinners
 
 Duplicate detection is automatic whenever history is enabled (the default): an
 identical file (same bytes) that was already transcribed reuses the prior
 summary instead of re-running paid transcription. See Key Design Decisions.
+
+### Model Management
+
+- `nota models list` — print the effective summary catalog as tab-separated rows (id, provider, label, source, fetchedAt)
+- `nota models refresh` — force a fetch from models.dev, showing added/removed ids vs the previous cache
 
 ## Speaker Management
 
@@ -95,26 +101,45 @@ are written to stderr so stdout stays scriptable.
 Non-secret model preferences live in `~/.nota/settings.json` (schema exactly
 `{ "transcription": { "model": "..." }, "summary": { "model": "..." } }`).
 Secrets never go here — API keys stay in `~/.nota/config`. Precedence for each
-model is **CLI flag > settings.json > built-in default** (transcription
-`universal`, summary `gpt-5-mini`). Invalid or unknown entries in settings.json
-are warned about on stderr and ignored.
+model is **CLI flag > settings.json > key-aware default chain**.
 
+Summary models are auto-admitted weekly from `models.dev/api.json` through an
+allowlist (mainline chat models only: gpt-5.x, gemini flash/pro, deepseek v4+).
+Transcription model ids remain statically curated.
+
+- `nota models list` — print the effective summary catalog (id, provider, label, source) as tab-separated rows
+- `nota models refresh` — force a fetch from models.dev, showing added/removed ids
 - `nota settings list` — effective model + source (settings.json vs default); tab-separated rows on stdout, header on stderr
 - `nota settings get <path>` — print the effective value for a dot-path (`transcription.model` or `summary.model`)
 - `nota settings set <path> <value>` — validate against the registry and persist; invalid model exits non-zero listing valid ids
 - `nota settings unset <path>` — remove the key, reverting to the default
 
-Valid model ids (from `src/registry.ts`):
-- Transcription: `universal`, `slam-1`, `nano` (AssemblyAI); `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe` (OpenAI)
-- Summary: `gpt-5-mini`, `gpt-5`, `gpt-4o`, `gpt-4.1` (OpenAI); `gemini-2.5-flash`, `gemini-2.5-pro` (Gemini); `deepseek-v4-flash`, `deepseek-v4-pro` (DeepSeek)
+The summary default is key-aware: `deepseek-v4-flash` if `DEEPSEEK_API_KEY` resolves → `gpt-5.4-mini` if `OPENAI_API_KEY` → `gemini-3.6-flash` if `GEMINI_API_KEY` → error listing the three options. If a configured summary model is absent from the catalog (retired), it warns once and falls back to the chain.
+
+Transcription model ids (static):
+- `universal`, `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`
+
+Summary model ids (auto-admitted; run `nota models list` for the current set):
+- Example: `gpt-5-mini`, `gpt-5`, `gpt-5.1`, `gpt-5.4-mini` (OpenAI); `gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-3.6-flash` (Gemini); `deepseek-v4-flash`, `deepseek-v4-pro` (DeepSeek)
 
 The macOS Settings window (Cmd+,) exposes the same pickers plus masked API-key
 management; it mirrors the registry in `macos/Nota/App/ModelRegistry.swift`.
 
+## Model Catalog (self-updating)
+
+Summary model ids, labels, limits, and pricing are sourced from a local cache
+(`~/.nota/models-catalog.json`) that is auto-refreshed from `models.dev` weekly
+in the background. A baked snapshot ships in-repo as the fallback. To see the
+current catalog: `nota models list`. To force a refresh: `nota models refresh`.
+The cache feeds cost computation for usage tracking.
+
 ## Key Design Decisions
 
 - Nota is the primary name; MeetingSum references exist only for backward compatibility.
-- Model registry (`src/registry.ts`) is the single source of truth: model id → task, provider, required API key env, base URL. Provider is derived, never stored. Gemini summarization reaches Google through the OpenAI-compatible endpoint (`GEMINI_OPENAI_BASE_URL`). Only the API keys the resolved models actually need are required — e.g. AssemblyAI transcription + Gemini summary needs `ASSEMBLYAI_API_KEY` + `GEMINI_API_KEY` and no OpenAI key.
+- Model registry (`src/registry.ts`) is the single source of truth: model id → task, provider, required API key env, base URL. Transcription models are statically curated; summary models are sourced dynamically from the auto-refreshed catalog (`src/catalog.ts` + `~/.nota/models-catalog.json`) with a baked in-repo fallback. Only the API keys the resolved models actually need are required.
+- Summary model ids are auto-admitted weekly: mainline chat models (gpt-5.x, gemini flash/pro, deepseek v4+) matching allowlist predicates. Run `nota models list` for the current set.
+- Summary default is key-aware: `deepseek-v4-flash` > `gpt-5.4-mini` > `gemini-3.6-flash` based on which API key is set. A hint is printed when DeepSeek is skipped despite being the cheapest option.
+- Pricing for summary models comes from the catalog via `computeSummaryCost` (tier-aware, ×1e-6 unit assertion). Pricing for transcription models remains a static table in `src/pricing.ts`.
 - AssemblyAI as default provider: transcription + diarization in one API call ($0.15/hr)
 - Whisper retained as fallback via `--provider whisper`
 - `.qta` files auto-converted to `.m4a` via ffmpeg before AssemblyAI upload
@@ -131,9 +156,9 @@ management; it mirrors the registry in `macos/Nota/App/ModelRegistry.swift`.
 - `ffmpeg` and `ffprobe` must be installed and in PATH
 - Node.js 18+
 - Environment variable: `OPENAI_API_KEY` — required only when a resolved model is an OpenAI model (any `gpt-*`/`whisper-1` transcription or summary model). Not needed for, e.g., AssemblyAI transcription + Gemini summary.
-- Environment variable: `ASSEMBLYAI_API_KEY` — required when the resolved transcription model is an AssemblyAI model (`universal`/`slam-1`/`nano`, the default)
+- Environment variable: `ASSEMBLYAI_API_KEY` — required when the resolved transcription model is an AssemblyAI model (`universal`/`whisper-1`/`gpt-4o-transcribe`/`gpt-4o-mini-transcribe` — the default is `universal`)
 - Environment variable: `GEMINI_API_KEY` — required when the resolved summary model is a Gemini model
-- Environment variable: `DEEPSEEK_API_KEY` — required when the resolved summary model is a DeepSeek model (`deepseek-v4-flash`/`deepseek-v4-pro`, reached via DeepSeek's OpenAI-compatible endpoint)
+- Environment variable: `DEEPSEEK_API_KEY` — required when the resolved summary model is a DeepSeek model (`deepseek-v4-flash`/`deepseek-v4-pro`). Note: `deepseek-v4-flash` is the cheapest default and is selected first when `DEEPSEEK_API_KEY` is set.
 - Speaker identity (`--identify` and `nota enroll`) needs no API key or Python. It uses `onnxruntime-node` and auto-downloads its checksum-pinned ONNX model on first use.
 - For `--provider whisper` with diarization only: Python 3.8+ with `pyannote.audio`, plus `HUGGINGFACE_TOKEN` (pyannote is not used for speaker identity)
 

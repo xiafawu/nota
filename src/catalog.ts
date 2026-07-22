@@ -65,7 +65,6 @@ const CACHE_PATH = path.join(CACHE_DIR, CACHE_BASENAME);
 /** 7 days in ms. */
 const CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
-const BACKUP_BAKED_PATH = new URL("models-catalog.baked.json", import.meta.url).pathname;
 
 // ── Allowlist predicates ─────────────────────────────────────────────────────
 
@@ -414,27 +413,15 @@ export function writeCache(
 // ── Baked snapshot ───────────────────────────────────────────────────────────
 
 /**
- * Load the baked snapshot shipped in-repo. Falls back to an empty catalog only
- * if the baked file itself is missing or corrupt (should not happen in a normal
- * build).
+ * The baked snapshot shipped in-repo. This is a typed constant embedded at build
+ * time so no file I/O is needed (works from src/ and dist/ identically).
  */
-export function loadBakedSnapshot(): CatalogCache {
-  try {
-    const raw = readFileSync(BACKUP_BAKED_PATH, "utf-8");
-    return JSON.parse(raw) as CatalogCache;
-  } catch {
-    return {
-      schemaVersion: 1,
-      source: "baked",
-      etag: "",
-      fetchedAt: "1970-01-01T00:00:00Z",
-      costUnit: "usd_per_1m_tokens",
-      models: [],
-    };
-  }
-}
+const BAKED_SNAPSHOT: CatalogCache = {"schemaVersion":1,"source":"https://models.dev/api.json","etag":"\"baked-snapshot\"","fetchedAt":"2026-07-22T00:00:00Z","costUnit":"usd_per_1m_tokens","models":[{"id":"deepseek-v4-flash","provider":"deepseek","label":"DeepSeek V4 Flash","task":"summary","cost":{"input":0.14,"output":0.28,"cacheRead":0.0028,"tiers":[]},"limit":{"context":1000000,"output":384000}},{"id":"deepseek-v4-pro","provider":"deepseek","label":"DeepSeek V4 Pro","task":"summary","cost":{"input":0.435,"output":0.87,"cacheRead":0.003625,"tiers":[]},"limit":{"context":1000000,"output":384000}},{"id":"gemini-2.5-flash","provider":"gemini","label":"Gemini 2.5 Flash","task":"summary","cost":{"input":0.3,"output":2.5,"cacheRead":0.03,"tiers":[]},"limit":{"context":1048576,"output":65536}},{"id":"gemini-2.5-pro","provider":"gemini","label":"Gemini 2.5 Pro","task":"summary","cost":{"input":1.25,"output":10,"cacheRead":0.125,"tiers":[{"thresholdTokens":200000,"input":2.5,"output":15,"cacheRead":0.25}]},"limit":{"context":1048576,"output":65536}},{"id":"gemini-3.5-flash","provider":"gemini","label":"Gemini 3.5 Flash","task":"summary","cost":{"input":0.15,"output":0.6,"cacheRead":0.015,"tiers":[]},"limit":{"context":1048576,"output":65536}},{"id":"gemini-3.6-flash","provider":"gemini","label":"Gemini 3.6 Flash","task":"summary","cost":{"input":0.1,"output":0.4,"cacheRead":0.01,"tiers":[]},"limit":{"context":1048576,"output":65536}},{"id":"gpt-5","provider":"openai","label":"GPT-5","task":"summary","cost":{"input":1.25,"output":10,"cacheRead":0.125,"tiers":[]},"limit":{"context":1000000,"output":16384}},{"id":"gpt-5-mini","provider":"openai","label":"GPT-5 mini","task":"summary","cost":{"input":0.25,"output":2,"cacheRead":0.025,"tiers":[]},"limit":{"context":1000000,"output":16384}},{"id":"gpt-5.1","provider":"openai","label":"GPT-5.1","task":"summary","cost":{"input":2,"output":8,"cacheRead":0.5,"tiers":[]},"limit":{"context":1000000,"output":16384}},{"id":"gpt-5.2","provider":"openai","label":"GPT-5.2","task":"summary","cost":{"input":2.5,"output":10,"cacheRead":1.25,"tiers":[]},"limit":{"context":1000000,"output":16384}},{"id":"gpt-5.4","provider":"openai","label":"GPT-5.4","task":"summary","cost":{"input":1.25,"output":10,"cacheRead":0.125,"tiers":[]},"limit":{"context":1000000,"output":16384}},{"id":"gpt-5.4-mini","provider":"openai","label":"GPT-5.4 mini","task":"summary","cost":{"input":0.25,"output":2,"cacheRead":0.025,"tiers":[]},"limit":{"context":1000000,"output":16384}},{"id":"gpt-5.5","provider":"openai","label":"GPT-5.5","task":"summary","cost":{"input":1,"output":8,"cacheRead":0.1,"tiers":[]},"limit":{"context":1000000,"output":16384}},{"id":"gpt-5.6","provider":"openai","label":"GPT-5.6","task":"summary","cost":{"input":2.5,"output":10,"cacheRead":1.25,"tiers":[]},"limit":{"context":1000000,"output":16384}}]};
 
-// ── Effective catalog resolution ─────────────────────────────────────────────
+/** Load the baked snapshot. Returns the embedded constant. */
+export function loadBakedSnapshot(): CatalogCache {
+  return BAKED_SNAPSHOT;
+}
 
 /**
  * Resolve the effective catalog: on-disk cache first, then baked snapshot.
