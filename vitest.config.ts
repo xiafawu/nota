@@ -7,5 +7,7 @@ export default defineConfig({
     // this repo whose test files would otherwise be scanned and run as
     // duplicates, inflating the count and runtime.
     exclude: [...configDefaults.exclude, "**/.claude/**"],
+    // Hermetic catalog path — see tests/setup.ts.
+    setupFiles: ["tests/setup.ts"],
   },
 });

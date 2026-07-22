@@ -28,6 +28,7 @@ const FIXTURE = {
       },
       "gpt-5-mini": {
         id: "gpt-5-mini",
+        name: "GPT-5 mini",
         family: "gpt-chat",
         modalities: { input: ["text"], output: ["text"] },
         tool_call: true,
@@ -81,6 +82,32 @@ const FIXTURE = {
         tool_call: true,
         cost: { input: 2.5, output: 10 },
         limit: { context: 1000000, output: 16384 },
+      },
+      // EXCLUDED — previous generation still listed on models.dev. A bare
+      // `gpt-\d+` pattern matches these; the predicate must floor at gen 5.
+      "gpt-4": {
+        id: "gpt-4",
+        family: "gpt-chat",
+        modalities: { input: ["text"], output: ["text"] },
+        tool_call: true,
+        cost: { input: 30, output: 60 },
+        limit: { context: 8192, output: 8192 },
+      },
+      "gpt-4.1": {
+        id: "gpt-4.1",
+        family: "gpt-chat",
+        modalities: { input: ["text"], output: ["text"] },
+        tool_call: true,
+        cost: { input: 2, output: 8 },
+        limit: { context: 1047576, output: 32768 },
+      },
+      "gpt-4.1-mini": {
+        id: "gpt-4.1-mini",
+        family: "gpt-chat",
+        modalities: { input: ["text"], output: ["text"] },
+        tool_call: true,
+        cost: { input: 0.4, output: 1.6 },
+        limit: { context: 1047576, output: 32768 },
       },
       // EXCLUDED — near-misses
       "gpt-5.4-pro": {
@@ -141,7 +168,10 @@ const FIXTURE = {
       "gemini-2.5-flash": {
         id: "gemini-2.5-flash",
         family: "gemini-flash",
-        modalities: { input: ["text", "image"], output: ["text"] },
+        // Real shape: Gemini chat models are multimodal on input (incl. audio).
+        // The predicate must not reject them for that — regression trap for
+        // the audio-input gate that once wiped all of Gemini.
+        modalities: { input: ["text", "image", "audio", "video", "pdf"], output: ["text"] },
         tool_call: true,
         cost: { input: 0.3, output: 2.5 },
         limit: { context: 1048576, output: 65536 },
@@ -149,7 +179,7 @@ const FIXTURE = {
       "gemini-2.5-pro": {
         id: "gemini-2.5-pro",
         family: "gemini-pro",
-        modalities: { input: ["text", "image"], output: ["text"] },
+        modalities: { input: ["text", "image", "audio", "video", "pdf"], output: ["text"] },
         tool_call: true,
         cost: { input: 1.25, output: 10 },
         limit: { context: 1048576, output: 65536 },
@@ -157,7 +187,10 @@ const FIXTURE = {
       "gemini-3.5-flash": {
         id: "gemini-3.5-flash",
         family: "gemini-flash",
-        modalities: { input: ["text", "image"], output: ["text"] },
+        // Real shape: Gemini chat models are multimodal on input (incl. audio).
+        // The predicate must not reject them for that — regression trap for
+        // the audio-input gate that once wiped all of Gemini.
+        modalities: { input: ["text", "image", "audio", "video", "pdf"], output: ["text"] },
         tool_call: true,
         cost: { input: 0.15, output: 0.6 },
         limit: { context: 1048576, output: 65536 },
@@ -165,7 +198,10 @@ const FIXTURE = {
       "gemini-3.6-flash": {
         id: "gemini-3.6-flash",
         family: "gemini-flash",
-        modalities: { input: ["text", "image"], output: ["text"] },
+        // Real shape: Gemini chat models are multimodal on input (incl. audio).
+        // The predicate must not reject them for that — regression trap for
+        // the audio-input gate that once wiped all of Gemini.
+        modalities: { input: ["text", "image", "audio", "video", "pdf"], output: ["text"] },
         tool_call: true,
         cost: { input: 0.1, output: 0.4 },
         limit: { context: 1048576, output: 65536 },
@@ -174,7 +210,7 @@ const FIXTURE = {
       "gemini-3-pro-preview": {
         id: "gemini-3-pro-preview",
         family: "gemini-pro",
-        modalities: { input: ["text", "image"], output: ["text"] },
+        modalities: { input: ["text", "image", "audio", "video", "pdf"], output: ["text"] },
         tool_call: true,
         cost: { input: 2, output: 12 },
         limit: { context: 1048576, output: 65536 },
@@ -190,7 +226,10 @@ const FIXTURE = {
       "gemini-flash-latest": {
         id: "gemini-flash-latest",
         family: "gemini-flash",
-        modalities: { input: ["text", "image"], output: ["text"] },
+        // Real shape: Gemini chat models are multimodal on input (incl. audio).
+        // The predicate must not reject them for that — regression trap for
+        // the audio-input gate that once wiped all of Gemini.
+        modalities: { input: ["text", "image", "audio", "video", "pdf"], output: ["text"] },
         tool_call: true,
         cost: { input: 0.3, output: 2.5 },
         limit: { context: 1048576, output: 65536 },
@@ -282,6 +321,9 @@ const EXPECTED_ADMITTED = [
 ];
 
 const NEAR_MISSES = [
+  "gpt-4",
+  "gpt-4.1",
+  "gpt-4.1-mini",
   "gpt-5.4-pro",
   "gpt-5.3-chat-latest",
   "gpt-5.1-codex",
@@ -326,6 +368,14 @@ describe("allowlist — admit exactly the 14 handoff-specified models", () => {
         expect(m.provider).toBe("openai");
       }
     }
+  });
+
+  it("maps the models.dev name field to label, falling back to id", () => {
+    const mini = result.find((m) => m.id === "gpt-5-mini");
+    expect(mini?.label).toBe("GPT-5 mini");
+    // Entries without a name keep the id as label
+    const flash = result.find((m) => m.id === "deepseek-v4-flash");
+    expect(flash?.label).toBe("deepseek-v4-flash");
   });
 
   it("maps deepseek provider to deepseek", () => {

@@ -77,7 +77,7 @@ interface RawModelEntry {
     output?: string[];
   };
   tool_call?: boolean;
-  label?: string;
+  name?: string;
   cost: {
     input: number;
     output: number;
@@ -116,18 +116,29 @@ function isChatTextModel(m: RawModelEntry): boolean {
   return m.tool_call === true;
 }
 
-/** OpenAI: mainline gpt-* chat models. */
-const OPENAI_MAINLINE = /^gpt-\d+(\.\d+)?(-mini)?$/;
+/**
+ * OpenAI: mainline gpt-* chat models, generation 5 and later. The floor
+ * matters: models.dev still lists gpt-4 / gpt-4.1(-mini), which match a bare
+ * `gpt-\d+` pattern and would resurrect the old generation in the pickers.
+ */
+const OPENAI_MAINLINE = /^gpt-([5-9]|\d{2,})(\.\d+)?(-mini)?$/;
 
 function openaiAdmit(m: RawModelEntry): boolean {
   return isChatTextModel(m) && OPENAI_MAINLINE.test(m.id);
 }
 
-/** Google: stable Gemini flash/pro, no preview/latest/deprecated. */
+/**
+ * Google: stable Gemini flash/pro, no preview/latest/deprecated.
+ *
+ * Deliberately does NOT use isChatTextModel: Gemini chat models are
+ * multimodal on INPUT (text+image+audio+video+pdf), so the no-audio-input
+ * gate — meant to exclude OpenAI realtime models — would reject every
+ * Gemini model. Text-only OUTPUT is the discriminator that matters here.
+ */
 function googleAdmit(m: RawModelEntry): boolean {
   if (m.family !== "gemini-flash" && m.family !== "gemini-pro") return false;
-  // Must pass structural gate (text-only, no audio, tool_call)
-  if (!isChatTextModel(m)) return false;
+  const out = m.modalities?.output ?? [];
+  if (out.length !== 1 || out[0] !== "text") return false;
   // Reject preview and floating -latest aliases
   if (/preview/.test(m.id)) return false;
   if (/latest/.test(m.id)) return false;
@@ -192,7 +203,7 @@ export function filterCatalog(raw: RawCatalog): CatalogModelEntry[] {
       result.push({
         id,
         provider: notaProvider,
-        label: entry.label ?? id,
+        label: entry.name ?? id,
         task: "summary",
         cost: {
           input: cost.input,
@@ -591,6 +602,24 @@ export async function refreshCatalog(opts?: {
 
   // Filter through allowlist
   const filteredModels = filterCatalog(raw as RawCatalog);
+
+  // Every provider must survive filtering with at least one model. A filter
+  // bug that silently empties one provider (e.g. an audio-input gate wiping
+  // all of Gemini, whose chat models are multimodal on input) must reject
+  // the fetch and keep serving the previous cache.
+  const emptyProviders = ["openai", "gemini", "deepseek"].filter(
+    (prov) => !filteredModels.some((m) => m.provider === prov),
+  );
+  if (emptyProviders.length > 0) {
+    const fallback = prevCache ?? loadBakedSnapshot();
+    return {
+      ok: false,
+      cache: fallback,
+      added: [],
+      removed: [],
+      errors: emptyProviders.map((p) => `no models admitted for provider: ${p}`),
+    };
+  }
 
   // Build new cache
   const etag = response.headers.get("etag") ?? "";
