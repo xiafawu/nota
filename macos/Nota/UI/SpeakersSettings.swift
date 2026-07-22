@@ -167,6 +167,9 @@ struct SpeakersSettingsView: View {
       detail
         .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+    // Fill the tab: without this the HStack sizes to content and the detail
+    // placeholder drifts into a corner of the larger settings window.
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
     .onAppear { model.refresh() }
   }
 
@@ -202,7 +205,7 @@ struct SpeakersSettingsView: View {
               .tag(Optional(entry.id))
           }
         }
-        .listStyle(.inset)
+        .listStyle(.sidebar)
       }
 
       Divider()
@@ -221,32 +224,27 @@ struct SpeakersSettingsView: View {
     }
   }
 
+  /// Minimal row: name + right-aligned voiceprint-count badge. Enrollment
+  /// date and source stay in the detail pane where there's room — putting
+  /// them here wrapped the date across three lines at sidebar width and
+  /// surfaced meaningless temp-file names.
   private func speakerRow(_ entry: SpeakerEntry) -> some View {
-    VStack(alignment: .leading, spacing: 2) {
+    HStack(spacing: 8) {
       Text(entry.name)
         .font(.callout)
         .fontWeight(.medium)
         .lineLimit(1)
         .truncationMode(.middle)
-      HStack(spacing: 6) {
-        // Show count + first voiceprint's enrolledAt / source for the row
-        let count = entry.profile.voiceprints.count
-        Text("\(count) voiceprint\(count == 1 ? "" : "s")")
-        if let first = entry.profile.voiceprints.first {
-          Text("•")
-          Text(formatEnrolledAt(first.enrolledAt))
-          if !first.source.isEmpty {
-            Text("•")
-            Text(URL(fileURLWithPath: first.source).lastPathComponent)
-              .lineLimit(1)
-              .truncationMode(.middle)
-          }
-        }
-      }
-      .font(.caption2)
-      .foregroundStyle(.secondary)
+      Spacer(minLength: 4)
+      Text("\(entry.profile.voiceprints.count)")
+        .font(.caption2.monospacedDigit())
+        .foregroundStyle(.secondary)
+        .padding(.horizontal, 7)
+        .padding(.vertical, 1)
+        .background(.quaternary.opacity(0.5), in: Capsule())
+        .help("\(entry.profile.voiceprints.count) voiceprint\(entry.profile.voiceprints.count == 1 ? "" : "s")")
     }
-    .padding(.vertical, 2)
+    .padding(.vertical, 3)
   }
 
   @ViewBuilder
@@ -254,13 +252,10 @@ struct SpeakersSettingsView: View {
     if let selected = model.selected {
       detailForm(for: selected)
     } else {
-      VStack(spacing: 12) {
-        Image(systemName: "person.crop.circle.badge.questionmark")
-          .font(.system(size: 36))
-          .foregroundStyle(.secondary)
-        Text("Select a speaker")
-          .foregroundStyle(.secondary)
-      }
+      ContentUnavailableView(
+        "Select a speaker",
+        systemImage: "person.crop.circle.badge.questionmark"
+      )
       .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
   }
