@@ -45,6 +45,7 @@ by this map — done when the change is shipped, tested, and deployed.
 - [R1 Catalog contract](tickets/R1-catalog-contract.md) — models.dev ids = endpoint ids verbatim (no alias table; Gemini bare-id invariant); predicates admit 8/4/2 models (OpenAI `family` corrupted — use id-regex + modality gate); tiers encoded in `cost.tiers[]` (threshold varies — never hardcode 200k, ignore `context_over_200k`); catalog replaces pricing.ts for summary (unit trap ×1e-6); cache schema v1 + etag/validation/stale-serve rules locked. [Contract](assets/catalog-contract.md).
 - [G1 Refresh + fallback UX](tickets/G1-refresh-ux.md) — fetch on both CLI + app startup (>7d, background, atomic write); manual refresh = Settings button AND `nota models refresh` verb; zombie warning = stderr line + dismissible Settings banner; default resolution is key-aware (deepseek → OpenAI mini → Gemini flash, first key that resolves; no hard breaks); "catalog as of <fetchedAt>" footers in Settings Models + `nota usage`.
 - [G2 Pricing integration](tickets/G2-pricing-integration.md) — pricing.ts shrinks to transcription-only; summary cost from catalog cache at snapshot (baked snapshot = no-cache fallback); missing cost → costUSD null "unknown" (T5 semantics, no estimation); pricedAsOf = catalog fetchedAt; tiers computed generically from `cost.tiers[]`; ×1e-6 unit conversion with assertion test.
+- [X1 Implement TS](tickets/X1-implement-ts.md) — **shipped, merged ff `11c6666..693f37b`** via omp (5 lane commits + 1 review fix); 402 tests green; catalog module + dynamic registry + key-aware chain + zombie fallback + `nota models list|refresh` + catalog-sourced pricing live on master; baked snapshot inlined in `src/catalog.ts` (no separate file).
 
 ## Not yet specified
 
@@ -71,6 +72,6 @@ by this map — done when the change is shipped, tested, and deployed.
 | [R1 Catalog contract: models.dev shape → Nota schema](tickets/R1-catalog-contract.md) | research | closed | — |
 | [G1 Refresh + fallback UX](tickets/G1-refresh-ux.md) | grilling | closed | — |
 | [G2 Pricing integration with usage-stats](tickets/G2-pricing-integration.md) | grilling | closed | R1 ✅ |
-| [X1 Implement TS: catalog, registry, defaults](tickets/X1-implement-ts.md) | task | open | R1 ✅, G1 ✅, G2 ✅ |
-| [X2 Implement macOS: shared cache + dynamic pickers](tickets/X2-implement-macos.md) | task | open | X1 |
-| [X3 Ship: docs, deploy, verify](tickets/X3-ship-verify.md) | task | open | X1, X2 |
+| [X1 Implement TS: catalog, registry, defaults](tickets/X1-implement-ts.md) | task | closed | R1 ✅, G1 ✅, G2 ✅ |
+| [X2 Implement macOS: shared cache + dynamic pickers](tickets/X2-implement-macos.md) | task | open | X1 ✅ |
+| [X3 Ship: docs, deploy, verify](tickets/X3-ship-verify.md) | task | open | X1 ✅, X2 |
