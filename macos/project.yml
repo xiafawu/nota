@@ -7,9 +7,13 @@ options:
     macOS: "26.0"
   createIntermediateGroups: true
 
-# Ad-hoc signing everywhere: no Team ID, manual style, "-" identity. This
-# mirrors the old hand-rolled script (codesign --sign -) so the nested
-# app-extension can still carry its App Sandbox entitlements.
+# Signing: app targets (Nota, NotaShare) use the stable self-signed
+# "Nota Local Signing" identity (scripts/create-signing-cert.sh) so macOS TCC
+# grants (Accessibility, Input Monitoring) survive rebuilds — an ad-hoc
+# cdhash changes every build, and a debug copy sharing the bundle id with the
+# deployed app would invalidate its grants on every Xcode Run. Test bundles
+# stay ad-hoc ("-" below): they never touch TCC and must build without the
+# local cert (e.g. worktree/CI checkouts).
 settings:
   base:
     CODE_SIGN_STYLE: Manual
@@ -55,6 +59,7 @@ targets:
         # Deliberately no CODE_SIGN_ENTITLEMENTS: the main app is unsandboxed
         # for the production dictation distribution path. NotaShare remains
         # separately sandboxed below.
+        CODE_SIGN_IDENTITY: "Nota Local Signing"
     dependencies:
       - target: NotaShare
         embed: true
@@ -74,6 +79,7 @@ targets:
         CODE_SIGN_ENTITLEMENTS: NotaShare/NotaShare.entitlements
         PRODUCT_BUNDLE_IDENTIFIER: com.xiafawu.nota.share
         PRODUCT_NAME: NotaShare
+        CODE_SIGN_IDENTITY: "Nota Local Signing"
 
   NotaDictationTests:
     type: bundle.unit-test
