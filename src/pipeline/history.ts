@@ -32,6 +32,8 @@ export interface UsageEntry {
   durationMin?: number;
   costUSD: number | null;
   estimated: boolean;
+  /** ISO timestamp of the catalog snapshot used for cost computation. */
+  pricedAsOf?: string;
 }
 
 export interface HistoryRecord {
