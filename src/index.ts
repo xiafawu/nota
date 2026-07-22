@@ -37,6 +37,9 @@ import {
   settingsUnset,
 } from "./cli/settings.js";
 import { parseWindow, usageRuns, usageSummary, usageSummaryJSON } from "./cli/usage.js";
+import { loadSettings } from "./utils/settings.js";
+import { modelsList, modelsRefresh } from "./cli/models.js";
+import { isCacheStale, refreshCatalog, readCache } from "./catalog.js";
 
 const program = new Command();
 
@@ -466,6 +469,40 @@ usage
       process.exit(1);
     }
   });
+
+// ── models ───────────────────────────────────────────────────────────────────
+
+const models = program
+  .command("models")
+  .description("Manage the summary model catalog (auto-refreshed weekly)");
+
+models
+  .command("list")
+  .description("List effective summary catalog models (tab-separated)")
+  .action(async () => {
+    try {
+      await modelsList();
+    } catch (error) {
+      process.stderr.write(
+        `Error: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      process.exit(1);
+    }
+  });
+
+models
+  .command("refresh")
+  .description("Force-refresh the model catalog from models.dev")
+  .action(async () => {
+    try {
+      await modelsRefresh();
+    } catch (error) {
+      process.stderr.write(
+        `Error: ${error instanceof Error ? error.message : String(error)}\n`,
+      );
+      process.exit(1);
+    }
+  });
 program
   .command("config")
   .description(
@@ -523,5 +560,36 @@ program
 // Load ~/.nota/config once at bootstrap so every subcommand (run, history,
 // speakers, config) sees file-provided keys. Real env vars still win.
 applyEnvFile();
+
+// Background catalog freshness check: if the cache is stale, fire off a
+// refresh in the background. Never blocks or fails the CLI.
+(async () => {
+  try {
+    const cache = readCache();
+    if (cache && isCacheStale(cache)) {
+      const settings = loadSettings();
+      const configuredIds: string[] = [];
+      if (settings.summary?.model) configuredIds.push(settings.summary.model);
+
+      refreshCatalog({
+        etag: cache.etag,
+        configuredIds,
+        prevCache: cache,
+      }).then((result) => {
+        if (!result.ok && result.errors.length > 0) {
+          for (const err of result.errors) {
+            process.stderr.write(`catalog refresh warning: ${err}\n`);
+          }
+        } else if (result.added.length > 0 || result.removed.length > 0) {
+          process.stderr.write(
+            `catalog updated: ${result.added.length} added, ${result.removed.length} removed (${result.cache.fetchedAt})\n`,
+          );
+        }
+      });
+    }
+  } catch {
+    // Background refresh never throws
+  }
+})();
 
 program.parse();

@@ -8,6 +8,7 @@
 import type { AggregateWindow } from "../usage-stats.js";
 import { perModelSummary, perRunLog } from "../usage-stats.js";
 import { listHistoryRecords } from "../pipeline/history.js";
+import { effectiveCatalog } from "../catalog.js";
 
 const VALID_WINDOWS = ["all", "30d", "month"] as const;
 
@@ -110,10 +111,13 @@ export async function usageSummary(window?: AggregateWindow, historyDir?: string
   process.stderr.write(
     `total\t\t${totalRuns}\t${totalCalls}\t${totalTokensIn}\t${totalTokensOut}\t${totalEstMark}${formatCost(totalCost)}\n`,
   );
-
   if (unknownCount > 0) {
     process.stderr.write(`${unknownCount} runs have unknown cost\n`);
   }
+
+  // Catalog pricing source footer
+  const { catalog } = effectiveCatalog();
+  process.stderr.write(`model catalog as of ${catalog.fetchedAt}\n`);
 }
 
 /**
@@ -171,4 +175,8 @@ export async function usageRuns(window?: AggregateWindow, historyDir?: string): 
   if (unknownCount > 0) {
     process.stderr.write(`${unknownCount} runs have unknown cost\n`);
   }
+
+  // Catalog pricing source footer
+  const { catalog } = effectiveCatalog();
+  process.stderr.write(`model catalog as of ${catalog.fetchedAt}\n`);
 }
