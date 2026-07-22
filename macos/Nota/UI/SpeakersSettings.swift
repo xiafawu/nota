@@ -205,7 +205,11 @@ struct SpeakersSettingsView: View {
               .tag(Optional(entry.id))
           }
         }
-        .listStyle(.sidebar)
+        // .inset, not .sidebar: sidebar style is a source list meant for
+        // NavigationSplitView — inside the Settings TabView its material
+        // background extends into the titlebar safe area and punches through
+        // the toolbar over the left column.
+        .listStyle(.inset)
       }
 
       Divider()
