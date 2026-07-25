@@ -222,6 +222,16 @@ final class NotaModel: ObservableObject {
     do {
       selectedURL = try makeStableInputCopy(from: fileURL)
       originalSelectedURL = fileURL
+      // Staged shares live in ~/.nota/inbox and never reach runNota's reaper (that one only
+      // sees the stable copy). Drop the staged file here so the inbox doesn't accumulate
+      // ~78 MB per share. Both conditions matter: `resolveSharedURL` will hand back ANY
+      // absolute path carried in a nota: URL, and a user can drag-drop a file that merely
+      // happens to be named .nota-share-*, so a prefix check alone would delete user data.
+      let parent = fileURL.deletingLastPathComponent().standardizedFileURL
+      if parent == notaInboxDirectory().standardizedFileURL,
+         fileURL.lastPathComponent.hasPrefix(".nota-share-") {
+        try? FileManager.default.removeItem(at: fileURL)
+      }
       status = fileURL.lastPathComponent
     } catch {
       selectedURL = nil
@@ -560,7 +570,9 @@ final class NotaModel: ObservableObject {
 
   /// Map an incoming open request to a file URL. Plain file URLs pass through;
   /// the share extension's `nota://import?path=<abs path>` is decoded back to
-  /// the staged file in ~/Documents/Nota.
+  /// the staged file in ~/.nota/inbox. Note this returns whatever absolute path
+  /// the URL carries — callers that delete must verify the directory too, not
+  /// just the `.nota-share-` basename (see `accept`).
   private static func resolveSharedURL(_ url: URL) -> URL {
     guard !url.isFileURL,
           url.scheme == "nota",

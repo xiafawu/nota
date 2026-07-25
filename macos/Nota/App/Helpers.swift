@@ -38,6 +38,19 @@ func notaHistoryDirectory() -> URL {
     .appendingPathComponent("history", isDirectory: true)
 }
 
+/// Where the share extension stages an incoming file before handing it to the
+/// app over `nota://import`. The host is unsandboxed, so
+/// `homeDirectoryForCurrentUser` is already the real home here — the extension
+/// must resolve it via `getpwuid` instead (App Sandbox rewrites it to the
+/// extension's container). The extension keeps its own copy of this path as
+/// `stagingDirectory()` in macos/NotaShare/ShareViewController.swift, because
+/// the NotaShare target compiles only `NotaShare/` sources. Keep them in sync.
+func notaInboxDirectory() -> URL {
+  FileManager.default.homeDirectoryForCurrentUser
+    .appendingPathComponent(".nota", isDirectory: true)
+    .appendingPathComponent("inbox", isDirectory: true)
+}
+
 func notaOutputDirectory() -> URL {
   if let override = ProcessInfo.processInfo.environment["NOTA_OUTPUT_DIR"], !override.isEmpty {
     return URL(fileURLWithPath: override, isDirectory: true)

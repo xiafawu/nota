@@ -98,8 +98,13 @@ ditto "$BUILD_APP" "$DEST_APP"
 SIGN_ID="${NOTA_SIGN_ID:-Nota Local Signing}"
 if command -v codesign >/dev/null 2>&1; then
   if security find-identity -v -p codesigning 2>/dev/null | grep -qF "$SIGN_ID"; then
-    # Sign inner code (frameworks, NotaShare.appex) then the outer app.
-    codesign --force --deep --sign "$SIGN_ID" "$DEST_APP"
+    # Sign inner code first, preserving each nested bundle's entitlements, then the outer app.
+    # NEVER use --deep here: it re-signs NotaShare.appex with NO entitlements, which strips
+    # app-sandbox and makes pkd reject the extension ("plug-ins must be sandboxed").
+    codesign --force --sign "$SIGN_ID" \
+      --entitlements "$PROJECT_DIR/macos/NotaShare/NotaShare.entitlements" \
+      "$DEST_APP/Contents/PlugIns/NotaShare.appex"
+    codesign --force --sign "$SIGN_ID" "$DEST_APP"
     codesign --verify --deep --strict "$DEST_APP"
     echo "Signed with stable identity: \"$SIGN_ID\""
   else
@@ -108,6 +113,19 @@ if command -v codesign >/dev/null 2>&1; then
     echo "         will NOT persist across redeploys. Run scripts/create-signing-cert.sh once." >&2
     codesign --verify --deep --strict "$DEST_APP" || true
   fi
+fi
+
+# Fail the deploy if the extension ended up unsandboxed — otherwise the share sheet
+# silently falls back to a DerivedData build and every share test is a lie. Checked
+# outside the identity branch above on purpose: the ad-hoc `else` path is exactly the
+# state that produces an unsandboxed appex, so a gate nested in the `if` would skip
+# the case it exists to catch.
+if [ -d "$DEST_APP/Contents/PlugIns/NotaShare.appex" ]; then
+  codesign -d --entitlements - "$DEST_APP/Contents/PlugIns/NotaShare.appex" 2>&1 \
+    | grep -q "com.apple.security.app-sandbox" || {
+      echo "ERROR: NotaShare.appex has no sandbox entitlement — pkd will reject it." >&2
+      exit 1
+    }
 fi
 
 if [ -x "$LSREGISTER" ]; then

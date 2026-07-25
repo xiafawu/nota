@@ -1,4 +1,5 @@
 import AppKit
+import Darwin
 import UniformTypeIdentifiers
 
 @objc(ShareViewController)
@@ -140,11 +141,37 @@ final class ShareViewController: NSViewController {
     }
   }
 
+  /// App Sandbox maps `homeDirectoryForCurrentUser` to the extension's container
+  /// (~/Library/Containers/<id>/Data). The `home-relative-path` entitlement exception,
+  /// however, is scoped against the REAL home — so staging must resolve the real home
+  /// explicitly or the exception is never exercised and the host cannot read the file
+  /// (TCC kTCCServiceSystemPolicyAppDataDetailed blocks cross-container reads).
+  /// Deliberately no fallback to homeDirectoryForCurrentUser: that value IS the broken
+  /// container path, and staging there fails later, in the host, with an opaque message.
+  private func realHomeDirectory() throws -> URL {
+    guard let pw = getpwuid(getuid()), let dir = pw.pointee.pw_dir else {
+      throw ShareError.noHomeDirectory
+    }
+    return URL(fileURLWithPath: String(cString: dir), isDirectory: true)
+  }
+
+  /// The shared staging inbox, `~/.nota/inbox`. Kept outside every TCC-protected
+  /// directory (Desktop/Documents/Downloads/iCloud/Containers) so the unsandboxed
+  /// host app can read what this extension writes.
+  ///
+  /// The host app has its own copy of this path as `notaInboxDirectory()` in
+  /// macos/Nota/App/Helpers.swift — the NotaShare target compiles only
+  /// `NotaShare/` sources, so the two cannot share one definition. Keep them
+  /// in sync.
+  private func stagingDirectory() throws -> URL {
+    try realHomeDirectory()
+      .appendingPathComponent(".nota", isDirectory: true)
+      .appendingPathComponent("inbox", isDirectory: true)
+  }
+
   private func copyForNota(_ url: URL) throws -> URL {
     let fileManager = FileManager.default
-    let directory = fileManager.homeDirectoryForCurrentUser
-      .appendingPathComponent("Documents", isDirectory: true)
-      .appendingPathComponent("Nota", isDirectory: true)
+    let directory = try stagingDirectory()
     try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
 
     let extensionName = url.pathExtension.isEmpty ? "m4a" : url.pathExtension.lowercased()
@@ -153,17 +180,16 @@ final class ShareViewController: NSViewController {
     return destination
   }
 
-  /// Sweep stale share-staging files older than 5 minutes from the
-  /// extension's container Documents/Nota. Without this, the container
-  /// accumulates ~78 MB per share (macOS does not auto-clean files inside
-  /// a sandbox container's persistent dirs). The host app has already
-  /// re-copied successful shares into its own ~/Documents/Nota via
-  /// makeStableInputCopy, so anything still here is staging debris.
+  /// Sweep stale share-staging files older than 5 minutes from the shared
+  /// inbox (~/.nota/inbox). Without this the inbox accumulates ~78 MB per
+  /// share — nothing auto-cleans it. The host app already re-copies a
+  /// successful share into ~/Documents/Nota via makeStableInputCopy and
+  /// deletes the staged original, so anything still here is debris from a
+  /// share the host never picked up. Best-effort: a missing staging
+  /// directory or an unresolvable home simply means nothing to prune.
   private func pruneStaleStagedFiles() {
     let fileManager = FileManager.default
-    let directory = fileManager.homeDirectoryForCurrentUser
-      .appendingPathComponent("Documents", isDirectory: true)
-      .appendingPathComponent("Nota", isDirectory: true)
+    guard let directory = try? stagingDirectory() else { return }
     guard let entries = try? fileManager.contentsOfDirectory(
       at: directory,
       includingPropertiesForKeys: [.contentModificationDateKey],
@@ -184,6 +210,7 @@ final class ShareViewController: NSViewController {
 private enum ShareError: LocalizedError {
   case noFile
   case openFailed
+  case noHomeDirectory
 
   var errorDescription: String? {
     switch self {
@@ -191,6 +218,8 @@ private enum ShareError: LocalizedError {
       return "No shared audio file was provided."
     case .openFailed:
       return "Could not open Nota for the shared audio."
+    case .noHomeDirectory:
+      return "Could not resolve your home directory."
     }
   }
 }
