@@ -48,6 +48,10 @@ targets:
       - path: Nota/Assets/AppIcon.icon
         buildPhase: resources
         type: file
+      # Compiled into both Nota and NotaShare: the share hand-off path must be
+      # identical in the two processes. XcodeGen is fine with one path appearing
+      # in several targets' sources.
+      - path: Shared
     settings:
       base:
         INFOPLIST_FILE: Nota/Info.plist
@@ -73,6 +77,8 @@ targets:
         excludes:
           - "Info.plist"
           - "NotaShare.entitlements"
+      # Same shared source as the Nota target above (staging path definition).
+      - path: Shared
     settings:
       base:
         INFOPLIST_FILE: NotaShare/Info.plist

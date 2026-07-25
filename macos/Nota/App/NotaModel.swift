@@ -227,8 +227,13 @@ final class NotaModel: ObservableObject {
       // ~78 MB per share. Both conditions matter: `resolveSharedURL` will hand back ANY
       // absolute path carried in a nota: URL, and a user can drag-drop a file that merely
       // happens to be named .nota-share-*, so a prefix check alone would delete user data.
-      let parent = fileURL.deletingLastPathComponent().standardizedFileURL
-      if parent == notaInboxDirectory().standardizedFileURL,
+      // `resolvingSymlinksInPath` (not `standardizedFileURL`) on BOTH sides: lexical
+      // standardization collapses `..` without following symlinks, so a path like
+      // <inbox>/sub/../.nota-share-x where `sub` is a symlink would compare equal to the
+      // inbox while the kernel resolves it somewhere else entirely.
+      let parent = fileURL.deletingLastPathComponent().resolvingSymlinksInPath()
+      if let inbox = try? notaInboxDirectory(),
+         parent == inbox.resolvingSymlinksInPath(),
          fileURL.lastPathComponent.hasPrefix(".nota-share-") {
         try? FileManager.default.removeItem(at: fileURL)
       }

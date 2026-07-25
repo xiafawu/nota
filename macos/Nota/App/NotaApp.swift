@@ -93,7 +93,28 @@ private struct OpenTuningWindowButton: View {
 final class AppDelegate: NSObject, NSApplicationDelegate {
   func applicationDidFinishLaunching(_ notification: Notification) {
     hideFromDockUnderTests()
+    ensureShareInboxExists()
     enforceSingleInstance()
+  }
+
+  /// Create `~/.nota/inbox` so the share extension can stage into it.
+  ///
+  /// The extension is sandboxed and its entitlement grants `/.nota/inbox/` only
+  /// — deliberately not `/.nota/`, which would expose the API-key file
+  /// (`~/.nota/config`) and `speakers.json` to a sandboxed process. Creating the
+  /// intermediate `~/.nota` is therefore a write to `~/` that the extension is
+  /// not permitted to make, and on a machine where Nota has never written any
+  /// state (keys exported in the shell, Settings never opened, CLI never run)
+  /// the extension's own `createDirectory` fails with EACCES and the first share
+  /// dies. This app is unsandboxed, so the same call always succeeds here.
+  ///
+  /// Runs before `enforceSingleInstance()` so a duplicate launch still repairs
+  /// the directory on its way out. Best-effort: a failure must not block launch,
+  /// and the install-time `mkdir -p` in scripts/deploy-macos-app.sh covers the
+  /// case where the extension runs before this app has ever been launched.
+  private func ensureShareInboxExists() {
+    guard let inbox = try? notaInboxDirectory() else { return }
+    try? FileManager.default.createDirectory(at: inbox, withIntermediateDirectories: true)
   }
 
   /// xcodebuild launches this app as the unit-test host; a regular activation

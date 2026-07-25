@@ -72,6 +72,15 @@ fi
 
 mkdir -p "$DEPLOY_DIR"
 
+# Share-staging inbox. The share extension is sandboxed and its entitlement
+# grants ~/.nota/inbox only — NOT ~/.nota, which would expose the API-key file
+# (~/.nota/config) and speakers.json to a sandboxed process. That means the
+# extension cannot create the intermediate ~/.nota itself, so on a machine that
+# has never written Nota state the first share would fail with EACCES. The app
+# also does this at launch (AppDelegate.ensureShareInboxExists), but the
+# extension can run before the app has ever been launched.
+mkdir -p "$HOME/.nota/inbox"
+
 # Kill any running Nota process so the new binary actually loads on relaunch.
 # `open` alone just raises an already-running window without reloading the
 # executable, which masks source changes from testers and review loops.
@@ -115,15 +124,22 @@ if command -v codesign >/dev/null 2>&1; then
   fi
 fi
 
-# Fail the deploy if the extension ended up unsandboxed — otherwise the share sheet
-# silently falls back to a DerivedData build and every share test is a lie. Checked
-# outside the identity branch above on purpose: the ad-hoc `else` path is exactly the
-# state that produces an unsandboxed appex, so a gate nested in the `if` would skip
-# the case it exists to catch.
+# Fail the deploy if the extension ended up unsandboxed — pkd refuses to register an
+# unsandboxed plug-in, and the share sheet then silently falls back to a DerivedData
+# build, so every share test would exercise a stale binary. The actual culprit was
+# `--deep` in the signed branch above, which re-signed the appex with no entitlements;
+# the ad-hoc `else` path re-signs nothing, so the appex keeps xcodebuild's signature
+# (made with CODE_SIGN_ENTITLEMENTS, hence sandboxed). This check sits outside the
+# whole if/else as defense in depth: it holds for any future signing path, including
+# ones that do touch the appex.
+#
+# Remove the bundle before failing: `ditto` above already replaced $DEST_APP, so
+# exiting here would otherwise leave a freshly-installed broken app in place.
 if [ -d "$DEST_APP/Contents/PlugIns/NotaShare.appex" ]; then
   codesign -d --entitlements - "$DEST_APP/Contents/PlugIns/NotaShare.appex" 2>&1 \
     | grep -q "com.apple.security.app-sandbox" || {
       echo "ERROR: NotaShare.appex has no sandbox entitlement — pkd will reject it." >&2
+      rm -rf "$DEST_APP"
       exit 1
     }
 fi

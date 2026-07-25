@@ -1,5 +1,4 @@
 import AppKit
-import Darwin
 import UniformTypeIdentifiers
 
 @objc(ShareViewController)
@@ -141,37 +140,17 @@ final class ShareViewController: NSViewController {
     }
   }
 
-  /// App Sandbox maps `homeDirectoryForCurrentUser` to the extension's container
-  /// (~/Library/Containers/<id>/Data). The `home-relative-path` entitlement exception,
-  /// however, is scoped against the REAL home — so staging must resolve the real home
-  /// explicitly or the exception is never exercised and the host cannot read the file
-  /// (TCC kTCCServiceSystemPolicyAppDataDetailed blocks cross-container reads).
-  /// Deliberately no fallback to homeDirectoryForCurrentUser: that value IS the broken
-  /// container path, and staging there fails later, in the host, with an opaque message.
-  private func realHomeDirectory() throws -> URL {
-    guard let pw = getpwuid(getuid()), let dir = pw.pointee.pw_dir else {
-      throw ShareError.noHomeDirectory
-    }
-    return URL(fileURLWithPath: String(cString: dir), isDirectory: true)
-  }
-
-  /// The shared staging inbox, `~/.nota/inbox`. Kept outside every TCC-protected
-  /// directory (Desktop/Documents/Downloads/iCloud/Containers) so the unsandboxed
-  /// host app can read what this extension writes.
-  ///
-  /// The host app has its own copy of this path as `notaInboxDirectory()` in
-  /// macos/Nota/App/Helpers.swift — the NotaShare target compiles only
-  /// `NotaShare/` sources, so the two cannot share one definition. Keep them
-  /// in sync.
-  private func stagingDirectory() throws -> URL {
-    try realHomeDirectory()
-      .appendingPathComponent(".nota", isDirectory: true)
-      .appendingPathComponent("inbox", isDirectory: true)
-  }
-
   private func copyForNota(_ url: URL) throws -> URL {
     let fileManager = FileManager.default
-    let directory = try stagingDirectory()
+    // `notaInboxDirectory()` lives in macos/Shared/NotaInbox.swift, compiled into
+    // both this extension and the host app so the hand-off path cannot drift.
+    let directory = try notaInboxDirectory()
+    // A no-op when the directory exists — which is the normal case, because the
+    // unsandboxed sides create it (AppDelegate at launch, deploy script at
+    // install). It must still throw if staging genuinely cannot proceed: this
+    // extension's entitlement covers `/.nota/inbox/` but not the intermediate
+    // `~/.nota`, so on a machine that has never run Nota this is the call that
+    // reports the problem instead of silently staging somewhere unreadable.
     try fileManager.createDirectory(at: directory, withIntermediateDirectories: true)
 
     let extensionName = url.pathExtension.isEmpty ? "m4a" : url.pathExtension.lowercased()
@@ -189,7 +168,7 @@ final class ShareViewController: NSViewController {
   /// directory or an unresolvable home simply means nothing to prune.
   private func pruneStaleStagedFiles() {
     let fileManager = FileManager.default
-    guard let directory = try? stagingDirectory() else { return }
+    guard let directory = try? notaInboxDirectory() else { return }
     guard let entries = try? fileManager.contentsOfDirectory(
       at: directory,
       includingPropertiesForKeys: [.contentModificationDateKey],
@@ -207,10 +186,12 @@ final class ShareViewController: NSViewController {
   }
 }
 
+// A failure to resolve the home directory surfaces as
+// `NotaInboxError.noHomeDirectory` (macos/Shared/NotaInbox.swift); it reaches
+// the user through the same `finish(with:error:)` path as these cases.
 private enum ShareError: LocalizedError {
   case noFile
   case openFailed
-  case noHomeDirectory
 
   var errorDescription: String? {
     switch self {
@@ -218,8 +199,6 @@ private enum ShareError: LocalizedError {
       return "No shared audio file was provided."
     case .openFailed:
       return "Could not open Nota for the shared audio."
-    case .noHomeDirectory:
-      return "Could not resolve your home directory."
     }
   }
 }
