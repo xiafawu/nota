@@ -50,6 +50,10 @@ struct ContextSnapshot: Equatable, Sendable {
   private static func focusedWindowTitle(pid: pid_t) -> String? {
     guard AXIsProcessTrusted() else { return nil }
     let appElement = AXUIElementCreateApplication(pid)
+    // This runs the instant the hotkey goes down, before the microphone opens,
+    // so a wedged frontmost app must not be able to eat the user's first words
+    // against the 6 s default AX timeout.
+    AXUIElementSetMessagingTimeout(appElement, 0.25)
 
     var windowValue: CFTypeRef?
     guard AXUIElementCopyAttributeValue(
