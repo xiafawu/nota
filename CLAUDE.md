@@ -96,6 +96,30 @@ fallback to `~/.meetingsum/speakers.json`):
 Commands exit non-zero if a referenced profile is missing. Confirmation lines
 are written to stderr so stdout stays scriptable.
 
+## Custom Dictionary
+
+Shared custom-vocabulary store at `~/.nota/dictionary.json` (schema v1), read
+and written by both the CLI and the macOS dictation app:
+
+```json
+{ "version": 1,
+  "terms": [ { "term": "genc2rust", "spokenForms": ["gency to rust"],
+               "source": "manual", "starred": false, "addedAt": "<ISO>" } ] }
+```
+
+- `nota dictionary list` — one tab-separated row per term (term, spoken forms, source, starred, addedAt) on stdout; header on stderr
+- `nota dictionary add <term> [--spoken <form>]... [--star]` — add, or merge into the existing case-insensitive match
+- `nota dictionary remove <term>` — case-insensitive; exits non-zero when the term is absent
+
+`term` is unique case-insensitively; re-adding merges spoken forms, keeps the
+original `addedAt`, and leaves `starred` sticky once set. `starred` terms win
+the cut when the term list is later capped for context hints. Set
+`NOTA_DICTIONARY_FILE` to point at a different path (tests do this).
+
+TypeScript: `src/utils/dictionary.ts` (store) + `src/cli/dictionary.ts` (verbs).
+Swift: `macos/Nota/Dictation/DictionaryStore.swift`. The two must stay in
+lockstep on field names, `version`, and the uniqueness rule.
+
 ## Model Settings
 
 Non-secret model preferences live in `~/.nota/settings.json` (schema exactly
@@ -149,6 +173,7 @@ The cache feeds cost computation for usage tracking.
 - Long transcripts (>100k tokens) are summarized in sections then rolled up
 - Output saved as markdown file next to input by default
 - Byte-level (SHA-256) duplicate detection: when history is enabled (the default), Nota hashes the raw audio once in `runPipeline` and, if an identical file already has a *completed* history record whose output `.md` still exists, reuses that summary and skips transcription. `--force` overrides; a hash failure warns but still transcribes. This gates the common case (same file shared twice) cheaply before any paid call; it is a byte hash, not an acoustic fingerprint, so a re-encoded copy of the same recording is not detected. Legacy records (pre-feature) have no `contentHash` and never match. Example: `nota recording.m4a --force` reprocesses a file already in history.
+- The custom dictionary (`~/.nota/dictionary.json`, schema v1) is one file with two writers — `src/utils/dictionary.ts` and `macos/Nota/Dictation/DictionaryStore.swift`. Both write atomically (temp file + rename) and both treat a missing or corrupt file as an empty dictionary with a warning, never a hard failure: dictation must not be blocked by a bad dictionary. Decoding is deliberately tolerant (unknown `source` degrades to `manual`, missing optionals default) so a file written by a newer version still loads.
 - ESM-only project (`"type": "module"` in package.json)
 
 ## External Requirements
