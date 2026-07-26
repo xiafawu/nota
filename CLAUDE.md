@@ -179,6 +179,74 @@ terms are learned per session.
 The Dictation tab of the Settings window (Cmd+,) lists, adds, removes, and stars
 terms against the same file the `nota dictionary` verbs use.
 
+## Dictation Delivery
+
+Two ways the recognized text reaches the app being dictated into, chosen by the
+**Streaming Delivery** toggle (`DictationSettings.streamingDelivery`, default
+**OFF**).
+
+**Batch (default).** Everything is inserted once, on release: recognize →
+`Formatter.applyRules` → `WordReplacements` → polish → one `TextInjector.inject`
+into the target captured at that moment. Unchanged by the streaming work.
+
+**Streaming (opt-in).** Sentences are typed in while the user is still talking:
+
+```
+mic → DictationTranscriber → volatile tail ───────────→ HUD rough-draft line
+        └─ finalized delta → SentenceSegmenter → refine → ordered append
+                                                (per sentence, concurrent)
+```
+
+- **Finality mid-session.** `AppleSpeechStream(streaming: true)` builds the
+  analyzer with the `volatileRangeChangedHandler` initializer and reads each
+  result's own `isFinal` instead of the teardown-time `didFinalize` flag.
+  Finalized results are **deltas to append**; volatile results **replace** the
+  tail — swapping those duplicates text into the user's document. Segments
+  reach the controller as `Hypothesis(isSegment: true)`; every other producer
+  keeps the original two-field contract, so `isSegment` defaults to false.
+- **Apple engine only.** AssemblyAI realtime reports whole formatted turns
+  rather than deltas, so it ignores the request and
+  `SpeechStream.deliversSegments` stays false. A session that falls back to
+  `SFSpeechRecognizer` also reverts to batch delivery — which is why
+  `deliversSegments` is only meaningful *after* `start()` returns.
+- **Sentences, not chunks.** `SentenceSegmenter` accumulates finalized deltas
+  and releases only complete sentences (terminator + whitespace or end of
+  finalized text; abbreviations and initials guarded). Whatever never reaches a
+  boundary is released once, at stop, through the same pipeline. A 240-char
+  overflow valve cuts at the last word boundary so a speaker who never lands a
+  period is not silently held.
+- **In order, always.** Refinement (rules → dictionary → polish) runs
+  concurrently per sentence, so sentence 2's network call routinely returns
+  before sentence 1's. `OrderedDeliveryBuffer` holds completions until their
+  predecessors land and a single pump task serializes the writes. Text is in a
+  live document and cannot be reordered afterwards.
+- **Append-only.** Delivered text is never rewritten. `StreamingDelivery.appendDelta`
+  computes exactly what to add (one separating space, or none if the target
+  already ends in whitespace). `TextInjector.inject(_:target:mode: .append)`
+  changes only the AX strategy — it reads the field's value and writes it back
+  with the delta on the end, and a failed *read* falls through to CGEvent with
+  the same delta rather than writing the delta as the whole value. Secure-field
+  refusal is unchanged; a secure target simply skips streaming for the session.
+- **Fixed target.** `FocusedTarget.capture()` moves to session **start**. If the
+  user switches apps mid-sentence the text still lands where they were looking
+  when they started talking — capturing at the end would spray it into whatever
+  gained focus.
+- **Degradation.** A sentence whose polish fails is delivered as its own offline
+  (rules + dictionary) text and the queue keeps moving; the warning surfaces
+  through the normal HUD path. With polish disabled the pipeline is still
+  streaming, just rules + dictionary. Auto-learn gets a per-*session* budget
+  (`AutoLearn.maxCandidatesPerSession`) because streaming polishes once per
+  sentence rather than once per session.
+- **HUD.** `ListeningView` gains a rough-draft line above the RMS bars showing
+  the last ~60 characters of the volatile tail. It is deliberately not part of
+  `HUDState`: the auto-hide bookkeeping compares states for equality, and a
+  line that changes on every syllable would make every comparison miss.
+
+`macos/Nota/Dictation/StreamingDelivery.swift` holds the pure core
+(`SentenceSegmenter`, `OrderedDeliveryBuffer`, `StreamingDeliveryQueue`,
+delta/rough-draft/refine helpers) so the invariants are tested without a
+recognizer, a network call, or an Accessibility target.
+
 ## Model Settings
 
 Non-secret model preferences live in `~/.nota/settings.json` (schema exactly
@@ -233,6 +301,24 @@ The cache feeds cost computation for usage tracking.
 - Output saved as markdown file next to input by default
 - Byte-level (SHA-256) duplicate detection: when history is enabled (the default), Nota hashes the raw audio once in `runPipeline` and, if an identical file already has a *completed* history record whose output `.md` still exists, reuses that summary and skips transcription. `--force` overrides; a hash failure warns but still transcribes. This gates the common case (same file shared twice) cheaply before any paid call; it is a byte hash, not an acoustic fingerprint, so a re-encoded copy of the same recording is not detected. Legacy records (pre-feature) have no `contentHash` and never match. Example: `nota recording.m4a --force` reprocesses a file already in history.
 - The custom dictionary (`~/.nota/dictionary.json`, schema v1) is one file with two writers — `src/utils/dictionary.ts` and `macos/Nota/Dictation/DictionaryStore.swift`. Both write atomically (temp file + rename) and both *read* a missing or corrupt file as an empty dictionary with a warning, never a hard failure: dictation must not be blocked by a bad dictionary. Decoding is tolerant per entry on both sides (one damaged entry costs only itself; unknown `source` degrades to `manual`, missing optionals default), so a hand-edited typo or a file written by a newer version still loads. Reading-as-empty is safe only for reads: before a *write*, a wholly unparseable file is copied to `dictionary.json.corrupt-<epoch>` and the store starts over, because auto-learn calls `add` unattended and would otherwise replace every unreadable term with the one it just learned. In-process writers (Settings pane, auto-learn) are serialized by a lock in `DictionaryStore`; the CLI is a separate process and stays last-write-wins.
+- `DictationSettings` decodes field by field (`init(from:)` in
+  `DictationTypes.swift`), never through the synthesized `Decodable`. The
+  synthesized one ignores property defaults and throws on a missing key, and
+  `DictationSettingsStore.load()` turns any throw into factory defaults — so
+  every new setting would silently wipe the user's engine, trigger, polish and
+  HUD preferences on first launch after an upgrade. Tolerance is per field: a
+  payload that is not a keyed container at all still resets, which is what
+  should happen to a corrupt one. Add new settings with a default value **and**
+  a line in `init(from:)`.
+- Streaming dictation delivery is opt-in and default OFF, because it is the one
+  part of the pipeline that cannot be undone: text appended to a live document
+  while the user talks is already in their file. With the toggle off every path
+  behaves exactly as it did before it existed — no target is captured at session
+  start, no segment hypothesis is ever produced, and injection stays in
+  `.standard` mode. With it on, the guarantees are append-only delivery, spoken
+  order regardless of polish completion order, a target fixed at session start,
+  and per-sentence fallback to offline text when polish fails. See Dictation
+  Delivery.
 - ESM-only project (`"type": "module"` in package.json)
 
 ## External Requirements
