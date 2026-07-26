@@ -27,6 +27,11 @@ enum AutoLearn {
   /// dictations are rewritten in too many places for a diff to be meaningful.
   static let maxTokens = 400
 
+  /// Most terms one session may contribute. A polish call that turned four or
+  /// five separate runs into identifiers is rewriting the text, not fixing a
+  /// couple of spellings, and every stored term biases every later session.
+  static let maxCandidatesPerSession = 3
+
   /// Pairs worth adding to the dictionary as `.learned`.
   static func candidates(before: String, after: String) -> [Candidate] {
     let beforeTokens = tokenize(before)
@@ -40,7 +45,7 @@ enum AutoLearn {
       // One replacement token only: a multi-token "correction" is a rewrite.
       guard block.after.count == 1, let term = normalizedTerm(block.after[0]) else { continue }
       guard !block.before.isEmpty, block.before.count <= maxSpokenWords else { continue }
-      guard ContextSnapshot.isIdentifierShaped(term) else { continue }
+      guard isLearnable(term) else { continue }
 
       let spokenForm = block.before
         .compactMap { normalizedTerm($0) }
@@ -57,8 +62,77 @@ enum AutoLearn {
 
       result.append(Candidate(term: term, spokenForm: spokenForm))
     }
-    return result
+    return Array(result.prefix(maxCandidatesPerSession))
   }
+
+  // MARK: - What may be learned
+
+  /// Whether `term` is worth writing to the dictionary permanently.
+  ///
+  /// `ContextSnapshot.isIdentifierShaped` is the L1 harvest filter and is
+  /// deliberately generous: a wrong recognition hint costs one session. A
+  /// learned term is different — it lands on disk and L2 rewrites every later
+  /// session with it — so the bar is higher on two counts.
+  ///
+  /// 1. The shape must carry real identifier signal. Punctuation alone is not
+  ///    enough, or "e.g." and "U.S." (single letters around dots) qualify;
+  ///    at least one alphanumeric run of two characters has to survive the
+  ///    punctuation, unless a digit or interior case-mix already settles it.
+  /// 2. The letters alone must not spell an ordinary English word. "e-mail"
+  ///    passes rule 1, but learning it means L2 hyphenates the user's "email"
+  ///    forever — a stylistic preference of one polish call made permanent.
+  static func isLearnable(_ term: String) -> Bool {
+    guard ContextSnapshot.isIdentifierShaped(term) else { return false }
+    guard !isCommonWord(term) else { return false }
+
+    if term.contains(where: { $0.isNumber }) { return true }
+    if hasInteriorCaseMix(term) { return true }
+    return alphanumericRuns(term).contains { $0.count >= 2 }
+  }
+
+  /// Uppercase past the first character alongside a lowercase somewhere —
+  /// `camelCase`, `NSWorkspace`, `genC2`, but not `Rust` or `JSON`.
+  private static func hasInteriorCaseMix(_ term: String) -> Bool {
+    term.dropFirst().contains(where: { $0.isUppercase })
+      && term.contains(where: { $0.isLowercase })
+  }
+
+  private static func alphanumericRuns(_ term: String) -> [Substring] {
+    term.split(whereSeparator: { !$0.isLetter && !$0.isNumber })
+  }
+
+  /// True when the term is an ordinary word wearing punctuation or case as a
+  /// costume: fold away everything but the letters and look the result up.
+  private static func isCommonWord(_ term: String) -> Bool {
+    let letters = term.lowercased().filter(\.isLetter)
+    guard !letters.isEmpty else { return false }
+    return commonWords.contains(letters)
+  }
+
+  /// Small stoplist, letters-only and lowercased. It does not need to be a
+  /// dictionary — it only has to cover the words a polish model actually
+  /// restyles: contractions it re-punctuates, ordinals it renumbers, and the
+  /// handful of compounds it likes to hyphenate.
+  private static let commonWords: Set<String> = [
+    "a", "about", "after", "all", "also", "am", "an", "and", "any", "are", "as", "at",
+    "back", "be", "because", "been", "before", "best", "but", "by",
+    "call", "can", "cant", "come", "could", "couldnt",
+    "day", "did", "didnt", "do", "does", "doesnt", "dont", "down",
+    "each", "eg", "email", "etc", "even", "first", "for", "from",
+    "get", "give", "go", "good", "great", "had", "has", "hasnt", "have", "havent",
+    "he", "her", "here", "hes", "him", "his", "how",
+    "i", "id", "ie", "if", "ill", "im", "in", "into", "is", "isnt", "it", "its", "ive",
+    "just", "know", "let", "lets", "like", "look",
+    "make", "many", "me", "more", "most", "my", "nd", "new", "no", "not", "now",
+    "of", "ok", "okay", "on", "one", "online", "only", "or", "other", "our", "out", "over",
+    "people", "pm", "rd", "right", "said", "same", "say", "see", "she", "shes", "should",
+    "shouldnt", "so", "some", "st",
+    "take", "th", "than", "that", "thats", "the", "their", "them", "then", "there",
+    "these", "they", "theyre", "thing", "think", "this", "those", "time", "to", "two",
+    "up", "us", "use", "very", "want", "was", "wasnt", "way", "we", "well", "were",
+    "werent", "what", "whats", "when", "which", "who", "will", "with", "wont", "work",
+    "would", "wouldnt", "year", "you", "your", "youre",
+  ]
 
   // MARK: - Diff
 

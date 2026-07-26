@@ -117,6 +117,51 @@ final class AutoLearnTests: XCTestCase {
     )
   }
 
+  func testAStylisticHyphenationOfACommonWordIsNotLearned() {
+    // "e-mail" is identifier-shaped by punctuation alone. Learning it makes L2
+    // hyphenate the user's "email" in every later session — one polish call's
+    // house style, made permanent.
+    XCTAssertEqual(
+      AutoLearn.candidates(before: "Send me an email today.", after: "Send me an e-mail today."),
+      []
+    )
+  }
+
+  func testASingleLetterDottedAbbreviationIsNotLearned() {
+    // Every alphanumeric run is one character long: no identifier signal, just
+    // punctuation the polish model added.
+    XCTAssertEqual(
+      AutoLearn.candidates(before: "For example the parser.", after: "For e.g. the parser."),
+      []
+    )
+  }
+
+  func testAnOrdinalRewriteIsNotLearned() {
+    XCTAssertEqual(
+      AutoLearn.candidates(before: "The second pass.", after: "The 2nd pass."),
+      []
+    )
+  }
+
+  func testInteriorCaseMixIsStillLearnable() {
+    XCTAssertTrue(AutoLearn.isLearnable("camelCase"))
+    XCTAssertTrue(AutoLearn.isLearnable("NSWorkspace"))
+    XCTAssertFalse(AutoLearn.isLearnable("U.S."))
+    XCTAssertFalse(AutoLearn.isLearnable("Rust"))
+    XCTAssertTrue(AutoLearn.isLearnable("package.json"))
+    XCTAssertTrue(AutoLearn.isLearnable("--no-history"))
+  }
+
+  func testAtMostThreeTermsAreLearnedFromOneSession() {
+    // Five collapses in one dictation is a rewrite, not a spelling fix run.
+    let before = "x packagejson x tsconfigjson x cargotoml x gency to rust x gpt-5 mini x"
+    let after = "x package.json x tsconfig.json x cargo.toml x genc2rust x gpt-5-mini x"
+    XCTAssertEqual(
+      AutoLearn.candidates(before: before, after: after).count,
+      AutoLearn.maxCandidatesPerSession
+    )
+  }
+
   func testEmptyInputsLearnNothing() {
     XCTAssertEqual(AutoLearn.candidates(before: "", after: "genc2rust."), [])
     XCTAssertEqual(AutoLearn.candidates(before: "gency to rust.", after: ""), [])
