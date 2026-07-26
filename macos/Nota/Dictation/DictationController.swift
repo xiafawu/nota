@@ -49,6 +49,13 @@ final class DictationController: ObservableObject {
   private var isSessionPending = false
   private let injector = TextInjector()
 
+  /// What the user was looking at when this session began (plan 02). Captured
+  /// at start so the AX round-trip hides under the first syllable.
+  private(set) var sessionContext: ContextSnapshot = .empty
+  /// Dictionary snapshot for this session, read once at start so mid-session
+  /// edits can never change the vocabulary out from under the pipeline.
+  private(set) var sessionDictionary: [DictionaryTerm] = []
+
   init(
     permissions: PermissionsCoordinator? = nil,
     capture: MicCapture? = nil,
@@ -191,10 +198,24 @@ final class DictationController: ObservableObject {
 
     isSessionPending = true
 
+    // L1 context: frontmost app + focused window title, plus the custom
+    // dictionary. Both are read here, at session start, and stay fixed for the
+    // session. An empty dictionary and an untrusted AX process both yield an
+    // empty hint list, which makes this a no-op.
+    sessionContext = ContextSnapshot.capture()
+    sessionDictionary = DictionaryStore.load()
+    let hints = ContextHints.build(
+      terms: sessionDictionary,
+      harvested: sessionContext.harvestIdentifiers()
+    )
+
     // Create a speech stream matching the current engine choice
-    let stream = makeDictationStream(for: settings.engine)
+    let stream = makeDictationStream(for: settings.engine, contextualHints: hints)
     speechStream = stream
     logger.info("Using engine: \(self.settings.engine.label)")
+    logger.debug(
+      "Session context: app=\(self.sessionContext.appName ?? "nil", privacy: .public) hints=\(hints.count)"
+    )
     lastHypothesis = nil
     lastProcessedText = nil
     lastRulesResult = nil

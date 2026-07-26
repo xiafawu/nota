@@ -14,6 +14,16 @@ import Speech
 ///
 /// Emits partial and final hypotheses through an `AsyncStream<Hypothesis>`.
 final class AppleSpeechStream: SpeechStream {
+  /// Short phrases the recognizer should be biased toward (dictionary terms +
+  /// identifiers harvested from the focused window). Empty means "behave
+  /// exactly as before context hints existed" — no `AnalysisContext` is built
+  /// and no `setContext` call is made.
+  private let contextualHints: [String]
+
+  init(contextualHints: [String] = []) {
+    self.contextualHints = contextualHints
+  }
+
   // MARK: - SpeechAnalyzer path (macOS 26+)
 
   private var transcriber: DictationTranscriber?
@@ -248,6 +258,20 @@ final class AppleSpeechStream: SpeechStream {
     transcriber = t
     analyzer = a
 
+    // Context must be attached BEFORE start(inputSequence:) — a context set
+    // after analysis begins does not bias results already in flight. A hint
+    // failure is never fatal: unbiased dictation beats no dictation.
+    if !contextualHints.isEmpty {
+      let context = AnalysisContext()
+      context.contextualStrings[.general] = contextualHints
+      do {
+        try await a.setContext(context)
+        logger.debug("Applied \(self.contextualHints.count) contextual hints")
+      } catch {
+        logger.warning("setContext failed: \(error.localizedDescription, privacy: .public); continuing without hints")
+      }
+    }
+
     let (inputStream, inputCont) = AsyncStream<AnalyzerInput>.makeStream()
     inputContinuation = inputCont
 
@@ -323,6 +347,10 @@ final class AppleSpeechStream: SpeechStream {
     let request = SFSpeechAudioBufferRecognitionRequest()
     request.shouldReportPartialResults = true
     request.requiresOnDeviceRecognition = true
+    // Same hint list, the older API's spelling of it.
+    if !contextualHints.isEmpty {
+      request.contextualStrings = contextualHints
+    }
     recognitionRequest = request
 
     recognitionTask = r.recognitionTask(with: request) { [weak self] result, error in

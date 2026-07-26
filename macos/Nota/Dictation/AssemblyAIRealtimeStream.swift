@@ -31,10 +31,17 @@ enum AssemblyAIError: LocalizedError, Equatable {
 
 /// Select the concrete `SpeechStream` for the chosen engine.
 /// Tests verify the type mapping through this function.
-func makeDictationStream(for engine: EngineChoice) -> any SpeechStream {
+///
+/// `contextualHints` biases the Apple on-device recognizer (see `ContextHints`).
+/// The AssemblyAI realtime engine has no equivalent per-session hint channel, so
+/// it ignores them.
+func makeDictationStream(
+  for engine: EngineChoice,
+  contextualHints: [String] = []
+) -> any SpeechStream {
   switch engine {
   case .apple:
-    return AppleSpeechStream()
+    return AppleSpeechStream(contextualHints: contextualHints)
   case .assemblyAIRealtime:
     return AssemblyAIRealtimeStream()
   }

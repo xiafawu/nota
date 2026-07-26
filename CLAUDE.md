@@ -120,6 +120,19 @@ TypeScript: `src/utils/dictionary.ts` (store) + `src/cli/dictionary.ts` (verbs).
 Swift: `macos/Nota/Dictation/DictionaryStore.swift`. The two must stay in
 lockstep on field names, `version`, and the uniqueness rule.
 
+### How dictation uses the dictionary
+
+**L1 — recognizer bias.** At the start of every dictation session the app takes
+a `ContextSnapshot` (frontmost app, bundle id, focused window title via
+Accessibility) and harvests identifier-shaped tokens from the title
+(`genc2rust`, `package.json`, `--no-history`). Dictionary terms plus those
+tokens become `AnalysisContext.contextualStrings[.general]`, attached with
+`setContext` *before* the analyzer starts. Apple caps the list at 100 short
+(1–2 word) phrases: starred terms survive the cut first, then manual/learned
+terms, then harvested ones. An empty dictionary and an untrusted-for-AX process
+both make this a no-op — dictation behaves exactly as it did before.
+`macos/Nota/Dictation/ContextSnapshot.swift`.
+
 ## Model Settings
 
 Non-secret model preferences live in `~/.nota/settings.json` (schema exactly
