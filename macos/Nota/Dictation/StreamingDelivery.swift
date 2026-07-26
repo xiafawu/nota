@@ -53,6 +53,42 @@ enum StreamingDelivery {
     return "…" + String(collapsed.suffix(limit))
   }
 
+  /// One piece of speech on its way to the target, and how it was cut.
+  ///
+  /// Not every release is a sentence. The 240-char overflow valve cuts a
+  /// run-on at its last word boundary, and `Formatter`'s capitalize and
+  /// terminal-punctuation rules would dress that fragment up as a sentence —
+  /// typing a period into the middle of a phrase the user is still speaking and
+  /// capitalizing the word that continues it. Delivery is append-only, so
+  /// neither can be taken back.
+  struct Segment: Sendable, Equatable {
+    let text: String
+    /// False when this continues a sentence an earlier fragment opened.
+    var startsSentence: Bool = true
+    /// False when the valve cut this mid-sentence.
+    var endsSentence: Bool = true
+
+    /// True only for a segment that is a sentence on both ends — the only kind
+    /// polish is allowed to see.
+    var isWholeSentence: Bool { startsSentence && endsSentence }
+  }
+
+  /// `Formatter.applyRules` with the two sentence-shaped rules made conditional.
+  ///
+  /// Whitespace, filler, and false-start cleanup are safe on any run of words;
+  /// capitalization and the trailing period are claims about where a sentence
+  /// begins and ends, and are applied only where the segmenter actually found
+  /// one.
+  static func applyRules(to segment: Segment) -> String {
+    guard !segment.text.isEmpty else { return segment.text }
+    var text = Formatter.normalizeWhitespace(segment.text)
+    text = Formatter.dropFillerWords(text)
+    text = Formatter.cleanupFalseStarts(text)
+    if segment.startsSentence { text = Formatter.capitalizeFirst(text) }
+    if segment.endsSentence { text = Formatter.ensureTerminalPunctuation(text) }
+    return text
+  }
+
   /// One sentence's trip through the pipeline the batch path runs whole:
   /// `Formatter.applyRules` → `WordReplacements` → polish.
   struct RefinedSentence {
@@ -73,13 +109,18 @@ enum StreamingDelivery {
   ///
   /// `polish` is injected rather than called directly so the fallback is
   /// testable without a network call or an API key.
+  ///
+  /// Polish only ever sees a whole sentence. It is a sentence-level rewriter:
+  /// hand it the overflow valve's mid-sentence fragment and it hands back a
+  /// sentence, capital and full stop included, in text that has already been
+  /// promised to a live document.
   static func refine(
-    _ sentence: String,
+    _ segment: Segment,
     terms: [DictionaryTerm],
     polish: (@Sendable (String) async throws -> String)?
   ) async -> RefinedSentence {
-    let offline = WordReplacements.apply(Formatter.applyRules(sentence), terms: terms)
-    guard let polish, !offline.isEmpty else {
+    let offline = WordReplacements.apply(applyRules(to: segment), terms: terms)
+    guard let polish, !offline.isEmpty, segment.isWholeSentence else {
       return RefinedSentence(text: offline, offline: offline, polishError: nil)
     }
     do {
@@ -87,6 +128,15 @@ enum StreamingDelivery {
     } catch {
       return RefinedSentence(text: offline, offline: offline, polishError: error)
     }
+  }
+
+  /// Convenience for text already known to be a whole sentence.
+  static func refine(
+    _ sentence: String,
+    terms: [DictionaryTerm],
+    polish: (@Sendable (String) async throws -> String)?
+  ) async -> RefinedSentence {
+    await refine(Segment(text: sentence), terms: terms, polish: polish)
   }
 }
 
@@ -126,8 +176,12 @@ struct SentenceSegmenter {
     "fig", "approx", "inc", "ltd", "dept", "vol", "cf", "al", "no", "pp",
   ]
 
-  /// Feed newly finalized text; returns the sentences it completes, in order.
-  mutating func append(_ text: String) -> [String] {
+  /// True while the last thing released was a mid-sentence fragment, so
+  /// whatever comes next continues it rather than starting a sentence.
+  private var isMidSentence = false
+
+  /// Feed newly finalized text; returns the segments it completes, in order.
+  mutating func append(_ text: String) -> [StreamingDelivery.Segment] {
     guard !text.isEmpty else { return [] }
     pending = StreamingDelivery.joined(pending, text)
     return drain()
@@ -135,35 +189,62 @@ struct SentenceSegmenter {
 
   /// Release everything still held, clearing the segmenter. Called once when
   /// the session stops so the un-finalized tail still reaches the target.
-  mutating func flush() -> String? {
+  ///
+  /// The tail ends the session, so it ends a sentence: it gets the same
+  /// terminal punctuation the batch path would have given it.
+  mutating func flush() -> StreamingDelivery.Segment? {
     let remainder = pending.trimmingCharacters(in: .whitespacesAndNewlines)
     pending = ""
-    return remainder.isEmpty ? nil : remainder
+    guard !remainder.isEmpty else { return nil }
+    let segment = StreamingDelivery.Segment(
+      text: remainder,
+      startsSentence: !isMidSentence,
+      endsSentence: true
+    )
+    isMidSentence = false
+    return segment
   }
 
   // MARK: - Cutting
 
-  private mutating func drain() -> [String] {
-    var sentences: [String] = []
+  private mutating func drain() -> [StreamingDelivery.Segment] {
+    var segments: [StreamingDelivery.Segment] = []
 
     while let cut = Self.sentenceEnd(in: pending) {
       let sentence = String(pending[pending.startIndex..<cut])
         .trimmingCharacters(in: .whitespacesAndNewlines)
       pending = String(pending[cut...]).trimmingLeadingWhitespace()
-      if !sentence.isEmpty { sentences.append(sentence) }
+      guard !sentence.isEmpty else { continue }
+      segments.append(
+        StreamingDelivery.Segment(
+          text: sentence,
+          startsSentence: !isMidSentence,
+          endsSentence: true
+        )
+      )
+      isMidSentence = false
     }
 
     // Overflow release. Cutting at the last space keeps the trailing partial
-    // word in `pending`, so a word is never split across two deliveries.
+    // word in `pending`, so a word is never split across two deliveries — but
+    // the cut lands mid-sentence, and the segment says so.
     while pending.count > Self.maxPendingCharacters,
           let space = pending.lastIndex(where: { $0.isWhitespace }) {
       let chunk = String(pending[..<space])
         .trimmingCharacters(in: .whitespacesAndNewlines)
       pending = String(pending[pending.index(after: space)...])
-      if !chunk.isEmpty { sentences.append(chunk) }
+      guard !chunk.isEmpty else { continue }
+      segments.append(
+        StreamingDelivery.Segment(
+          text: chunk,
+          startsSentence: !isMidSentence,
+          endsSentence: false
+        )
+      )
+      isMidSentence = true
     }
 
-    return sentences
+    return segments
   }
 
   /// Index just past the end of the first complete sentence in `text`, or nil.
@@ -265,9 +346,9 @@ struct OrderedDeliveryBuffer {
 /// target or a network call.
 @MainActor
 final class StreamingDeliveryQueue {
-  /// Cleanup + dictionary + polish for one sentence. Never throws: a failed
+  /// Cleanup + dictionary + polish for one segment. Never throws: a failed
   /// polish must yield the offline text, not stall the queue.
-  typealias Refine = @Sendable (String) async -> String
+  typealias Refine = @Sendable (StreamingDelivery.Segment) async -> String
   /// Append `delta` to the target app.
   typealias Deliver = @MainActor (String) async -> Void
 
@@ -293,22 +374,32 @@ final class StreamingDeliveryQueue {
   /// Number of sentences accepted this session.
   private(set) var enqueuedCount = 0
 
-  /// Submit a completed sentence. Returns immediately; refinement runs
-  /// concurrently and delivery is serialized behind every earlier sentence.
-  func enqueue(_ sentence: String) {
-    let trimmed = sentence.trimmingCharacters(in: .whitespacesAndNewlines)
+  /// Submit a completed segment. Returns immediately; refinement runs
+  /// concurrently and delivery is serialized behind every earlier segment.
+  func enqueue(_ segment: StreamingDelivery.Segment) {
+    let trimmed = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
 
+    let unit = StreamingDelivery.Segment(
+      text: trimmed,
+      startsSentence: segment.startsSentence,
+      endsSentence: segment.endsSentence
+    )
     let index = nextIndex
     nextIndex += 1
     enqueuedCount += 1
 
     let refine = self.refine
     refinements.append(Task { [weak self] in
-      let refined = await refine(trimmed)
+      let refined = await refine(unit)
       guard let self else { return }
       self.complete(index: index, text: refined)
     })
+  }
+
+  /// Submit text already known to be a whole sentence.
+  func enqueue(_ sentence: String) {
+    enqueue(StreamingDelivery.Segment(text: sentence))
   }
 
   /// Wait until every submitted sentence has been refined and delivered.

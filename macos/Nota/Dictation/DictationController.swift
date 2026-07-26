@@ -474,8 +474,8 @@ final class DictationController: ObservableObject {
       lastHypothesis = streamingRecognized
       logger.debug("Segment finalized: \"\(hypothesis.text, privacy: .public)\"")
       guard let deliveryQueue else { return }
-      for sentence in segmenter.append(hypothesis.text) {
-        deliveryQueue.enqueue(sentence)
+      for segment in segmenter.append(hypothesis.text) {
+        deliveryQueue.enqueue(segment)
       }
       return
     }
@@ -515,10 +515,13 @@ final class DictationController: ObservableObject {
     }
     let polish: (@Sendable (String) async throws -> String)? = polishEnabled ? runPolish : nil
 
-    let refine: StreamingDeliveryQueue.Refine = { [weak self] sentence in
-      if polish != nil { await self?.beginPolish() }
-      let refined = await StreamingDelivery.refine(sentence, terms: terms, polish: polish)
-      if polish != nil { await self?.endPolish(refined) }
+    let refine: StreamingDeliveryQueue.Refine = { [weak self] segment in
+      // A fragment never reaches polish, so it never counts as polish in
+      // flight either.
+      let willPolish = polish != nil && segment.isWholeSentence
+      if willPolish { await self?.beginPolish() }
+      let refined = await StreamingDelivery.refine(segment, terms: terms, polish: polish)
+      if willPolish { await self?.endPolish(refined) }
       return refined.text
     }
 

@@ -2,12 +2,20 @@ import XCTest
 
 @testable import Nota
 
+private extension SentenceSegmenter {
+  /// Just the text of what a delta releases — most segmentation tests care
+  /// about where the cuts land, not how each piece is labelled.
+  mutating func appendText(_ text: String) -> [String] {
+    append(text).map(\.text)
+  }
+}
+
 // MARK: - Sentence segmentation
 
 final class SentenceSegmenterTests: XCTestCase {
   func testHoldsTextWithoutATerminator() {
     var segmenter = SentenceSegmenter()
-    XCTAssertEqual(segmenter.append("the quick brown fox"), [])
+    XCTAssertEqual(segmenter.appendText("the quick brown fox"), [])
     XCTAssertEqual(segmenter.pending, "the quick brown fox")
   }
 
@@ -16,14 +24,14 @@ final class SentenceSegmenterTests: XCTestCase {
     // Finalized text never changes, so a trailing period is a real boundary —
     // waiting for a following space would hold the last sentence of every
     // pause hostage.
-    XCTAssertEqual(segmenter.append("the quick brown fox."), ["the quick brown fox."])
+    XCTAssertEqual(segmenter.appendText("the quick brown fox."), ["the quick brown fox."])
     XCTAssertEqual(segmenter.pending, "")
   }
 
   func testSplitsSeveralSentencesFromOneDelta() {
     var segmenter = SentenceSegmenter()
     XCTAssertEqual(
-      segmenter.append("One thing. Two things! Three?"),
+      segmenter.appendText("One thing. Two things! Three?"),
       ["One thing.", "Two things!", "Three?"]
     )
     XCTAssertEqual(segmenter.pending, "")
@@ -31,55 +39,55 @@ final class SentenceSegmenterTests: XCTestCase {
 
   func testKeepsTheRemainderAfterTheLastBoundary() {
     var segmenter = SentenceSegmenter()
-    XCTAssertEqual(segmenter.append("Done. And then"), ["Done."])
+    XCTAssertEqual(segmenter.appendText("Done. And then"), ["Done."])
     XCTAssertEqual(segmenter.pending, "And then")
   }
 
   func testJoinsSuccessiveDeltasWithASingleSpace() {
     var segmenter = SentenceSegmenter()
-    XCTAssertEqual(segmenter.append("hello"), [])
-    XCTAssertEqual(segmenter.append("world."), ["hello world."])
+    XCTAssertEqual(segmenter.appendText("hello"), [])
+    XCTAssertEqual(segmenter.appendText("world."), ["hello world."])
   }
 
   func testDoesNotDoubleASpaceTheDeltaAlreadyCarries() {
     var segmenter = SentenceSegmenter()
-    XCTAssertEqual(segmenter.append("hello"), [])
-    XCTAssertEqual(segmenter.append(" world."), ["hello world."])
+    XCTAssertEqual(segmenter.appendText("hello"), [])
+    XCTAssertEqual(segmenter.appendText(" world."), ["hello world."])
   }
 
   func testKeepsAClosingQuoteWithItsSentence() {
     var segmenter = SentenceSegmenter()
     XCTAssertEqual(
-      segmenter.append("She said \"stop.\" Then she left."),
+      segmenter.appendText("She said \"stop.\" Then she left."),
       ["She said \"stop.\"", "Then she left."]
     )
   }
 
   func testEllipsisAndInterrobangCountAsOneBoundary() {
     var segmenter = SentenceSegmenter()
-    XCTAssertEqual(segmenter.append("Really?! Yes... ok"), ["Really?!", "Yes..."])
+    XCTAssertEqual(segmenter.appendText("Really?! Yes... ok"), ["Really?!", "Yes..."])
     XCTAssertEqual(segmenter.pending, "ok")
   }
 
   func testDecimalNumbersAreNotBoundaries() {
     var segmenter = SentenceSegmenter()
-    XCTAssertEqual(segmenter.append("pi is 3.14159 roughly"), [])
+    XCTAssertEqual(segmenter.appendText("pi is 3.14159 roughly"), [])
     XCTAssertEqual(segmenter.pending, "pi is 3.14159 roughly")
   }
 
   func testAbbreviationDoesNotEndASentence() {
     var segmenter = SentenceSegmenter()
-    XCTAssertEqual(segmenter.append("Ask Dr. Chen about it."), ["Ask Dr. Chen about it."])
+    XCTAssertEqual(segmenter.appendText("Ask Dr. Chen about it."), ["Ask Dr. Chen about it."])
   }
 
   func testInitialDoesNotEndASentence() {
     var segmenter = SentenceSegmenter()
-    XCTAssertEqual(segmenter.append("Email J. Smith today."), ["Email J. Smith today."])
+    XCTAssertEqual(segmenter.appendText("Email J. Smith today."), ["Email J. Smith today."])
   }
 
   func testNumberedListItemDoesNotEndASentence() {
     var segmenter = SentenceSegmenter()
-    XCTAssertEqual(segmenter.append("1. buy milk"), [])
+    XCTAssertEqual(segmenter.appendText("1. buy milk"), [])
     XCTAssertEqual(segmenter.pending, "1. buy milk")
   }
 
@@ -88,7 +96,7 @@ final class SentenceSegmenterTests: XCTestCase {
     // A speaker who never lands a period must still get text, but never half
     // a word.
     let long = Array(repeating: "word", count: 80).joined(separator: " ")
-    let released = segmenter.append(long)
+    let released = segmenter.appendText(long)
 
     XCTAssertEqual(released.count, 1)
     let chunk = try XCTUnwrap(released.first)
@@ -101,23 +109,72 @@ final class SentenceSegmenterTests: XCTestCase {
     )
   }
 
+  func testACutAtARealBoundaryIsAWholeSentence() throws {
+    var segmenter = SentenceSegmenter()
+    let segment = try XCTUnwrap(segmenter.append("All done.").first)
+    XCTAssertTrue(segment.isWholeSentence)
+  }
+
+  func testTheOverflowValveReleasesAFragmentNotASentence() throws {
+    var segmenter = SentenceSegmenter()
+    let long = Array(repeating: "word", count: 80).joined(separator: " ")
+    let fragment = try XCTUnwrap(segmenter.append(long).first)
+
+    // The valve cut mid-sentence. Saying otherwise is what makes the formatter
+    // append a period and capitalize the continuation — into a live document,
+    // where neither can be taken back.
+    XCTAssertTrue(fragment.startsSentence, "it does open the sentence")
+    XCTAssertFalse(fragment.endsSentence, "but it does not end one")
+    XCTAssertFalse(fragment.isWholeSentence)
+  }
+
+  func testTheSegmentAfterAFragmentContinuesItRatherThanStartingASentence() throws {
+    var segmenter = SentenceSegmenter()
+    let long = Array(repeating: "word", count: 80).joined(separator: " ")
+    _ = segmenter.append(long)
+
+    let next = try XCTUnwrap(segmenter.append(" and then we stopped.").first)
+    XCTAssertFalse(next.startsSentence, "this continues the run-on the valve cut")
+    XCTAssertTrue(next.endsSentence)
+
+    // And once a real boundary lands, the next one starts a sentence again.
+    let after = try XCTUnwrap(segmenter.append("Fresh start.").first)
+    XCTAssertTrue(after.isWholeSentence)
+  }
+
   func testFlushReturnsTheRemainderAndClears() {
     var segmenter = SentenceSegmenter()
-    _ = segmenter.append("half a thought")
-    XCTAssertEqual(segmenter.flush(), "half a thought")
+    _ = segmenter.appendText("half a thought")
+    XCTAssertEqual(segmenter.flush()?.text, "half a thought")
     XCTAssertEqual(segmenter.pending, "")
     XCTAssertNil(segmenter.flush())
   }
 
+  func testTheFlushedTailEndsASentenceBecauseTheSessionDoes() throws {
+    var segmenter = SentenceSegmenter()
+    _ = segmenter.append("half a thought")
+    let tail = try XCTUnwrap(segmenter.flush())
+    XCTAssertTrue(tail.isWholeSentence, "the tail gets the period batch delivery would give it")
+  }
+
+  func testTheTailAfterAFragmentStillDoesNotStartASentence() throws {
+    var segmenter = SentenceSegmenter()
+    let long = Array(repeating: "word", count: 80).joined(separator: " ")
+    _ = segmenter.append(long)
+    let tail = try XCTUnwrap(segmenter.flush())
+    XCTAssertFalse(tail.startsSentence)
+    XCTAssertTrue(tail.endsSentence)
+  }
+
   func testFlushOfWhitespaceOnlyPendingIsNil() {
     var segmenter = SentenceSegmenter()
-    _ = segmenter.append("   ")
+    _ = segmenter.appendText("   ")
     XCTAssertNil(segmenter.flush())
   }
 
   func testEmptyDeltaIsIgnored() {
     var segmenter = SentenceSegmenter()
-    XCTAssertEqual(segmenter.append(""), [])
+    XCTAssertEqual(segmenter.appendText(""), [])
     XCTAssertEqual(segmenter.pending, "")
   }
 }
@@ -266,9 +323,9 @@ final class StreamingDeliveryQueueTests: XCTestCase {
     let gate = RefinementGate()
     let recorder = DeltaRecorder()
     let queue = StreamingDeliveryQueue(
-      refine: { sentence in
-        await gate.wait(for: sentence)
-        return sentence
+      refine: { segment in
+        await gate.wait(for: segment.text)
+        return segment.text
       },
       deliver: { delta in recorder.deltas.append(delta) }
     )
@@ -291,9 +348,9 @@ final class StreamingDeliveryQueueTests: XCTestCase {
     let gate = RefinementGate()
     let recorder = DeltaRecorder()
     let queue = StreamingDeliveryQueue(
-      refine: { sentence in
-        await gate.wait(for: sentence)
-        return sentence
+      refine: { segment in
+        await gate.wait(for: segment.text)
+        return segment.text
       },
       deliver: { delta in recorder.deltas.append(delta) }
     )
@@ -323,7 +380,7 @@ final class StreamingDeliveryQueueTests: XCTestCase {
   func testDeliveredTextOnlyEverGrows() async {
     let recorder = DeltaRecorder()
     let queue = StreamingDeliveryQueue(
-      refine: { $0 },
+      refine: { $0.text },
       deliver: { delta in recorder.deltas.append(delta) }
     )
 
@@ -343,7 +400,7 @@ final class StreamingDeliveryQueueTests: XCTestCase {
   func testEmptySentencesAreNeverEnqueuedOrDelivered() async {
     let recorder = DeltaRecorder()
     let queue = StreamingDeliveryQueue(
-      refine: { $0 },
+      refine: { $0.text },
       deliver: { delta in recorder.deltas.append(delta) }
     )
 
@@ -359,7 +416,7 @@ final class StreamingDeliveryQueueTests: XCTestCase {
   func testASentenceRefinedToNothingDeliversNothingButDoesNotStallTheQueue() async {
     let recorder = DeltaRecorder()
     let queue = StreamingDeliveryQueue(
-      refine: { $0 == "skip me." ? "" : $0 },
+      refine: { $0.text == "skip me." ? "" : $0.text },
       deliver: { delta in recorder.deltas.append(delta) }
     )
 
@@ -372,7 +429,7 @@ final class StreamingDeliveryQueueTests: XCTestCase {
   }
 
   func testFinishIsIdempotentAndSafeOnAnUntouchedQueue() async {
-    let queue = StreamingDeliveryQueue(refine: { $0 }, deliver: { _ in })
+    let queue = StreamingDeliveryQueue(refine: { $0.text }, deliver: { _ in })
     await queue.finish()
     await queue.finish()
     XCTAssertEqual(queue.deliveredText, "")
@@ -442,6 +499,74 @@ final class StreamingRefineTests: XCTestCase {
     )
     XCTAssertFalse(polishCalled)
     XCTAssertEqual(refined.text, "")
+  }
+
+  // MARK: - Fragments released by the overflow valve
+
+  func testAFragmentIsNotGivenATerminalPeriod() async {
+    let fragment = StreamingDelivery.Segment(
+      text: "and then we went to the",
+      startsSentence: true,
+      endsSentence: false
+    )
+    let refined = await StreamingDelivery.refine(fragment, terms: [], polish: nil)
+
+    XCTAssertEqual(refined.text, "And then we went to the")
+    XCTAssertFalse(refined.text.hasSuffix("."), "a period here lands mid-sentence, permanently")
+  }
+
+  func testAContinuationIsNotCapitalized() async {
+    let continuation = StreamingDelivery.Segment(
+      text: "store on the corner.",
+      startsSentence: false,
+      endsSentence: true
+    )
+    let refined = await StreamingDelivery.refine(continuation, terms: [], polish: nil)
+
+    XCTAssertEqual(refined.text, "store on the corner.")
+  }
+
+  func testPolishNeverSeesAFragment() async {
+    // Polish is a sentence-level rewriter: hand it half a sentence and it hands
+    // back a whole one, capital and full stop included. A polish that ran would
+    // be visible in the text, so no flag is needed to catch it.
+    let fragment = StreamingDelivery.Segment(
+      text: "and then we went to the",
+      startsSentence: true,
+      endsSentence: false
+    )
+    let refined = await StreamingDelivery.refine(
+      fragment,
+      terms: [],
+      polish: { text in text + " POLISHED." }
+    )
+
+    XCTAssertEqual(refined.text, "And then we went to the")
+    XCTAssertEqual(refined.text, refined.offline)
+    XCTAssertNil(refined.polishError)
+  }
+
+  func testAFragmentStillGetsTheOfflineDictionaryPass() async {
+    // Skipping polish must not cost the fragment its spelling fixes — offline
+    // replacement is the only one left.
+    let terms = [DictionaryTerm(term: "genc2rust", spokenForms: ["gency to rust"])]
+    let fragment = StreamingDelivery.Segment(
+      text: "we ran gency to rust over the",
+      startsSentence: true,
+      endsSentence: false
+    )
+    let refined = await StreamingDelivery.refine(fragment, terms: terms, polish: nil)
+
+    XCTAssertEqual(refined.text, "We ran genc2rust over the")
+  }
+
+  func testAWholeSentenceStillGetsBothRules() async {
+    let refined = await StreamingDelivery.refine(
+      StreamingDelivery.Segment(text: "hello world"),
+      terms: [],
+      polish: nil
+    )
+    XCTAssertEqual(refined.text, "Hello world.")
   }
 
   /// One sentence failing polish must not change what the ones around it
