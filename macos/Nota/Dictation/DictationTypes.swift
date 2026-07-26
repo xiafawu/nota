@@ -162,50 +162,93 @@ enum MicCaptureError: LocalizedError {
 
 // MARK: - P3 Hybrid injection types
 
-/// Snapshot of the OS-focused input target, captured immediately before injection.
+/// Snapshot of the OS-focused input target, captured immediately before
+/// injection (batch delivery) or at session start (streaming delivery).
 struct FocusedTarget: Equatable {
   let bundleID: String?
   let isSecureInput: Bool
   let accessibilityElement: AXUIElement?
+  /// The process that owned focus at capture time.
+  ///
+  /// Load-bearing, not diagnostic: CGEvent typing and the synthetic Cmd-V are
+  /// *posted* to this pid. Without it they go to whatever is frontmost when the
+  /// event is delivered, which for a streaming session is whatever the user
+  /// switched to while the sentence was being polished.
+  var processID: pid_t?
 
-  /// Captures the current OS-focused UI element and its metadata.
-  static func capture() -> FocusedTarget {
-    guard let frontApp = NSWorkspace.shared.frontmostApplication else {
+  /// How long an AX round-trip into the target app may take before it is
+  /// abandoned. The default is 6 s, and every one of these calls sits between
+  /// the user and their text.
+  private static let axMessagingTimeout: Float = 0.25
+
+  /// Captures the currently focused UI element and its metadata.
+  ///
+  /// Async, and deliberately so: only the `NSWorkspace` lookup needs the main
+  /// thread, while reading the focused element is a synchronous IPC into
+  /// another process that can sit there for its whole messaging timeout. This
+  /// runs the instant the hotkey goes down, where a blocked main actor is a
+  /// frozen HUD and a microphone that opens after the first word.
+  static func capture() async -> FocusedTarget {
+    guard let frontApp = await MainActor.run(body: { frontmostApp() }) else {
       return FocusedTarget(
         bundleID: nil,
         isSecureInput: false,
-        accessibilityElement: nil
+        accessibilityElement: nil,
+        processID: nil
       )
     }
 
-    let bundleID = frontApp.bundleIdentifier
-    let appElement = AXUIElementCreateApplication(frontApp.processIdentifier)
+    let axElement = focusedElement(pid: frontApp.pid)
+    return FocusedTarget(
+      bundleID: frontApp.bundleID,
+      isSecureInput: axElement?.hasSecureRole ?? false,
+      accessibilityElement: axElement,
+      processID: frontApp.pid
+    )
+  }
+
+  /// Identity of the frontmost app. `NSWorkspace` is main-thread API, but this
+  /// reads local state only — it never messages the other process.
+  @MainActor
+  private static func frontmostApp() -> (bundleID: String?, pid: pid_t)? {
+    guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
+    return (app.bundleIdentifier, app.processIdentifier)
+  }
+
+  /// The focused UI element of `pid`, or nil when it cannot be read.
+  private static func focusedElement(pid: pid_t) -> AXUIElement? {
+    let appElement = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(appElement, axMessagingTimeout)
+
     var focusedValue: CFTypeRef?
-    let axResult = AXUIElementCopyAttributeValue(
+    guard AXUIElementCopyAttributeValue(
       appElement,
       kAXFocusedUIElementAttribute as CFString,
       &focusedValue
-    )
+    ) == .success, let focusedValue else { return nil }
+    // A third-party AX server can return `.success` with some other CF type in
+    // the out-parameter; force-casting that traps and takes dictation with it.
+    guard CFGetTypeID(focusedValue) == AXUIElementGetTypeID() else { return nil }
+    return (focusedValue as! AXUIElement)
+  }
 
-    let axElement: AXUIElement?
-    if axResult == .success, let element = focusedValue {
-      axElement = (element as! AXUIElement)
-    } else {
-      axElement = nil
+  /// Whether the target is a secure field **now**.
+  ///
+  /// `isSecureInput` is a snapshot. Batch delivery captured it microseconds
+  /// before writing, so the two agreed; a streaming session writes many times
+  /// against one snapshot and the focus inside the target app can land in a
+  /// password field between them. Every write re-asks.
+  ///
+  /// Fails safe in both directions: a target already known to be secure stays
+  /// refused, and an unreadable element (AX not trusted, app gone) falls back
+  /// to the captured answer rather than inventing a new one.
+  func isSecureInputNow() -> Bool {
+    if isSecureInput { return true }
+    guard let processID else { return accessibilityElement?.hasSecureRole ?? false }
+    guard let live = Self.focusedElement(pid: processID) else {
+      return accessibilityElement?.hasSecureRole ?? false
     }
-
-    let isSecure: Bool
-    if let element = axElement {
-      isSecure = element.hasSecureRole
-    } else {
-      isSecure = false
-    }
-
-    return FocusedTarget(
-      bundleID: bundleID,
-      isSecureInput: isSecure,
-      accessibilityElement: axElement
-    )
+    return live.hasSecureRole
   }
 }
 extension AXUIElement {

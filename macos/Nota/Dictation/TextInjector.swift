@@ -48,8 +48,11 @@ final class TextInjector {
 
     lastSecureFieldNotice = nil
 
-    // Check secure / password fields.
-    guard !target.isSecureInput else {
+    // Check secure / password fields. Re-asked on every write, not read off the
+    // capture-time snapshot: a streaming session writes many times against one
+    // target and the focus inside that app can move into a password field
+    // between two sentences.
+    guard !target.isSecureInputNow() else {
       lastSecureFieldNotice = "Cannot dictate into a password or secure field"
       logger.notice("Refusing injection into secure field (bundle=\(target.bundleID ?? "nil", privacy: .public))")
       return
@@ -174,11 +177,16 @@ final class TextInjector {
 
   // MARK: - CGEvent keystroke injection
 
-  /// Attempt to inject by posting a single CGEvent with UTF-16 string to the frontmost PID.
+  /// Attempt to inject by posting a single CGEvent with UTF-16 string to the
+  /// target's process.
+  ///
+  /// The pid comes from the target, falling back to the frontmost app only when
+  /// the capture could not record one. Posting to whatever is frontmost at
+  /// delivery time is what made a streaming sentence land in the app the user
+  /// switched to while it was being polished.
   private func tryCGEventInject(_ text: String, target: FocusedTarget) -> Bool {
-    guard target.bundleID != nil,
-          let pid = frontmostAppPID() else {
-      logger.debug("CGEvent: no bundle ID or frontmost PID")
+    guard let pid = target.processID ?? frontmostAppPID() else {
+      logger.debug("CGEvent: no target or frontmost PID")
       return false
     }
 

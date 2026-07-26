@@ -146,11 +146,42 @@ final class FocusedTargetTests: XCTestCase {
     XCTAssertNotEqual(a, c)
   }
 
-  func testFocusedTargetCaptureDoesNotCrash() {
+  func testFocusedTargetCaptureDoesNotCrash() async {
     // Should not crash even without accessibility permissions.
-    let target = FocusedTarget.capture()
+    let target = await FocusedTarget.capture()
     // At minimum, bundleID should be non-nil when running under the test host (XCTest).
     // We just verify it doesn't crash and the struct is valid.
     XCTAssertFalse(target.isSecureInput) // Secure input not normally active during tests
+  }
+
+  func testCaptureRecordsThePidInjectionHasToPostTo() async throws {
+    // Without it, CGEvent typing and the synthetic Cmd-V go to whatever is
+    // frontmost when they are delivered rather than to the session's target.
+    // Which app is frontmost during a test run is not ours to say — only that
+    // whichever it was, the pid came back with it.
+    let target = await FocusedTarget.capture()
+    let pid = try XCTUnwrap(target.processID)
+    XCTAssertGreaterThan(pid, 0)
+  }
+
+  func testASecureTargetStaysSecureOnEveryRecheck() {
+    // The whole point of re-asking is that it can only get stricter, never
+    // laxer, than what capture saw.
+    let target = FocusedTarget(
+      bundleID: "com.example",
+      isSecureInput: true,
+      accessibilityElement: nil
+    )
+    XCTAssertTrue(target.isSecureInputNow())
+  }
+
+  func testRecheckWithNothingReadableFallsBackToTheCapturedAnswer() {
+    let target = FocusedTarget(
+      bundleID: "com.example",
+      isSecureInput: false,
+      accessibilityElement: nil,
+      processID: nil
+    )
+    XCTAssertFalse(target.isSecureInputNow())
   }
 }

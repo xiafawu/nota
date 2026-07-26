@@ -229,19 +229,21 @@ final class DictationController: ObservableObject {
     // Restricted to the Apple engine: AssemblyAI realtime reports whole turns
     // rather than deltas, so its "finals" are not segments.
     let wantsStreaming = settings.streamingDelivery && settings.engine == .apple
-    let startTarget = wantsStreaming ? FocusedTarget.capture() : nil
 
-    // L1 context: frontmost app + focused window title, plus the custom
-    // dictionary. Both are I/O — an AX round-trip into a frontmost app that may
-    // not answer, and a file read — so they are started here and awaited only
-    // where the hints are needed, at analyzer setup. Nothing on the main actor
-    // waits for them: a wedged frontmost app must not freeze the HUD or hold
-    // the hotkey handler. An empty dictionary and an untrusted-for-AX process
-    // both yield an empty hint list, which makes this a no-op.
+    // L1 context: frontmost app + focused window title, the custom dictionary,
+    // and — for a streaming session — the target this session's text belongs
+    // to. All of it is I/O: AX round-trips into a frontmost app that may not
+    // answer, and a file read. So it is started here and awaited only where the
+    // results are needed, at analyzer setup. Nothing on the main actor waits
+    // for it: a wedged frontmost app must not freeze the HUD or hold the hotkey
+    // handler, which is exactly what a synchronous `FocusedTarget.capture()`
+    // here would do. An empty dictionary and an untrusted-for-AX process both
+    // yield an empty hint list, which makes this a no-op.
     let contextLoad = Task.detached(priority: .userInitiated) {
       async let snapshot = ContextSnapshot.capture()
+      let target = wantsStreaming ? await FocusedTarget.capture() : nil
       let terms = DictionaryStore.load()
-      return (await snapshot, terms)
+      return (await snapshot, terms, target)
     }
 
     sessionContext = .empty
@@ -256,7 +258,7 @@ final class DictationController: ObservableObject {
     resetStreamingSession()
 
     Task { [weak self] in
-      let (snapshot, terms) = await contextLoad.value
+      let (snapshot, terms, startTarget) = await contextLoad.value
       guard let self, self.isSessionPending else { return }
       self.sessionContext = snapshot
       self.sessionDictionary = terms
@@ -697,10 +699,13 @@ final class DictationController: ObservableObject {
 
     if !text.isEmpty {
       self.state = .injecting
-      let target = FocusedTarget.capture()
-      self.logger.info("Focused target: bundle=\(target.bundleID ?? "nil", privacy: .public) secure=\(target.isSecureInput)")
 
       Task {
+        // Awaited rather than called inline: reading the focused element is a
+        // synchronous IPC into an app that may not answer, and the main actor
+        // is holding the HUD.
+        let target = await FocusedTarget.capture()
+        self.logger.info("Focused target: bundle=\(target.bundleID ?? "nil", privacy: .public) secure=\(target.isSecureInput)")
         await self.injector.inject(text, target: target)
         await MainActor.run {
           if let notice = self.injector.lastSecureFieldNotice {
