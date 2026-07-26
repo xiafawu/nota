@@ -26,6 +26,11 @@ import {
   summarizeRecord,
   tagRecord,
 } from "./cli/enrich.js";
+import {
+  dictionaryAdd,
+  dictionaryList,
+  dictionaryRemove,
+} from "./cli/dictionary.js";
 import { printConfig } from "./cli/config.js";
 import { preflightCommand } from "./cli/preflight.js";
 import { applyEnvFile } from "./utils/env-file.js";
@@ -368,6 +373,66 @@ program
         `\nError: ${error instanceof Error ? error.message : String(error)}`,
       );
       process.exit(1);
+    }
+  });
+
+function handleDictionaryError(error: unknown): never {
+  console.error(
+    `Error: ${error instanceof Error ? error.message : String(error)}`,
+  );
+  process.exit(1);
+}
+
+/** Commander collector so `--spoken` can be repeated for multiple forms. */
+function collectSpoken(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+const dictionary = program
+  .command("dictionary")
+  .description(
+    "Manage the shared custom-vocabulary dictionary (~/.nota/dictionary.json)",
+  );
+
+dictionary
+  .command("list")
+  .description("List dictionary terms (tab-separated)")
+  .action(() => {
+    try {
+      dictionaryList();
+    } catch (error) {
+      handleDictionaryError(error);
+    }
+  });
+
+dictionary
+  .command("add")
+  .description("Add a term, or merge into the existing one (case-insensitive)")
+  .argument("<term>", "Term as it should be written")
+  .option(
+    "--spoken <form>",
+    "Spoken form that should map to this term (repeatable)",
+    collectSpoken,
+    [],
+  )
+  .option("--star", "Star the term so it is kept when the context list is capped")
+  .action((term: string, options) => {
+    try {
+      dictionaryAdd(term, { spoken: options.spoken, star: options.star });
+    } catch (error) {
+      handleDictionaryError(error);
+    }
+  });
+
+dictionary
+  .command("remove")
+  .description("Remove a term from the dictionary (case-insensitive)")
+  .argument("<term>", "Term to remove")
+  .action((term: string) => {
+    try {
+      dictionaryRemove(term);
+    } catch (error) {
+      handleDictionaryError(error);
     }
   });
 
