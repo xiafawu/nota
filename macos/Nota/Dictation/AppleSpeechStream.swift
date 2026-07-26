@@ -20,9 +20,19 @@ final class AppleSpeechStream: SpeechStream {
   /// and no `setContext` call is made.
   private let contextualHints: [String]
 
-  init(contextualHints: [String] = []) {
+  /// Whether the caller wants finalized sentence segments mid-session.
+  /// Only the `SpeechAnalyzer` path can provide them; the `SFSpeechRecognizer`
+  /// fallback reports finality once, at the end, so a session that falls back
+  /// leaves `deliversSegments` false and the caller reverts to batch delivery.
+  private let streamingRequested: Bool
+
+  init(contextualHints: [String] = [], streaming: Bool = false) {
     self.contextualHints = contextualHints
+    self.streamingRequested = streaming
   }
+
+  private var streamingActive = false
+  var deliversSegments: Bool { streamingActive }
 
   // MARK: - SpeechAnalyzer path (macOS 26+)
 
@@ -31,6 +41,15 @@ final class AppleSpeechStream: SpeechStream {
   private var inputContinuation: AsyncStream<AnalyzerInput>.Continuation?
   private var analyzerTask: Task<Void, any Error>?
   private var didFinalize = false
+
+  /// Streaming mode only: every finalized delta seen so far, joined. Guarded by
+  /// `stateLock` because the results reader writes it and `finish()` reads it.
+  private var accumulatedFinal = ""
+
+  /// Streaming mode only: the range the analyzer still considers volatile, as
+  /// reported by `volatileRangeChangedHandler`. Diagnostic — finality itself
+  /// comes from each result's own `isFinal`.
+  private let volatileRange = OSAllocatedUnfairLock<CMTimeRange?>(initialState: nil)
 
   /// Format negotiated via `SpeechAnalyzer.bestAvailableAudioFormat`. Feeding
   /// `AnalyzerInput` any other format traps inside the Speech framework
@@ -65,7 +84,11 @@ final class AppleSpeechStream: SpeechStream {
     // Try SpeechAnalyzer first (macOS 26+)
     if #available(macOS 26, *) {
       do {
-        try await startWithSpeechAnalyzer()
+        if streamingRequested {
+          try await startWithStreamingAnalyzer()
+        } else {
+          try await startWithSpeechAnalyzer()
+        }
         return
       } catch {
         logger.warning("SpeechAnalyzer path failed: \(error.localizedDescription, privacy: .public); falling back to SFSpeechRecognizer")
@@ -187,7 +210,9 @@ final class AppleSpeechStream: SpeechStream {
       let (fc, text) = self.stateLock.withLock { _ -> (CheckedContinuation<String, any Error>?, String) in
         let fc = self.finishContinuation
         self.finishContinuation = nil
-        return (fc, self.finalText ?? "")
+        // `accumulatedFinal` is empty outside streaming mode, so this is the
+        // same `finalText ?? ""` the non-streaming path has always returned.
+        return (fc, self.finalText ?? self.accumulatedFinal)
       }
       if fc != nil {
         self.logger.error("finish() watchdog fired — analyzer finalize stalled; returning partial text")
@@ -234,6 +259,9 @@ final class AppleSpeechStream: SpeechStream {
     streamError = nil
     analyzerFormat = nil
     converter = nil
+    streamingActive = false
+    stateLock.withLock { _ in accumulatedFinal = "" }
+    volatileRange.withLock { $0 = nil }
   }
 
   // MARK: - SpeechAnalyzer path
@@ -321,6 +349,106 @@ final class AppleSpeechStream: SpeechStream {
     }
 
     logger.info("SpeechAnalyzer dictation started")
+  }
+
+  // MARK: - Streaming SpeechAnalyzer path
+
+  /// Same recognizer, wired for mid-session delivery.
+  ///
+  /// Two things differ from `startWithSpeechAnalyzer()`. Finality comes from
+  /// each result's own `isFinal` instead of the teardown-time `didFinalize`
+  /// flag, so a sentence can be handed on while the user is still talking; and
+  /// the analyzer is built with the `volatileRangeChangedHandler` initializer,
+  /// which also takes the `AnalysisContext` up front — context must be
+  /// attached before analysis starts, and this initializer starts it.
+  ///
+  /// Finalized results are deltas (append them); volatile results are the
+  /// current tail (replace it). Getting that backwards duplicates text into
+  /// the user's document, which append-only delivery cannot undo.
+  @available(macOS 26, *)
+  private func startWithStreamingAnalyzer() async throws {
+    let t = DictationTranscriber(
+      locale: Locale(identifier: "en-US"),
+      preset: .progressiveLongDictation
+    )
+
+    guard let format = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [t]) else {
+      throw AppleSpeechError.unavailable
+    }
+    analyzerFormat = format
+    logger.info("SpeechAnalyzer (streaming) negotiated format: \(format, privacy: .public)")
+
+    let context = AnalysisContext()
+    if !contextualHints.isEmpty {
+      context.contextualStrings[.general] = contextualHints
+    }
+
+    let (inputStream, inputCont) = AsyncStream<AnalyzerInput>.makeStream()
+    inputContinuation = inputCont
+
+    // Only Sendable state is captured: the handler runs on the analyzer's
+    // executor, and `self` is a plain reference type owned by the main actor.
+    let logger = self.logger
+    let volatileRange = self.volatileRange
+    let a = SpeechAnalyzer(
+      inputSequence: inputStream,
+      modules: [t],
+      analysisContext: context,
+      volatileRangeChangedHandler: { range, _, _ in
+        volatileRange.withLock { $0 = range }
+        logger.debug(
+          "volatile range now \(range.start.seconds, privacy: .public)…\(range.end.seconds, privacy: .public)"
+        )
+      }
+    )
+    transcriber = t
+    analyzer = a
+    streamingActive = true
+
+    // Background task: read results and emit segment / volatile hypotheses.
+    Task { [weak self] in
+      guard let self else { return }
+      do {
+        for try await result in t.results {
+          let text = String(result.text.characters)
+          if result.isFinal {
+            guard !text.isEmpty else { continue }
+            self.stateLock.withLock { _ in
+              self.accumulatedFinal = StreamingDelivery.joined(self.accumulatedFinal, text)
+            }
+            self.hypothesisContinuation.yield(
+              Hypothesis(text: text, isFinal: true, isSegment: true)
+            )
+          } else {
+            self.hypothesisContinuation.yield(Hypothesis(text: text, isFinal: false))
+          }
+        }
+        // Results ended: the session's text is everything finalized, not the
+        // last result — finalized results are deltas.
+        let (fc, text) = self.stateLock.withLock { _ -> (CheckedContinuation<String, any Error>?, String) in
+          if self.finalText == nil { self.finalText = self.accumulatedFinal }
+          let fc = self.finishContinuation
+          self.finishContinuation = nil
+          return (fc, self.finalText ?? "")
+        }
+        // Finish the hypothesis stream before resuming finish(): the caller
+        // drains the hypothesis loop to be sure every segment reached the
+        // delivery queue before it flushes the tail.
+        self.hypothesisContinuation.finish()
+        fc?.resume(returning: text)
+      } catch {
+        let fc = self.stateLock.withLock { _ in
+          self.streamError = error
+          let fc = self.finishContinuation
+          self.finishContinuation = nil
+          return fc
+        }
+        self.hypothesisContinuation.finish()
+        fc?.resume(throwing: error)
+      }
+    }
+
+    logger.info("SpeechAnalyzer streaming dictation started")
   }
 
   // MARK: - SFSpeechRecognizer fallback

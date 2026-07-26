@@ -35,13 +35,19 @@ enum AssemblyAIError: LocalizedError, Equatable {
 /// `contextualHints` biases the Apple on-device recognizer (see `ContextHints`).
 /// The AssemblyAI realtime engine has no equivalent per-session hint channel, so
 /// it ignores them.
+///
+/// `streaming` asks for finalized sentence segments mid-session. Only the Apple
+/// on-device engine can supply them: AssemblyAI realtime reports whole formatted
+/// turns, not deltas, so it ignores the request and the caller falls back to
+/// batch delivery (`SpeechStream.deliversSegments` stays false).
 func makeDictationStream(
   for engine: EngineChoice,
-  contextualHints: [String] = []
+  contextualHints: [String] = [],
+  streaming: Bool = false
 ) -> any SpeechStream {
   switch engine {
   case .apple:
-    return AppleSpeechStream(contextualHints: contextualHints)
+    return AppleSpeechStream(contextualHints: contextualHints, streaming: streaming)
   case .assemblyAIRealtime:
     return AssemblyAIRealtimeStream()
   }
