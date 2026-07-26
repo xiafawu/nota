@@ -156,8 +156,12 @@ enum PolishClient {
 
     if let context, !context.isEmpty {
       var lines: [String] = []
-      if let appName = context.appName { lines.append("- Application: \(appName)") }
-      if let windowTitle = context.windowTitle { lines.append("- Window title: \(windowTitle)") }
+      if let appName = sanitizedContextValue(context.appName) {
+        lines.append("- Application: \(appName)")
+      }
+      if let windowTitle = sanitizedContextValue(context.windowTitle) {
+        lines.append("- Window title: \(windowTitle)")
+      }
       if !lines.isEmpty {
         sections.append(
           """
@@ -186,6 +190,37 @@ enum PolishClient {
     )
 
     return sections.joined(separator: "\n\n")
+  }
+
+  /// Longest context value kept in the prompt. A window title is a label, not a
+  /// document; past this it is padding at best.
+  static let maxContextValueLength = 200
+
+  /// Flatten a context value to a single short line before it is interpolated.
+  ///
+  /// The guardrail paragraphs tell the model the context is source material,
+  /// not instructions — but a value carrying newlines can leave the "- Window
+  /// title:" line entirely and write what looks like a new prompt section, and
+  /// the app that owns that title is not the user. Returns nil when nothing
+  /// printable survives, so no empty bullet is emitted.
+  static func sanitizedContextValue(_ value: String?) -> String? {
+    guard let value else { return nil }
+    var flattened = ""
+    for scalar in value.unicodeScalars {
+      if CharacterSet.whitespacesAndNewlines.contains(scalar)
+        || CharacterSet.controlCharacters.contains(scalar) {
+        flattened.append(" ")
+      } else {
+        flattened.unicodeScalars.append(scalar)
+      }
+    }
+    let collapsed = flattened
+      .split(separator: " ", omittingEmptySubsequences: true)
+      .joined(separator: " ")
+    guard !collapsed.isEmpty else { return nil }
+    guard collapsed.count > maxContextValueLength else { return collapsed }
+    return String(collapsed.prefix(maxContextValueLength - 1))
+      .trimmingCharacters(in: .whitespaces) + "…"
   }
 }
 
