@@ -248,6 +248,16 @@ enum InjectionStrategy: Equatable, CustomStringConvertible {
   }
 }
 
+/// Whether an injection replaces the focused field's contents or extends them.
+enum InjectionMode: Equatable, Sendable {
+  /// One insertion per session: AX writes the whole value, CGEvent and paste
+  /// insert at the caret. The only mode used when streaming delivery is off.
+  case standard
+  /// Streaming delivery: `text` is a delta appended after everything already
+  /// delivered. Nothing previously delivered is ever rewritten.
+  case append
+}
+
 /// Per-bundle-ID injection override.
 struct PerAppOverride: Equatable {
   /// Force a specific strategy instead of the default AX→CGEvent→paste chain.
@@ -298,4 +308,42 @@ struct DictationSettings: Codable, Equatable, Sendable {
   var polishModelID: String? = nil
   /// Show floating HUD pill during dictation sessions.
   var showHUD: Bool = true
+  /// Type polished sentences into the target app while the user is still
+  /// speaking, instead of inserting everything at once on release.
+  ///
+  /// Default OFF, and deliberately so: streaming delivery appends text to a
+  /// live document and can never take it back. Every other code path behaves
+  /// exactly as it did before this flag existed while it is false.
+  var streamingDelivery: Bool = false
+
+  private enum CodingKeys: String, CodingKey {
+    case engine, trigger, activation, polishEnabled, polishModelID, showHUD
+    case streamingDelivery
+  }
+
+  init() {}
+
+  /// Tolerant decode, one field at a time.
+  ///
+  /// The synthesized `Decodable` ignores property defaults and throws on a
+  /// missing key, and `DictationSettingsStore.load()` turns any throw into
+  /// "reset to factory defaults" — so shipping a new setting would silently
+  /// wipe the user's engine, trigger, polish, and HUD preferences on first
+  /// launch. Each field falling back to its own default makes adding a setting
+  /// cost the user nothing. A wholly unreadable payload still resets, which is
+  /// the intended behavior for corruption.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    let defaults = DictationSettings()
+    engine = (try? container.decode(EngineChoice.self, forKey: .engine)) ?? defaults.engine
+    trigger = (try? container.decode(TriggerKey.self, forKey: .trigger)) ?? defaults.trigger
+    activation = (try? container.decode(ActivationMode.self, forKey: .activation))
+      ?? defaults.activation
+    polishEnabled = (try? container.decode(Bool.self, forKey: .polishEnabled))
+      ?? defaults.polishEnabled
+    polishModelID = try? container.decode(String.self, forKey: .polishModelID)
+    showHUD = (try? container.decode(Bool.self, forKey: .showHUD)) ?? defaults.showHUD
+    streamingDelivery = (try? container.decode(Bool.self, forKey: .streamingDelivery))
+      ?? defaults.streamingDelivery
+  }
 }

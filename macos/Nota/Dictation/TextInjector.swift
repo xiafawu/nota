@@ -35,7 +35,12 @@ final class TextInjector {
 
   /// Inject `text` into the given `target` using the strategy table.
   /// Runs off the main thread (uses `Task.sleep` instead of `Thread.sleep`).
-  func inject(_ text: String, target: FocusedTarget) async {
+  ///
+  /// `mode` only changes the Accessibility strategy. CGEvent and paste both
+  /// insert at the caret, which already appends; AX sets the field's whole
+  /// value, so appending means reading what is there and writing it back with
+  /// the delta on the end.
+  func inject(_ text: String, target: FocusedTarget, mode: InjectionMode = .standard) async {
     guard !text.isEmpty else {
       logger.info("Skipping injection — empty text")
       return
@@ -57,7 +62,7 @@ final class TextInjector {
     // Fallback chain.
     switch strategy {
     case .accessibility:
-      if tryAXInject(text, target: target) {
+      if tryAXInject(text, target: target, mode: mode) {
         logResolved(target.bundleID, strategy: "AX")
         return
       }
@@ -107,17 +112,37 @@ final class TextInjector {
   // MARK: - AX injection
 
   /// Attempt to inject via AXUIElementSetAttributeValue on the focused element.
-  private func tryAXInject(_ text: String, target: FocusedTarget) -> Bool {
+  ///
+  /// In `.append` mode a failed *read* returns false rather than writing the
+  /// delta as the whole value — that would wipe the field. False sends the
+  /// caller down the CGEvent branch, which types the same delta at the caret.
+  private func tryAXInject(
+    _ text: String,
+    target: FocusedTarget,
+    mode: InjectionMode = .standard
+  ) -> Bool {
     guard let element = target.accessibilityElement else {
       logger.debug("AX: no accessibility element available")
       return false
+    }
+
+    let value: String
+    switch mode {
+    case .standard:
+      value = text
+    case .append:
+      guard let current = Self.readAXValue(element) else {
+        logger.debug("AX: could not read current value for append — falling back to CGEvent")
+        return false
+      }
+      value = Self.appendedValue(current: current, delta: text)
     }
 
     // Set AXValue attribute directly.
     let result = AXUIElementSetAttributeValue(
       element,
       kAXValueAttribute as CFString,
-      text as CFTypeRef
+      value as CFTypeRef
     )
 
     if result == .success {
@@ -127,6 +152,24 @@ final class TextInjector {
 
     logger.debug("AX: set value failed with error \(result.rawValue)")
     return false
+  }
+
+  /// Current string value of an AX element, or nil when it has none this
+  /// process can read (wrong type, no permission, element gone).
+  private static func readAXValue(_ element: AXUIElement) -> String? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(
+      element,
+      kAXValueAttribute as CFString,
+      &value
+    ) == .success else { return nil }
+    return value as? String
+  }
+
+  /// The full field value that appends `delta` to `current`. Pure, so the
+  /// append-only contract is testable without an AX element.
+  static func appendedValue(current: String?, delta: String) -> String {
+    (current ?? "") + delta
   }
 
   // MARK: - CGEvent keystroke injection
