@@ -124,6 +124,66 @@ final class WordReplacementsTests: XCTestCase {
     XCTAssertEqual(rules.map(\.spoken), ["gency to rust", "gen c2 rust", "rust"])
   }
 
+  // MARK: - One pass over the input
+
+  func testAShorterRuleDoesNotFireInsideATermALongerRuleJustProduced() {
+    // Both entries are natural. Applying rule 2 to rule 1's output would inject
+    // "package.JSON", a spelling neither dictionary entry asks for.
+    let result = WordReplacements.apply(
+      "Open the package json file.",
+      terms: [
+        term("package.json", spoken: ["package json"]),
+        term("JSON", spoken: ["json"]),
+      ]
+    )
+    XCTAssertEqual(result, "Open the package.json file.")
+  }
+
+  func testAFlagProducedByOneRuleIsNotRewrittenByAnother() {
+    let result = WordReplacements.apply(
+      "Run no history please.",
+      terms: [
+        term("--no-history", spoken: ["no history"]),
+        term("History", spoken: ["history"]),
+      ]
+    )
+    XCTAssertEqual(result, "Run --no-history please.")
+  }
+
+  func testASecondRuleStillAppliesToTextTheFirstDidNotConsume() {
+    // Consuming the input must not mean later occurrences are skipped.
+    let result = WordReplacements.apply(
+      "package json holds the json.",
+      terms: [
+        term("package.json", spoken: ["package json"]),
+        term("JSON", spoken: ["json"]),
+      ]
+    )
+    XCTAssertEqual(result, "package.json holds the JSON.")
+  }
+
+  func testAdjacentMatchesAreBothReplaced() {
+    XCTAssertEqual(
+      WordReplacements.apply("rust,rust", terms: [term("Rust", spoken: ["rust"])]),
+      "Rust,Rust"
+    )
+  }
+
+  func testNonASCIITextIsCarriedThroughUnchanged() {
+    XCTAssertEqual(
+      WordReplacements.apply("héllo 🎧 rust", terms: [term("Rust", spoken: ["rust"])]),
+      "héllo 🎧 Rust"
+    )
+  }
+
+  func testEqualLengthSpokenFormsAreOrderedDeterministically() {
+    let rules = WordReplacements.rules(from: [
+      term("Zeta", spoken: ["abcd"]),
+      term("Alpha", spoken: ["abcd"]),
+    ])
+    XCTAssertEqual(rules.map(\.term), ["Alpha", "Zeta"])
+  }
+
   func testSpokenFormIdenticalToItsOwnTermIsDroppedAsANoop() {
     let rules = WordReplacements.rules(from: [term("Nota", spoken: ["Nota", "note a"])])
     XCTAssertEqual(rules.map(\.spoken), ["note a"])

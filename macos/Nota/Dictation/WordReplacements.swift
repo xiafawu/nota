@@ -1,5 +1,4 @@
 import Foundation
-import os
 
 // MARK: - WordReplacements
 
@@ -11,11 +10,6 @@ import os
 /// offline — when polish is disabled this is the last thing that touches the
 /// text.
 enum WordReplacements {
-  private static let logger = Logger(
-    subsystem: "com.xiafawu.nota",
-    category: "dictation.replacements"
-  )
-
   /// One `spoken → term` substitution.
   struct Rule: Equatable {
     let spoken: String
@@ -39,12 +33,13 @@ enum WordReplacements {
         rules.append(Rule(spoken: trimmed, term: term.term))
       }
     }
-    // `sorted(by:)` is not stable, so break ties on the spoken form to keep the
-    // output of `rules(from:)` deterministic for a given dictionary.
+    // `sorted(by:)` is not stable, so ties are broken on the spoken form and
+    // then the term: `apply` resolves same-position matches by rule order, so
+    // an unstable sort would make its output vary run to run.
     return rules.sorted {
-      $0.spoken.count != $1.spoken.count
-        ? $0.spoken.count > $1.spoken.count
-        : $0.spoken < $1.spoken
+      if $0.spoken.count != $1.spoken.count { return $0.spoken.count > $1.spoken.count }
+      if $0.spoken != $1.spoken { return $0.spoken < $1.spoken }
+      return $0.term < $1.term
     }
   }
 
@@ -53,16 +48,57 @@ enum WordReplacements {
     apply(text, rules: rules(from: terms))
   }
 
+  /// One left-to-right pass over `text`: at each position the first rule that
+  /// matches wins (rules arrive longest-first) and its *input* span is consumed.
+  ///
+  /// Consuming the input is the point. Folding the rules over an accumulating
+  /// result instead let a short rule fire inside a term a long rule had just
+  /// produced — with `package.json` ("package json") and `JSON` ("json") both
+  /// in the dictionary, "package json" became "package.JSON", a spelling
+  /// neither entry asks for. One pass means every character of what the user
+  /// said is rewritten at most once.
   static func apply(_ text: String, rules: [Rule]) -> String {
     guard !text.isEmpty, !rules.isEmpty else { return text }
-    var result = text
-    for rule in rules {
-      result = replace(rule.spoken, with: rule.term, in: result)
+    var result = ""
+    var index = text.startIndex
+    // The character before `index` in the original text — the left half of the
+    // `(?<![A-Za-z0-9])` boundary. Nil at the start of the text.
+    var previous: Character?
+
+    while index < text.endIndex {
+      if !isBoundaryBlocking(previous), let match = firstMatch(in: text, at: index, rules: rules) {
+        result.append(match.term)
+        previous = text[text.index(before: match.end)]
+        index = match.end
+        continue
+      }
+      previous = text[index]
+      result.append(text[index])
+      index = text.index(after: index)
     }
     return result
   }
 
-  /// Case-insensitive whole-token replacement.
+  // MARK: - Matching
+
+  private struct Match {
+    let term: String
+    let end: String.Index
+  }
+
+  private static func firstMatch(
+    in text: String,
+    at index: String.Index,
+    rules: [Rule]
+  ) -> Match? {
+    for rule in rules {
+      guard let end = matchEnd(of: rule.spoken, in: text, at: index) else { continue }
+      return Match(term: rule.term, end: end)
+    }
+    return nil
+  }
+
+  /// End index of `spoken` matched case-insensitively at `index`, or nil.
   ///
   /// The boundary is `(?<![A-Za-z0-9]) … (?![A-Za-z0-9])`, not `\b`: `\b` sits
   /// between a word character and a non-word character, so it fires *inside*
@@ -70,19 +106,25 @@ enum WordReplacements {
   /// `package.json`, `--no-history` would all be matched piecewise. Treating
   /// punctuation as a boundary means a spoken form only ever replaces a
   /// complete alphanumeric run.
-  static func replace(_ spoken: String, with term: String, in text: String) -> String {
-    let pattern = "(?<![A-Za-z0-9])" + NSRegularExpression.escapedPattern(for: spoken)
-      + "(?![A-Za-z0-9])"
-    guard let regex = try? NSRegularExpression(pattern: pattern, options: [.caseInsensitive])
-    else {
-      logger.error("Unusable replacement pattern for \(spoken, privacy: .public)")
-      return text
-    }
-    return regex.stringByReplacingMatches(
-      in: text,
-      options: [],
-      range: NSRange(text.startIndex..., in: text),
-      withTemplate: NSRegularExpression.escapedTemplate(for: term)
-    )
+  private static func matchEnd(
+    of spoken: String,
+    in text: String,
+    at index: String.Index
+  ) -> String.Index? {
+    guard let range = text.range(
+      of: spoken,
+      options: [.caseInsensitive, .anchored],
+      range: index..<text.endIndex
+    ) else { return nil }
+    guard !isBoundaryBlocking(range.upperBound == text.endIndex ? nil : text[range.upperBound])
+    else { return nil }
+    return range.upperBound
+  }
+
+  /// True when `character` is one of `[A-Za-z0-9]`, i.e. when it sits mid-token
+  /// and so blocks a match from starting or ending next to it.
+  private static func isBoundaryBlocking(_ character: Character?) -> Bool {
+    guard let character, character.isASCII else { return false }
+    return character.isLetter || character.isNumber
   }
 }
