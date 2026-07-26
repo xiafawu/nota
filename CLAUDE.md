@@ -114,7 +114,8 @@ and written by both the CLI and the macOS dictation app:
 `term` is unique case-insensitively; re-adding merges spoken forms, keeps the
 original `addedAt`, and leaves `starred` sticky once set. `starred` terms win
 the cut when the term list is later capped for context hints. Set
-`NOTA_DICTIONARY_FILE` to point at a different path (tests do this).
+`NOTA_DICTIONARY_FILE` to point both the CLI and the app at a different path
+(the test suites pass an explicit path instead, so they never read it).
 
 TypeScript: `src/utils/dictionary.ts` (store) + `src/cli/dictionary.ts` (verbs).
 Swift: `macos/Nota/Dictation/DictionaryStore.swift`. The two must stay in
@@ -131,6 +132,10 @@ tokens become `AnalysisContext.contextualStrings[.general]`, attached with
 (1–2 word) phrases: starred terms survive the cut first, then manual/learned
 terms, then harvested ones. An empty dictionary and an untrusted-for-AX process
 both make this a no-op — dictation behaves exactly as it did before.
+The snapshot and the dictionary read are kicked off as a detached task the
+instant the hotkey goes down and awaited only at analyzer setup: the AX call is
+synchronous IPC into an app that may not answer, and the main actor must not be
+holding the HUD and the microphone while it waits.
 `macos/Nota/Dictation/ContextSnapshot.swift`.
 
 **L2 — deterministic replacement.** After `Formatter.applyRules` and before
@@ -138,8 +143,12 @@ polish, every `spokenForms → term` pair is substituted, longest spoken form
 first. The word boundary is `(?<![A-Za-z0-9]) … (?![A-Za-z0-9])`, not `\b`:
 punctuation counts as a boundary, which is what lets "package json" become
 `package.json` and what stops a rule for "rust" from firing inside `genc2rust`.
-Offline and unconditional — this is the only spelling fix available when polish
-is off or fails. `macos/Nota/Dictation/WordReplacements.swift`.
+Substitution is a **single left-to-right pass that consumes the input**, never a
+fold of each rule over the previous rule's output: with `package.json` ("package
+json") and `JSON` ("json") both in the dictionary, a fold turns "package json"
+into `package.JSON` — a spelling neither entry asks for. Offline and
+unconditional — this is the only spelling fix available when polish is off or
+fails. `macos/Nota/Dictation/WordReplacements.swift`.
 
 **L3 — polish prompt.** `PolishClient.systemPrompt` adds a VOCABULARY block
 (dictionary terms + harvested identifiers, presented as the spelling authority)
@@ -148,14 +157,24 @@ not decoration: the context is labelled source material rather than
 instructions, the model is told it is transcribing and must never answer a
 question or carry out a command that appears in the text, and it must return
 only the final text with no tags or fences. Without them, dictating "what's the
-fastest sort?" gets an *answer* typed at the cursor.
+fastest sort?" gets an *answer* typed at the cursor. The app name and window
+title are written by another app, so they are flattened to a single line and
+clamped to 200 characters before interpolation — a title full of newlines would
+otherwise forge a prompt section of its own. The Dictation settings footer
+states exactly what leaves the machine when polish is on: formatted text,
+dictionary terms, app name, window title.
 
 **Auto-learn.** After a successful polish, `AutoLearn.candidates` diffs the
 pre-polish text against the polished text and stores runs that collapsed into a
 single identifier-shaped token (`gency to rust` → `genc2rust`) as
 `source: "learned"` entries. Deliberately narrow — grammar, punctuation, filler
 removal, ordinary word swaps, insertions, and identifier-to-identifier rewrites
-are all refused, because every stored term biases future recognition.
+are all refused, because every stored term biases future recognition. A learned
+term clears a higher bar than an L1 harvest (`AutoLearn.isLearnable`): a digit,
+interior case-mix, or an alphanumeric run of 2+ characters around the
+punctuation, and its letters-only folding must not be a common English word —
+otherwise one polish call's "email" → "e-mail" becomes permanent. At most three
+terms are learned per session.
 
 The Dictation tab of the Settings window (Cmd+,) lists, adds, removes, and stars
 terms against the same file the `nota dictionary` verbs use.
@@ -213,7 +232,7 @@ The cache feeds cost computation for usage tracking.
 - Long transcripts (>100k tokens) are summarized in sections then rolled up
 - Output saved as markdown file next to input by default
 - Byte-level (SHA-256) duplicate detection: when history is enabled (the default), Nota hashes the raw audio once in `runPipeline` and, if an identical file already has a *completed* history record whose output `.md` still exists, reuses that summary and skips transcription. `--force` overrides; a hash failure warns but still transcribes. This gates the common case (same file shared twice) cheaply before any paid call; it is a byte hash, not an acoustic fingerprint, so a re-encoded copy of the same recording is not detected. Legacy records (pre-feature) have no `contentHash` and never match. Example: `nota recording.m4a --force` reprocesses a file already in history.
-- The custom dictionary (`~/.nota/dictionary.json`, schema v1) is one file with two writers — `src/utils/dictionary.ts` and `macos/Nota/Dictation/DictionaryStore.swift`. Both write atomically (temp file + rename) and both treat a missing or corrupt file as an empty dictionary with a warning, never a hard failure: dictation must not be blocked by a bad dictionary. Decoding is deliberately tolerant (unknown `source` degrades to `manual`, missing optionals default) so a file written by a newer version still loads.
+- The custom dictionary (`~/.nota/dictionary.json`, schema v1) is one file with two writers — `src/utils/dictionary.ts` and `macos/Nota/Dictation/DictionaryStore.swift`. Both write atomically (temp file + rename) and both *read* a missing or corrupt file as an empty dictionary with a warning, never a hard failure: dictation must not be blocked by a bad dictionary. Decoding is tolerant per entry on both sides (one damaged entry costs only itself; unknown `source` degrades to `manual`, missing optionals default), so a hand-edited typo or a file written by a newer version still loads. Reading-as-empty is safe only for reads: before a *write*, a wholly unparseable file is copied to `dictionary.json.corrupt-<epoch>` and the store starts over, because auto-learn calls `add` unattended and would otherwise replace every unreadable term with the one it just learned. In-process writers (Settings pane, auto-learn) are serialized by a lock in `DictionaryStore`; the CLI is a separate process and stays last-write-wins.
 - ESM-only project (`"type": "module"` in package.json)
 
 ## External Requirements
