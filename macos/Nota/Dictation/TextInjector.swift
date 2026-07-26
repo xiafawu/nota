@@ -22,6 +22,9 @@ final class TextInjector {
   /// Set when a secure/password field was refused on the last `inject` call.
   private(set) var lastSecureFieldNotice: String?
 
+  /// Serializes the clipboard save/restore pairs of the paste strategy.
+  private let paster = PasteInjector()
+
   /// Clear the secure-field notice after it has been displayed.
   func clearSecureFieldNotice() {
     lastSecureFieldNotice = nil
@@ -228,75 +231,14 @@ final class TextInjector {
 
   // MARK: - Paste injection
 
-  /// Inject via clipboard save → Cmd-V → clipboard restore with per-app delay.
+  /// Inject via clipboard save → Cmd-V → clipboard restore with per-app delay,
+  /// serialized against every other paste (see `PasteInjector`).
   private func tryPasteInject(_ text: String, for target: FocusedTarget) async {
-    let pasteboard = NSPasteboard.general
-    let snapshot = capturePasteboard(pasteboard)
-    let restoreDelayNs = pasteRestoreDelayNs(for: target.bundleID)
-
-    defer {
-      Task { [weak self] in
-        try? await Task.sleep(nanoseconds: restoreDelayNs)
-        self?.restorePasteboard(pasteboard, from: snapshot)
-      }
-    }
-
-    pasteboard.clearContents()
-    guard pasteboard.setString(text, forType: .string) else {
-      logger.error("Paste: failed to set string on pasteboard")
-      return
-    }
-
-    // Brief settle for NSPasteboard to flush.
-    try? await Task.sleep(nanoseconds: 10_000_000) // 10 ms
-    await synthesizeCommandV()
-  }
-
-  // MARK: - Pasteboard save/restore
-
-  private func capturePasteboard(_ pb: NSPasteboard) -> PasteboardSnapshot {
-    let items: [[(NSPasteboard.PasteboardType, Data)]] = (pb.pasteboardItems ?? []).map { item in
-      item.types.compactMap { type in
-        item.data(forType: type).map { (type, $0) }
-      }
-    }
-    return PasteboardSnapshot(items: items)
-  }
-
-  private func restorePasteboard(_ pb: NSPasteboard, from snapshot: PasteboardSnapshot) {
-    pb.clearContents()
-    let restoredItems = snapshot.items.map { typeDataPairs -> NSPasteboardItem in
-      let item = NSPasteboardItem()
-      for (type, data) in typeDataPairs {
-        item.setData(data, forType: type)
-      }
-      return item
-    }
-    pb.writeObjects(restoredItems)
-    logger.debug("Paste: restored \(snapshot.items.count) pasteboard items")
-  }
-
-  // MARK: - Synthetic Cmd-V
-
-  private func synthesizeCommandV() async {
-    let source = CGEventSource(stateID: .combinedSessionState)
-    let vKey = CGKeyCode(0x09) // kVK_ANSI_V
-
-    guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: true),
-          let keyUp = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: false)
-    else {
-      logger.error("Paste: failed to create CGEvent for Cmd-V")
-      return
-    }
-
-    keyDown.flags = .maskCommand
-    keyUp.flags = .maskCommand
-
-    keyDown.post(tap: .cghidEventTap)
-    try? await Task.sleep(nanoseconds: 30_000_000) // 30 ms between down and up
-    keyUp.post(tap: .cghidEventTap)
-
-    logger.debug("Paste: posted synthetic Cmd-V")
+    await paster.paste(
+      text,
+      toPid: target.processID,
+      restoreDelayNs: pasteRestoreDelayNs(for: target.bundleID)
+    )
   }
 
   // MARK: - Helpers
@@ -339,6 +281,131 @@ extension TextInjector {
     // Standard Cocoa apps — no override (AX fallthrough).
     // "com.apple.TextEdit", "com.apple.Notes", etc.
   ]
+}
+
+// MARK: - PasteInjector
+
+/// Owns the clipboard save → Cmd-V → restore sequence, strictly one at a time.
+///
+/// Batch delivery pasted once per session, so a snapshot and its restore could
+/// never overlap. Streaming delivers sentence after sentence — the pump loops
+/// straight into the next queued item and the ordered buffer releases several
+/// at once — and unserialized that means the second paste snapshots the
+/// clipboard while it still holds the *first* sentence's dictated text and then
+/// restores that as "the user's clipboard", with the two deferred restores
+/// racing to decide which. Here every step of one paste finishes, restore
+/// included, before the next one starts.
+///
+/// Chained explicitly rather than left to actor isolation: actors are
+/// reentrant, so each `await` inside a paste would otherwise readmit the next.
+private actor PasteInjector {
+  private let logger = Logger(subsystem: "com.xiafawu.nota", category: "dictation.injector")
+
+  /// The most recently enqueued paste; the next one waits on it.
+  private var tail: Task<Void, Never>?
+
+  func paste(_ text: String, toPid pid: pid_t?, restoreDelayNs: UInt64) async {
+    let previous = tail
+    let logger = self.logger
+    let task = Task {
+      _ = await previous?.value
+      await PasteInjector.perform(
+        text,
+        toPid: pid,
+        restoreDelayNs: restoreDelayNs,
+        logger: logger
+      )
+    }
+    tail = task
+    await task.value
+  }
+
+  private static func perform(
+    _ text: String,
+    toPid pid: pid_t?,
+    restoreDelayNs: UInt64,
+    logger: Logger
+  ) async {
+    let pasteboard = NSPasteboard.general
+    let snapshot = capture(pasteboard)
+
+    pasteboard.clearContents()
+    guard pasteboard.setString(text, forType: .string) else {
+      logger.error("Paste: failed to set string on pasteboard")
+      restore(pasteboard, from: snapshot, logger: logger)
+      return
+    }
+
+    // Brief settle for NSPasteboard to flush.
+    try? await Task.sleep(nanoseconds: 10_000_000) // 10 ms
+    await synthesizeCommandV(toPid: pid, logger: logger)
+
+    // Awaited, not deferred to a detached task: the user's clipboard has to be
+    // back before the next paste snapshots it.
+    try? await Task.sleep(nanoseconds: restoreDelayNs)
+    restore(pasteboard, from: snapshot, logger: logger)
+  }
+
+  // MARK: - Pasteboard save/restore
+
+  private static func capture(_ pb: NSPasteboard) -> PasteboardSnapshot {
+    let items: [[(NSPasteboard.PasteboardType, Data)]] = (pb.pasteboardItems ?? []).map { item in
+      item.types.compactMap { type in
+        item.data(forType: type).map { (type, $0) }
+      }
+    }
+    return PasteboardSnapshot(items: items)
+  }
+
+  private static func restore(
+    _ pb: NSPasteboard,
+    from snapshot: PasteboardSnapshot,
+    logger: Logger
+  ) {
+    pb.clearContents()
+    let restoredItems = snapshot.items.map { typeDataPairs -> NSPasteboardItem in
+      let item = NSPasteboardItem()
+      for (type, data) in typeDataPairs {
+        item.setData(data, forType: type)
+      }
+      return item
+    }
+    pb.writeObjects(restoredItems)
+    logger.debug("Paste: restored \(snapshot.items.count) pasteboard items")
+  }
+
+  // MARK: - Synthetic Cmd-V
+
+  /// Posts Cmd-V to the target process when one is known.
+  ///
+  /// The HID tap delivers to whatever is frontmost at delivery time, which is
+  /// not necessarily the app the session started in.
+  private static func synthesizeCommandV(toPid pid: pid_t?, logger: Logger) async {
+    let source = CGEventSource(stateID: .combinedSessionState)
+    let vKey = CGKeyCode(0x09) // kVK_ANSI_V
+
+    guard let keyDown = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: true),
+          let keyUp = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: false)
+    else {
+      logger.error("Paste: failed to create CGEvent for Cmd-V")
+      return
+    }
+
+    keyDown.flags = .maskCommand
+    keyUp.flags = .maskCommand
+
+    if let pid {
+      keyDown.postToPid(pid)
+      try? await Task.sleep(nanoseconds: 30_000_000) // 30 ms between down and up
+      keyUp.postToPid(pid)
+    } else {
+      keyDown.post(tap: .cghidEventTap)
+      try? await Task.sleep(nanoseconds: 30_000_000)
+      keyUp.post(tap: .cghidEventTap)
+    }
+
+    logger.debug("Paste: posted synthetic Cmd-V")
+  }
 }
 
 // MARK: - PasteboardSnapshot
