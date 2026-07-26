@@ -10,6 +10,8 @@ final class ShareViewController: NSViewController {
     let root = NSView(frame: NSRect(x: 0, y: 0, width: 320, height: 120))
     statusLabel.alignment = .center
     statusLabel.font = .systemFont(ofSize: 15, weight: .medium)
+    statusLabel.lineBreakMode = .byWordWrapping
+    statusLabel.maximumNumberOfLines = 3
     statusLabel.translatesAutoresizingMaskIntoConstraints = false
     root.addSubview(statusLabel)
 
@@ -38,14 +40,19 @@ final class ShareViewController: NSViewController {
 
   @MainActor
   private func finish(with message: String, error: Error? = nil) {
-    statusLabel.stringValue = message
-
-    if let error {
-      extensionContext?.cancelRequest(withError: error)
+    guard let error else {
+      statusLabel.stringValue = message
+      extensionContext?.completeRequest(returningItems: nil)
       return
     }
 
-    extensionContext?.completeRequest(returningItems: nil)
+    // cancelRequest tears the sheet down in the same runloop turn, so setting
+    // the label and cancelling together renders every failure as "nothing
+    // happened". Hold the sheet open long enough to read the reason.
+    statusLabel.stringValue = "\(message)\n\(error.localizedDescription)"
+    DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in
+      self?.extensionContext?.cancelRequest(withError: error)
+    }
   }
 
   private func routeSharedAudio() async {
