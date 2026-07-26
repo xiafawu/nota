@@ -26,27 +26,39 @@ struct ContextSnapshot: Equatable, Sendable {
 
   /// Snapshot the frontmost app and its focused window title.
   ///
-  /// `NSWorkspace.frontmostApplication` is main-thread API, so this is
-  /// `@MainActor`. AX failures (untrusted process, app without an AX-visible
-  /// window) degrade to nil rather than throwing.
-  @MainActor
-  static func capture() -> ContextSnapshot {
-    guard let frontApp = NSWorkspace.shared.frontmostApplication else {
+  /// Async, and deliberately not `@MainActor`: only the `NSWorkspace` lookup
+  /// needs the main thread, while the AX round-trip is a synchronous IPC into
+  /// another process that can sit there for its whole messaging timeout. This
+  /// is called the instant the hotkey goes down, where a blocked main thread
+  /// is a frozen HUD and a late microphone.
+  ///
+  /// AX failures (untrusted process, app without an AX-visible window) degrade
+  /// to nil rather than throwing.
+  static func capture() async -> ContextSnapshot {
+    guard let frontApp = await MainActor.run(body: { frontmostApp() }) else {
       return .empty
     }
     return ContextSnapshot(
-      appName: frontApp.localizedName,
-      bundleID: frontApp.bundleIdentifier,
-      windowTitle: focusedWindowTitle(pid: frontApp.processIdentifier)
+      appName: frontApp.name,
+      bundleID: frontApp.bundleID,
+      windowTitle: focusedWindowTitle(pid: frontApp.pid)
     )
+  }
+
+  /// Identity of the frontmost app. `NSWorkspace` is main-thread API, but this
+  /// reads local state only — it never messages the other process.
+  @MainActor
+  static func frontmostApp() -> (name: String?, bundleID: String?, pid: pid_t)? {
+    guard let app = NSWorkspace.shared.frontmostApplication else { return nil }
+    return (app.localizedName, app.bundleIdentifier, app.processIdentifier)
   }
 
   /// Focused-window title of `pid`, or nil.
   ///
   /// Guarded by `AXIsProcessTrusted()`: calling AX without the grant returns
   /// errors anyway, and skipping the calls avoids a pointless several-hundred
-  /// millisecond timeout on some apps.
-  @MainActor
+  /// millisecond timeout on some apps. The AX C API is thread-safe, so this
+  /// runs wherever `capture()` was resumed.
   private static func focusedWindowTitle(pid: pid_t) -> String? {
     guard AXIsProcessTrusted() else { return nil }
     let appElement = AXUIElementCreateApplication(pid)
@@ -61,6 +73,10 @@ struct ContextSnapshot: Equatable, Sendable {
       kAXFocusedWindowAttribute as CFString,
       &windowValue
     ) == .success, let windowValue else { return nil }
+    // A third-party AX server can return `.success` with some other CF type in
+    // the out-parameter; force-casting that traps and takes dictation — and the
+    // app — down with it.
+    guard CFGetTypeID(windowValue) == AXUIElementGetTypeID() else { return nil }
     let window = windowValue as! AXUIElement
 
     var titleValue: CFTypeRef?

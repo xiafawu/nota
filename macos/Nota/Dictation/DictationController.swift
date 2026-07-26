@@ -199,74 +199,82 @@ final class DictationController: ObservableObject {
     isSessionPending = true
 
     // L1 context: frontmost app + focused window title, plus the custom
-    // dictionary. Both are read here, at session start, and stay fixed for the
-    // session. An empty dictionary and an untrusted AX process both yield an
-    // empty hint list, which makes this a no-op.
-    sessionContext = ContextSnapshot.capture()
-    sessionDictionary = DictionaryStore.load()
-    let hints = ContextHints.build(
-      terms: sessionDictionary,
-      harvested: sessionContext.harvestIdentifiers()
-    )
+    // dictionary. Both are I/O — an AX round-trip into a frontmost app that may
+    // not answer, and a file read — so they are started here and awaited only
+    // where the hints are needed, at analyzer setup. Nothing on the main actor
+    // waits for them: a wedged frontmost app must not freeze the HUD or hold
+    // the hotkey handler. An empty dictionary and an untrusted-for-AX process
+    // both yield an empty hint list, which makes this a no-op.
+    let contextLoad = Task.detached(priority: .userInitiated) {
+      async let snapshot = ContextSnapshot.capture()
+      let terms = DictionaryStore.load()
+      return (await snapshot, terms)
+    }
 
-    // Create a speech stream matching the current engine choice
-    let stream = makeDictationStream(for: settings.engine, contextualHints: hints)
-    speechStream = stream
-    logger.info("Using engine: \(self.settings.engine.label)")
-    logger.debug(
-      "Session context: app=\(self.sessionContext.appName ?? "nil", privacy: .public) hints=\(hints.count)"
-    )
+    sessionContext = .empty
+    sessionDictionary = []
     lastHypothesis = nil
     lastProcessedText = nil
     lastRulesResult = nil
     lastPolishResult = nil
     lastPolishWarning = nil
 
-    // Observe partial hypotheses for diagnostics
     Task { [weak self] in
-      guard let self else { return }
-      for await hypothesis in stream.hypotheses {
-        await MainActor.run {
-          self.lastHypothesis = hypothesis.text
-          self.logger.debug("Hypothesis isFinal=\(hypothesis.isFinal) text=\"\(hypothesis.text, privacy: .public)\"")
+      let (snapshot, terms) = await contextLoad.value
+      guard let self, self.isSessionPending else { return }
+      self.sessionContext = snapshot
+      self.sessionDictionary = terms
+
+      let hints = ContextHints.build(terms: terms, harvested: snapshot.harvestIdentifiers())
+
+      // Create a speech stream matching the current engine choice
+      let stream = makeDictationStream(for: self.settings.engine, contextualHints: hints)
+      self.speechStream = stream
+      self.logger.info("Using engine: \(self.settings.engine.label)")
+      self.logger.debug(
+        "Session context: app=\(snapshot.appName ?? "nil", privacy: .public) hints=\(hints.count)"
+      )
+
+      // Observe partial hypotheses for diagnostics
+      Task { [weak self] in
+        guard let self else { return }
+        for await hypothesis in stream.hypotheses {
+          await MainActor.run {
+            self.lastHypothesis = hypothesis.text
+            self.logger.debug("Hypothesis isFinal=\(hypothesis.isFinal) text=\"\(hypothesis.text, privacy: .public)\"")
+          }
         }
       }
-    }
 
-    // Start speech recognition first, then capture once ready
-    Task {
+      // Start speech recognition first, then capture once ready
       do {
         try await stream.start()
       } catch {
-        await MainActor.run {
-          self.isSessionPending = false
-          self.speechStream = nil
-          self.state = .failed(message: error.localizedDescription)
-          self.logger.error("SpeechStream.start failed: \(error.localizedDescription, privacy: .public)")
-        }
+        self.isSessionPending = false
+        self.speechStream = nil
+        self.state = .failed(message: error.localizedDescription)
+        self.logger.error("SpeechStream.start failed: \(error.localizedDescription, privacy: .public)")
         return
       }
 
       // Speech is ready — now start microphone capture
-      await MainActor.run {
-        guard self.isSessionPending else {
-          stream.cancel()
-          self.speechStream = nil
-          return
-        }
-        do {
-          try self.capture.start()
-          self.isSessionPending = false
-          self.state = .listening
-          let modeLabel = self.settings.activation == .hold ? "Hold" : "Toggle"
-          self.logger.info("\(modeLabel) \(self.settings.trigger.kind == .fnGlobe ? "Fn/Globe" : "keyCode") started dictation session")
-        } catch {
-          stream.cancel()
-          self.isSessionPending = false
-          self.speechStream = nil
-          self.state = .failed(message: error.localizedDescription)
-          self.logger.error("microphone capture failed: \(error.localizedDescription, privacy: .public)")
-        }
+      guard self.isSessionPending else {
+        stream.cancel()
+        self.speechStream = nil
+        return
+      }
+      do {
+        try self.capture.start()
+        self.isSessionPending = false
+        self.state = .listening
+        let modeLabel = self.settings.activation == .hold ? "Hold" : "Toggle"
+        self.logger.info("\(modeLabel) \(self.settings.trigger.kind == .fnGlobe ? "Fn/Globe" : "keyCode") started dictation session")
+      } catch {
+        stream.cancel()
+        self.isSessionPending = false
+        self.speechStream = nil
+        self.state = .failed(message: error.localizedDescription)
+        self.logger.error("microphone capture failed: \(error.localizedDescription, privacy: .public)")
       }
     }
   }
