@@ -11,7 +11,7 @@ private enum SettingsTab: Hashable {
   var idealHeight: CGFloat {
     switch self {
     case .general: 220
-    case .dictation: 580
+    case .dictation: 660
     case .models: 400
     case .apiKeys: 400
     case .speakers: 520

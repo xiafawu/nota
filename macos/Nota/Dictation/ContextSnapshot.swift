@@ -143,15 +143,24 @@ enum ContextHints {
   static let maxHints = 100
   static let maxWordsPerHint = 2
 
+  /// Cap for the L3 polish prompt's vocabulary block. Smaller than the L1 cap
+  /// because every term is prompt tokens on a per-session paid call, and a long
+  /// list dilutes the model's attention rather than sharpening it.
+  static let maxPromptTerms = 60
+
   /// Rank dictionary terms and harvested identifiers into a hint list.
   ///
   /// Order is the cut order: starred terms survive first, then manual/learned
   /// terms, then dictionary-harvested terms, then identifiers harvested from
   /// the window title.
+  ///
+  /// `maxWords` nil keeps phrases of any length — used for the L3 prompt, where
+  /// the 1–2 word rule does not apply.
   static func build(
     terms: [DictionaryTerm],
     harvested: [String] = [],
-    limit: Int = maxHints
+    limit: Int = maxHints,
+    maxWords: Int? = maxWordsPerHint
   ) -> [String] {
     let starred = terms.filter { $0.starred }.map(\.term)
     let authored = terms.filter { !$0.starred && $0.source != .harvested }.map(\.term)
@@ -162,15 +171,27 @@ enum ContextHints {
     for candidate in starred + authored + dictHarvested + harvested {
       guard result.count < limit else { break }
       let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
-      guard !trimmed.isEmpty, isShortEnough(trimmed) else { continue }
+      guard !trimmed.isEmpty, fits(trimmed, maxWords: maxWords) else { continue }
       guard seen.insert(trimmed.lowercased()).inserted else { continue }
       result.append(trimmed)
     }
     return result
   }
 
-  private static func isShortEnough(_ phrase: String) -> Bool {
-    phrase.split(whereSeparator: { $0 == " " || $0.isNewline || $0 == "\t" }).count
-      <= maxWordsPerHint
+  /// Terms and identifiers for the L3 polish prompt's vocabulary block. Same
+  /// ranking as `build`, but multi-word terms are kept — the prompt has no
+  /// 1–2 word restriction.
+  static func promptVocabulary(
+    terms: [DictionaryTerm],
+    harvested: [String] = [],
+    limit: Int = maxPromptTerms
+  ) -> [String] {
+    build(terms: terms, harvested: harvested, limit: limit, maxWords: nil)
+  }
+
+  private static func fits(_ phrase: String, maxWords: Int?) -> Bool {
+    guard let maxWords else { return true }
+    return phrase.split(whereSeparator: { $0 == " " || $0.isNewline || $0 == "\t" }).count
+      <= maxWords
   }
 }

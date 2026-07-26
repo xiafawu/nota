@@ -133,6 +133,33 @@ terms, then harvested ones. An empty dictionary and an untrusted-for-AX process
 both make this a no-op — dictation behaves exactly as it did before.
 `macos/Nota/Dictation/ContextSnapshot.swift`.
 
+**L2 — deterministic replacement.** After `Formatter.applyRules` and before
+polish, every `spokenForms → term` pair is substituted, longest spoken form
+first. The word boundary is `(?<![A-Za-z0-9]) … (?![A-Za-z0-9])`, not `\b`:
+punctuation counts as a boundary, which is what lets "package json" become
+`package.json` and what stops a rule for "rust" from firing inside `genc2rust`.
+Offline and unconditional — this is the only spelling fix available when polish
+is off or fails. `macos/Nota/Dictation/WordReplacements.swift`.
+
+**L3 — polish prompt.** `PolishClient.systemPrompt` adds a VOCABULARY block
+(dictionary terms + harvested identifiers, presented as the spelling authority)
+and a CONTEXT block (app name + window title). The guardrails are load-bearing,
+not decoration: the context is labelled source material rather than
+instructions, the model is told it is transcribing and must never answer a
+question or carry out a command that appears in the text, and it must return
+only the final text with no tags or fences. Without them, dictating "what's the
+fastest sort?" gets an *answer* typed at the cursor.
+
+**Auto-learn.** After a successful polish, `AutoLearn.candidates` diffs the
+pre-polish text against the polished text and stores runs that collapsed into a
+single identifier-shaped token (`gency to rust` → `genc2rust`) as
+`source: "learned"` entries. Deliberately narrow — grammar, punctuation, filler
+removal, ordinary word swaps, insertions, and identifier-to-identifier rewrites
+are all refused, because every stored term biases future recognition.
+
+The Dictation tab of the Settings window (Cmd+,) lists, adds, removes, and stars
+terms against the same file the `nota dictionary` verbs use.
+
 ## Model Settings
 
 Non-secret model preferences live in `~/.nota/settings.json` (schema exactly

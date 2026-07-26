@@ -6,6 +6,7 @@ struct DictationSettingsView: View {
   var controller: DictationController?
 
   @State private var settings: DictationSettings = DictationSettingsStore.load()
+  @StateObject private var dictionary = DictionaryModel()
 
   var body: some View {
     Form {
@@ -13,6 +14,7 @@ struct DictationSettingsView: View {
       triggerSection
       engineSection
       polishSection
+      dictionarySection
       hudSection
     }
     .formStyle(.grouped)
@@ -20,6 +22,9 @@ struct DictationSettingsView: View {
       DictationSettingsStore.save(settings)
       controller?.reloadSettings()
     }
+    // The CLI (`nota dictionary …`) and auto-learn write the same file, so the
+    // list is re-read whenever this pane comes back into view.
+    .onAppear { dictionary.refresh() }
   }
 
   // MARK: - Activation mode
@@ -119,6 +124,82 @@ struct DictationSettingsView: View {
     }
   }
 
+  // MARK: - Custom dictionary
+
+  private var dictionarySection: some View {
+    Section {
+      HStack(spacing: Metrics.statusHStackSpacing) {
+        TextField("Term", text: $dictionary.draftTerm)
+          .onSubmit { dictionary.addDraft() }
+        TextField("Sounds like (optional)", text: $dictionary.draftSpokenForm)
+          .onSubmit { dictionary.addDraft() }
+        Button("Add") { dictionary.addDraft() }
+          .disabled(!dictionary.canAddDraft)
+      }
+
+      if let error = dictionary.lastError {
+        Text(error)
+          .font(Tokens.settingsCaptionFont)
+          .foregroundStyle(.red)
+      }
+
+      if dictionary.terms.isEmpty {
+        Text("No custom terms yet.")
+          .font(Tokens.settingsCaptionFont)
+          .foregroundStyle(.secondary)
+      } else {
+        ForEach(dictionary.terms, id: \.term) { term in
+          dictionaryRow(term)
+        }
+      }
+    } header: {
+      Text("Custom Dictionary")
+    } footer: {
+      VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
+        footerText("Terms bias recognition, are substituted into the text, and are given to the polish model as the correct spelling.")
+        footerText("Starred terms are kept first when the list is capped at \(ContextHints.maxHints) recognition hints.")
+        footerText("Shared with the `nota dictionary` command — both read ~/.nota/dictionary.json.")
+      }
+    }
+  }
+
+  private func dictionaryRow(_ term: DictionaryTerm) -> some View {
+    HStack(spacing: Metrics.statusHStackSpacing) {
+      Button {
+        dictionary.toggleStar(term)
+      } label: {
+        Image(systemName: term.starred ? "star.fill" : "star")
+      }
+      .buttonStyle(.borderless)
+      .help(term.starred ? "Unstar" : "Star — starred terms survive the hint cap")
+
+      VStack(alignment: .leading, spacing: 0) {
+        Text(term.term)
+        if !term.spokenForms.isEmpty {
+          Text("sounds like: " + term.spokenForms.joined(separator: ", "))
+            .font(Tokens.settingsCaptionFont)
+            .foregroundStyle(.secondary)
+        }
+      }
+
+      Spacer(minLength: Metrics.statusHStackSpacing)
+
+      if term.source != .manual {
+        Text(term.source.rawValue)
+          .font(Tokens.settingsCaptionFont)
+          .foregroundStyle(.secondary)
+      }
+
+      Button {
+        dictionary.remove(term)
+      } label: {
+        Image(systemName: "trash")
+      }
+      .buttonStyle(.borderless)
+      .help("Remove \(term.term)")
+    }
+  }
+
   // MARK: - HUD
 
   private var hudSection: some View {
@@ -137,5 +218,61 @@ struct DictationSettingsView: View {
     Text(text)
       .font(Tokens.settingsCaptionFont)
       .foregroundStyle(.secondary)
+  }
+}
+
+// MARK: - DictionaryModel
+
+/// View state over `DictionaryStore`. Every mutation writes through to
+/// `~/.nota/dictionary.json` and re-reads, so the list on screen is always the
+/// file on disk rather than a drifting in-memory copy.
+@MainActor
+final class DictionaryModel: ObservableObject {
+  @Published private(set) var terms: [DictionaryTerm] = []
+  @Published var draftTerm: String = ""
+  @Published var draftSpokenForm: String = ""
+  @Published var lastError: String?
+
+  init() {
+    refresh()
+  }
+
+  var canAddDraft: Bool {
+    !draftTerm.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+  }
+
+  func refresh() {
+    terms = DictionaryStore.load().sorted {
+      $0.term.lowercased() < $1.term.lowercased()
+    }
+  }
+
+  func addDraft() {
+    let term = draftTerm.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !term.isEmpty else { return }
+    let spoken = draftSpokenForm.trimmingCharacters(in: .whitespacesAndNewlines)
+    perform {
+      try DictionaryStore.add(term, spokenForms: spoken.isEmpty ? [] : [spoken])
+      self.draftTerm = ""
+      self.draftSpokenForm = ""
+    }
+  }
+
+  func remove(_ term: DictionaryTerm) {
+    perform { _ = try DictionaryStore.remove(term.term) }
+  }
+
+  func toggleStar(_ term: DictionaryTerm) {
+    perform { _ = try DictionaryStore.setStarred(!term.starred, for: term.term) }
+  }
+
+  private func perform(_ mutation: () throws -> Void) {
+    do {
+      try mutation()
+      lastError = nil
+    } catch {
+      lastError = error.localizedDescription
+    }
+    refresh()
   }
 }

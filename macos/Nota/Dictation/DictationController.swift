@@ -316,8 +316,13 @@ final class DictationController: ObservableObject {
         self.lastLatency = latency
         self.lastHypothesis = finalText
 
-        // --- P4: Formatter pipeline (rules → optional polish) ---
-        let rulesResult = Formatter.applyRules(finalText)
+        // --- Formatter pipeline (rules → dictionary replacements → polish) ---
+        // L2 runs unconditionally: deterministic, offline, and the only
+        // spelling fix available when polish is disabled or fails.
+        let rulesResult = WordReplacements.apply(
+          Formatter.applyRules(finalText),
+          terms: self.sessionDictionary
+        )
         self.lastRulesResult = rulesResult
         self.lastPolishResult = nil
         self.lastPolishWarning = nil
@@ -331,10 +336,21 @@ final class DictationController: ObservableObject {
           self.logger.info("Polishing with model=\(modelID, privacy: .public)")
           self.isPolishInProgress = true
 
+          let vocabulary = ContextHints.promptVocabulary(
+            terms: self.sessionDictionary,
+            harvested: self.sessionContext.harvestIdentifiers()
+          )
+          let context = self.sessionContext
+
           Task {
             let polished: String
             do {
-              polished = try await PolishClient.polish(rulesResult, modelID: modelID)
+              polished = try await PolishClient.polish(
+                rulesResult,
+                modelID: modelID,
+                vocabulary: vocabulary,
+                context: context
+              )
               self.lastPolishResult = polished
               self.lastPolishWarning = nil
               self.logger.info("Polish succeeded")
@@ -348,10 +364,43 @@ final class DictationController: ObservableObject {
             }
 
             self.doInject(polished, latency: latency)
+            // After injection, never before: learning is bookkeeping and must
+            // not delay the text reaching the user's cursor.
+            self.learnFromPolish(before: rulesResult, after: polished)
           }
         } else {
           textToInject = rulesResult
           self.doInject(textToInject, latency: latency)
+        }
+      }
+    }
+  }
+
+  /// Record identifiers the polish model corrected, so the next session gets
+  /// them at L1/L2 without a paid call.
+  ///
+  /// Runs off the main actor: `DictionaryStore` writes atomically, so a
+  /// background write racing a foreground read can only ever produce the old or
+  /// the new file, never a half-written one. A write failure is logged and
+  /// dropped — learning is an optimization, never a reason to surface an error
+  /// after the text has already been injected.
+  private func learnFromPolish(before: String, after: String) {
+    let candidates = AutoLearn.candidates(before: before, after: after)
+    guard !candidates.isEmpty else { return }
+    let logger = self.logger
+    Task.detached(priority: .utility) {
+      for candidate in candidates {
+        do {
+          try DictionaryStore.add(
+            candidate.term,
+            spokenForms: [candidate.spokenForm],
+            source: .learned
+          )
+          logger.info(
+            "Learned \"\(candidate.term, privacy: .public)\" from \"\(candidate.spokenForm, privacy: .public)\""
+          )
+        } catch {
+          logger.warning("Could not learn \(candidate.term, privacy: .public): \(error.localizedDescription, privacy: .public)")
         }
       }
     }
