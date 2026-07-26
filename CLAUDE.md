@@ -215,6 +215,14 @@ mic → DictationTranscriber → volatile tail ───────────
   boundary is released once, at stop, through the same pipeline. A 240-char
   overflow valve cuts at the last word boundary so a speaker who never lands a
   period is not silently held.
+- **A fragment is not a sentence.** Each release carries how it was cut
+  (`StreamingDelivery.Segment.startsSentence` / `.endsSentence`). The valve's
+  mid-sentence chunk gets neither a terminal period nor a capital on the chunk
+  that continues it, and it never reaches polish — polish is a sentence-level
+  rewriter and hands back a sentence, capital and full stop included, for text
+  that is already promised to a live document. Fragments still get the offline
+  dictionary pass. The tail flushed at stop *does* end a sentence, so it is
+  punctuated exactly as batch delivery would have punctuated it.
 - **In order, always.** Refinement (rules → dictionary → polish) runs
   concurrently per sentence, so sentence 2's network call routinely returns
   before sentence 1's. `OrderedDeliveryBuffer` holds completions until their
@@ -225,18 +233,43 @@ mic → DictationTranscriber → volatile tail ───────────
   already ends in whitespace). `TextInjector.inject(_:target:mode: .append)`
   changes only the AX strategy — it reads the field's value and writes it back
   with the delta on the end, and a failed *read* falls through to CGEvent with
-  the same delta rather than writing the delta as the whole value. Secure-field
-  refusal is unchanged; a secure target simply skips streaming for the session.
-- **Fixed target.** `FocusedTarget.capture()` moves to session **start**. If the
-  user switches apps mid-sentence the text still lands where they were looking
-  when they started talking — capturing at the end would spray it into whatever
-  gained focus.
+  the same delta rather than writing the delta as the whole value.
+- **Fixed target, in every strategy.** `FocusedTarget.capture()` moves to
+  session **start** and records the target's **pid**. All three strategies
+  honor it: AX writes the captured element, CGEvent typing is posted to that
+  pid, and the synthetic Cmd-V is posted to that pid instead of the HID tap.
+  Without the pid the last two follow whatever is frontmost at *delivery* time,
+  so a sentence the user started in Slack would land in whatever they clicked
+  while it was being polished — and every paste- and keyEvents-forced app in
+  `defaultOverrideTable` (Chrome, Slack, VSCode, terminals) takes one of those
+  two paths.
+- **Secure fields are re-checked per write.** A streaming session writes many
+  times against one captured target, so `TextInjector.inject` re-asks
+  `FocusedTarget.isSecureInputNow()` every time instead of trusting the
+  start-of-session snapshot: focus inside the target app can move into a
+  password field between two sentences. It can only get stricter — an already
+  secure target stays refused, and an unreadable element falls back to the
+  captured answer. A target that is *already* secure at session start skips
+  streaming for the whole session.
+- **One paste at a time.** The paste strategy's clipboard save → Cmd-V →
+  restore runs through a serializing actor (`PasteInjector`) and awaits its own
+  restore. Batch delivery pasted once per session so the pairs could not
+  overlap; streaming delivers back to back, and unserialized the second paste
+  snapshots the clipboard while it still holds the first sentence's dictated
+  text and then restores *that* as the user's clipboard.
 - **Degradation.** A sentence whose polish fails is delivered as its own offline
   (rules + dictionary) text and the queue keeps moving; the warning surfaces
   through the normal HUD path. With polish disabled the pipeline is still
   streaming, just rules + dictionary. Auto-learn gets a per-*session* budget
   (`AutoLearn.maxCandidatesPerSession`) because streaming polishes once per
   sentence rather than once per session.
+- **A finished session stops talking.** Polish outlives the session that started
+  it, and every piece of state it writes — the in-flight polish count, the
+  last-result diagnostics, the auto-learn budget — belongs to the controller,
+  not the session. So teardown bumps a session epoch and cancels the delivery
+  queue: a stale refinement is dropped rather than surfacing session A's polish
+  failure on session B's HUD, and it can never deliver into a target that is
+  no longer the one the user is looking at.
 - **HUD.** `ListeningView` gains a rough-draft line above the RMS bars showing
   the last ~60 characters of the volatile tail. It is deliberately not part of
   `HUDState`: the auto-hide bookkeeping compares states for equality, and a
