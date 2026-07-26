@@ -77,6 +77,15 @@ final class DictationController: ObservableObject {
   /// per sentence, so without a session budget one talkative minute could
   /// write a dozen permanent dictionary entries.
   private var autoLearnBudget = AutoLearn.maxCandidatesPerSession
+  /// Bumped every time a streaming session's state is torn down.
+  ///
+  /// Refinement can outlive its session — a polish call may still be waiting on
+  /// the network when the user releases the key and starts talking again — and
+  /// every piece of state it writes (`polishInFlight`, the last-result
+  /// diagnostics, `autoLearnBudget`) belongs to the controller, not the
+  /// session. A stale epoch is how a dead session's polish is told it no longer
+  /// speaks for the HUD.
+  private var sessionEpoch: UInt64 = 0
 
   init(
     permissions: PermissionsCoordinator? = nil,
@@ -473,6 +482,10 @@ final class DictationController: ObservableObject {
       streamingRecognized = StreamingDelivery.joined(streamingRecognized, hypothesis.text)
       lastHypothesis = streamingRecognized
       logger.debug("Segment finalized: \"\(hypothesis.text, privacy: .public)\"")
+      // The volatile tail this finalized: the HUD must stop offering it as a
+      // rough draft of text that is already on its way into the document. No
+      // further volatile result is guaranteed to arrive and clear it.
+      roughDraft = ""
       guard let deliveryQueue else { return }
       for segment in segmenter.append(hypothesis.text) {
         deliveryQueue.enqueue(segment)
@@ -515,13 +528,17 @@ final class DictationController: ObservableObject {
     }
     let polish: (@Sendable (String) async throws -> String)? = polishEnabled ? runPolish : nil
 
+    // Bound to the session that built this queue: a refinement that returns
+    // after teardown must not touch the next session's polish state.
+    let epoch = sessionEpoch
+
     let refine: StreamingDeliveryQueue.Refine = { [weak self] segment in
       // A fragment never reaches polish, so it never counts as polish in
       // flight either.
       let willPolish = polish != nil && segment.isWholeSentence
-      if willPolish { await self?.beginPolish() }
+      if willPolish { await self?.beginPolish(epoch: epoch) }
       let refined = await StreamingDelivery.refine(segment, terms: terms, polish: polish)
-      if willPolish { await self?.endPolish(refined) }
+      if willPolish { await self?.endPolish(refined, epoch: epoch) }
       return refined.text
     }
 
@@ -533,12 +550,17 @@ final class DictationController: ObservableObject {
     return StreamingDeliveryQueue(refine: refine, deliver: deliver)
   }
 
-  private func beginPolish() {
+  private func beginPolish(epoch: UInt64) {
+    guard epoch == sessionEpoch else { return }
     polishInFlight += 1
     isPolishInProgress = true
   }
 
-  private func endPolish(_ refined: StreamingDelivery.RefinedSentence) {
+  private func endPolish(_ refined: StreamingDelivery.RefinedSentence, epoch: UInt64) {
+    guard epoch == sessionEpoch else {
+      logger.debug("Ignoring polish result from a finished session")
+      return
+    }
     polishInFlight = max(0, polishInFlight - 1)
     isPolishInProgress = polishInFlight > 0
     guard !refined.offline.isEmpty else { return }
@@ -563,6 +585,7 @@ final class DictationController: ObservableObject {
   private func finalizeStreamingSession() {
     let stream = speechStream
     let queue = deliveryQueue
+    let epoch = sessionEpoch
 
     Task {
       var finishError: (any Error)?
@@ -594,7 +617,7 @@ final class DictationController: ObservableObject {
         self.lastProcessedText = queue.deliveredText
       }
 
-      self.finishStreamingSession(error: finishError)
+      self.finishStreamingSession(error: finishError, epoch: epoch)
     }
   }
 
@@ -604,6 +627,13 @@ final class DictationController: ObservableObject {
   /// ends the hypothesis stream with it. When the analyzer stalls and the
   /// stream's own watchdog returns instead, nothing ever ends it — so the loop
   /// is cancelled rather than waited on forever.
+  ///
+  /// Cancelling the loop does not drop what it has already buffered, and it
+  /// does not have to: `withTaskGroup` cannot return until every child has
+  /// finished, and the child awaiting `task.value` finishes only when the loop
+  /// itself does. So by the time this returns, every segment the recognizer
+  /// emitted has reached the queue — which is what lets the tail be flushed
+  /// afterwards and still be delivered last.
   private func drainHypotheses(timeout: TimeInterval) async {
     guard let task = hypothesisTask else { return }
     await withTaskGroup(of: Void.self) { group in
@@ -616,7 +646,17 @@ final class DictationController: ObservableObject {
     hypothesisTask = nil
   }
 
-  private func finishStreamingSession(error: (any Error)?) {
+  /// Land a streaming session: report it, then drop its state.
+  ///
+  /// Runs after several awaits, and the session it belongs to may be gone by
+  /// then — a permission loss tears one down mid-finalize. A stale finish must
+  /// not report its result over whatever replaced it, least of all by putting
+  /// the controller back to `.idle` after it was disabled.
+  private func finishStreamingSession(error: (any Error)?, epoch: UInt64) {
+    guard epoch == sessionEpoch else {
+      logger.debug("Skipping teardown for a session that was already torn down")
+      return
+    }
     isSessionPending = false
     polishInFlight = 0
     isPolishInProgress = false
@@ -646,7 +686,16 @@ final class DictationController: ObservableObject {
     resetStreamingSession()
   }
 
+  /// Drop every trace of a streaming session, including work still in flight.
+  ///
+  /// The epoch bump and the queue cancellation are the same guarantee stated
+  /// twice: nothing this session started may write to the controller once the
+  /// session is gone. Cancelling a queue that already finished is a no-op, so
+  /// this is safe on the normal stop path as well as on teardown.
   private func resetStreamingSession() {
+    sessionEpoch &+= 1
+    deliveryQueue?.cancel()
+    hypothesisTask?.cancel()
     hypothesisTask = nil
     deliveryQueue = nil
     streamingTarget = nil

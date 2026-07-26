@@ -428,6 +428,56 @@ final class StreamingDeliveryQueueTests: XCTestCase {
     XCTAssertEqual(recorder.deltas, ["First.", " Last."])
   }
 
+  func testCancelStopsARefinementFromDeliveringIntoADeadSession() async {
+    let gate = RefinementGate()
+    let recorder = DeltaRecorder()
+    let queue = StreamingDeliveryQueue(
+      refine: { segment in
+        await gate.wait(for: segment.text)
+        return segment.text
+      },
+      deliver: { delta in recorder.deltas.append(delta) }
+    )
+
+    queue.enqueue("Still polishing.")
+    // The user let go and started a new session; this queue's target is gone.
+    queue.cancel()
+    await gate.release("Still polishing.")
+    await queue.finish()
+
+    XCTAssertEqual(recorder.deltas, [], "a cancelled session must not type into the next one's app")
+    XCTAssertEqual(queue.deliveredText, "")
+  }
+
+  func testCancelIsSafeAfterEverythingHasAlreadyBeenDelivered() async {
+    let recorder = DeltaRecorder()
+    let queue = StreamingDeliveryQueue(
+      refine: { $0.text },
+      deliver: { delta in recorder.deltas.append(delta) }
+    )
+
+    queue.enqueue("Done.")
+    await queue.finish()
+    queue.cancel()
+    await queue.finish()
+
+    XCTAssertEqual(recorder.deltas, ["Done."])
+  }
+
+  func testEnqueueAfterCancelIsIgnored() async {
+    let recorder = DeltaRecorder()
+    let queue = StreamingDeliveryQueue(
+      refine: { $0.text },
+      deliver: { delta in recorder.deltas.append(delta) }
+    )
+
+    queue.cancel()
+    queue.enqueue("Too late.")
+    await queue.finish()
+
+    XCTAssertEqual(recorder.deltas, [])
+  }
+
   func testFinishIsIdempotentAndSafeOnAnUntouchedQueue() async {
     let queue = StreamingDeliveryQueue(refine: { $0.text }, deliver: { _ in })
     await queue.finish()

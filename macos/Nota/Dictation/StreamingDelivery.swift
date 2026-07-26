@@ -365,6 +365,9 @@ final class StreamingDeliveryQueue {
   private var refinements: [Task<Void, Never>] = []
   private var queued: [String] = []
   private var pumpTask: Task<Void, Never>?
+  /// Set by `cancel()`. A refinement that had already passed its own
+  /// cancellation check must not be able to restart the pump behind it.
+  private var isCancelled = false
 
   init(refine: @escaping Refine, deliver: @escaping Deliver) {
     self.refine = refine
@@ -377,6 +380,7 @@ final class StreamingDeliveryQueue {
   /// Submit a completed segment. Returns immediately; refinement runs
   /// concurrently and delivery is serialized behind every earlier segment.
   func enqueue(_ segment: StreamingDelivery.Segment) {
+    guard !isCancelled else { return }
     let trimmed = segment.text.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return }
 
@@ -402,6 +406,22 @@ final class StreamingDeliveryQueue {
     enqueue(StreamingDelivery.Segment(text: sentence))
   }
 
+  /// Abandon this session's work.
+  ///
+  /// Refinement outlives the session that started it — a polish call can sit
+  /// for its whole timeout — and its completion writes controller state
+  /// (polish counters, last-result diagnostics, the auto-learn budget) that by
+  /// then belongs to the *next* session. Nothing here may deliver afterwards
+  /// either: the target it was captured for is gone.
+  func cancel() {
+    isCancelled = true
+    for task in refinements { task.cancel() }
+    refinements = []
+    pumpTask?.cancel()
+    pumpTask = nil
+    queued = []
+  }
+
   /// Wait until every submitted sentence has been refined and delivered.
   func finish() async {
     while true {
@@ -416,6 +436,7 @@ final class StreamingDeliveryQueue {
   // MARK: - Private
 
   private func complete(index: Int, text: String) {
+    guard !isCancelled else { return }
     let ready = buffer.complete(index: index, text: text)
     guard !ready.isEmpty else { return }
     queued.append(contentsOf: ready)
@@ -426,10 +447,10 @@ final class StreamingDeliveryQueue {
   /// `queued` observed empty in the same synchronous step that clears
   /// `pumpTask`, so a completion landing mid-drain can never be stranded.
   private func startPumpIfNeeded() {
-    guard pumpTask == nil else { return }
+    guard pumpTask == nil, !isCancelled else { return }
     pumpTask = Task { [weak self] in
       guard let self else { return }
-      while !self.queued.isEmpty {
+      while !self.isCancelled, !self.queued.isEmpty {
         let text = self.queued.removeFirst()
         let delta = StreamingDelivery.appendDelta(previous: self.deliveredText, next: text)
         guard !delta.isEmpty else { continue }
