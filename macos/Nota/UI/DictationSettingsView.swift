@@ -118,7 +118,7 @@ struct DictationSettingsView: View {
     } footer: {
       VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
         footerText("Applies a language model to improve the formatted text before it is inserted.")
-        footerText("Only the formatted text is sent to the provider — never audio or raw recognition data.")
+        footerText("Sent to the provider: the formatted text, your custom dictionary terms, and the name and window title of the app you were dictating into. Never audio or raw recognition data.")
         footerText("Local formatting always runs first and is the offline fallback if polish fails.")
       }
     }
