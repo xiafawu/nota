@@ -14,6 +14,7 @@ struct DictationSettingsView: View {
       triggerSection
       engineSection
       polishSection
+      streamingSection
       dictionarySection
       hudSection
     }
@@ -120,6 +121,25 @@ struct DictationSettingsView: View {
         footerText("Applies a language model to improve the formatted text before it is inserted.")
         footerText("Sent to the provider: the formatted text, your custom dictionary terms, and the name and window title of the app you were dictating into. Never audio or raw recognition data.")
         footerText("Local formatting always runs first and is the offline fallback if polish fails.")
+      }
+    }
+  }
+
+  // MARK: - Streaming delivery
+
+  private var streamingSection: some View {
+    Section {
+      Toggle("Insert While Speaking", isOn: $settings.streamingDelivery)
+    } header: {
+      Text("Streaming Delivery")
+    } footer: {
+      VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
+        footerText("Types each sentence into the app as soon as it is recognized, instead of inserting everything when you release the key.")
+        footerText("Text is only ever added, never rewritten — a sentence the polish model improves late still arrives in the order you said it. If polish fails for a sentence, its local formatting is inserted instead.")
+        footerText("Insertion stays in the app that had focus when you started speaking, even if you switch apps mid-sentence.")
+        if settings.engine != .apple {
+          footerText("Requires the Apple On-Device engine; other engines insert on release as usual.")
+        }
       }
     }
   }

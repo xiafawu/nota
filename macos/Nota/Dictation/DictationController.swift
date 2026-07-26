@@ -18,6 +18,9 @@ final class DictationController: ObservableObject {
   @Published private(set) var lastPolishWarning: String?
   /// True while a polish LLM call is in flight.
   @Published private(set) var isPolishInProgress: Bool = false
+  /// The recognizer's un-finalized tail during a streaming session — the rough
+  /// draft the HUD shows. Always empty when streaming delivery is off.
+  @Published private(set) var roughDraft: String = ""
   let permissions: PermissionsCoordinator
   let capture: MicCapture
 
@@ -55,6 +58,25 @@ final class DictationController: ObservableObject {
   /// Dictionary snapshot for this session, read once at start so mid-session
   /// edits can never change the vocabulary out from under the pipeline.
   private(set) var sessionDictionary: [DictionaryTerm] = []
+
+  // MARK: - Streaming delivery session state (plan 04)
+
+  /// True only once the recognizer has confirmed it will report finalized
+  /// segments mid-session AND the session has somewhere safe to append to.
+  private var isStreamingSession = false
+  /// Where this session's text goes, captured when the hotkey went down.
+  private var streamingTarget: FocusedTarget?
+  private var segmenter = SentenceSegmenter()
+  private var deliveryQueue: StreamingDeliveryQueue?
+  private var hypothesisTask: Task<Void, Never>?
+  /// Everything the recognizer has finalized this session, for diagnostics.
+  private var streamingRecognized = ""
+  /// Concurrent polish calls in flight; `isPolishInProgress` is this > 0.
+  private var polishInFlight = 0
+  /// Terms auto-learn may still store this session. Streaming polishes once
+  /// per sentence, so without a session budget one talkative minute could
+  /// write a dozen permanent dictionary entries.
+  private var autoLearnBudget = AutoLearn.maxCandidatesPerSession
 
   init(
     permissions: PermissionsCoordinator? = nil,
@@ -198,6 +220,17 @@ final class DictationController: ObservableObject {
 
     isSessionPending = true
 
+    // Streaming appends into whatever had focus when the hotkey went down, and
+    // keeps appending there for the whole session. Capturing at the end
+    // instead — as batch delivery does — would send a sentence the user
+    // started in one app into whatever they switched to while it was being
+    // polished. Text already typed into a document cannot be moved.
+    //
+    // Restricted to the Apple engine: AssemblyAI realtime reports whole turns
+    // rather than deltas, so its "finals" are not segments.
+    let wantsStreaming = settings.streamingDelivery && settings.engine == .apple
+    let startTarget = wantsStreaming ? FocusedTarget.capture() : nil
+
     // L1 context: frontmost app + focused window title, plus the custom
     // dictionary. Both are I/O — an AX round-trip into a frontmost app that may
     // not answer, and a file read — so they are started here and awaited only
@@ -218,6 +251,9 @@ final class DictationController: ObservableObject {
     lastRulesResult = nil
     lastPolishResult = nil
     lastPolishWarning = nil
+    polishInFlight = 0
+    autoLearnBudget = AutoLearn.maxCandidatesPerSession
+    resetStreamingSession()
 
     Task { [weak self] in
       let (snapshot, terms) = await contextLoad.value
@@ -228,20 +264,40 @@ final class DictationController: ObservableObject {
       let hints = ContextHints.build(terms: terms, harvested: snapshot.harvestIdentifiers())
 
       // Create a speech stream matching the current engine choice
-      let stream = makeDictationStream(for: self.settings.engine, contextualHints: hints)
+      let stream = makeDictationStream(
+        for: self.settings.engine,
+        contextualHints: hints,
+        streaming: wantsStreaming
+      )
       self.speechStream = stream
       self.logger.info("Using engine: \(self.settings.engine.label)")
       self.logger.debug(
         "Session context: app=\(snapshot.appName ?? "nil", privacy: .public) hints=\(hints.count)"
       )
 
+      // The delivery queue must exist before the hypothesis loop starts, or a
+      // segment arriving early would have nowhere to go.
+      if wantsStreaming, let startTarget {
+        if startTarget.isSecureInput {
+          // Batch delivery refuses secure fields with a notice at the end;
+          // streaming would have to refuse once per sentence instead.
+          self.logger.notice("Streaming delivery skipped — focused field is secure")
+        } else {
+          self.streamingTarget = startTarget
+          self.deliveryQueue = self.makeDeliveryQueue(
+            target: startTarget,
+            terms: terms,
+            snapshot: snapshot
+          )
+        }
+      }
+
       // Observe partial hypotheses for diagnostics
-      Task { [weak self] in
+      self.hypothesisTask = Task { [weak self] in
         guard let self else { return }
         for await hypothesis in stream.hypotheses {
           await MainActor.run {
-            self.lastHypothesis = hypothesis.text
-            self.logger.debug("Hypothesis isFinal=\(hypothesis.isFinal) text=\"\(hypothesis.text, privacy: .public)\"")
+            self.handleHypothesis(hypothesis)
           }
         }
       }
@@ -252,15 +308,26 @@ final class DictationController: ObservableObject {
       } catch {
         self.isSessionPending = false
         self.speechStream = nil
+        self.resetStreamingSession()
         self.state = .failed(message: error.localizedDescription)
         self.logger.error("SpeechStream.start failed: \(error.localizedDescription, privacy: .public)")
         return
+      }
+
+      // Only now is it known whether the engine that actually started can
+      // report segments — a SpeechAnalyzer session that fell back to
+      // SFSpeechRecognizer cannot, and this session reverts to batch delivery.
+      self.isStreamingSession = self.deliveryQueue != nil && stream.deliversSegments
+      if wantsStreaming, !self.isStreamingSession {
+        self.logger.info("Streaming delivery unavailable this session — using batch delivery")
+        self.resetStreamingSession()
       }
 
       // Speech is ready — now start microphone capture
       guard self.isSessionPending else {
         stream.cancel()
         self.speechStream = nil
+        self.resetStreamingSession()
         return
       }
       do {
@@ -273,6 +340,7 @@ final class DictationController: ObservableObject {
         stream.cancel()
         self.isSessionPending = false
         self.speechStream = nil
+        self.resetStreamingSession()
         self.state = .failed(message: error.localizedDescription)
         self.logger.error("microphone capture failed: \(error.localizedDescription, privacy: .public)")
       }
@@ -285,6 +353,7 @@ final class DictationController: ObservableObject {
       isSessionPending = false
       speechStream?.cancel()
       speechStream = nil
+      resetStreamingSession()
       state = .idle
       logger.info("Dictation session cancelled before speech started")
       return
@@ -295,6 +364,11 @@ final class DictationController: ObservableObject {
     lastCaptureDiagnostics = capture.diagnostics
 
     state = .finalizing
+
+    if isStreamingSession {
+      finalizeStreamingSession()
+      return
+    }
 
     Task {
       let finalText: String
@@ -384,6 +458,199 @@ final class DictationController: ObservableObject {
     }
   }
 
+  // MARK: - Hypothesis routing
+
+  /// One hypothesis from the recognizer.
+  ///
+  /// With streaming off this is exactly what it has always been: record the
+  /// text for diagnostics. Streaming adds two arrivals — a finalized *segment*
+  /// (a delta, feed it to the segmenter) and a volatile tail (replace the
+  /// rough draft) — and never rewrites what an earlier segment delivered.
+  private func handleHypothesis(_ hypothesis: Hypothesis) {
+    if hypothesis.isSegment {
+      streamingRecognized = StreamingDelivery.joined(streamingRecognized, hypothesis.text)
+      lastHypothesis = streamingRecognized
+      logger.debug("Segment finalized: \"\(hypothesis.text, privacy: .public)\"")
+      guard let deliveryQueue else { return }
+      for sentence in segmenter.append(hypothesis.text) {
+        deliveryQueue.enqueue(sentence)
+      }
+      return
+    }
+
+    if isStreamingSession {
+      roughDraft = hypothesis.text
+      return
+    }
+
+    lastHypothesis = hypothesis.text
+    logger.debug("Hypothesis isFinal=\(hypothesis.isFinal) text=\"\(hypothesis.text, privacy: .public)\"")
+  }
+
+  // MARK: - Streaming delivery
+
+  /// Build this session's delivery queue: the same L1 → L2 → L3 pipeline the
+  /// batch path runs, applied per sentence, with delivery serialized.
+  private func makeDeliveryQueue(
+    target: FocusedTarget,
+    terms: [DictionaryTerm],
+    snapshot: ContextSnapshot
+  ) -> StreamingDeliveryQueue {
+    let polishEnabled = settings.polishEnabled
+    let modelID = settings.polishModelID ?? ModelRegistry.defaultModel(for: .summary)
+    let vocabulary = ContextHints.promptVocabulary(
+      terms: terms,
+      harvested: snapshot.harvestIdentifiers()
+    )
+
+    let runPolish: @Sendable (String) async throws -> String = { text in
+      try await PolishClient.polish(
+        text,
+        modelID: modelID,
+        vocabulary: vocabulary,
+        context: snapshot
+      )
+    }
+    let polish: (@Sendable (String) async throws -> String)? = polishEnabled ? runPolish : nil
+
+    let refine: StreamingDeliveryQueue.Refine = { [weak self] sentence in
+      if polish != nil { await self?.beginPolish() }
+      let refined = await StreamingDelivery.refine(sentence, terms: terms, polish: polish)
+      if polish != nil { await self?.endPolish(refined) }
+      return refined.text
+    }
+
+    let deliver: StreamingDeliveryQueue.Deliver = { [weak self] delta in
+      guard let self else { return }
+      await self.injector.inject(delta, target: target, mode: .append)
+    }
+
+    return StreamingDeliveryQueue(refine: refine, deliver: deliver)
+  }
+
+  private func beginPolish() {
+    polishInFlight += 1
+    isPolishInProgress = true
+  }
+
+  private func endPolish(_ refined: StreamingDelivery.RefinedSentence) {
+    polishInFlight = max(0, polishInFlight - 1)
+    isPolishInProgress = polishInFlight > 0
+    guard !refined.offline.isEmpty else { return }
+
+    lastRulesResult = refined.offline
+    if let error = refined.polishError {
+      lastPolishResult = nil
+      lastPolishWarning = "Polish failed: \(error.localizedDescription). Using rules-only result."
+      logger.warning("Polish failed: \(error.localizedDescription, privacy: .public)")
+      return
+    }
+    lastPolishResult = refined.text
+    learnFromPolish(before: refined.offline, after: refined.text)
+  }
+
+  /// Stop path for a streaming session.
+  ///
+  /// Order matters: drain the recognizer, then make sure every segment it
+  /// emitted has reached the queue, and only then flush the un-finalized tail
+  /// — enqueued last so it is delivered last. Everything already typed into
+  /// the target stands regardless of what happens here.
+  private func finalizeStreamingSession() {
+    let stream = speechStream
+    let queue = deliveryQueue
+
+    Task {
+      var finishError: (any Error)?
+      do {
+        let recognized = try await stream?.finish() ?? ""
+        if !recognized.isEmpty {
+          self.lastHypothesis = recognized
+        }
+      } catch is CancellationError {
+        // Nothing to report: whatever was delivered stands.
+      } catch {
+        finishError = error
+        self.logger.error(
+          "SpeechStream.finish failed: \(error.localizedDescription, privacy: .public)"
+        )
+      }
+
+      await self.drainHypotheses(timeout: 2.0)
+      self.roughDraft = ""
+
+      if let queue {
+        if let tail = self.segmenter.flush() {
+          queue.enqueue(tail)
+        }
+        if queue.enqueuedCount > 0 {
+          self.state = .injecting
+        }
+        await queue.finish()
+        self.lastProcessedText = queue.deliveredText
+      }
+
+      self.finishStreamingSession(error: finishError)
+    }
+  }
+
+  /// Wait for the hypothesis loop to end, but never longer than `timeout`.
+  ///
+  /// The recognizer's results stream normally ends inside `finish()`, which
+  /// ends the hypothesis stream with it. When the analyzer stalls and the
+  /// stream's own watchdog returns instead, nothing ever ends it — so the loop
+  /// is cancelled rather than waited on forever.
+  private func drainHypotheses(timeout: TimeInterval) async {
+    guard let task = hypothesisTask else { return }
+    await withTaskGroup(of: Void.self) { group in
+      group.addTask { _ = await task.value }
+      group.addTask { try? await Task.sleep(nanoseconds: UInt64(timeout * 1_000_000_000)) }
+      _ = await group.next()
+      task.cancel()
+      group.cancelAll()
+    }
+    hypothesisTask = nil
+  }
+
+  private func finishStreamingSession(error: (any Error)?) {
+    isSessionPending = false
+    polishInFlight = 0
+    isPolishInProgress = false
+
+    let latency = Date().timeIntervalSince(holdBeganAt ?? Date())
+    lastLatency = latency
+    let delivered = deliveryQueue?.deliveredText ?? ""
+    logger.info(
+      "Streaming session: latency=\(String(format: "%.2f", latency))s text=\"\(delivered, privacy: .public)\""
+    )
+
+    if let error, delivered.isEmpty {
+      // Nothing reached the target, so the failure is the whole story.
+      state = .failed(message: error.localizedDescription)
+    } else if let notice = injector.lastSecureFieldNotice {
+      state = .failed(message: notice)
+      Task {
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        self.injector.clearSecureFieldNotice()
+        self.state = .idle
+      }
+    } else {
+      state = .idle
+    }
+
+    speechStream = nil
+    resetStreamingSession()
+  }
+
+  private func resetStreamingSession() {
+    hypothesisTask = nil
+    deliveryQueue = nil
+    streamingTarget = nil
+    isStreamingSession = false
+    segmenter = SentenceSegmenter()
+    streamingRecognized = ""
+    roughDraft = ""
+  }
+
   /// Record identifiers the polish model corrected, so the next session gets
   /// them at L1/L2 without a paid call.
   ///
@@ -393,8 +660,14 @@ final class DictationController: ObservableObject {
   /// dropped — learning is an optimization, never a reason to surface an error
   /// after the text has already been injected.
   private func learnFromPolish(before: String, after: String) {
-    let candidates = AutoLearn.candidates(before: before, after: after)
+    guard autoLearnBudget > 0 else { return }
+    // `AutoLearn.candidates` already caps one call at the session maximum; the
+    // budget makes that a *session* cap when streaming polishes per sentence.
+    let candidates = Array(
+      AutoLearn.candidates(before: before, after: after).prefix(autoLearnBudget)
+    )
     guard !candidates.isEmpty else { return }
+    autoLearnBudget -= candidates.count
     let logger = self.logger
     Task.detached(priority: .utility) {
       for candidate in candidates {
@@ -456,6 +729,7 @@ final class DictationController: ObservableObject {
     speechStream = nil
     capture.stop()
     lastCaptureDiagnostics = capture.diagnostics
+    resetStreamingSession()
   }
 
   deinit {

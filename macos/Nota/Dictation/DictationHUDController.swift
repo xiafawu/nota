@@ -97,7 +97,13 @@ final class DictationHUDController {
     announceTransition(from: lastShownState, to: hudState)
     lastShownState = hudState
 
-    panel.update(state: hudState)
+    // Kept out of `HUDState` on purpose: the auto-hide bookkeeping above
+    // compares states for equality, and a line that changes on every syllable
+    // would make `consumedState` never match.
+    panel.update(
+      state: hudState,
+      roughDraft: StreamingDelivery.roughDraftTail(controller.roughDraft)
+    )
 
     if controller.settings.showHUD, hudState != .hidden {
       // Position once per show — repositioning every tick teleports the pill

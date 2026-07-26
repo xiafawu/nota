@@ -14,7 +14,9 @@ final class DictationHUDPanel: NSPanel {
   private let hostingView: NSHostingView<DictationHUDContentView>
 
   init() {
-    hostingView = NSHostingView(rootView: DictationHUDContentView(state: .hidden))
+    hostingView = NSHostingView(
+      rootView: DictationHUDContentView(state: .hidden, roughDraft: nil)
+    )
 
     let rect = NSRect(x: 0, y: 0, width: 200, height: 48)
     super.init(
@@ -42,8 +44,14 @@ final class DictationHUDPanel: NSPanel {
 
   /// Update the HUD content and resize the panel to fit. Size changes are
   /// animated (center-anchored) so state swaps glide instead of snapping.
-  func update(state: HUDState) {
-    hostingView.rootView = DictationHUDContentView(state: state)
+  ///
+  /// `roughDraft` is the streaming rough-draft line; nil (the only value a
+  /// non-streaming session ever passes) renders the pill exactly as before.
+  /// It is deliberately not part of `HUDState`: the auto-hide bookkeeping
+  /// compares states for equality, and a line that changes on every syllable
+  /// would make every comparison miss.
+  func update(state: HUDState, roughDraft: String? = nil) {
+    hostingView.rootView = DictationHUDContentView(state: state, roughDraft: roughDraft)
     hostingView.setFrameSize(hostingView.fittingSize)
     let size = hostingView.fittingSize
 
@@ -195,6 +203,8 @@ final class DictationHUDPanel: NSPanel {
 
 struct DictationHUDContentView: View {
   let state: HUDState
+  /// Streaming rough draft (already clamped by `StreamingDelivery.roughDraftTail`).
+  var roughDraft: String?
 
   var body: some View {
     // Solid dark capsule (Wispr Flow / macOS dictation indicator grammar):
@@ -273,7 +283,7 @@ struct DictationHUDContentView: View {
     case .hidden:
       EmptyView()
     case .listening(let level):
-      ListeningView(level: level)
+      ListeningView(level: level, roughDraft: roughDraft)
     case .processing(let step):
       ProcessingView(step: step)
     case .success(let snippet):
@@ -313,6 +323,9 @@ private struct HUDPillShape: InsettableShape {
 
 private struct ListeningView: View {
   let level: Float
+  /// Streaming only: the recognizer's un-finalized tail. Nil renders the meter
+  /// alone, exactly as the pill looked before streaming delivery existed.
+  var roughDraft: String?
 
   private static let barCount = 9
   /// Center-weighted silhouette — Apple's voice UIs (Siri, Voice Memos)
@@ -321,6 +334,24 @@ private struct ListeningView: View {
   private static let profile: [CGFloat] = [0.35, 0.55, 0.8, 0.95, 1.0, 0.95, 0.8, 0.55, 0.35]
 
   var body: some View {
+    if let roughDraft, !roughDraft.isEmpty {
+      // Rough draft above the meter: it is the thing worth reading, and it
+      // must not push the meter sideways as it grows.
+      VStack(alignment: .leading, spacing: 6) {
+        Text(roughDraft)
+          .font(.caption)
+          .foregroundStyle(.secondary)
+          .lineLimit(1)
+          .truncationMode(.head)
+          .frame(maxWidth: 260, alignment: .leading)
+        meter
+      }
+    } else {
+      meter
+    }
+  }
+
+  private var meter: some View {
     HStack(spacing: 8) {
       Image(systemName: "mic.fill")
         .foregroundStyle(.red)
