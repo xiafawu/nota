@@ -66,15 +66,49 @@ struct DictionaryFile: Codable, Sendable {
 
   static let currentVersion = 1
   static let empty = DictionaryFile(version: currentVersion, terms: [])
+
+  init(version: Int, terms: [DictionaryTerm]) {
+    self.version = version
+    self.terms = terms
+  }
+
+  // Tolerant decode, matching `loadDictionary` in src/utils/dictionary.ts: a
+  // missing `version` and a single damaged entry each cost only themselves.
+  // All-or-nothing decoding would let one hand-edited typo silently disable
+  // L1, L2 and L3 in the app while `nota dictionary list` still printed every
+  // good term.
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    self.version = (try? container.decode(Int.self, forKey: .version))
+      ?? DictionaryFile.currentVersion
+    self.terms = ((try? container.decode([LenientTerm].self, forKey: .terms)) ?? [])
+      .compactMap(\.term)
+  }
+}
+
+/// One entry that decodes to nil instead of throwing, so a damaged entry cannot
+/// take the rest of the file down with it.
+private struct LenientTerm: Decodable {
+  let term: DictionaryTerm?
+
+  init(from decoder: Decoder) throws {
+    term = try? DictionaryTerm(from: decoder)
+  }
 }
 
 enum DictionaryStoreError: LocalizedError {
   case invalidTerm(String)
+  case unpreservableFile(String, String)
 
   var errorDescription: String? {
     switch self {
     case .invalidTerm(let term):
       return "Invalid dictionary term \"\(term)\": must be non-empty and free of tabs and newlines."
+    case .unpreservableFile(let path, let detail):
+      return """
+        Refusing to overwrite the unreadable dictionary at \(path): it could not \
+        be backed up first (\(detail)). Fix or remove that file, then try again.
+        """
     }
   }
 }
@@ -92,8 +126,28 @@ enum DictionaryStore {
     category: "dictation.dictionary"
   )
 
+  /// Serializes the read-modify-write in `add`/`remove`/`setStarred`.
+  ///
+  /// Two writers live in this process: the Settings pane and the auto-learn
+  /// task detached from `DictationController.learnFromPolish`. Without this,
+  /// both could read the same snapshot and the second `save` would drop the
+  /// first's term — atomic writes prevent a torn file, not a lost update.
+  /// A third writer, the `nota dictionary` CLI, is a separate process and
+  /// still outside this lock.
+  private static let mutationLock = NSLock()
+
+  /// `~/.nota/dictionary.json`, or whatever `NOTA_DICTIONARY_FILE` points at.
+  ///
+  /// The env override mirrors `defaultDictionaryPath()` in
+  /// src/utils/dictionary.ts. Without it the two halves of the same store
+  /// disagree about which file they mean the moment anyone redirects the CLI.
   static var defaultURL: URL {
-    FileManager.default.homeDirectoryForCurrentUser
+    let override = ProcessInfo.processInfo.environment["NOTA_DICTIONARY_FILE"]?
+      .trimmingCharacters(in: .whitespacesAndNewlines)
+    if let override, !override.isEmpty {
+      return URL(fileURLWithPath: (override as NSString).expandingTildeInPath)
+    }
+    return FileManager.default.homeDirectoryForCurrentUser
       .appendingPathComponent(".nota", isDirectory: true)
       .appendingPathComponent("dictionary.json")
   }
@@ -108,18 +162,74 @@ enum DictionaryStore {
 
   // MARK: Read
 
+  /// Read-only load. A missing or unreadable file is an empty dictionary and
+  /// leaves the file untouched — a read must never have side effects, least of
+  /// all on the hotkey path.
   static func load(from url: URL = defaultURL) -> [DictionaryTerm] {
     guard FileManager.default.fileExists(atPath: url.path) else { return [] }
     do {
-      let data = try Data(contentsOf: url)
-      let file = try JSONDecoder().decode(DictionaryFile.self, from: data)
-      return normalize(file.terms)
+      return try parse(at: url)
     } catch {
       logger.warning(
         "Ignoring unreadable dictionary at \(url.path, privacy: .public): \(error.localizedDescription, privacy: .public)"
       )
       return []
     }
+  }
+
+  private static func parse(at url: URL) throws -> [DictionaryTerm] {
+    let data = try Data(contentsOf: url)
+    let file = try JSONDecoder().decode(DictionaryFile.self, from: data)
+    return normalize(file.terms)
+  }
+
+  /// The read half of a mutation. Unlike `load`, a file that cannot be parsed
+  /// at all is copied aside to `dictionary.json.corrupt-<epoch>` first.
+  ///
+  /// Reading a corrupt file as empty is right for dictation — it must never
+  /// fail to start over a bad dictionary — but destructive for a write: the
+  /// `save` that follows replaces every term the decoder could not read with
+  /// whatever the caller is adding. Auto-learn reaches this path with no user
+  /// interaction at all, so the bytes have to survive somewhere before the
+  /// store starts over.
+  ///
+  /// Per-entry damage never gets here: `DictionaryFile` decodes tolerantly, so
+  /// only a wholly unparseable file (truncated, not JSON, not an object) is
+  /// quarantined.
+  static func loadForMutation(at url: URL = defaultURL) throws -> [DictionaryTerm] {
+    guard FileManager.default.fileExists(atPath: url.path) else { return [] }
+    do {
+      return try parse(at: url)
+    } catch {
+      try quarantine(url, reason: error.localizedDescription)
+      return []
+    }
+  }
+
+  /// Copy an unparseable dictionary to `<name>.corrupt-<epoch>` so the write
+  /// that follows cannot be the end of the user's terms.
+  ///
+  /// Copy, not move: if the write that follows fails, the original is still
+  /// exactly where it was. A backup that already exists is left alone — the
+  /// same second's second attempt would otherwise overwrite the first rescue.
+  private static func quarantine(_ url: URL, reason: String) throws {
+    let backup = url.deletingLastPathComponent()
+      .appendingPathComponent(
+        "\(url.lastPathComponent).corrupt-\(Int(Date().timeIntervalSince1970))"
+      )
+    do {
+      if !FileManager.default.fileExists(atPath: backup.path) {
+        try FileManager.default.copyItem(at: url, to: backup)
+      }
+    } catch {
+      throw DictionaryStoreError.unpreservableFile(url.path, error.localizedDescription)
+    }
+    logger.warning(
+      """
+      Unreadable dictionary at \(url.path, privacy: .public) (\(reason, privacy: .public)); \
+      backed it up to \(backup.lastPathComponent, privacy: .public) and started a new one.
+      """
+    )
   }
 
   // MARK: Write
@@ -167,21 +277,25 @@ enum DictionaryStore {
       source: source,
       starred: starred
     )
-    let merged = merging(incoming, into: load(from: url))
-    try save(merged, to: url)
-    // `merging` guarantees the key is present.
-    return merged.first { $0.key == incoming.key } ?? incoming
+    return try mutationLock.withLock {
+      let merged = merging(incoming, into: try loadForMutation(at: url))
+      try save(merged, to: url)
+      // `merging` guarantees the key is present.
+      return merged.first { $0.key == incoming.key } ?? incoming
+    }
   }
 
   /// Remove a term case-insensitively. Returns false when it was not present.
   @discardableResult
   static func remove(_ term: String, at url: URL = defaultURL) throws -> Bool {
     let key = term.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    let terms = load(from: url)
-    let remaining = terms.filter { $0.key != key }
-    guard remaining.count != terms.count else { return false }
-    try save(remaining, to: url)
-    return true
+    return try mutationLock.withLock {
+      let terms = try loadForMutation(at: url)
+      let remaining = terms.filter { $0.key != key }
+      guard remaining.count != terms.count else { return false }
+      try save(remaining, to: url)
+      return true
+    }
   }
 
   /// Star or unstar an existing term. Returns false when it was not present.
@@ -192,11 +306,13 @@ enum DictionaryStore {
     at url: URL = defaultURL
   ) throws -> Bool {
     let key = term.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-    var terms = load(from: url)
-    guard let index = terms.firstIndex(where: { $0.key == key }) else { return false }
-    terms[index].starred = starred
-    try save(terms, to: url)
-    return true
+    return try mutationLock.withLock {
+      var terms = try loadForMutation(at: url)
+      guard let index = terms.firstIndex(where: { $0.key == key }) else { return false }
+      terms[index].starred = starred
+      try save(terms, to: url)
+      return true
+    }
   }
 
   // MARK: Pure helpers

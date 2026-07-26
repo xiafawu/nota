@@ -2,6 +2,7 @@ import {
   defaultDictionaryPath,
   key,
   loadDictionary,
+  loadDictionaryForMutation,
   mergeTerm,
   unionForms,
   validateTerm,
@@ -37,7 +38,7 @@ export function dictionaryAdd(
   filePath = defaultDictionaryPath(),
 ): DictionaryTerm {
   const term = validateTerm(rawTerm);
-  const terms = loadDictionary(filePath);
+  const terms = loadDictionaryForMutation(filePath);
   const existed = terms.some((t) => key(t.term) === key(term));
 
   const incoming: DictionaryTerm = {
@@ -67,7 +68,7 @@ export function dictionaryRemove(
   filePath = defaultDictionaryPath(),
 ): void {
   const target = key(rawTerm);
-  const terms = loadDictionary(filePath);
+  const terms = loadDictionaryForMutation(filePath);
   const remaining = terms.filter((t) => key(t.term) !== target);
   if (remaining.length === terms.length) {
     throw new Error(`Term "${rawTerm.trim()}" is not in the dictionary.`);

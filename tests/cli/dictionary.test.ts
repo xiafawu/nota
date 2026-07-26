@@ -143,6 +143,44 @@ describe("dictionaryAdd", () => {
     dictionaryAdd("genc2rust", {}, file);
     expect(readdirSync(dir)).toEqual(["dictionary.json"]);
   });
+
+  it("backs a corrupt file up before starting a new one", () => {
+    // A truncated file still holds the user's terms; reading it as empty and
+    // writing the new term over it would destroy all of them.
+    const corrupt = '{"version":1,"terms":[{"term":"alpha"},{"term":"beta"}';
+    writeFileSync(file, corrupt);
+
+    dictionaryAdd("gamma", {}, file);
+
+    expect(loadDictionary(file).map((t) => t.term)).toEqual(["gamma"]);
+    const backups = readdirSync(dir).filter((name) =>
+      name.startsWith("dictionary.json.corrupt-"),
+    );
+    expect(backups).toHaveLength(1);
+    expect(readFileSync(path.join(dir, backups[0]), "utf-8")).toBe(corrupt);
+    expect(stderr.join("")).toMatch(/backed it up to/);
+  });
+
+  it("keeps the good entries when only one is damaged", () => {
+    // Same tolerance as the Swift decoder: one hand-edited typo must not read
+    // as an empty dictionary and get overwritten.
+    writeFileSync(
+      file,
+      JSON.stringify({
+        version: 1,
+        terms: [{ term: "alpha" }, { trem: "typo" }, "nope", { term: "beta" }],
+      }),
+    );
+
+    dictionaryAdd("gamma", {}, file);
+
+    expect(loadDictionary(file).map((t) => t.term)).toEqual([
+      "alpha",
+      "beta",
+      "gamma",
+    ]);
+    expect(readdirSync(dir)).toEqual(["dictionary.json"]);
+  });
 });
 
 describe("dictionaryRemove", () => {
@@ -162,6 +200,23 @@ describe("dictionaryRemove", () => {
       /not in the dictionary/,
     );
     expect(loadDictionary(file)).toHaveLength(1);
+  });
+
+  it("backs a corrupt file up and reports the term as absent", () => {
+    const corrupt = '{"version":1,"terms":[{"term":"alpha"}';
+    writeFileSync(file, corrupt);
+
+    expect(() => dictionaryRemove("alpha", file)).toThrow(
+      /is not in the dictionary/,
+    );
+    // Nothing was written, so the corrupt original is still in place next to
+    // its backup.
+    expect(readFileSync(file, "utf-8")).toBe(corrupt);
+    expect(
+      readdirSync(dir).filter((name) =>
+        name.startsWith("dictionary.json.corrupt-"),
+      ),
+    ).toHaveLength(1);
   });
 });
 

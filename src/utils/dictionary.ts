@@ -1,4 +1,5 @@
 import {
+  copyFileSync,
   existsSync,
   mkdirSync,
   readFileSync,
@@ -54,6 +55,40 @@ export function key(term: string): string {
   return term.trim().toLowerCase();
 }
 
+type ParseOutcome =
+  | { ok: true; terms: DictionaryTerm[] }
+  | { ok: false; reason: string };
+
+/** Read and shape-check the file. Shared by the two loaders below. */
+function parseDictionary(filePath: string): ParseOutcome {
+  let raw: string;
+  try {
+    raw = readFileSync(filePath, "utf-8");
+  } catch (error) {
+    return { ok: false, reason: `${filePath} could not be read (${error})` };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { ok: false, reason: `${filePath} is not valid JSON` };
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { ok: false, reason: `${filePath} is not a JSON object` };
+  }
+  const rawTerms = (parsed as Record<string, unknown>).terms;
+  // No `terms` key at all is an empty dictionary, not damage: there is nothing
+  // to lose by writing over it.
+  if (rawTerms === undefined) return { ok: true, terms: [] };
+  if (!Array.isArray(rawTerms)) {
+    return { ok: false, reason: `${filePath} has no valid "terms" array` };
+  }
+  return {
+    ok: true,
+    terms: normalizeTerms(rawTerms.map(coerceTerm).filter(isTerm)),
+  };
+}
+
 /**
  * Load the dictionary terms. A missing file is an empty dictionary; an
  * unparseable or wrongly-shaped file warns on stderr and reads as empty so
@@ -63,28 +98,55 @@ export function loadDictionary(
   filePath = defaultDictionaryPath(),
 ): DictionaryTerm[] {
   if (!existsSync(filePath)) return [];
-  let parsed: unknown;
+  const outcome = parseDictionary(filePath);
+  if (!outcome.ok) {
+    process.stderr.write(`warning: ${outcome.reason}; ignoring it.\n`);
+    return [];
+  }
+  return outcome.terms;
+}
+
+/**
+ * The read half of a mutation. Unlike `loadDictionary`, a file that cannot be
+ * parsed at all is copied aside to `<name>.corrupt-<epoch>` first: the
+ * `writeDictionary` that follows replaces every term the parser could not read
+ * with whatever is being added, so the bytes have to survive somewhere.
+ * Mirrors `DictionaryStore.loadForMutation` in Swift.
+ *
+ * Per-entry damage never reaches here — `parseDictionary` drops the bad entry
+ * and keeps the rest, exactly like the Swift decoder.
+ */
+export function loadDictionaryForMutation(
+  filePath = defaultDictionaryPath(),
+): DictionaryTerm[] {
+  if (!existsSync(filePath)) return [];
+  const outcome = parseDictionary(filePath);
+  if (!outcome.ok) {
+    quarantineDictionary(filePath, outcome.reason);
+    return [];
+  }
+  return outcome.terms;
+}
+
+/**
+ * Copy an unparseable dictionary to `<name>.corrupt-<epoch>` and warn.
+ *
+ * Copy, not rename: if the write that follows fails, the original is still
+ * where it was. An existing backup from the same second is left alone rather
+ * than overwritten with a second rescue attempt.
+ */
+function quarantineDictionary(filePath: string, reason: string): void {
+  const backup = `${filePath}.corrupt-${Math.floor(Date.now() / 1000)}`;
   try {
-    parsed = JSON.parse(readFileSync(filePath, "utf-8"));
-  } catch {
-    process.stderr.write(
-      `warning: ${filePath} is not valid JSON; ignoring it.\n`,
+    if (!existsSync(backup)) copyFileSync(filePath, backup);
+  } catch (error) {
+    throw new Error(
+      `Refusing to overwrite the dictionary: ${reason}, and it could not be backed up (${error}). Fix or remove that file, then try again.`,
     );
-    return [];
   }
-  const rawTerms =
-    parsed && typeof parsed === "object" && !Array.isArray(parsed)
-      ? (parsed as Record<string, unknown>).terms
-      : undefined;
-  if (!Array.isArray(rawTerms)) {
-    if (rawTerms !== undefined) {
-      process.stderr.write(
-        `warning: ${filePath} has no valid "terms" array; ignoring it.\n`,
-      );
-    }
-    return [];
-  }
-  return normalizeTerms(rawTerms.map(coerceTerm).filter(isTerm));
+  process.stderr.write(
+    `warning: ${reason}; backed it up to ${backup} and started a new one.\n`,
+  );
 }
 
 /**

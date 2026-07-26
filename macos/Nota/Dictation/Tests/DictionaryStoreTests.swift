@@ -14,6 +14,9 @@ final class DictionaryStoreTests: XCTestCase {
       .appendingPathComponent("nota-dictionary-tests-\(UUID().uuidString)", isDirectory: true)
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
     fileURL = directory.appendingPathComponent("dictionary.json")
+    // `defaultURL` reads this; a stray value in the test runner's environment
+    // would otherwise decide what `testDefaultURLPointsAtNotaHome` sees.
+    unsetenv("NOTA_DICTIONARY_FILE")
   }
 
   override func tearDownWithError() throws {
@@ -38,6 +41,16 @@ final class DictionaryStoreTests: XCTestCase {
       DictionaryStore.defaultURL.deletingLastPathComponent().lastPathComponent,
       ".nota"
     )
+  }
+
+  func testDefaultURLHonorsTheEnvironmentOverride() {
+    // Same override the CLI honours (`defaultDictionaryPath()` in
+    // src/utils/dictionary.ts) — pointing one side elsewhere has to move both.
+    let override = directory.appendingPathComponent("elsewhere.json").path
+    setenv("NOTA_DICTIONARY_FILE", override, 1)
+    defer { unsetenv("NOTA_DICTIONARY_FILE") }
+
+    XCTAssertEqual(DictionaryStore.defaultURL.path, override)
   }
 
   // MARK: - Round-trip
@@ -111,6 +124,31 @@ final class DictionaryStoreTests: XCTestCase {
         )
       ]
     )
+  }
+
+  func testOneDamagedEntryDoesNotDisableTheWholeDictionary() throws {
+    // The TS loader coerces per entry (tests/cli/dictionary.test.ts asserts it),
+    // so an all-or-nothing Swift decode would leave `nota dictionary list`
+    // printing terms that L1/L2/L3 had silently stopped seeing.
+    let json = """
+      { "version": 1, "terms": [
+        { "term": "genc2rust" },
+        { "trem": "typo" },
+        "nope",
+        { "term": "package.json" }
+      ] }
+      """
+    try Data(json.utf8).write(to: fileURL)
+
+    XCTAssertEqual(
+      DictionaryStore.load(from: fileURL).map(\.term),
+      ["genc2rust", "package.json"]
+    )
+  }
+
+  func testAFileWithoutAVersionStillLoads() throws {
+    try Data(#"{ "terms": [ { "term": "genc2rust" } ] }"#.utf8).write(to: fileURL)
+    XCTAssertEqual(DictionaryStore.load(from: fileURL).map(\.term), ["genc2rust"])
   }
 
   func testUnknownSourceDegradesToManual() throws {
@@ -187,6 +225,74 @@ final class DictionaryStoreTests: XCTestCase {
     XCTAssertFalse(DictionaryStore.load(from: fileURL)[0].starred)
 
     XCTAssertFalse(try DictionaryStore.setStarred(true, for: "absent", at: fileURL))
+  }
+
+  // MARK: - Never destroy what could not be read
+
+  func testMutatingAnUnreadableFileBacksItUpFirst() throws {
+    // A truncated file: the user's real terms are in there, just unparseable.
+    // Auto-learn reaches this path unattended, so the bytes must survive.
+    let corrupt = #"{ "version": 1, "terms": [ { "term": "alpha" }, { "term": "beta" }"#
+    try Data(corrupt.utf8).write(to: fileURL)
+
+    try DictionaryStore.add("learned", source: .learned, at: fileURL)
+
+    XCTAssertEqual(DictionaryStore.load(from: fileURL).map(\.term), ["learned"])
+    let backups = try FileManager.default
+      .contentsOfDirectory(atPath: directory.path)
+      .filter { $0.hasPrefix("dictionary.json.corrupt-") }
+    XCTAssertEqual(backups.count, 1)
+    XCTAssertEqual(
+      try String(contentsOf: directory.appendingPathComponent(backups[0]), encoding: .utf8),
+      corrupt
+    )
+  }
+
+  func testReadingAnUnreadableFileDegradesToEmptyAndTouchesNothing() throws {
+    // Dictation must not fail to start over a bad dictionary, and a read must
+    // not quarantine anything — only a write can lose data.
+    try Data("{not json".utf8).write(to: fileURL)
+
+    XCTAssertEqual(DictionaryStore.load(from: fileURL), [])
+    XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: directory.path), [
+      "dictionary.json"
+    ])
+  }
+
+  func testASecondMutationDoesNotOverwriteTheFirstBackup() throws {
+    let corrupt = #"{ "version": 1, "terms": [ { "term": "alpha" }"#
+    try Data(corrupt.utf8).write(to: fileURL)
+
+    // `remove` quarantines but writes nothing (the term is absent), so the
+    // corrupt file is still in place for the `add` that follows.
+    XCTAssertFalse(try DictionaryStore.remove("alpha", at: fileURL))
+    try DictionaryStore.add("learned", at: fileURL)
+
+    let backups = try FileManager.default
+      .contentsOfDirectory(atPath: directory.path)
+      .filter { $0.hasPrefix("dictionary.json.corrupt-") }
+    XCTAssertFalse(backups.isEmpty)
+    for backup in backups {
+      XCTAssertEqual(
+        try String(contentsOf: directory.appendingPathComponent(backup), encoding: .utf8),
+        corrupt
+      )
+    }
+  }
+
+  // MARK: - Concurrent writers
+
+  func testConcurrentAddsAllSurvive() {
+    // Two writers live in the app: the Settings pane and the detached
+    // auto-learn task. An unsynchronized load-modify-save loses whichever
+    // term the slower writer's snapshot predates.
+    let url = fileURL!
+    let count = 16
+    DispatchQueue.concurrentPerform(iterations: count) { index in
+      _ = try? DictionaryStore.add("term\(index)", at: url)
+    }
+
+    XCTAssertEqual(DictionaryStore.load(from: url).count, count)
   }
 
   // MARK: - Atomic write
