@@ -407,12 +407,17 @@ final class StubReviewPresenter: DictationReviewPresenting {
   private(set) var presented: [DictationReviewRequest] = []
   private(set) var dismissCount = 0
   var isPresenting = false
+  /// The zombie-WindowServer case the real presenter reports by returning
+  /// false: the card never reached the screen and no decision will ever come.
+  var canPresent = true
 
   var latest: DictationReviewRequest? { presented.last }
 
-  func present(_ request: DictationReviewRequest) {
+  @discardableResult
+  func present(_ request: DictationReviewRequest) -> Bool {
     presented.append(request)
-    isPresenting = true
+    isPresenting = canPresent
+    return canPresent
   }
 
   func dismiss() {
@@ -497,6 +502,24 @@ final class DictationReviewBranchTests: XCTestCase {
     XCTAssertTrue(controller.isReviewing)
     // The HUD's success snippet reads this field; nothing has been inserted.
     XCTAssertNil(controller.lastProcessedText)
+  }
+
+  /// The zombie-WindowServer case (`orderFrontRegardless` with
+  /// `windowNumber == 0`, as on 2026-07-27). The card is a review session's
+  /// only output and `isReviewing` suppresses the pill while one is open, so a
+  /// swallowed failure here is a session with no card, no pill and no error —
+  /// and the next hotkey press throws the text away.
+  func testAPanelThatNeverReachedTheScreenIsReportedInsteadOfWaitedOn() {
+    let controller = makeController(.review)
+    presenter.canPresent = false
+    controller.deliver("Ship the genc2rust patch.", offline: "Ship the patch.", latency: 1)
+
+    XCTAssertFalse(controller.isReviewing, "no decision can ever come — the pill must come back")
+    XCTAssertEqual(
+      controller.state,
+      .failed(message: "Nota could not show the review card. Restart Nota to fix it.")
+    )
+    XCTAssertNil(controller.lastProcessedText, "the mode still inserted nothing")
   }
 
   func testImmediateModeNeverOpensThePanel() {
@@ -599,7 +622,10 @@ final class DictationReviewPresenterTests: XCTestCase {
   func testTheCloseButtonDeliversItsDiscard() {
     let presenter = DictationReviewPresenter()
     var discards = 0
-    presenter.present(request(onDiscard: { discards += 1 }))
+    XCTAssertTrue(
+      presenter.present(request(onDiscard: { discards += 1 })),
+      "the card reached the screen"
+    )
     XCTAssertTrue(presenter.isPresenting)
 
     presenter.windowWillClose(Notification(name: NSWindow.willCloseNotification))
@@ -678,10 +704,11 @@ final class DictationReviewPanelTests: XCTestCase {
     let (panel, _) = makePanel()
     defer { panel.orderOut(nil) }
 
-    panel.present()
+    XCTAssertTrue(panel.present(), "present() reports whether the card reached the screen")
 
     XCTAssertTrue(panel.isVisible)
     XCTAssertTrue(panel.isKeyWindow)
+    XCTAssertTrue(panel.verifyWindowDevice(), "a card with no window device is a lost session")
   }
 
   func testThePanelIsNonactivatingAndStillTakesKey() {

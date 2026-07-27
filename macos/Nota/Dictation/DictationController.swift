@@ -862,7 +862,7 @@ final class DictationController: ObservableObject {
     state = .idle
 
     let id = pending.id
-    review.present(
+    let shown = review.present(
       DictationReviewRequest(
         text: polished,
         onApply: { [weak self] edited in
@@ -873,6 +873,18 @@ final class DictationController: ObservableObject {
         }
       )
     )
+    guard shown else {
+      // The card is a review session's only output, and `isReviewing`
+      // suppresses the pill while one is open — a panel that never reached the
+      // screen would leave the owner with no card, no pill and no error, and
+      // the next hotkey press would throw this text away silently. Nothing is
+      // inserted, which is the mode's promise; the failure is said out loud,
+      // and clearing `pendingReview` lets the pill say it.
+      pendingReview = nil
+      logger.error("Review panel could not be shown — the session's text was not inserted")
+      state = .failed(message: "Nota could not show the review card. Restart Nota to fix it.")
+      return
+    }
     logger.info("Review panel opened with \(polished.count) characters")
   }
 

@@ -112,7 +112,13 @@ struct DictationReviewRequest {
 @MainActor
 protocol DictationReviewPresenting: AnyObject {
   var isPresenting: Bool { get }
-  func present(_ request: DictationReviewRequest)
+  /// Put this review on screen. **Returns whether it actually got there** — a
+  /// card that never reached the screen is this mode's total output missing,
+  /// and the caller has to say so rather than wait for a decision that can
+  /// never come. A false return delivers no callback: the request is dropped
+  /// here.
+  @discardableResult
+  func present(_ request: DictationReviewRequest) -> Bool
   /// Take the panel down without applying. Idempotent, and safe to call from
   /// inside a decision callback.
   func dismiss()
@@ -135,7 +141,8 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
 
   var isPresenting: Bool { pending != nil }
 
-  func present(_ request: DictationReviewRequest) {
+  @discardableResult
+  func present(_ request: DictationReviewRequest) -> Bool {
     // A second present without a decision would strand the first session's
     // text: close it out as a discard so nothing of it is ever inserted.
     dismiss()
@@ -145,19 +152,20 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
     model.onApply = { [weak self] text in self?.finish(.apply(text)) }
     model.onDiscard = { [weak self] in self?.finish(.discard) }
 
-    let panel = self.panel ?? DictationReviewPanel(model: model)
-    self.panel = panel
-    panel.delegate = self
-    panel.sizeToFitContent()
-    panel.reposition()
-    installKeyMonitor(for: panel)
-
-    // No `NSApp.activate` anywhere on this path. The panel carries
-    // `.nonactivatingPanel`, so it takes key status — and typing — without Nota
-    // becoming the active app: the app being dictated into stays frontmost, the
-    // home window never surfaces behind the card, and there is no focus to hand
-    // back when the panel goes away.
-    panel.present()
+    guard show() else {
+      // Nothing is on screen and nothing ever will be for this request, so it
+      // is dropped here rather than left pending: a review waiting on a
+      // decision that cannot be made suppresses the pill for every session
+      // after it. The caller reports the failure — it is the only party that
+      // still holds the text.
+      pending = nil
+      close()
+      Self.logger.fault(
+        "Review panel has no window device after two attempts — the card cannot be shown."
+      )
+      return false
+    }
+    return true
   }
 
   func dismiss() {
@@ -166,6 +174,48 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
   }
 
   // MARK: - Private
+
+  /// Get the card on screen, with one bounded heal.
+  ///
+  /// `orderFrontRegardless()` fails silently: on 2026-07-27 it left the HUD
+  /// panel with `windowNumber == 0` for a day, rendering into a window that did
+  /// not exist. The pill has `HUDVisibilityMonitor` for exactly this, and the
+  /// review card needs it more — it is the only thing a review session puts on
+  /// screen, and `isReviewing` suppresses the pill while one is open, so a
+  /// zombie panel means the owner sees nothing at all. A dead server-side
+  /// window cannot be revived, only replaced, so the retry is a *fresh*
+  /// NSPanel; a second failure is the same failure and stops.
+  private func show() -> Bool {
+    if let existing = panel, configureAndShow(existing) { return true }
+
+    if let dead = panel {
+      Self.logger.error("Recreating the review panel after a failed show.")
+      // Delegate first: `close()` on a panel still holding this presenter as
+      // its delegate would deliver `windowWillClose` — a discard of the very
+      // review being opened.
+      dead.delegate = nil
+      dead.orderOut(nil)
+      dead.close()
+      panel = nil
+    }
+    return configureAndShow(DictationReviewPanel(model: model))
+  }
+
+  /// Size, place, wire and order one panel front.
+  ///
+  /// No `NSApp.activate` anywhere on this path. The panel carries
+  /// `.nonactivatingPanel`, so it takes key status — and typing — without Nota
+  /// becoming the active app: the app being dictated into stays frontmost, the
+  /// home window never surfaces behind the card, and there is no focus to hand
+  /// back when the panel goes away.
+  private func configureAndShow(_ panel: DictationReviewPanel) -> Bool {
+    self.panel = panel
+    panel.delegate = self
+    panel.sizeToFitContent()
+    panel.reposition()
+    installKeyMonitor(for: panel)
+    return panel.present()
+  }
 
   /// Land a decision, exactly once.
   ///
@@ -312,10 +362,38 @@ final class DictationReviewPanel: NSPanel {
   /// front from an *inactive* app is deferred until the app activates, and this
   /// app never will. Key status is then asked for separately, which is the part
   /// `.nonactivatingPanel` makes legal.
-  func present() {
+  ///
+  /// Returns whether the card actually reached the screen — see
+  /// `verifyWindowDevice`.
+  @discardableResult
+  func present() -> Bool {
     orderFrontRegardless()
+    guard verifyWindowDevice() else { return false }
     makeKey()
     focusEditor()
+    return true
+  }
+
+  /// True when AppKit gave this panel a server-side window.
+  ///
+  /// `orderFrontRegardless()` returns nothing and fails silently: on 2026-07-27
+  /// it left the HUD panel with `windowNumber == 0` for an entire day. The same
+  /// check guards the pill (`DictationHUDPanel.verifyWindowDevice`); here it
+  /// guards the one window a review session has, with nothing else on screen to
+  /// notice its absence.
+  @discardableResult
+  func verifyWindowDevice() -> Bool {
+    let number = windowNumber
+    guard number <= 0 else { return true }
+    Self.logger.error(
+      """
+      Review panel has no window device after orderFrontRegardless \
+      (windowNumber=\(number, privacy: .public), \
+      isVisible=\(self.isVisible, privacy: .public), \
+      frame=\(NSStringFromRect(self.frame), privacy: .public)) — zombie WindowServer state.
+      """
+    )
+    return false
   }
 
   /// Put the caret in the editor.
