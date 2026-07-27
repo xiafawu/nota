@@ -313,7 +313,81 @@ final class DictionaryStoreTests: XCTestCase {
     XCTAssertEqual(DictionaryStore.load(from: nested).map(\.term), ["Nota"])
   }
 
+  // MARK: - Bulk add
+
+  func testAddAllStoresEveryTerm() throws {
+    try DictionaryStore.addAll(
+      [
+        DictionaryTerm(term: "genc2rust", spokenForms: ["gency to rust"]),
+        DictionaryTerm(term: "pyannote"),
+        DictionaryTerm(term: "AssemblyAI")
+      ],
+      at: fileURL
+    )
+    XCTAssertEqual(
+      DictionaryStore.load(from: fileURL).map(\.term),
+      ["genc2rust", "pyannote", "AssemblyAI"]
+    )
+    XCTAssertEqual(DictionaryStore.load(from: fileURL).first?.spokenForms, ["gency to rust"])
+  }
+
+  func testAddAllMergesIntoWhatIsAlreadyThereAndReportsIt() throws {
+    try DictionaryStore.add("package.json", spokenForms: ["package json"], at: fileURL)
+    _ = try DictionaryStore.setStarred(true, for: "package.json", at: fileURL)
+
+    let known = try DictionaryStore.addAll(
+      [
+        DictionaryTerm(term: "package.json", spokenForms: ["package dot json"]),
+        DictionaryTerm(term: "pyannote")
+      ],
+      at: fileURL
+    )
+
+    XCTAssertEqual(known, ["package.json"])
+    let stored = DictionaryStore.load(from: fileURL)
+    XCTAssertEqual(stored.map(\.term), ["package.json", "pyannote"])
+    XCTAssertEqual(stored[0].spokenForms, ["package json", "package dot json"])
+    XCTAssertTrue(stored[0].starred, "a star already set is sticky")
+  }
+
+  func testAddAllHandlesAWholePastedList() throws {
+    try DictionaryStore.save([DictionaryTerm(term: "Nota")], to: fileURL)
+    try DictionaryStore.addAll((0..<500).map { DictionaryTerm(term: "term\($0)") }, at: fileURL)
+    XCTAssertEqual(DictionaryStore.load(from: fileURL).count, 501)
+  }
+
+  /// One write means all-or-nothing: `add` per term left the terms before the
+  /// bad one on disk and the rest of the list lost.
+  func testAddAllRefusesTheWholeListWhenATermIsInvalid() throws {
+    try DictionaryStore.add("Nota", at: fileURL)
+    XCTAssertThrowsError(
+      try DictionaryStore.addAll(
+        [DictionaryTerm(term: "genc2rust"), DictionaryTerm(term: "bad\tterm")],
+        at: fileURL
+      )
+    )
+    XCTAssertEqual(
+      DictionaryStore.load(from: fileURL).map(\.term),
+      ["Nota"],
+      "a refused import must not leave half of itself behind"
+    )
+  }
+
   // MARK: - Pure helpers
+
+  func testMergingManyIsTheSameAsFoldingOneAtATime() {
+    let existing = [DictionaryTerm(term: "Nota", spokenForms: ["note uh"], starred: true)]
+    let incoming = [
+      DictionaryTerm(term: "genc2rust", spokenForms: ["gency to rust"]),
+      DictionaryTerm(term: "NOTA", spokenForms: ["no tuh"]),
+      DictionaryTerm(term: "genc2rust", source: .learned)
+    ]
+    let folded = incoming.reduce(existing) { DictionaryStore.merging($1, into: $0) }
+    XCTAssertEqual(DictionaryStore.merging(incoming, into: existing), folded)
+    XCTAssertEqual(folded.map(\.term), ["NOTA", "genc2rust"])
+    XCTAssertEqual(folded[0].spokenForms, ["note uh", "no tuh"])
+    XCTAssertTrue(folded[0].starred)
+  }
 
   func testMergingAppendsAnUnrelatedTerm() {
     let existing = [DictionaryTerm(term: "Nota")]

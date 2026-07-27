@@ -180,7 +180,7 @@ enum DictionaryBulkImport {
   static let separator: Character = "|"
 
   static func parse(_ text: String) -> Parsed {
-    var terms: [DictionaryTerm] = []
+    var parsed: [DictionaryTerm] = []
     var skipped = 0
 
     for line in text.components(separatedBy: .newlines) {
@@ -197,15 +197,14 @@ enum DictionaryBulkImport {
 
       // `a || b` and a trailing separator both leave empty fields behind.
       let spokenForms = fields.dropFirst().filter { !$0.isEmpty }
-      // Dedupe inside the paste with the very rule the store uses, so a list
-      // containing a term twice behaves exactly like adding it twice.
-      terms = DictionaryStore.merging(
-        DictionaryTerm(term: term, spokenForms: Array(spokenForms)),
-        into: terms
-      )
+      parsed.append(DictionaryTerm(term: term, spokenForms: Array(spokenForms)))
     }
 
-    return Parsed(terms: terms, skippedLines: skipped)
+    // Dedupe inside the paste with the very rule the store uses, so a list
+    // containing a term twice behaves exactly like adding it twice. Merged in
+    // one pass at the end rather than per line: folding it rescans the terms
+    // collected so far for every line of the paste.
+    return Parsed(terms: DictionaryStore.merging(parsed, into: []), skippedLines: skipped)
   }
 }
 
@@ -272,24 +271,24 @@ final class DictionaryModel: ObservableObject {
     perform { _ = try DictionaryStore.setStarred(!term.starred, for: term.term) }
   }
 
-  /// Import a pasted list. Each entry goes through `DictionaryStore.add`, so
-  /// an already-known term is merged (spoken forms unioned, star and original
-  /// `addedAt` kept) rather than replaced.
+  /// Import a pasted list in one write. An already-known term is merged (spoken
+  /// forms unioned, star and original `addedAt` kept) rather than replaced.
+  ///
+  /// `DictionaryStore.addAll`, not `add` per term: this runs on the main actor,
+  /// and one full decode-and-rewrite of dictionary.json per pasted line would
+  /// freeze Settings, the HUD and the hotkey path for seconds on a list of any
+  /// size. It also makes the import all-or-nothing, so the counts below can
+  /// never describe a half-written file.
   func importBulk(_ text: String) {
     let parsed = DictionaryBulkImport.parse(text)
-    let known = Set(terms.map(\.key))
     var summary = DictionaryImportSummary(skipped: parsed.skippedLines)
     perform {
-      for term in parsed.terms {
-        try DictionaryStore.add(term.term, spokenForms: term.spokenForms)
-        if known.contains(term.key) {
-          summary.merged += 1
-        } else {
-          summary.added += 1
-        }
-      }
+      let known = try DictionaryStore.addAll(parsed.terms)
+      summary.merged = parsed.terms.filter { known.contains($0.key) }.count
+      summary.added = parsed.terms.count - summary.merged
     }
-    lastImportSummary = summary
+    // A failed import reports the error, not a tally of what it did not write.
+    lastImportSummary = lastError == nil ? summary : nil
   }
 
   private func perform(_ mutation: () throws -> Void) {

@@ -285,6 +285,34 @@ enum DictionaryStore {
     }
   }
 
+  /// Add many terms in a single read-modify-write.
+  ///
+  /// `add` in a loop is what a pasted word list would otherwise cost: one full
+  /// decode and one full atomic rewrite of dictionary.json per line, on the
+  /// main actor, for a feature whose whole purpose is pasting hundreds at once.
+  /// One write is also all-or-nothing — a failure halfway through no longer
+  /// leaves the file holding part of the list.
+  ///
+  /// Returns the keys that were already in the file, so a caller can report
+  /// added-vs-merged without a second read.
+  @discardableResult
+  static func addAll(_ incoming: [DictionaryTerm], at url: URL = defaultURL) throws -> Set<String> {
+    let cleaned: [DictionaryTerm] = try incoming.map { term in
+      DictionaryTerm(
+        term: try validated(term.term),
+        spokenForms: cleanedForms(term.spokenForms),
+        source: term.source,
+        starred: term.starred
+      )
+    }
+    return try mutationLock.withLock {
+      let existing = try loadForMutation(at: url)
+      let known = Set(existing.map(\.key))
+      try save(merging(cleaned, into: existing), to: url)
+      return known
+    }
+  }
+
   /// Remove a term case-insensitively. Returns false when it was not present.
   @discardableResult
   static func remove(_ term: String, at url: URL = defaultURL) throws -> Bool {
@@ -325,14 +353,47 @@ enum DictionaryStore {
       result.append(incoming)
       return result
     }
-    var existing = result[index]
+    result[index] = merged(incoming, into: result[index])
+    return result
+  }
+
+  /// Merge many terms under the same rule, in one pass.
+  ///
+  /// Identical in result to folding the single-term overload over the list, but
+  /// it keys the existing terms once instead of rescanning them per incoming
+  /// term — the difference between linear and quadratic on a pasted list.
+  static func merging(
+    _ incoming: [DictionaryTerm],
+    into terms: [DictionaryTerm]
+  ) -> [DictionaryTerm] {
+    var result = terms
+    var index = [String: Int](minimumCapacity: terms.count)
+    for (position, term) in result.enumerated() where index[term.key] == nil {
+      index[term.key] = position
+    }
+    for term in incoming {
+      if let position = index[term.key] {
+        result[position] = merged(term, into: result[position])
+      } else {
+        index[term.key] = result.count
+        result.append(term)
+      }
+    }
+    return result
+  }
+
+  /// The pairwise rule both `merging` overloads apply.
+  private static func merged(
+    _ incoming: DictionaryTerm,
+    into existingTerm: DictionaryTerm
+  ) -> DictionaryTerm {
+    var existing = existingTerm
     // Last spelling wins so `add "Nota"` can fix the casing of "nota".
     existing.term = incoming.term
     existing.spokenForms = unioned(existing.spokenForms, incoming.spokenForms)
     existing.starred = existing.starred || incoming.starred
     if incoming.source != .manual { existing.source = incoming.source }
-    result[index] = existing
-    return result
+    return existing
   }
 
   /// Drop blank terms and collapse case-insensitive duplicates (first wins),
