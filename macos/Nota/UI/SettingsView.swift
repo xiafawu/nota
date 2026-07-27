@@ -4,14 +4,15 @@ import SwiftUI
 /// content so sparse tabs don't float in blank space and dense tabs don't
 /// scroll inside a too-short window.
 private enum SettingsTab: Hashable {
-  case general, dictation, models, apiKeys, speakers
+  case general, dictation, dictionary, models, apiKeys, speakers
 
   static let windowWidth: CGFloat = 720
 
   var idealHeight: CGFloat {
     switch self {
     case .general: 220
-    case .dictation: 660
+    case .dictation: 600
+    case .dictionary: 560
     case .models: 400
     case .apiKeys: 400
     case .speakers: 520
@@ -44,9 +45,16 @@ struct SettingsView: View {
         .tabItem { Label("General", systemImage: "gearshape") }
         .tag(SettingsTab.general)
 
-      DictationSettingsView(controller: dictationController)
-        .tabItem { Label("Dictation", systemImage: "mic") }
-        .tag(SettingsTab.dictation)
+      DictationSettingsView(
+        controller: dictationController,
+        openDictionary: { selectedTab = .dictionary }
+      )
+      .tabItem { Label("Dictation", systemImage: "mic") }
+      .tag(SettingsTab.dictation)
+
+      DictionarySettingsView()
+        .tabItem { Label("Dictionary", systemImage: "character.book.closed") }
+        .tag(SettingsTab.dictionary)
 
       ModelsSettingsView()
         .tabItem { Label("Models", systemImage: "cpu") }

@@ -176,8 +176,12 @@ punctuation, and its letters-only folding must not be a common English word —
 otherwise one polish call's "email" → "e-mail" becomes permanent. At most three
 terms are learned per session.
 
-The Dictation tab of the Settings window (Cmd+,) lists, adds, removes, and stars
-terms against the same file the `nota dictionary` verbs use.
+The **Dictionary** tab of the Settings window (Cmd+,) lists, adds, removes, and
+stars terms against the same file the `nota dictionary` verbs use, and imports a
+pasted word list in bulk (one term per line, optionally `term | spoken form`;
+blank lines ignored, duplicates collapsed case-insensitively through
+`DictionaryStore.merging`). The Dictation tab keeps only a "Manage Dictionary…"
+button pointing at it. `macos/Nota/UI/DictionarySettingsView.swift`.
 
 ## Dictation Delivery
 
