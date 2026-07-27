@@ -118,31 +118,22 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
   private var panel: DictationReviewPanel?
   private let model = DictationReviewModel()
   private var keyMonitor: Any?
-  /// The decision handler for the panel currently on screen. Cleared the
-  /// instant a decision is taken, which is what makes Apply-then-close fire
-  /// exactly one callback.
-  private var decide: ((DictationReview.Decision) -> Void)?
+  /// The review currently on screen. Taken — not merely read — the instant a
+  /// decision lands, which is what makes Apply-then-close fire exactly one
+  /// callback.
+  private var pending: DictationReviewRequest?
 
-  var isPresenting: Bool { decide != nil }
+  var isPresenting: Bool { pending != nil }
 
   func present(_ request: DictationReviewRequest) {
     // A second present without a decision would strand the first session's
     // text: close it out as a discard so nothing of it is ever inserted.
     dismiss()
 
-    decide = { [weak self] decision in
-      guard let self, self.decide != nil else { return }
-      self.decide = nil
-      self.close()
-      switch decision {
-      case .apply(let text): request.onApply(text)
-      case .discard: request.onDiscard()
-      }
-    }
-
+    pending = request
     model.text = request.text
-    model.onApply = { [weak self] text in self?.decide?(.apply(text)) }
-    model.onDiscard = { [weak self] in self?.decide?(.discard) }
+    model.onApply = { [weak self] text in self?.finish(.apply(text)) }
+    model.onDiscard = { [weak self] in self?.finish(.discard) }
 
     let panel = self.panel ?? DictationReviewPanel(model: model)
     self.panel = panel
@@ -161,13 +152,29 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
   }
 
   func dismiss() {
-    guard let decide else { return close() }
-    self.decide = nil
-    close()
-    decide(.discard)
+    guard pending != nil else { return close() }
+    finish(.discard)
   }
 
   // MARK: - Private
+
+  /// Land a decision, exactly once.
+  ///
+  /// Every route out of the panel — the two buttons, the key monitor, the
+  /// title-bar close, a pre-empting `dismiss()` — comes through here, and the
+  /// request is *taken* before the callback runs. Clearing the handler in the
+  /// caller and invoking it afterwards is the shape that broke: the callback's
+  /// own "is a review still open?" guard then answered no and swallowed the
+  /// discard, leaving the controller believing the panel was still up.
+  private func finish(_ decision: DictationReview.Decision) {
+    guard let request = pending else { return }
+    pending = nil
+    close()
+    switch decision {
+    case .apply(let text): request.onApply(text)
+    case .discard: request.onDiscard()
+    }
+  }
 
   private func close() {
     removeKeyMonitor()
@@ -188,10 +195,10 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
       let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
       switch event.keyCode {
       case 53: // Escape
-        self.decide?(.discard)
+        self.finish(.discard)
         return nil
       case 36 where flags.contains(.command): // Return
-        self.decide?(.apply(self.model.text))
+        self.finish(.apply(self.model.text))
         return nil
       default:
         return event
@@ -209,10 +216,7 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
 extension DictationReviewPresenter: NSWindowDelegate {
   /// The close button is a discard, same as Escape.
   func windowWillClose(_ notification: Notification) {
-    guard let decide else { return }
-    self.decide = nil
-    removeKeyMonitor()
-    decide(.discard)
+    finish(.discard)
   }
 }
 

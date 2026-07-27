@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 
 @testable import Nota
@@ -326,5 +327,63 @@ final class ReviewHUDTests: XCTestCase {
       ),
       .success(snippet: "Ship it.")
     )
+  }
+}
+
+// MARK: - The presenter
+
+/// Every route out of the panel has to deliver exactly one decision. The close
+/// button is the one that had no test and no callback: the panel disappeared
+/// while the controller went on believing a review was open.
+@MainActor
+final class DictationReviewPresenterTests: XCTestCase {
+  private func request(
+    onApply: @escaping (String) -> Void = { text in XCTFail("unexpected apply: \(text)") },
+    onDiscard: @escaping () -> Void = { XCTFail("unexpected discard") }
+  ) -> DictationReviewRequest {
+    DictationReviewRequest(
+      text: "Ship the genc2rust patch.",
+      onApply: onApply,
+      onDiscard: onDiscard
+    )
+  }
+
+  func testTheCloseButtonDeliversItsDiscard() {
+    let presenter = DictationReviewPresenter()
+    var discards = 0
+    presenter.present(request(onDiscard: { discards += 1 }))
+    XCTAssertTrue(presenter.isPresenting)
+
+    presenter.windowWillClose(Notification(name: NSWindow.willCloseNotification))
+
+    XCTAssertEqual(discards, 1)
+    XCTAssertFalse(presenter.isPresenting)
+  }
+
+  func testDismissDeliversItsDiscardExactlyOnce() {
+    let presenter = DictationReviewPresenter()
+    var discards = 0
+    presenter.present(request(onDiscard: { discards += 1 }))
+
+    presenter.dismiss()
+    presenter.dismiss()
+    presenter.windowWillClose(Notification(name: NSWindow.willCloseNotification))
+
+    XCTAssertEqual(discards, 1)
+    XCTAssertFalse(presenter.isPresenting)
+  }
+
+  /// A second present without a decision would strand the first session's text.
+  func testPresentingAgainDiscardsWhatWasAlreadyUp() {
+    let presenter = DictationReviewPresenter()
+    var discards = 0
+    presenter.present(request(onDiscard: { discards += 1 }))
+    presenter.present(request(onDiscard: { discards += 1 }))
+
+    XCTAssertEqual(discards, 1, "only the superseded review is discarded")
+    XCTAssertTrue(presenter.isPresenting)
+
+    presenter.dismiss()
+    XCTAssertEqual(discards, 2)
   }
 }
