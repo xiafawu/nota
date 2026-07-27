@@ -21,6 +21,9 @@ final class DictationController: ObservableObject {
   /// The recognizer's un-finalized tail during a streaming session — the rough
   /// draft the HUD shows. Always empty when streaming delivery is off.
   @Published private(set) var roughDraft: String = ""
+  /// True while the review panel holds this session's text and nothing has
+  /// been inserted. The HUD reads it to stand down — the panel is the feedback.
+  @Published private(set) var isReviewing = false
   let permissions: PermissionsCoordinator
   let capture: MicCapture
 
@@ -65,7 +68,11 @@ final class DictationController: ObservableObject {
   /// segments mid-session AND the session has somewhere safe to append to.
   private var isStreamingSession = false
   /// Where this session's text goes, captured when the hotkey went down.
-  private var streamingTarget: FocusedTarget?
+  ///
+  /// Streaming needs it because delivery happens while the user may already be
+  /// somewhere else; review needs it because the panel takes key focus, so by
+  /// the time Apply is pressed the frontmost app is Nota itself.
+  private var sessionTarget: FocusedTarget?
   private var segmenter = SentenceSegmenter()
   private var deliveryQueue: StreamingDeliveryQueue?
   private var hypothesisTask: Task<Void, Never>?
@@ -87,14 +94,41 @@ final class DictationController: ObservableObject {
   /// speaks for the HUD.
   private var sessionEpoch: UInt64 = 0
 
+  // MARK: - Review delivery session state (plan 07)
+
+  /// A session's text sitting in the review panel, waiting on the owner.
+  ///
+  /// Held here rather than read back off the controller at Apply time: the
+  /// session that produced this text is over by then, and every field the
+  /// decision needs — its target pid, what it started from — belongs to that
+  /// session and not to whatever came after it.
+  private struct PendingReview {
+    let id = UUID()
+    /// What the panel was opened with (polished, or the offline text when
+    /// polish is off or failed).
+    let polished: String
+    /// The rules + dictionary result behind `polished`.
+    let offline: String
+    /// The target captured when the hotkey went down.
+    let target: FocusedTarget?
+    let latency: TimeInterval
+  }
+
+  private var pendingReview: PendingReview? {
+    didSet { isReviewing = pendingReview != nil }
+  }
+  private let review: any DictationReviewPresenting
+
   init(
     permissions: PermissionsCoordinator? = nil,
     capture: MicCapture? = nil,
-    hotkeyMonitor: HotkeyMonitor? = nil
+    hotkeyMonitor: HotkeyMonitor? = nil,
+    review: (any DictationReviewPresenting)? = nil
   ) {
     self.settings = DictationSettingsStore.load()
     self.permissions = permissions ?? PermissionsCoordinator()
     self.capture = capture ?? MicCapture()
+    self.review = review ?? DictationReviewPresenter()
     self.hotkeyMonitor = hotkeyMonitor ?? HotkeyMonitor(
       triggerKey: self.settings.trigger,
       activationMode: self.settings.activation
@@ -227,6 +261,10 @@ final class DictationController: ObservableObject {
       return
     }
 
+    // The panel belongs to the session that produced its text: a new one
+    // cancels it, and cancelling inserts nothing.
+    discardPendingReview()
+
     isSessionPending = true
 
     // Streaming appends into whatever had focus when the hotkey went down, and
@@ -237,7 +275,12 @@ final class DictationController: ObservableObject {
     //
     // Restricted to the Apple engine: AssemblyAI realtime reports whole turns
     // rather than deltas, so its "finals" are not segments.
-    let wantsStreaming = settings.streamingDelivery && settings.engine == .apple
+    let wantsStreaming = settings.deliveryMode == .streaming && settings.engine == .apple
+    // Review captures the same target for the opposite reason: nothing is
+    // delivered during the session at all, and by the time the owner applies,
+    // Nota's own panel is frontmost. Engine-independent — review runs on the
+    // batch path whatever recognized the audio.
+    let wantsSessionTarget = wantsStreaming || settings.deliveryMode == .review
 
     // L1 context: frontmost app + focused window title, the custom dictionary,
     // and — for a streaming session — the target this session's text belongs
@@ -250,7 +293,7 @@ final class DictationController: ObservableObject {
     // yield an empty hint list, which makes this a no-op.
     let contextLoad = Task.detached(priority: .userInitiated) {
       async let snapshot = ContextSnapshot.capture()
-      let target = wantsStreaming ? await FocusedTarget.capture() : nil
+      let target = wantsSessionTarget ? await FocusedTarget.capture() : nil
       let terms = DictionaryStore.load()
       return (await snapshot, terms, target)
     }
@@ -288,13 +331,15 @@ final class DictationController: ObservableObject {
 
       // The delivery queue must exist before the hypothesis loop starts, or a
       // segment arriving early would have nowhere to go.
+      if let startTarget {
+        self.sessionTarget = startTarget
+      }
       if wantsStreaming, let startTarget {
         if startTarget.isSecureInput {
           // Batch delivery refuses secure fields with a notice at the end;
           // streaming would have to refuse once per sentence instead.
           self.logger.notice("Streaming delivery skipped — focused field is secure")
         } else {
-          self.streamingTarget = startTarget
           self.deliveryQueue = self.makeDeliveryQueue(
             target: startTarget,
             terms: terms,
@@ -420,8 +465,6 @@ final class DictationController: ObservableObject {
         self.lastPolishResult = nil
         self.lastPolishWarning = nil
 
-        let textToInject: String
-
         if self.settings.polishEnabled, !rulesResult.isEmpty {
           let modelID = self.settings.polishModelID
             ?? ModelRegistry.defaultModel(for: .summary)
@@ -452,18 +495,21 @@ final class DictationController: ObservableObject {
               self.lastPolishWarning = "Polish failed: \(error.localizedDescription). Using rules-only result."
               self.logger.warning("Polish failed: \(error.localizedDescription, privacy: .public)")
               // Fall back to rules-only.
-              self.doInject(rulesResult, latency: latency)
+              self.deliver(rulesResult, offline: rulesResult, latency: latency)
               return
             }
 
-            self.doInject(polished, latency: latency)
+            self.deliver(polished, offline: rulesResult, latency: latency)
             // After injection, never before: learning is bookkeeping and must
-            // not delay the text reaching the user's cursor.
-            self.learnFromPolish(before: rulesResult, after: polished)
+            // not delay the text reaching the user's cursor. Review mode is the
+            // exception — its text is not the owner's yet, so `deliver` defers
+            // every diff to the moment they apply it.
+            if self.settings.deliveryMode != .review {
+              self.learnTerms(before: rulesResult, after: polished)
+            }
           }
         } else {
-          textToInject = rulesResult
-          self.doInject(textToInject, latency: latency)
+          self.deliver(rulesResult, offline: rulesResult, latency: latency)
         }
       }
     }
@@ -573,7 +619,7 @@ final class DictationController: ObservableObject {
       return
     }
     lastPolishResult = refined.text
-    learnFromPolish(before: refined.offline, after: refined.text)
+    learnTerms(before: refined.offline, after: refined.text)
   }
 
   /// Stop path for a streaming session.
@@ -698,22 +744,167 @@ final class DictationController: ObservableObject {
     hypothesisTask?.cancel()
     hypothesisTask = nil
     deliveryQueue = nil
-    streamingTarget = nil
+    sessionTarget = nil
     isStreamingSession = false
     segmenter = SentenceSegmenter()
     streamingRecognized = ""
     roughDraft = ""
   }
 
-  /// Record identifiers the polish model corrected, so the next session gets
-  /// them at L1/L2 without a paid call.
+  // MARK: - Review delivery (plan 07)
+
+  /// Hand this session's finished text to whichever delivery mode is on.
+  ///
+  /// `.immediate` and `.streaming` inject it; `.review` shows it to the owner
+  /// first and injects nothing until they say so.
+  private func deliver(_ text: String, offline: String, latency: TimeInterval) {
+    guard settings.deliveryMode == .review else {
+      doInject(text, latency: latency)
+      return
+    }
+    presentReview(polished: text, offline: offline, latency: latency)
+  }
+
+  /// Open the review panel on this session's text.
+  private func presentReview(polished: String, offline: String, latency: TimeInterval) {
+    isPolishInProgress = false
+    speechStream = nil
+    lastLatency = latency
+    // Nothing has reached the target app, so nothing may read as inserted —
+    // the HUD's success snippet comes from this field, and the last session's
+    // text is still in it.
+    lastProcessedText = nil
+
+    guard !polished.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+      // Nothing was recognized; an empty panel is worse than no panel.
+      state = .idle
+      return
+    }
+
+    // Anything still open belongs to an earlier session; close it out first so
+    // its decision cannot be attributed to this one.
+    discardPendingReview()
+
+    let pending = PendingReview(
+      polished: polished,
+      offline: offline,
+      target: sessionTarget,
+      latency: latency
+    )
+    pendingReview = pending
+    state = .idle
+
+    let id = pending.id
+    review.present(
+      DictationReviewRequest(
+        text: polished,
+        onApply: { [weak self] edited in
+          self?.finishReview(.apply(edited), id: id)
+        },
+        onDiscard: { [weak self] in
+          self?.finishReview(.discard, id: id)
+        }
+      )
+    )
+    logger.info("Review panel opened with \(polished.count) characters")
+  }
+
+  /// Close an open review as a discard. Nothing is inserted.
+  private func discardPendingReview() {
+    guard let pending = pendingReview else { return }
+    finishReview(.discard, id: pending.id)
+  }
+
+  /// Land a review decision.
+  ///
+  /// `id` is the same guard the streaming epoch is: the panel outlives the
+  /// session that filled it, and a decision that arrives after another session
+  /// has taken over must not be attributed to that session's text or target.
+  private func finishReview(_ decision: DictationReview.Decision, id: UUID) {
+    guard let pending = pendingReview, pending.id == id else { return }
+    pendingReview = nil
+    review.dismiss()
+
+    let resolution = DictationReview.resolve(
+      polished: pending.polished,
+      offline: pending.offline,
+      decision: decision
+    )
+
+    guard let text = resolution.injection else {
+      // The whole point of the mode: a discarded session inserts nothing and
+      // teaches nothing.
+      logger.info("Review discarded — nothing inserted")
+      state = .idle
+      return
+    }
+
+    injectReviewed(text, target: pending.target, latency: pending.latency)
+    // After injection, and only for text the owner actually applied.
+    for pair in resolution.learn {
+      learnTerms(before: pair.before, after: pair.after)
+    }
+  }
+
+  /// Inject reviewed text into the target captured at SESSION START.
+  ///
+  /// Not `FocusedTarget.capture()` as the immediate path does: the panel took
+  /// key focus, so the frontmost app is Nota by now and a fresh capture would
+  /// type the text into Nota's own window. The pid recorded when the hotkey
+  /// went down is the only thing still pointing at the app being dictated into.
+  private func injectReviewed(_ text: String, target: FocusedTarget?, latency: TimeInterval) {
+    guard let target else {
+      // Only reachable if the session-start capture never ran; injecting
+      // "wherever" is exactly the failure this mode exists to prevent.
+      logger.error("Reviewed text has no target — refusing to insert it anywhere")
+      state = .failed(message: "Nota lost track of the app you were dictating into.")
+      return
+    }
+
+    lastProcessedText = text
+    state = .injecting
+    logger.info(
+      "Review applied: latency=\(String(format: "%.2f", latency))s text=\"\(text, privacy: .public)\""
+    )
+
+    Task {
+      // Bring the target back to the front first. The events below are posted
+      // to its pid and would land either way, but leaving Nota frontmost after
+      // an insert strands the owner one Cmd-Tab from the text they just typed.
+      if let pid = target.processID,
+         let app = NSRunningApplication(processIdentifier: pid) {
+        app.activate()
+        try? await Task.sleep(nanoseconds: 80_000_000)
+      }
+      await self.injector.inject(text, target: target)
+      if let notice = self.injector.lastSecureFieldNotice {
+        self.state = .failed(message: notice)
+        try? await Task.sleep(nanoseconds: 2_000_000_000)
+        self.injector.clearSecureFieldNotice()
+        self.state = .idle
+      } else {
+        self.state = .idle
+      }
+    }
+  }
+
+  /// Record identifiers a diff corrected, so the next session gets them at
+  /// L1/L2 without a paid call.
+  ///
+  /// Two kinds of caller, one gate. Polish supplies `before` = the offline text
+  /// and `after` = its own output; the review panel supplies `before` = the
+  /// polished text and `after` = what the owner typed over it, which is why the
+  /// spoken form stored alongside the term is the exact wrong spelling that was
+  /// on screen. Neither is allowed past `AutoLearn`'s identifier-shaped filter
+  /// — a human edit is a reason to trust the correction, not a reason to let
+  /// prose into the dictionary.
   ///
   /// Runs off the main actor: `DictionaryStore` writes atomically, so a
   /// background write racing a foreground read can only ever produce the old or
   /// the new file, never a half-written one. A write failure is logged and
   /// dropped — learning is an optimization, never a reason to surface an error
   /// after the text has already been injected.
-  private func learnFromPolish(before: String, after: String) {
+  private func learnTerms(before: String, after: String) {
     guard autoLearnBudget > 0 else { return }
     // `AutoLearn.candidates` already caps one call at the session maximum; the
     // budget makes that a *session* cap when streaming polishes per sentence.

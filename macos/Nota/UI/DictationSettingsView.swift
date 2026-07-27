@@ -15,7 +15,7 @@ struct DictationSettingsView: View {
       triggerSection
       engineSection
       polishSection
-      streamingSection
+      deliverySection
       dictionarySection
       hudSection
     }
@@ -123,20 +123,37 @@ struct DictationSettingsView: View {
     }
   }
 
-  // MARK: - Streaming delivery
+  // MARK: - Delivery
 
-  private var streamingSection: some View {
+  /// One picker, three modes: they are mutually exclusive by construction, so
+  /// there is no combination of switches that asks for text to be typed while
+  /// speaking *and* held back for review.
+  private var deliverySection: some View {
     Section {
-      Toggle("Insert While Speaking", isOn: $settings.streamingDelivery)
+      Picker("Delivery", selection: $settings.deliveryMode) {
+        ForEach(DeliveryMode.allCases, id: \.self) { mode in
+          Text(mode.label).tag(mode)
+        }
+      }
+      .pickerStyle(.radioGroup)
+      .labelsHidden()
     } header: {
-      Text("Streaming Delivery")
+      Text("Delivery")
     } footer: {
       VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
-        footerText("Types each sentence into the app as soon as it is recognized, instead of inserting everything when you release the key.")
-        footerText("Text is only ever added, never rewritten — a sentence the polish model improves late still arrives in the order you said it. If polish fails for a sentence, its local formatting is inserted instead.")
-        footerText("Insertion stays in the app that had focus when you started speaking, even if you switch apps mid-sentence.")
-        if settings.engine != .apple {
-          footerText("Requires the Apple On-Device engine; other engines insert on release as usual.")
+        footerText(settings.deliveryMode.detail)
+        switch settings.deliveryMode {
+        case .immediate:
+          EmptyView()
+        case .streaming:
+          footerText("Text is only ever added, never rewritten — a sentence the polish model improves late still arrives in the order you said it. If polish fails for a sentence, its local formatting is inserted instead.")
+          footerText("Insertion stays in the app that had focus when you started speaking, even if you switch apps mid-sentence.")
+          if settings.engine != .apple {
+            footerText("Requires the Apple On-Device engine; other engines insert on release as usual.")
+          }
+        case .review:
+          footerText("The panel takes keyboard focus, so Nota comes to the front while you edit. Applying inserts into the app you were dictating into, not whatever is frontmost.")
+          footerText("Corrections you make are learned: the term you typed is remembered, and the wrong spelling you replaced becomes one of its spoken forms.")
         }
       }
     }

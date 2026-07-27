@@ -170,7 +170,10 @@ final class DictationHUDPanel: NSPanel {
   /// Frame (Cocoa coordinates) of the focused window of the frontmost app,
   /// via the Accessibility API. Returns nil when the frontmost app is Nota
   /// itself or the window can't be read (no AX grant, no focused window).
-  private static func frontmostAppFocusedWindowFrame() -> NSRect? {
+  ///
+  /// Shared with the review panel, which anchors to the same window so the
+  /// panel appears where the pill it replaces would have been.
+  static func frontmostAppFocusedWindowFrame() -> NSRect? {
     guard let app = NSWorkspace.shared.frontmostApplication,
           app.processIdentifier != ProcessInfo.processInfo.processIdentifier
     else { return nil }

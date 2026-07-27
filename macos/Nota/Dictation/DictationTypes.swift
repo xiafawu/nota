@@ -341,6 +341,41 @@ struct TriggerKey: Codable, Equatable, Sendable {
   static let fnGlobe = TriggerKey(kind: .fnGlobe, keyCode: nil)
 }
 
+/// How recognized text reaches the app being dictated into.
+///
+/// One enum rather than a set of flags: the three modes are mutually exclusive
+/// by construction, so no combination of toggles can ask for text to be typed
+/// while the user is still speaking *and* held back for review.
+enum DeliveryMode: String, Codable, CaseIterable, Sendable {
+  /// Everything is inserted once, on release. The default, and the only mode
+  /// that existed before streaming delivery.
+  case immediate
+  /// Sentences are typed into the target while the user is still speaking.
+  case streaming
+  /// The polished text is shown in an editable panel; nothing reaches the
+  /// target app until the owner applies it.
+  case review
+
+  var label: String {
+    switch self {
+    case .immediate: return "Insert on Release"
+    case .streaming: return "Insert While Speaking"
+    case .review: return "Review Before Inserting"
+    }
+  }
+
+  var detail: String {
+    switch self {
+    case .immediate:
+      return "Everything you said is inserted at once when you release the key."
+    case .streaming:
+      return "Types each sentence into the app as soon as it is recognized, instead of inserting everything when you release the key."
+    case .review:
+      return "Opens a small editable panel with the finished text. Nothing is inserted until you apply it (⌘↩); Escape discards it."
+    }
+  }
+}
+
 /// Swift-only dictation preferences persisted via UserDefaults.
 struct DictationSettings: Codable, Equatable, Sendable {
   var engine: EngineChoice = .apple
@@ -351,16 +386,23 @@ struct DictationSettings: Codable, Equatable, Sendable {
   var polishModelID: String? = nil
   /// Show floating HUD pill during dictation sessions.
   var showHUD: Bool = true
-  /// Type polished sentences into the target app while the user is still
-  /// speaking, instead of inserting everything at once on release.
+  /// How the finished text reaches the target app.
   ///
-  /// Default OFF, and deliberately so: streaming delivery appends text to a
-  /// live document and can never take it back. Every other code path behaves
-  /// exactly as it did before this flag existed while it is false.
-  var streamingDelivery: Bool = false
+  /// Default `.immediate`, and deliberately so: the other two modes each change
+  /// when text becomes irreversible — streaming appends to a live document
+  /// while the user is still talking, review holds everything back behind a
+  /// panel. Every code path behaves exactly as it did before this setting
+  /// existed while it is `.immediate`.
+  var deliveryMode: DeliveryMode = .immediate
 
   private enum CodingKeys: String, CodingKey {
     case engine, trigger, activation, polishEnabled, polishModelID, showHUD
+    case deliveryMode
+  }
+
+  /// The boolean this enum replaced. Read only to migrate a payload written
+  /// before `deliveryMode` existed; never written again.
+  private enum LegacyCodingKeys: String, CodingKey {
     case streamingDelivery
   }
 
@@ -386,7 +428,27 @@ struct DictationSettings: Codable, Equatable, Sendable {
       ?? defaults.polishEnabled
     polishModelID = try? container.decode(String.self, forKey: .polishModelID)
     showHUD = (try? container.decode(Bool.self, forKey: .showHUD)) ?? defaults.showHUD
-    streamingDelivery = (try? container.decode(Bool.self, forKey: .streamingDelivery))
-      ?? defaults.streamingDelivery
+    deliveryMode = Self.decodeDeliveryMode(from: decoder, container: container)
+      ?? defaults.deliveryMode
+  }
+
+  /// `deliveryMode`, or the `streamingDelivery` bool it replaced.
+  ///
+  /// The bool is only consulted when the enum is absent, so a settings payload
+  /// carrying both — one written by this version, then read by it again — is
+  /// never re-migrated. `streamingDelivery: true` was the only way to ask for
+  /// streaming, so it maps to `.streaming`; false and absent both mean the
+  /// insert-on-release behavior that is now `.immediate`.
+  private static func decodeDeliveryMode(
+    from decoder: Decoder,
+    container: KeyedDecodingContainer<CodingKeys>
+  ) -> DeliveryMode? {
+    if let mode = try? container.decode(DeliveryMode.self, forKey: .deliveryMode) {
+      return mode
+    }
+    guard let legacy = try? decoder.container(keyedBy: LegacyCodingKeys.self),
+          let streaming = try? legacy.decode(Bool.self, forKey: .streamingDelivery)
+    else { return nil }
+    return streaming ? .streaming : .immediate
   }
 }

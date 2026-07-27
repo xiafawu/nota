@@ -688,28 +688,28 @@ final class StreamingDeliveryToggleTests: XCTestCase {
     super.tearDown()
   }
 
-  func testStreamingDeliveryDefaultsOff() {
+  func testStreamingDeliveryIsNotTheDefault() {
     DictationSettingsStore.reset()
-    XCTAssertFalse(DictationSettings().streamingDelivery)
-    XCTAssertFalse(DictationSettingsStore.load().streamingDelivery)
+    XCTAssertEqual(DictationSettings().deliveryMode, .immediate)
+    XCTAssertEqual(DictationSettingsStore.load().deliveryMode, .immediate)
   }
 
   func testStreamingDeliveryRoundTrips() {
     var settings = DictationSettingsStore.load()
-    settings.streamingDelivery = true
+    settings.deliveryMode = .streaming
     DictationSettingsStore.save(settings)
-    XCTAssertTrue(DictationSettingsStore.load().streamingDelivery)
+    XCTAssertEqual(DictationSettingsStore.load().deliveryMode, .streaming)
 
-    settings.streamingDelivery = false
+    settings.deliveryMode = .immediate
     DictationSettingsStore.save(settings)
-    XCTAssertFalse(DictationSettingsStore.load().streamingDelivery)
+    XCTAssertEqual(DictationSettingsStore.load().deliveryMode, .immediate)
   }
 
   func testSettingsSavedBeforeThisFlagExistedKeepEveryOtherPreference() throws {
-    // A payload written by the previous build has no `streamingDelivery` key.
-    // The synthesized decoder throws on a missing key and `load()` turns any
-    // throw into factory defaults — so without a tolerant decode, shipping this
-    // toggle would silently reset the user's engine, trigger, polish and HUD
+    // A payload written by the previous build has no delivery key at all. The
+    // synthesized decoder throws on a missing key and `load()` turns any throw
+    // into factory defaults — so without a tolerant decode, shipping this
+    // setting would silently reset the user's engine, trigger, polish and HUD
     // preferences on first launch.
     let legacy = """
     {"engine":"assemblyAIRealtime","trigger":{"kind":"keyCode","keyCode":49},\
@@ -721,7 +721,10 @@ final class StreamingDeliveryToggleTests: XCTestCase {
       from: Data(legacy.utf8)
     )
 
-    XCTAssertFalse(settings.streamingDelivery, "a setting that did not exist must default off")
+    XCTAssertEqual(
+      settings.deliveryMode, .immediate,
+      "a setting that did not exist must default to insert-on-release"
+    )
     XCTAssertEqual(settings.engine, .assemblyAIRealtime)
     XCTAssertEqual(settings.trigger, TriggerKey(kind: .keyCode, keyCode: 49))
     XCTAssertEqual(settings.activation, .toggle)
@@ -738,7 +741,7 @@ final class StreamingDeliveryToggleTests: XCTestCase {
     settings.polishEnabled = true
     settings.polishModelID = "deepseek-v4-flash"
     settings.showHUD = false
-    settings.streamingDelivery = true
+    settings.deliveryMode = .streaming
 
     let data = try JSONEncoder().encode(settings)
     XCTAssertEqual(try JSONDecoder().decode(DictationSettings.self, from: data), settings)

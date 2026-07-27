@@ -230,7 +230,8 @@ final class DictationHUDController {
       lastPolishWarning: controller.lastPolishWarning,
       lastSecureFieldNotice: controller.lastSecureFieldNotice,
       lastProcessedText: controller.lastProcessedText,
-      rmsLevel: controller.capture.rmsLevel
+      rmsLevel: controller.capture.rmsLevel,
+      isReviewing: controller.isReviewing
     )
   }
 

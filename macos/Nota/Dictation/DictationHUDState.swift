@@ -41,14 +41,21 @@ extension HUDState {
   /// The controller fields stay set while idle; `DictationHUDController`
   /// marks the shown state consumed when its auto-hide fires so a later
   /// unrelated update cannot resurrect a stale notice.
+  ///
+  /// `isReviewing` outranks everything: while the review panel is open it is
+  /// the session's feedback, and a pill hanging under it would be a second
+  /// opinion about a session whose text has not been inserted at all.
   static func compute(
     controllerState: DictationState,
     isPolishInProgress: Bool,
     lastPolishWarning: String?,
     lastSecureFieldNotice: String?,
     lastProcessedText: String?,
-    rmsLevel: Float
+    rmsLevel: Float,
+    isReviewing: Bool = false
   ) -> HUDState {
+    guard !isReviewing else { return .hidden }
+
     switch controllerState {
     case .disabled:
       return .hidden

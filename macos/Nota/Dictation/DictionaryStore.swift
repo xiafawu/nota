@@ -129,7 +129,7 @@ enum DictionaryStore {
   /// Serializes the read-modify-write in `add`/`remove`/`setStarred`.
   ///
   /// Two writers live in this process: the Settings pane and the auto-learn
-  /// task detached from `DictationController.learnFromPolish`. Without this,
+  /// task detached from `DictationController.learnTerms`. Without this,
   /// both could read the same snapshot and the second `save` would drop the
   /// first's term — atomic writes prevent a torn file, not a lost update.
   /// A third writer, the `nota dictionary` CLI, is a separate process and
