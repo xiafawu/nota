@@ -170,6 +170,10 @@ final class DictationController: ObservableObject {
   }
   private let review: any DictationReviewPresenting
 
+  /// How long Apply waits after the card goes away before posting keystrokes,
+  /// so the target app's own window has key status back. See `injectReviewed`.
+  private static let reviewKeyRestoreSettleNs: UInt64 = 80_000_000
+
   init(
     permissions: PermissionsCoordinator? = nil,
     capture: MicCapture? = nil,
@@ -955,6 +959,18 @@ final class DictationController: ObservableObject {
     )
 
     Task {
+      // The card that just ordered out was the KEY window. It never activated
+      // Nota — the target app stayed frontmost the whole time — but its own
+      // window resigned key while the owner typed in the card, and AppKit hands
+      // key status back through the window server a beat after the panel goes.
+      // Two of the three injection strategies post keystrokes to the target's
+      // pid (`tryCGEventInject`, and the paste strategy's synthetic Cmd-V), and
+      // an app routes those to whatever its key window is at delivery time: post
+      // them into that gap and Chrome, Slack, VSCode and every terminal —
+      // exactly the apps `defaultOverrideTable` forces down those two paths —
+      // drop them, while `lastProcessedText` still claims a success. AX writing
+      // does not care; the wait is imperceptible and covers all three.
+      try? await Task.sleep(nanoseconds: Self.reviewKeyRestoreSettleNs)
       await self.injector.inject(text, target: target)
       if let notice = self.injector.lastSecureFieldNotice {
         self.state = .failed(message: notice)
