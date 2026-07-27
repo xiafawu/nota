@@ -78,6 +78,16 @@ enum DictationReview {
       return Resolution(injection: edited, learn: pairs)
     }
   }
+
+  /// Words in the editor, for the card's title row.
+  ///
+  /// Whitespace-separated runs, which is what a person counts when they glance
+  /// at a paragraph — not `enumerateSubstrings(.byWords)`, which splits
+  /// `genc2rust` and `package.json` into several and would make the count
+  /// disagree with the text in front of them.
+  static func wordCount(_ text: String) -> Int {
+    text.split(whereSeparator: { $0.isWhitespace }).count
+  }
 }
 
 // MARK: - Presenting
@@ -142,13 +152,12 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
     panel.reposition()
     installKeyMonitor(for: panel)
 
-    // Deliberate activation: the owner is about to type into this panel, and a
-    // panel in a background app cannot take key focus. Safe here in a way it
-    // would not be mid-session — the injection target was captured when the
-    // hotkey went down and is addressed by pid, not by what is frontmost now.
-    NSApp.activate(ignoringOtherApps: true)
-    panel.makeKeyAndOrderFront(nil)
-    model.focusEditor()
+    // No `NSApp.activate` anywhere on this path. The panel carries
+    // `.nonactivatingPanel`, so it takes key status — and typing — without Nota
+    // becoming the active app: the app being dictated into stays frontmost, the
+    // home window never surfaces behind the card, and there is no focus to hand
+    // back when the panel goes away.
+    panel.present()
   }
 
   func dismiss() {
@@ -160,12 +169,12 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
 
   /// Land a decision, exactly once.
   ///
-  /// Every route out of the panel — the two buttons, the key monitor, the
-  /// title-bar close, a pre-empting `dismiss()` — comes through here, and the
-  /// request is *taken* before the callback runs. Clearing the handler in the
-  /// caller and invoking it afterwards is the shape that broke: the callback's
-  /// own "is a review still open?" guard then answered no and swallowed the
-  /// discard, leaving the controller believing the panel was still up.
+  /// Every route out of the panel — the two buttons, the key monitor, a
+  /// programmatic close, a pre-empting `dismiss()` — comes through here, and
+  /// the request is *taken* before the callback runs. Clearing the handler in
+  /// the caller and invoking it afterwards is the shape that broke: the
+  /// callback's own "is a review still open?" guard then answered no and
+  /// swallowed the discard, leaving the controller believing the panel was up.
   private func finish(_ decision: DictationReview.Decision) {
     guard let request = pending else { return }
     pending = nil
@@ -214,7 +223,7 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
 }
 
 extension DictationReviewPresenter: NSWindowDelegate {
-  /// The close button is a discard, same as Escape.
+  /// A closed panel is a discard, same as Escape.
   func windowWillClose(_ notification: Notification) {
     finish(.discard)
   }
@@ -227,70 +236,158 @@ extension DictationReviewPresenter: NSWindowDelegate {
 @MainActor
 final class DictationReviewModel: ObservableObject {
   @Published var text: String = ""
-  /// Bumped to move focus into the editor when a panel opens; the editor keys
-  /// its `@FocusState` off it so a second review focuses the box again.
-  @Published fileprivate var focusToken: Int = 0
 
   var onApply: ((String) -> Void)?
   var onDiscard: (() -> Void)?
 
   func apply() { onApply?(text) }
   func discard() { onDiscard?() }
-  func focusEditor() { focusToken &+= 1 }
 }
 
 // MARK: - DictationReviewPanel
 
-/// Floating panel holding the finished text until the owner decides.
+/// Floating card holding the finished text until the owner decides.
 ///
-/// Unlike the HUD pill this panel MUST become key — the owner types in it — so
-/// it is titled (a borderless window answers `canBecomeKey` with false) and
-/// says so explicitly on top of that.
+/// Two constraints pull against each other here. The owner types in it, so it
+/// MUST become key — which a borderless window refuses by default. But Nota
+/// must NOT become the active app: activating raises the home window over
+/// whatever is being dictated into and puts the owner one Cmd-Tab away from
+/// their own text. `.nonactivatingPanel` plus an explicit `canBecomeKey` is the
+/// combination that gives keyboard input to a panel of an inactive app (the
+/// Spotlight pattern), and it is why nothing on the review path activates Nota.
 @MainActor
 final class DictationReviewPanel: NSPanel {
+  private static let logger = Logger(subsystem: "com.xiafawu.nota", category: "dictation.review")
+
   private let hostingView: NSHostingView<DictationReviewView>
 
+  /// The owner types in this panel. A borderless window answers false, so it is
+  /// said explicitly.
   override var canBecomeKey: Bool { true }
+  /// Key, never main: main belongs to a document window of the *active* app,
+  /// and the whole point of this panel is that Nota never becomes one.
+  override var canBecomeMain: Bool { false }
 
   init(model: DictationReviewModel) {
     hostingView = NSHostingView(rootView: DictationReviewView(model: model))
     super.init(
-      contentRect: NSRect(x: 0, y: 0, width: 520, height: 220),
-      styleMask: [.titled, .closable, .utilityWindow],
+      contentRect: NSRect(x: 0, y: 0, width: 560, height: 260),
+      // Borderless: the card draws its own chrome (see DictationReviewView), so
+      // a title bar would be a second, lighter frame around it.
+      // Nonactivating: keyboard input without making Nota the active app.
+      styleMask: [.borderless, .nonactivatingPanel],
       backing: .buffered,
       defer: false
     )
 
-    title = "Review Dictation"
+    isOpaque = false
+    backgroundColor = .clear
+    // No window shadow: a window shadow can only draw INSIDE the window frame,
+    // which turns it into a dark rectangle behind a rounded card. The card
+    // draws its own SwiftUI shadow inside `DictationReviewView.shadowMargin`,
+    // exactly as the HUD pill does.
+    hasShadow = false
     hidesOnDeactivate = false
     isReleasedWhenClosed = false
     isMovableByWindowBackground = true
     collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     isFloatingPanel = true
     // AFTER isFloatingPanel, which silently rewrites `level` when set (the same
-    // ordering trap documented on DictationHUDPanel). Floating is right here:
-    // the panel is key, so it does not need to outrank a fullscreen app the way
-    // the pill does.
-    level = .floating
+    // ordering trap documented on DictationHUDPanel). `.statusBar` rather than
+    // `.floating`: the panel no longer activates Nota, so nothing raises it over
+    // a fullscreen app the way activation used to — and a review panel that is
+    // invisible behind a fullscreen editor loses the session's text.
+    level = .statusBar
+    // AppKit-drawn pieces inside the hosting view (the editor's insertion point,
+    // selection, scrollers) follow the window's appearance, not the SwiftUI
+    // environment. The card is dark in both system themes; so is this.
+    appearance = NSAppearance(named: .darkAqua)
 
     contentView = hostingView
   }
 
-  /// Grow the panel to whatever the content wants, within reason.
+  /// Order the card onscreen and give it the keyboard, without activating Nota.
+  ///
+  /// `orderFrontRegardless()` rather than `makeKeyAndOrderFront(_:)`: ordering
+  /// front from an *inactive* app is deferred until the app activates, and this
+  /// app never will. Key status is then asked for separately, which is the part
+  /// `.nonactivatingPanel` makes legal.
+  func present() {
+    orderFrontRegardless()
+    makeKey()
+    focusEditor()
+  }
+
+  /// Put the caret in the editor.
+  ///
+  /// Explicit AppKit rather than SwiftUI `@FocusState`: this panel is
+  /// borderless and nonactivating, the two cases where SwiftUI's focus plumbing
+  /// is least reliable, and "the owner can type" is the whole reason the panel
+  /// exists. One authority, asserted by test.
+  ///
+  /// Returns whether the editor took first responder.
+  @discardableResult
+  func focusEditor() -> Bool {
+    guard let editor = Self.firstTextView(in: contentView) else {
+      // The hosting view had not built its text view yet — retry once on the
+      // next turn of the run loop rather than leaving the caret nowhere.
+      DispatchQueue.main.async { [weak self] in
+        guard let self, let editor = Self.firstTextView(in: self.contentView) else {
+          Self.logger.error("Review panel has no editor to focus")
+          return
+        }
+        _ = self.makeFirstResponder(editor)
+      }
+      return false
+    }
+    return makeFirstResponder(editor)
+  }
+
+  /// First `NSTextView` in the hosted content — SwiftUI's `TextEditor` is one.
+  /// Internal so a test can type into the same view the owner would.
+  static func firstTextView(in view: NSView?) -> NSTextView? {
+    guard let view else { return nil }
+    if let textView = view as? NSTextView { return textView }
+    for subview in view.subviews {
+      if let found = firstTextView(in: subview) { return found }
+    }
+    return nil
+  }
+
+  /// Grow the panel to whatever the card wants, within reason.
+  ///
+  /// The window is deliberately larger than the card: `shadowMargin` of
+  /// transparent padding on every side is where the card's shadow falls.
   func sizeToFitContent() {
     hostingView.layoutSubtreeIfNeeded()
     let fitting = hostingView.fittingSize
     guard fitting.width > 0, fitting.height > 0 else { return }
+    let chrome = DictationReviewView.shadowMargin * 2
     setContentSize(
-      NSSize(width: max(fitting.width, 520), height: min(max(fitting.height, 220), 520))
+      NSSize(
+        width: max(fitting.width, DictationReviewView.minCardWidth + chrome),
+        height: min(
+          max(fitting.height, DictationReviewView.minCardHeight + chrome),
+          DictationReviewView.maxCardHeight + chrome
+        )
+      )
     )
   }
 
-  /// Put the panel where the pill was: centered under the focused window of
-  /// the app being dictated into.
+  /// Put the card where the pill was: centered under the focused window of the
+  /// app being dictated into.
   ///
-  /// Read before Nota activates, so the frontmost app is still the target.
+  /// All math is done on the *card* rect (window frame inset by `shadowMargin`)
+  /// — treating the window frame as the card renders every gap 24pt too large.
+  /// The frontmost app is read here and is still the target: nothing on this
+  /// path activates Nota.
   func reposition() {
+    let margin = DictationReviewView.shadowMargin
+    let card = NSSize(
+      width: max(frame.width - margin * 2, 0),
+      height: max(frame.height - margin * 2, 0)
+    )
+
     let anchor = DictationHUDPanel.frontmostAppFocusedWindowFrame()
     guard let screen = anchor.flatMap({ rect in
       NSScreen.screens.first { $0.frame.intersects(rect) }
@@ -299,52 +396,163 @@ final class DictationReviewPanel: NSPanel {
       ?? NSScreen.main
     else { return }
     let visible = screen.visibleFrame
-    let size = frame.size
 
     let centerX = anchor?.midX ?? visible.midX
     // Under the anchor window if it fits, otherwise centered on the screen —
-    // a panel the owner has to type into must never hang off the bottom edge.
-    let preferredY = anchor.map { $0.minY - 12 - size.height }
-      ?? (visible.midY - size.height / 2)
+    // a card the owner has to type into must never hang off the bottom edge.
+    let preferredY = anchor.map { $0.minY - 12 - card.height }
+      ?? (visible.midY - card.height / 2)
 
-    let x = max(visible.minX + 8, min(centerX - size.width / 2, visible.maxX - size.width - 8))
-    let y = max(visible.minY + 8, min(preferredY, visible.maxY - size.height - 8))
-    setFrameOrigin(NSPoint(x: x, y: y))
+    let x = max(visible.minX + 8, min(centerX - card.width / 2, visible.maxX - card.width - 8))
+    let y = max(visible.minY + 8, min(preferredY, visible.maxY - card.height - 8))
+    setFrameOrigin(NSPoint(x: x - margin, y: y - margin))
   }
 }
 
 // MARK: - DictationReviewView
 
+/// The card: one dark translucent surface, a hairline, and no other chrome —
+/// the same grammar as the HUD pill it replaces on screen.
 struct DictationReviewView: View {
   @ObservedObject var model: DictationReviewModel
-  @FocusState private var isEditorFocused: Bool
+
+  /// Transparent margin around the card reserved for its drop shadow. A window
+  /// cannot draw outside its own frame, so the room has to come from inside.
+  static let shadowMargin: CGFloat = 24
+  static let minCardWidth: CGFloat = 520
+  static let minCardHeight: CGFloat = 200
+  static let maxCardHeight: CGFloat = 520
+
+  private static let cornerRadius: CGFloat = 16
 
   var body: some View {
     VStack(alignment: .leading, spacing: 12) {
-      TextEditor(text: $model.text)
-        .font(.body)
-        .scrollContentBackground(.hidden)
-        .padding(6)
-        .background(.quaternary.opacity(0.4), in: RoundedRectangle(cornerRadius: 8))
-        .frame(minWidth: 470, minHeight: 120)
-        .focused($isEditorFocused)
-
-      HStack(spacing: 12) {
-        Text("Nothing is inserted until you apply.")
-          .font(.caption)
-          .foregroundStyle(.secondary)
-        Spacer(minLength: 12)
-        Button("Discard") { model.discard() }
-          .keyboardShortcut(.cancelAction)
-        Button("Apply") { model.apply() }
-          .keyboardShortcut(.return, modifiers: .command)
-          .buttonStyle(.borderedProminent)
-          .disabled(model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
-      }
+      titleRow
+      editor
+      footer
     }
-    .padding(16)
-    .onAppear { isEditorFocused = true }
-    .onChange(of: model.focusToken) { _, _ in isEditorFocused = true }
+    .padding(18)
+    .frame(
+      minWidth: Self.minCardWidth,
+      minHeight: Self.minCardHeight,
+      alignment: .topLeading
+    )
+    // Same body as the pill: fixed dark translucent fill with light content
+    // forced on top of it, rather than an adaptive material that reads
+    // light-and-frosted over light content.
+    .background { cardShape.fill(Color(white: 0.09).opacity(0.9)) }
+    .overlay { cardShape.strokeBorder(Color.white.opacity(0.25), lineWidth: 0.5) }
+    .environment(\.colorScheme, .dark)
+    .shadow(color: .black.opacity(0.32), radius: 18, y: 6)
+    .padding(Self.shadowMargin)
+  }
+
+  private var cardShape: RoundedRectangle {
+    RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+  }
+
+  private var titleRow: some View {
+    HStack(alignment: .firstTextBaseline, spacing: 12) {
+      Text("Review dictation")
+        .font(.headline)
+      Spacer(minLength: 12)
+      Text(wordCountLabel)
+        .font(.caption)
+        .monospacedDigit()
+        .foregroundStyle(.secondary)
+    }
+  }
+
+  private var wordCountLabel: String {
+    let count = DictationReview.wordCount(model.text)
+    return count == 1 ? "1 word" : "\(count) words"
+  }
+
+  /// Borderless by construction: no bezel, no scroll background, no focus ring
+  /// box. The card is the container; a second box inside it is what made the
+  /// panel read as a bare text input.
+  private var editor: some View {
+    TextEditor(text: $model.text)
+      .font(.body)
+      .scrollContentBackground(.hidden)
+      .background(Color.clear)
+      .frame(minHeight: 116)
+  }
+
+  private var footer: some View {
+    HStack(spacing: 10) {
+      Text("Nothing is inserted until you apply.")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      Spacer(minLength: 12)
+
+      Button { model.discard() } label: {
+        ReviewButtonLabel(title: "Discard", shortcut: "esc")
+      }
+      .buttonStyle(ReviewButtonStyle(prominent: false))
+      .keyboardShortcut(.cancelAction)
+
+      Button { model.apply() } label: {
+        ReviewButtonLabel(title: "Apply", shortcut: "⌘↩")
+      }
+      .buttonStyle(ReviewButtonStyle(prominent: true))
+      .keyboardShortcut(.return, modifiers: .command)
+      .disabled(model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+    }
+  }
+}
+
+// MARK: - Card buttons
+
+/// Label + its shortcut, the way a command card states one.
+private struct ReviewButtonLabel: View {
+  let title: String
+  let shortcut: String
+
+  var body: some View {
+    HStack(spacing: 6) {
+      Text(title)
+        .font(.callout.weight(.medium))
+      Text(shortcut)
+        .font(.caption2)
+        .opacity(0.55)
+    }
+  }
+}
+
+/// Buttons drawn on the card rather than by AppKit.
+///
+/// `.bordered` / `.borderedProminent` render the system's own chrome, which is
+/// the light-mode-shaped thing the redesign is removing — the card commits to a
+/// single dark look in both system themes, so its controls have to as well.
+private struct ReviewButtonStyle: ButtonStyle {
+  let prominent: Bool
+  @Environment(\.isEnabled) private var isEnabled
+
+  private static let cornerRadius: CGFloat = 8
+
+  func makeBody(configuration: Configuration) -> some View {
+    let shape = RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
+    return configuration.label
+      .padding(.horizontal, 12)
+      .padding(.vertical, 6)
+      .foregroundStyle(prominent ? Color.white : Color.white.opacity(0.8))
+      .background { shape.fill(fill(pressed: configuration.isPressed)) }
+      .overlay {
+        shape.strokeBorder(
+          Color.white.opacity(prominent ? 0 : 0.18),
+          lineWidth: 0.5
+        )
+      }
+      .opacity(isEnabled ? 1 : 0.4)
+      .contentShape(shape)
+  }
+
+  private func fill(pressed: Bool) -> Color {
+    if prominent {
+      return Color.accentColor.opacity(pressed ? 0.7 : 1)
+    }
+    return Color.white.opacity(pressed ? 0.2 : 0.08)
   }
 }
 

@@ -225,6 +225,29 @@ final class DictationReviewResolutionTests: XCTestCase {
   }
 }
 
+// MARK: - Word count
+
+/// The card's title row states how much text is in the box. It counts what a
+/// person counts when they glance at a paragraph — whitespace-separated runs —
+/// so an identifier is one word, not the three its punctuation splits it into.
+final class ReviewWordCountTests: XCTestCase {
+  func testAnEmptyBoxHasNoWords() {
+    XCTAssertEqual(DictationReview.wordCount(""), 0)
+    XCTAssertEqual(DictationReview.wordCount("   \n "), 0)
+  }
+
+  func testWordsAreWhitespaceSeparatedRuns() {
+    XCTAssertEqual(DictationReview.wordCount("Ship the patch."), 3)
+    XCTAssertEqual(DictationReview.wordCount("  Ship   the\npatch. "), 3)
+  }
+
+  func testAnIdentifierCountsOnce() {
+    // `genc2rust` and `package.json` are one word each to the owner reading
+    // them, however a linguistic word enumerator would split them.
+    XCTAssertEqual(DictationReview.wordCount("Ship genc2rust and package.json"), 4)
+  }
+}
+
 // MARK: - Learning from an owner edit
 
 /// The end of the review path: an owner's correction reaches the dictionary as
@@ -610,5 +633,113 @@ final class DictationReviewPresenterTests: XCTestCase {
 
     presenter.dismiss()
     XCTAssertEqual(discards, 2)
+  }
+}
+
+// MARK: - The panel itself
+
+/// The panel takes typing without Nota ever becoming the active app. Both
+/// halves are load-bearing and they pull against each other: drop
+/// `.nonactivatingPanel` and opening a review raises Nota's home window over
+/// the app being dictated into; drop `canBecomeKey` and the owner is looking at
+/// an editor they cannot type in.
+@MainActor
+final class DictationReviewPanelTests: XCTestCase {
+  private func makePanel(_ text: String = "Ship the gency to rust patch.")
+    -> (DictationReviewPanel, DictationReviewModel) {
+    let model = DictationReviewModel()
+    model.text = text
+    let panel = DictationReviewPanel(model: model)
+    panel.sizeToFitContent()
+    return (panel, model)
+  }
+
+  /// Give AppKit/SwiftUI turns of the run loop until `condition` holds.
+  @discardableResult
+  private func spin(
+    until condition: () -> Bool,
+    timeout: TimeInterval = 2
+  ) -> Bool {
+    let deadline = Date().addingTimeInterval(timeout)
+    while !condition(), Date() < deadline {
+      RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.02))
+    }
+    return condition()
+  }
+
+  /// `present()` really does produce a visible key window under this mask.
+  ///
+  /// Honest about its reach: the test host is itself the active app, so this
+  /// proves the order-front + make-key wiring, not the "while another app is
+  /// frontmost" half — that one is the `.nonactivatingPanel` bit asserted below
+  /// plus the absence of any `NSApp.activate` on the path, and it is the piece
+  /// the owner smoke-tests live.
+  func testPresentingProducesAVisibleKeyPanel() {
+    let (panel, _) = makePanel()
+    defer { panel.orderOut(nil) }
+
+    panel.present()
+
+    XCTAssertTrue(panel.isVisible)
+    XCTAssertTrue(panel.isKeyWindow)
+  }
+
+  func testThePanelIsNonactivatingAndStillTakesKey() {
+    let (panel, _) = makePanel()
+    defer { panel.orderOut(nil) }
+
+    XCTAssertTrue(
+      panel.styleMask.contains(.nonactivatingPanel),
+      "without this, showing the panel activates Nota and surfaces the home window"
+    )
+    XCTAssertTrue(panel.canBecomeKey, "the owner types in this panel")
+    XCTAssertFalse(panel.canBecomeMain, "main belongs to the active app, which Nota never becomes")
+  }
+
+  /// The mask's whole risk: a nonactivating borderless panel that cannot route
+  /// keystrokes into its editor. This types into the same `NSTextView` the
+  /// owner would and checks the text came back through the binding.
+  func testTypingLandsInTheEditorUnderTheNonactivatingMask() throws {
+    let (panel, model) = makePanel("Ship the patch")
+    defer { panel.orderOut(nil) }
+    panel.present()
+
+    XCTAssertTrue(
+      spin(until: { DictationReviewPanel.firstTextView(in: panel.contentView) != nil }),
+      "the card never built an editor"
+    )
+    let editor = try XCTUnwrap(DictationReviewPanel.firstTextView(in: panel.contentView))
+    XCTAssertTrue(editor.isEditable)
+    XCTAssertTrue(panel.focusEditor(), "the editor refused first responder")
+    XCTAssertTrue(
+      panel.firstResponder === editor || panel.firstResponder === editor.window?.firstResponder,
+      "first responder is \(String(describing: panel.firstResponder))"
+    )
+
+    editor.insertText("!", replacementRange: NSRange(location: editor.string.count, length: 0))
+    XCTAssertTrue(
+      spin(until: { model.text.hasSuffix("!") }),
+      "typed text never reached the model: \(model.text)"
+    )
+  }
+
+  /// Word count and Apply/Discard read the same string the owner edits.
+  func testTheModelCarriesWhatTheOwnerTyped() throws {
+    let (panel, model) = makePanel("Ship the patch")
+    defer { panel.orderOut(nil) }
+    panel.present()
+
+    XCTAssertTrue(spin(until: { DictationReviewPanel.firstTextView(in: panel.contentView) != nil }))
+    let editor = try XCTUnwrap(DictationReviewPanel.firstTextView(in: panel.contentView))
+    editor.insertText(
+      " today",
+      replacementRange: NSRange(location: editor.string.count, length: 0)
+    )
+    XCTAssertTrue(spin(until: { DictationReview.wordCount(model.text) == 4 }))
+
+    var applied: String?
+    model.onApply = { applied = $0 }
+    model.apply()
+    XCTAssertEqual(applied, "Ship the patch today")
   }
 }
