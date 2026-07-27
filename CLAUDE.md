@@ -185,11 +185,14 @@ button pointing at it. `macos/Nota/UI/DictionarySettingsView.swift`.
 
 ## Dictation Delivery
 
-Two ways the recognized text reaches the app being dictated into, chosen by the
-**Streaming Delivery** toggle (`DictationSettings.streamingDelivery`, default
-**OFF**).
+Three ways the recognized text reaches the app being dictated into, chosen by
+the **Delivery** picker (`DictationSettings.deliveryMode`, default
+`.immediate`). One enum, not a set of flags — the modes are mutually exclusive
+by construction. A payload written before the enum existed migrates from the old
+`streamingDelivery` bool: stored `true` → `.streaming`, false/absent →
+`.immediate`.
 
-**Batch (default).** Everything is inserted once, on release: recognize →
+**Immediate (default).** Everything is inserted once, on release: recognize →
 `Formatter.applyRules` → `WordReplacements` → polish → one `TextInjector.inject`
 into the target captured at that moment. Unchanged by the streaming work.
 
@@ -287,6 +290,48 @@ mic → DictationTranscriber → volatile tail ───────────
 delta/rough-draft/refine helpers) so the invariants are tested without a
 recognizer, a network call, or an Accessibility target.
 
+**Review (opt-in).** Capture and polish run exactly as `.immediate`, but the
+finished text goes into a small floating panel instead of the target app:
+
+- **Nothing is inserted until Apply.** ⌘↩ applies, Escape discards, and a
+  discard injects nothing at all — not an empty write. The panel is the only
+  place in the pipeline where a session's text can be thrown away after it was
+  recognized.
+- **Apply inserts what is in the box**, not what the pipeline produced. A
+  trailing newline is a keystroke, not an edit; emptying the box and applying is
+  a discard by another name.
+- **The panel takes key focus** — the owner types in it — so it is a titled
+  utility panel and Nota activates when it opens. Safe here in a way it is not
+  mid-session: the injection target was captured when the hotkey went down, and
+  `TextInjector` addresses it by pid. A fresh `FocusedTarget.capture()` at Apply
+  time would find Nota's own panel.
+- **⌘↩ and Escape come from a local key monitor**, not `.keyboardShortcut`
+  alone: `NSTextView` answers `cancelOperation:` itself, so Escape would never
+  reach a SwiftUI cancel button. The monitor is scoped to the panel's own events
+  and removed with it.
+- **The pill stands down** while the panel is open (`isReviewing` short-circuits
+  `HUDState.compute`). Two pieces of feedback for one session is one too many,
+  and the pill's success snippet would claim an insertion that has not happened.
+- **Learning waits for the owner.** The immediate path learns from the polish
+  diff the moment it lands; review holds every diff until Apply, because until
+  then the text is the model's and not the owner's. Applying learns two pairs
+  through the same `AutoLearn` identifier gate: `polished → edited` (the owner
+  correcting the model — the replaced spelling is stored as a *spoken form*, so
+  L2 fixes it deterministically next session) and `offline → edited` (the diff
+  immediate mode learns unconditionally, now endorsed). Discarding learns
+  nothing. A human edit is a reason to trust a correction, never a reason to let
+  prose into the dictionary.
+- **A new session cancels an open review**, inserting nothing: the panel belongs
+  to the session that filled it, and its target pid is that session's. Decisions
+  are tagged with the review's id for the same reason the streaming path carries
+  an epoch — a decision that arrives late must not be attributed to whatever
+  session came after.
+
+`macos/Nota/Dictation/DictationReviewPanel.swift` holds `DictationReview` (the
+pure apply/discard core), the panel, and the presenter behind
+`DictationReviewPresenting` so the controller's review branch has no window
+server in it.
+
 ## Model Settings
 
 Non-secret model preferences live in `~/.nota/settings.json` (schema exactly
@@ -350,15 +395,23 @@ The cache feeds cost computation for usage tracking.
   payload that is not a keyed container at all still resets, which is what
   should happen to a corrupt one. Add new settings with a default value **and**
   a line in `init(from:)`.
-- Streaming dictation delivery is opt-in and default OFF, because it is the one
-  part of the pipeline that cannot be undone: text appended to a live document
-  while the user talks is already in their file. With the toggle off every path
-  behaves exactly as it did before it existed — no target is captured at session
-  start, no segment hypothesis is ever produced, and injection stays in
-  `.standard` mode. With it on, the guarantees are append-only delivery, spoken
-  order regardless of polish completion order, a target fixed at session start,
-  and per-sentence fallback to offline text when polish fails. See Dictation
-  Delivery.
+- Dictation delivery is one enum with three values
+  (`DictationSettings.deliveryMode`), not independent toggles: streaming and
+  review are contradictory answers to "when does this text become the user's
+  problem", and a flag pair would let both be on. `.immediate` is the default
+  and behaves exactly as the pipeline did before either mode existed — no target
+  captured at session start, no segment hypothesis produced, injection in
+  `.standard` mode.
+- Streaming dictation delivery is opt-in because it is the one part of the
+  pipeline that cannot be undone: text appended to a live document while the
+  user talks is already in their file. Its guarantees are append-only delivery,
+  spoken order regardless of polish completion order, a target fixed at session
+  start, and per-sentence fallback to offline text when polish fails.
+- Review delivery is the opposite trade: nothing at all reaches the target until
+  the owner applies it, which buys the highest-quality dictionary signal the app
+  can get (a human correcting the model) at the cost of a keystroke per session
+  and Nota taking focus. Its diffs are learned only on Apply — text the owner
+  discarded teaches nothing. See Dictation Delivery.
 - The dictation HUD pill has exactly **one animation authority**: the panel's
   window frame, animated by `NSAnimationContext` in `DictationHUDPanel.update`.
   SwiftUI used to animate the pill's own layout at the same time
