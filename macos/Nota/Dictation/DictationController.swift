@@ -757,7 +757,11 @@ final class DictationController: ObservableObject {
   ///
   /// `.immediate` and `.streaming` inject it; `.review` shows it to the owner
   /// first and injects nothing until they say so.
-  private func deliver(_ text: String, offline: String, latency: TimeInterval) {
+  ///
+  /// Internal rather than private: this is where the review branch begins, and
+  /// with a stub `DictationReviewPresenting` injected it is the only way to
+  /// exercise apply, discard, and a superseded review without a window server.
+  func deliver(_ text: String, offline: String, latency: TimeInterval) {
     guard settings.deliveryMode == .review else {
       doInject(text, latency: latency)
       return
@@ -835,6 +839,7 @@ final class DictationController: ObservableObject {
       // The whole point of the mode: a discarded session inserts nothing and
       // teaches nothing.
       logger.info("Review discarded — nothing inserted")
+      returnFocus(to: pending.target)
       state = .idle
       return
     }
@@ -853,10 +858,17 @@ final class DictationController: ObservableObject {
   /// type the text into Nota's own window. The pid recorded when the hotkey
   /// went down is the only thing still pointing at the app being dictated into.
   private func injectReviewed(_ text: String, target: FocusedTarget?, latency: TimeInterval) {
-    guard let target else {
-      // Only reachable if the session-start capture never ran; injecting
-      // "wherever" is exactly the failure this mode exists to prevent.
-      logger.error("Reviewed text has no target — refusing to insert it anywhere")
+    // A pid is required, and it may not be Nota's own. The panel takes key
+    // focus, so a session begun while it was up records Nota as its target;
+    // injecting then would type the text into whatever Nota window happens to
+    // be there. Injecting "wherever" is exactly the failure this mode exists to
+    // prevent, so it refuses instead — the text stays on the owner's screen in
+    // the panel they applied from.
+    guard let target,
+          let pid = target.processID,
+          pid != ProcessInfo.processInfo.processIdentifier
+    else {
+      logger.error("Reviewed text has no usable target — refusing to insert it anywhere")
       state = .failed(message: "Nota lost track of the app you were dictating into.")
       return
     }
@@ -868,12 +880,9 @@ final class DictationController: ObservableObject {
     )
 
     Task {
-      // Bring the target back to the front first. The events below are posted
-      // to its pid and would land either way, but leaving Nota frontmost after
-      // an insert strands the owner one Cmd-Tab from the text they just typed.
-      if let pid = target.processID,
-         let app = NSRunningApplication(processIdentifier: pid) {
-        app.activate()
+      // Bring the target back to the front before writing into it, and give the
+      // switch a moment to land.
+      if self.returnFocus(to: target) {
         try? await Task.sleep(nanoseconds: 80_000_000)
       }
       await self.injector.inject(text, target: target)
@@ -886,6 +895,26 @@ final class DictationController: ObservableObject {
         self.state = .idle
       }
     }
+  }
+
+  /// Put the app that was being dictated into back in front.
+  ///
+  /// The review panel is the only window Nota shows during dictation, and Nota
+  /// is an accessory app — so the moment the panel goes away on a discard, the
+  /// active app is one with nothing to type into and the owner's next keystroke
+  /// lands nowhere. Apply needs the same call for a second reason: its events
+  /// are posted to the target's pid and would arrive either way, but leaving
+  /// Nota frontmost strands the owner one Cmd-Tab from the text they just
+  /// inserted.
+  ///
+  /// Returns whether an app was actually activated.
+  @discardableResult
+  private func returnFocus(to target: FocusedTarget?) -> Bool {
+    guard let pid = target?.processID,
+          pid != ProcessInfo.processInfo.processIdentifier,
+          let app = NSRunningApplication(processIdentifier: pid)
+    else { return false }
+    return app.activate()
   }
 
   /// Record identifiers a diff corrected, so the next session gets them at

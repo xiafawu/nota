@@ -330,6 +330,146 @@ final class ReviewHUDTests: XCTestCase {
   }
 }
 
+// MARK: - The controller's review branch
+
+/// Stands in for the panel so the branch runs with no window server: which
+/// requests were presented, and how often it was told to take one down.
+@MainActor
+final class StubReviewPresenter: DictationReviewPresenting {
+  private(set) var presented: [DictationReviewRequest] = []
+  private(set) var dismissCount = 0
+  var isPresenting = false
+
+  var latest: DictationReviewRequest? { presented.last }
+
+  func present(_ request: DictationReviewRequest) {
+    presented.append(request)
+    isPresenting = true
+  }
+
+  func dismiss() {
+    dismissCount += 1
+    isPresenting = false
+  }
+}
+
+/// The half of review delivery that lives in the controller: what opens a
+/// panel, what `isReviewing` says while one is open, and which decisions are
+/// still allowed to land.
+@MainActor
+final class DictationReviewBranchTests: XCTestCase {
+  private var presenter: StubReviewPresenter!
+
+  override func setUp() {
+    super.setUp()
+    presenter = StubReviewPresenter()
+  }
+
+  override func tearDown() {
+    presenter = nil
+    DictationSettingsStore.reset()
+    super.tearDown()
+  }
+
+  /// The controller reads its settings once, at init, so the mode has to be in
+  /// the store before it is built.
+  private func makeController(_ mode: DeliveryMode) -> DictationController {
+    var settings = DictationSettings()
+    settings.deliveryMode = mode
+    DictationSettingsStore.save(settings)
+    return DictationController(review: presenter)
+  }
+
+  func testReviewModeOpensThePanelAndInsertsNothing() {
+    let controller = makeController(.review)
+    controller.deliver("Ship the genc2rust patch.", offline: "Ship the patch.", latency: 1)
+
+    XCTAssertEqual(presenter.presented.count, 1)
+    XCTAssertEqual(presenter.latest?.text, "Ship the genc2rust patch.")
+    XCTAssertTrue(controller.isReviewing)
+    // The HUD's success snippet reads this field; nothing has been inserted.
+    XCTAssertNil(controller.lastProcessedText)
+  }
+
+  func testImmediateModeNeverOpensThePanel() {
+    let controller = makeController(.immediate)
+    controller.deliver("Ship it.", offline: "Ship it.", latency: 1)
+
+    XCTAssertTrue(presenter.presented.isEmpty)
+    XCTAssertFalse(controller.isReviewing)
+  }
+
+  func testAnEmptyResultOpensNoPanel() {
+    let controller = makeController(.review)
+    controller.deliver("   \n ", offline: "", latency: 1)
+
+    XCTAssertTrue(presenter.presented.isEmpty)
+    XCTAssertFalse(controller.isReviewing)
+    XCTAssertEqual(controller.state, .idle)
+  }
+
+  /// The defect this covers is invisible from the panel: a discard that never
+  /// reaches the controller leaves `isReviewing` true forever, and the pill
+  /// stays suppressed for every session after it.
+  func testADiscardEndsTheReviewAndLetsTheHUDBack() {
+    let controller = makeController(.review)
+    controller.deliver("Ship the genc2rust patch.", offline: "Ship the patch.", latency: 1)
+    presenter.latest?.onDiscard()
+
+    XCTAssertFalse(controller.isReviewing)
+    XCTAssertEqual(controller.state, .idle)
+    XCTAssertNil(controller.lastProcessedText)
+    XCTAssertEqual(presenter.dismissCount, 1)
+  }
+
+  /// No session ran, so there is no captured target. Applying must refuse
+  /// rather than type the text into whatever is frontmost — which, right after
+  /// the panel closes, is Nota.
+  func testApplyWithNoCapturedTargetRefusesToInsertAnywhere() {
+    let controller = makeController(.review)
+    controller.deliver("Ship the genc2rust patch.", offline: "Ship the patch.", latency: 1)
+    presenter.latest?.onApply("Ship the genc2rust patch.")
+
+    XCTAssertFalse(controller.isReviewing)
+    XCTAssertEqual(
+      controller.state,
+      .failed(message: "Nota lost track of the app you were dictating into.")
+    )
+  }
+
+  func testANewReviewCancelsTheOpenOneWithoutInserting() {
+    let controller = makeController(.review)
+    controller.deliver("First session.", offline: "First session.", latency: 1)
+    let stale = presenter.latest
+    controller.deliver("Second session.", offline: "Second session.", latency: 1)
+
+    XCTAssertEqual(presenter.presented.count, 2)
+    XCTAssertEqual(presenter.presented.first?.text, "First session.")
+    XCTAssertEqual(presenter.latest?.text, "Second session.")
+    XCTAssertTrue(controller.isReviewing, "the second review is the open one")
+    XCTAssertNil(controller.lastProcessedText, "the cancelled session inserted nothing")
+    XCTAssertNotNil(stale)
+  }
+
+  /// The panel outlives the session that filled it, so a decision can arrive
+  /// after another session has taken over. It carries that review's id for the
+  /// same reason the streaming path carries an epoch.
+  func testADecisionFromASupersededReviewIsIgnored() {
+    let controller = makeController(.review)
+    controller.deliver("First session.", offline: "First session.", latency: 1)
+    let stale = presenter.latest
+    controller.deliver("Second session.", offline: "Second session.", latency: 1)
+
+    stale?.onApply("First session, edited.")
+    XCTAssertTrue(controller.isReviewing, "the second review is still waiting")
+    XCTAssertNil(controller.lastProcessedText)
+    XCTAssertEqual(controller.state, .idle, "a stale apply must not report a failure either")
+
+    stale?.onDiscard()
+    XCTAssertTrue(controller.isReviewing, "a stale discard must not close the live review")
+  }
+}
+
 // MARK: - The presenter
 
 /// Every route out of the panel has to deliver exactly one decision. The close
