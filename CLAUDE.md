@@ -274,10 +274,13 @@ mic → DictationTranscriber → volatile tail ───────────
   queue: a stale refinement is dropped rather than surfacing session A's polish
   failure on session B's HUD, and it can never deliver into a target that is
   no longer the one the user is looking at.
-- **HUD.** `ListeningView` gains a rough-draft line above the RMS bars showing
-  the last ~60 characters of the volatile tail. It is deliberately not part of
-  `HUDState`: the auto-hide bookkeeping compares states for equality, and a
-  line that changes on every syllable would make every comparison miss.
+- **HUD.** `ListeningView` shows a rough-draft block above a centered mic +
+  RMS meter, holding the last ~120 characters of the volatile tail across two
+  `.callout` lines. It is deliberately not part of `HUDState`: the auto-hide
+  bookkeeping compares states for equality, and a line that changes on every
+  syllable would make every comparison miss. The block is a **fixed** width
+  (`HUDPillMetrics.draftWidth`) whenever a draft exists, so the pill widens
+  exactly once — when text starts — instead of stepping wider word by word.
 
 `macos/Nota/Dictation/StreamingDelivery.swift` holds the pure core
 (`SentenceSegmenter`, `OrderedDeliveryBuffer`, `StreamingDeliveryQueue`,
@@ -356,6 +359,23 @@ The cache feeds cost computation for usage tracking.
   order regardless of polish completion order, a target fixed at session start,
   and per-sentence fallback to offline text when polish fails. See Dictation
   Delivery.
+- The dictation HUD pill has exactly **one animation authority**: the panel's
+  window frame, animated by `NSAnimationContext` in `DictationHUDPanel.update`.
+  SwiftUI used to animate the pill's own layout at the same time
+  (`.animation(value: state)`), and two curves driving one geometry is what read
+  as jitter. The only SwiftUI animation left is the meter's, inside a
+  fixed-height frame — nothing that can change a size. Two ordering traps live
+  in the same file: `isFloatingPanel = true` silently rewrites `level` to
+  `.floating` (below fullscreen apps), so `.statusBar` must be assigned *after*
+  it; and the pill hangs below the focused window, so a taller pill has to grow
+  downward or it walks up into that window.
+- `orderFrontRegardless()` can silently fail to produce a window (2026-07-27:
+  `windowNumber == 0` for a day, only a relaunch fixed it). Every HUD show is
+  therefore checked, and `HUDVisibilityMonitor` escalates: recreate the NSPanel
+  once, then a fault log plus one user notification per run. A watchdog re-checks
+  ~1s after the show that brought the pill onscreen. The monitor knows AppKit
+  only through an injected `windowNumberProvider`, so the escalation is tested
+  without a WindowServer.
 - ESM-only project (`"type": "module"` in package.json)
 
 ## External Requirements
