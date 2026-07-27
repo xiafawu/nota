@@ -252,4 +252,31 @@ final class HUDStateTests: XCTestCase {
       HUDState.success(snippet: "bye")
     )
   }
+
+  /// Everything the pill shows while listening comes from the level and the
+  /// rough draft — and the rough draft is handed to the panel BESIDE the state,
+  /// never inside it, so that equality comparisons keep working. Which means a
+  /// listening tick must depend on nothing but the level: the previous
+  /// session's warning and snippet are still set on the controller while the
+  /// next one runs, and a state that flickered between them and `.listening`
+  /// would restart the panel's frame animation mid-sentence.
+  func testListeningDependsOnNothingButTheLevel() {
+    let clean = HUDState.compute(
+      controllerState: .listening,
+      isPolishInProgress: false,
+      lastPolishWarning: nil,
+      lastSecureFieldNotice: nil,
+      lastProcessedText: nil,
+      rmsLevel: 0.42
+    )
+    let withStaleNotices = HUDState.compute(
+      controllerState: .listening,
+      isPolishInProgress: true,
+      lastPolishWarning: "Polish failed. Using rules-only result.",
+      lastSecureFieldNotice: "Refused secure field",
+      lastProcessedText: "text from the last session",
+      rmsLevel: 0.42
+    )
+    XCTAssertEqual(clean, withStaleNotices)
+  }
 }

@@ -33,17 +33,27 @@ final class DictationHUDPanel: NSPanel {
     // the capsule. The pill draws its own SwiftUI shadow inside a margin
     // (see DictationHUDContentView.shadowMargin).
     hasShadow = false
-    level = .statusBar
     collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
     ignoresMouseEvents = true
     hidesOnDeactivate = false
     isFloatingPanel = true
+    // AFTER isFloatingPanel: setting it to true silently rewrites `level` to
+    // .floating (CGWindowLayer 3), which sits BELOW a fullscreen app. Assigning
+    // the level first — as this did — looked correct and shipped a pill that
+    // vanished over fullscreen windows. .statusBar is CGWindowLayer 25.
+    level = .statusBar
 
     contentView = hostingView
   }
 
-  /// Update the HUD content and resize the panel to fit. Size changes are
-  /// animated (center-anchored) so state swaps glide instead of snapping.
+  /// Update the HUD content and resize the panel to fit.
+  ///
+  /// **The window frame is the one and only animation authority.** SwiftUI
+  /// used to animate the pill's own layout (`.animation(value: state)`) while
+  /// NSAnimationContext animated the window around it: two curves of different
+  /// duration driving the same geometry, which is what read as jitter. The
+  /// content view now animates nothing that can change its size, and every
+  /// size/position change goes through the group below.
   ///
   /// `roughDraft` is the streaming rough-draft line; nil (the only value a
   /// non-streaming session ever passes) renders the pill exactly as before.
@@ -52,23 +62,51 @@ final class DictationHUDPanel: NSPanel {
   /// would make every comparison miss.
   func update(state: HUDState, roughDraft: String? = nil) {
     hostingView.rootView = DictationHUDContentView(state: state, roughDraft: roughDraft)
-    hostingView.setFrameSize(hostingView.fittingSize)
+    hostingView.layoutSubtreeIfNeeded()
     let size = hostingView.fittingSize
 
     var frame = self.frame
-    guard size != frame.size else { return }
+    // Sub-point churn is not worth restarting a 0.26s animation for, and this
+    // runs on every throttled RMS tick.
+    guard abs(size.width - frame.width) > 0.5 || abs(size.height - frame.height) > 0.5
+    else { return }
+    // Grow DOWN, not up: the pill hangs 12pt below the focused window's bottom
+    // edge (see reposition()), so a bottom-anchored resize would push a
+    // two-line draft up into that window. Fixed maxY keeps the gap.
+    frame.origin.y -= size.height - frame.size.height
     frame.origin.x -= (size.width - frame.size.width) / 2
     frame.size = size
+    frame = Self.clamped(frame, to: screen ?? NSScreen.main)
 
     if isVisible {
       NSAnimationContext.runAnimationGroup { context in
-        context.duration = 0.22
-        context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+        context.duration = HUDPillMetrics.frameDuration
+        context.timingFunction = HUDPillMetrics.frameTiming
         animator().setFrame(frame, display: true)
       }
     } else {
       setFrame(frame, display: true)
     }
+  }
+
+  /// Shift (never resize) a window frame so the pill inside it stays 8pt
+  /// within the screen's visible area. Growing downward can otherwise walk the
+  /// pill off the bottom of the screen.
+  private static func clamped(_ frame: NSRect, to screen: NSScreen?) -> NSRect {
+    guard let screen else { return frame }
+    let margin = DictationHUDContentView.shadowMargin
+    let visible = screen.visibleFrame
+    let pill = frame.insetBy(dx: margin, dy: margin)
+    guard pill.width > 0, pill.height > 0,
+          pill.width + 16 <= visible.width, pill.height + 16 <= visible.height
+    else { return frame }
+
+    var result = frame
+    result.origin.x += max(0, visible.minX + 8 - pill.minX)
+    result.origin.x -= max(0, pill.maxX - (visible.maxX - 8))
+    result.origin.y += max(0, visible.minY + 8 - pill.minY)
+    result.origin.y -= max(0, pill.maxY - (visible.maxY - 8))
+    return result
   }
 
   /// Position the pill under the focused window of the frontmost app — the
@@ -199,6 +237,37 @@ final class DictationHUDPanel: NSPanel {
   }
 }
 
+// MARK: - Pill metrics
+
+/// Sizing and motion constants for the pill, kept out of the views so the
+/// width-stability guarantee can be asserted without laying anything out.
+enum HUDPillMetrics {
+  /// Width the rough-draft block claims as soon as there is any draft at all.
+  ///
+  /// The pill must widen exactly ONCE — when text starts — and then hold
+  /// still. Letting the block size to its text made it step wider on almost
+  /// every recognized word, which is the "awkward per-word width jumps" the
+  /// redesign is about. A fixed block trades a little empty space on the first
+  /// word for a pill that never moves sideways while the user is speaking.
+  static let draftWidth: CGFloat = 420
+
+  /// Lines of rough draft shown before head-truncation kicks in.
+  static let draftLineLimit = 2
+
+  static let frameDuration: TimeInterval = 0.26
+
+  /// Spring-ish settle: fast out, long decelerating tail, no overshoot (an
+  /// overshooting window frame reads as a glitch, not as bounce).
+  static let frameTiming = CAMediaTimingFunction(controlPoints: 0.22, 0.9, 0.24, 1)
+
+  /// Width the draft block occupies for `draft`, or nil when there is no draft
+  /// and the pill is meter-only. Constant by construction — see `draftWidth`.
+  static func draftBlockWidth(for draft: String?) -> CGFloat? {
+    guard let draft, !draft.isEmpty else { return nil }
+    return draftWidth
+  }
+}
+
 // MARK: - HUD Content View
 
 struct DictationHUDContentView: View {
@@ -236,8 +305,11 @@ struct DictationHUDContentView: View {
         // window cannot draw outside its own frame, and without this the
         // shadow renders as a dark rectangle filling the pill-sized window.
         .padding(Self.shadowMargin)
-        .contentTransition(.opacity)
-        .animation(.easeOut(duration: 0.18), value: state)
+      // Deliberately no `.animation(value: state)` here: it animated the
+      // pill's layout at the same time DictationHUDPanel.update animated the
+      // window around it, and the two curves fighting is the jitter. The
+      // window frame is the sole animation authority; the only SwiftUI
+      // animation left is the meter's, inside a fixed-height frame.
     }
   }
 
@@ -334,16 +406,20 @@ private struct ListeningView: View {
   private static let profile: [CGFloat] = [0.35, 0.55, 0.8, 0.95, 1.0, 0.95, 0.8, 0.55, 0.35]
 
   var body: some View {
-    if let roughDraft, !roughDraft.isEmpty {
-      // Rough draft above the meter: it is the thing worth reading, and it
-      // must not push the meter sideways as it grows.
-      VStack(alignment: .leading, spacing: 6) {
-        Text(roughDraft)
-          .font(.caption)
-          .foregroundStyle(.secondary)
-          .lineLimit(1)
+    if let width = HUDPillMetrics.draftBlockWidth(for: roughDraft) {
+      // Rough draft above a CENTERED mic+meter: the draft is the thing worth
+      // reading, and the meter is the thing that must not drift sideways.
+      VStack(alignment: .center, spacing: 8) {
+        Text(roughDraft ?? "")
+          .font(.callout)
+          .foregroundStyle(.primary.opacity(0.85))
+          .lineLimit(HUDPillMetrics.draftLineLimit)
           .truncationMode(.head)
-          .frame(maxWidth: 260, alignment: .leading)
+          .multilineTextAlignment(.leading)
+          // Fixed width, so the pill's width is decided by the presence of a
+          // draft and never by its length; only the height moves after that.
+          .frame(width: width, alignment: .leading)
+          .fixedSize(horizontal: false, vertical: true)
         meter
       }
     } else {

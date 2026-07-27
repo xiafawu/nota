@@ -37,7 +37,12 @@ enum StreamingDelivery {
   }
 
   /// Characters of the volatile tail the HUD shows as a rough draft.
-  static let roughDraftLimit = 60
+  ///
+  /// Sized to the pill's draft block — two `.callout` lines across
+  /// `HUDPillMetrics.draftWidth` — so the clamp lands just past what the block
+  /// can show rather than well inside it. Overshooting is safe: the block
+  /// head-truncates, and the newest words are the ones that survive either cut.
+  static let roughDraftLimit = 120
 
   /// The tail of the in-flight recognition, clamped for the HUD line.
   ///
