@@ -453,12 +453,23 @@ final class DictationReviewBranchTests: XCTestCase {
     return DictationController(review: presenter)
   }
 
+  /// A target the session wiring can actually build a delivery queue against —
+  /// without one, "no queue was built" says nothing about the mode.
+  private var target: FocusedTarget {
+    FocusedTarget(
+      bundleID: "com.apple.TextEdit",
+      isSecureInput: false,
+      accessibilityElement: nil,
+      processID: 4242
+    )
+  }
+
   /// The live recognizer, in the mode that must not act on it. A volatile
   /// result is a rough draft for the pill; a finalized one accumulates. Neither
   /// reaches the target app — there is nowhere for it to go until Apply.
   func testAReviewSessionShowsADraftAndAccumulatesWithoutInsertingAnything() {
     let controller = makeController(.review)
-    controller.beginLiveDraftSessionForTests()
+    controller.beginSessionForTests(target: target)
     XCTAssertFalse(controller.deliversMidSessionForTests, "review builds no delivery queue")
 
     controller.handleHypothesis(Hypothesis(text: "ship the gency to", isFinal: false))
@@ -481,6 +492,19 @@ final class DictationReviewBranchTests: XCTestCase {
     )
     XCTAssertNil(controller.lastProcessedText, "nothing was inserted mid-session")
     XCTAssertFalse(controller.isReviewing, "the panel opens on stop, not per segment")
+  }
+
+  /// The counterweight: the same session wiring, one mode over, DOES build a
+  /// queue. Without this the assertion above passes on a hook that could never
+  /// build one, whatever the mode said.
+  func testTheSameSessionWiringBuildsAQueueForStreaming() {
+    let controller = makeController(.streaming)
+    controller.beginSessionForTests(target: target)
+
+    XCTAssertTrue(
+      controller.deliversMidSessionForTests,
+      "streaming delivers mid-session — if this is nil the review assertion proves nothing"
+    )
   }
 
   /// The default mode never grew a live draft: its recognizer reports whole

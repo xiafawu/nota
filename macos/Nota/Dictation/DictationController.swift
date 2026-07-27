@@ -1094,12 +1094,28 @@ final class DictationController: ObservableObject {
 /// and a permission grant; the claim under test — a review session accumulates
 /// segments and delivers nothing — needs none of them.
 extension DictationController {
-  /// The state a live-draft session is left in once its recognizer has started.
-  func beginLiveDraftSessionForTests() {
-    isLiveDraftSession = true
+  /// The state a session is left in once its recognizer has started, wired the
+  /// way `start()` wires it: the plan for this controller's delivery mode
+  /// decides both the live draft and whether a delivery queue exists at all.
+  ///
+  /// Running the plan here rather than setting `isLiveDraftSession` by hand is
+  /// what makes "a review session builds no delivery queue" an assertion about
+  /// the mode. A hook that never built one would answer nil in every mode, and
+  /// a regression that wired review to a queue — sentences typed into the live
+  /// document mid-session, the one thing this mode promises never to do — would
+  /// leave the test green.
+  func beginSessionForTests(engine: EngineChoice = .apple, target: FocusedTarget? = nil) {
+    let plan = DictationSessionPlan.make(mode: settings.deliveryMode, engine: engine)
+    isLiveDraftSession = plan.wantsLiveDraft
     roughDraft = ""
     streamingRecognized = ""
     segmenter = SentenceSegmenter()
+
+    if plan.capturesTarget { sessionTarget = target }
+    if plan.deliversMidSession, let target, !target.isSecureInput {
+      deliveryQueue = makeDeliveryQueue(target: target, terms: [], snapshot: .empty)
+    }
+    isStreamingSession = deliveryQueue != nil && plan.wantsLiveDraft
   }
 
   /// Everything the recognizer has finalized this session.
