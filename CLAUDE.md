@@ -328,7 +328,22 @@ goes into a small floating card instead of the target app:
   a fresh `FocusedTarget.capture()` at Apply time would still read the panel's
   own editor — so injection goes to the pid captured when the hotkey went down,
   and reviewed text is **refused** rather than inserted when that pid is Nota's
-  own process.
+  own process. The panel is still the **key** window while it is up, so the
+  target app's own window has to take key status back before Apply posts
+  anything: `injectReviewed` waits `reviewKeyRestoreSettleNs` (80 ms) first.
+  CGEvent typing and the paste strategy's Cmd-V are posted to the pid and land
+  in whatever that app's key window is at delivery time — every paste- and
+  keystroke-forced app in `defaultOverrideTable` would otherwise drop them into
+  the gap while `lastProcessedText` claimed a success.
+- **The card is checked onto the screen.** `present()` returns whether AppKit
+  actually gave the panel a window device, the presenter recreates the NSPanel
+  once when it did not (a dead server-side window can only be replaced — the
+  bounded heal `HUDVisibilityMonitor` does for the pill), and a second failure
+  drops the request and returns false. The controller then clears
+  `pendingReview` and reports it: this is the one window a review session puts
+  on screen, and `isReviewing` suppresses the pill while one is open, so a
+  swallowed `orderFrontRegardless` no-op would be no card, no pill, no error —
+  and the next hotkey press would throw the text away silently.
 - **One decision per review, delivered exactly once.** The two buttons, the key
   monitor, a programmatic close and a pre-empting `dismiss()` all route through
   `DictationReviewPresenter.finish`, which *takes* the pending request before
@@ -480,7 +495,10 @@ The cache feeds cost computation for usage tracking.
   once, then a fault log plus one user notification per run. A watchdog re-checks
   ~1s after the show that brought the pill onscreen. The monitor knows AppKit
   only through an injected `windowNumberProvider`, so the escalation is tested
-  without a WindowServer.
+  without a WindowServer. The review card runs the same check on the way up
+  (`DictationReviewPanel.verifyWindowDevice`, one recreate, then a false return
+  the controller turns into a visible failure) — no window Nota shows may be
+  assumed onto the screen.
 - ESM-only project (`"type": "module"` in package.json)
 
 ## External Requirements
