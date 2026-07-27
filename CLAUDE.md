@@ -180,8 +180,13 @@ The **Dictionary** tab of the Settings window (Cmd+,) lists, adds, removes, and
 stars terms against the same file the `nota dictionary` verbs use, and imports a
 pasted word list in bulk (one term per line, optionally `term | spoken form`;
 blank lines ignored, duplicates collapsed case-insensitively through
-`DictionaryStore.merging`). The Dictation tab keeps only a "Manage Dictionary…"
-button pointing at it. `macos/Nota/UI/DictionarySettingsView.swift`.
+`DictionaryStore.merging`). A pasted list lands through
+`DictionaryStore.addAll` — one read-modify-write for the whole paste, not one
+per line: the pane runs on the main actor, and rewriting dictionary.json per
+term froze Settings, the HUD and the hotkey path for seconds on a list of any
+size. One write is also all-or-nothing, so a refused import leaves no half of
+itself on disk. The Dictation tab keeps only a "Manage Dictionary…" button
+pointing at it. `macos/Nota/UI/DictionarySettingsView.swift`.
 
 ## Dictation Delivery
 
@@ -190,7 +195,12 @@ the **Delivery** picker (`DictationSettings.deliveryMode`, default
 `.immediate`). One enum, not a set of flags — the modes are mutually exclusive
 by construction. A payload written before the enum existed migrates from the old
 `streamingDelivery` bool: stored `true` → `.streaming`, false/absent →
-`.immediate`.
+`.immediate`. That bool is still **written back out** alongside the enum, so the
+migration runs in both directions — a build predating `deliveryMode` reads only
+the bool and re-saves without the enum, which would otherwise strand a streaming
+user on insert-on-release for good after one launch of an older build. It can
+never win over the enum on the way back in: it is consulted only when
+`deliveryMode` is absent.
 
 **Immediate (default).** Everything is inserted once, on release: recognize →
 `Formatter.applyRules` → `WordReplacements` → polish → one `TextInjector.inject`
@@ -304,7 +314,19 @@ finished text goes into a small floating panel instead of the target app:
   utility panel and Nota activates when it opens. Safe here in a way it is not
   mid-session: the injection target was captured when the hotkey went down, and
   `TextInjector` addresses it by pid. A fresh `FocusedTarget.capture()` at Apply
-  time would find Nota's own panel.
+  time would find Nota's own panel. Two consequences the panel is responsible
+  for: **every** way out of it hands the front back to that pid (discard as much
+  as apply — Nota is an accessory app, so a closed panel leaves it active with
+  no window and the owner's next keystroke goes nowhere), and reviewed text is
+  **refused** rather than inserted when the recorded target is Nota's own
+  process, which is what a session begun while the panel was up would record.
+- **One decision per review, delivered exactly once.** The two buttons, the key
+  monitor, the title-bar close and a pre-empting `dismiss()` all route through
+  `DictationReviewPresenter.finish`, which *takes* the pending request before
+  running its callback. Clearing the handler in the caller and invoking it after
+  is the shape that broke: the callback's own "is a review still open?" guard
+  then answered no, the close button's discard was swallowed, and `isReviewing`
+  stayed true — suppressing the pill until an unrelated session cleared it.
 - **⌘↩ and Escape come from a local key monitor**, not `.keyboardShortcut`
   alone: `NSTextView` answers `cancelOperation:` itself, so Escape would never
   reach a SwiftUI cancel button. The monitor is scoped to the panel's own events
@@ -330,7 +352,9 @@ finished text goes into a small floating panel instead of the target app:
 `macos/Nota/Dictation/DictationReviewPanel.swift` holds `DictationReview` (the
 pure apply/discard core), the panel, and the presenter behind
 `DictationReviewPresenting` so the controller's review branch has no window
-server in it.
+server in it. `DictationController.deliver` is internal for the same reason: it
+is where the branch begins, and with a stub presenter injected it drives apply,
+discard and a superseded review from a unit test.
 
 ## Model Settings
 
