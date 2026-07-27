@@ -2,6 +2,46 @@ import AppKit
 import Foundation
 import os
 
+// MARK: - DictationSessionPlan
+
+/// What a session's delivery mode and engine ask of the recognizer.
+///
+/// Pure and separate from the controller so the claim that matters can be
+/// asserted without a microphone: **review runs the streaming recognizer for
+/// its live rough draft but never delivers anything mid-session.** The two are
+/// independent answers — one is about what the HUD can show while the owner
+/// talks, the other about what reaches their document — and collapsing them
+/// into a single `wantsStreaming` flag is what left review mode with a silent
+/// pill.
+struct DictationSessionPlan: Equatable {
+  /// Build the recognizer in streaming mode: a volatile tail for the pill's
+  /// rough draft, plus finalized results as deltas.
+  let wantsLiveDraft: Bool
+  /// Build a delivery queue and type each sentence in as it is recognized.
+  let deliversMidSession: Bool
+  /// Capture the injection target when the hotkey goes down.
+  let capturesTarget: Bool
+
+  static func make(mode: DeliveryMode, engine: EngineChoice) -> DictationSessionPlan {
+    // Only the Apple analyzer reports deltas. AssemblyAI realtime reports whole
+    // formatted turns, so asking it for a live draft yields neither a volatile
+    // tail worth showing nor segments worth accumulating.
+    let live = engine == .apple && (mode == .streaming || mode == .review)
+    return DictationSessionPlan(
+      wantsLiveDraft: live,
+      // Streaming appends into whatever had focus when the hotkey went down and
+      // keeps appending there for the whole session. Review appends nothing at
+      // all until the owner says so.
+      deliversMidSession: mode == .streaming && live,
+      // Review captures the same target for the opposite reason streaming does:
+      // nothing is delivered during the session, and by the time the owner
+      // applies, the session that recognized the audio is long over. Engine
+      // independent — the pid is needed however the audio was recognized.
+      capturesTarget: mode == .review || (mode == .streaming && live)
+    )
+  }
+}
+
 @MainActor
 final class DictationController: ObservableObject {
   @Published private(set) var state: DictationState = .disabled(reason: "Checking permissions…")
@@ -18,8 +58,12 @@ final class DictationController: ObservableObject {
   @Published private(set) var lastPolishWarning: String?
   /// True while a polish LLM call is in flight.
   @Published private(set) var isPolishInProgress: Bool = false
-  /// The recognizer's un-finalized tail during a streaming session — the rough
-  /// draft the HUD shows. Always empty when streaming delivery is off.
+  /// The recognizer's un-finalized tail — the rough draft the HUD shows.
+  ///
+  /// Fed by every session that runs the streaming recognizer, which is both of
+  /// the non-default delivery modes: streaming is already typing the finalized
+  /// text in, and review shows the draft because the pill is the *only* thing
+  /// on screen until the panel opens. Always empty in `.immediate`.
   @Published private(set) var roughDraft: String = ""
   /// True while the review panel holds this session's text and nothing has
   /// been inserted. The HUD reads it to stand down — the panel is the feedback.
@@ -67,11 +111,18 @@ final class DictationController: ObservableObject {
   /// True only once the recognizer has confirmed it will report finalized
   /// segments mid-session AND the session has somewhere safe to append to.
   private var isStreamingSession = false
+  /// True once the recognizer has confirmed it reports a volatile tail — the
+  /// rough draft — whether or not this session delivers anything mid-session.
+  ///
+  /// Strictly weaker than `isStreamingSession`: a review session sets this and
+  /// not that, which is exactly the difference between "the pill shows what you
+  /// are saying" and "the text is already in your document".
+  private var isLiveDraftSession = false
   /// Where this session's text goes, captured when the hotkey went down.
   ///
   /// Streaming needs it because delivery happens while the user may already be
-  /// somewhere else; review needs it because the panel takes key focus, so by
-  /// the time Apply is pressed the frontmost app is Nota itself.
+  /// somewhere else; review needs it because the panel holds key focus, so a
+  /// capture at Apply time would read the panel's own editor as the target.
   private var sessionTarget: FocusedTarget?
   private var segmenter = SentenceSegmenter()
   private var deliveryQueue: StreamingDeliveryQueue?
@@ -267,20 +318,11 @@ final class DictationController: ObservableObject {
 
     isSessionPending = true
 
-    // Streaming appends into whatever had focus when the hotkey went down, and
-    // keeps appending there for the whole session. Capturing at the end
-    // instead — as batch delivery does — would send a sentence the user
-    // started in one app into whatever they switched to while it was being
-    // polished. Text already typed into a document cannot be moved.
-    //
-    // Restricted to the Apple engine: AssemblyAI realtime reports whole turns
-    // rather than deltas, so its "finals" are not segments.
-    let wantsStreaming = settings.deliveryMode == .streaming && settings.engine == .apple
-    // Review captures the same target for the opposite reason: nothing is
-    // delivered during the session at all, and by the time the owner applies,
-    // Nota's own panel is frontmost. Engine-independent — review runs on the
-    // batch path whatever recognized the audio.
-    let wantsSessionTarget = wantsStreaming || settings.deliveryMode == .review
+    // What this session asks the recognizer for, and what it is allowed to do
+    // with the results. Review and streaming share the live recognizer and
+    // share nothing else: review accumulates and delivers exactly once, at the
+    // end, into the panel.
+    let plan = DictationSessionPlan.make(mode: settings.deliveryMode, engine: settings.engine)
 
     // L1 context: frontmost app + focused window title, the custom dictionary,
     // and — for a streaming session — the target this session's text belongs
@@ -293,7 +335,7 @@ final class DictationController: ObservableObject {
     // yield an empty hint list, which makes this a no-op.
     let contextLoad = Task.detached(priority: .userInitiated) {
       async let snapshot = ContextSnapshot.capture()
-      let target = wantsSessionTarget ? await FocusedTarget.capture() : nil
+      let target = plan.capturesTarget ? await FocusedTarget.capture() : nil
       let terms = DictionaryStore.load()
       return (await snapshot, terms, target)
     }
@@ -321,7 +363,7 @@ final class DictationController: ObservableObject {
       let stream = makeDictationStream(
         for: self.settings.engine,
         contextualHints: hints,
-        streaming: wantsStreaming
+        streaming: plan.wantsLiveDraft
       )
       self.speechStream = stream
       self.logger.info("Using engine: \(self.settings.engine.label)")
@@ -334,7 +376,7 @@ final class DictationController: ObservableObject {
       if let startTarget {
         self.sessionTarget = startTarget
       }
-      if wantsStreaming, let startTarget {
+      if plan.deliversMidSession, let startTarget {
         if startTarget.isSecureInput {
           // Batch delivery refuses secure fields with a notice at the end;
           // streaming would have to refuse once per sentence instead.
@@ -370,11 +412,12 @@ final class DictationController: ObservableObject {
         return
       }
 
-      // Only now is it known whether the engine that actually started can
-      // report segments — a SpeechAnalyzer session that fell back to
-      // SFSpeechRecognizer cannot, and this session reverts to batch delivery.
+      // Only now is it known what the engine that actually started can do — a
+      // SpeechAnalyzer session that fell back to SFSpeechRecognizer reports
+      // finality once, at the end, so it has neither a live draft nor segments.
+      self.isLiveDraftSession = stream.deliversSegments
       self.isStreamingSession = self.deliveryQueue != nil && stream.deliversSegments
-      if wantsStreaming, !self.isStreamingSession {
+      if plan.deliversMidSession, !self.isStreamingSession {
         self.logger.info("Streaming delivery unavailable this session — using batch delivery")
         self.resetStreamingSession()
       }
@@ -420,6 +463,9 @@ final class DictationController: ObservableObject {
     lastCaptureDiagnostics = capture.diagnostics
 
     state = .finalizing
+    // The draft was a preview of text that is now being finalized; the pill
+    // moves to its processing state and must not keep offering it.
+    roughDraft = ""
 
     if isStreamingSession {
       finalizeStreamingSession()
@@ -449,6 +495,14 @@ final class DictationController: ObservableObject {
 
       await MainActor.run {
         self.isSessionPending = false
+        // The recognizer is done, so nothing more may arrive claiming to be
+        // this session's live draft. Only a live-draft session has a loop still
+        // running here at all; cancelling an already-finished one is a no-op.
+        self.hypothesisTask?.cancel()
+        self.hypothesisTask = nil
+        self.isLiveDraftSession = false
+        self.roughDraft = ""
+
         let startTime = self.holdBeganAt ?? Date()
         let latency = Date().timeIntervalSince(startTime)
         self.lastLatency = latency
@@ -519,18 +573,26 @@ final class DictationController: ObservableObject {
 
   /// One hypothesis from the recognizer.
   ///
-  /// With streaming off this is exactly what it has always been: record the
-  /// text for diagnostics. Streaming adds two arrivals — a finalized *segment*
-  /// (a delta, feed it to the segmenter) and a volatile tail (replace the
-  /// rough draft) — and never rewrites what an earlier segment delivered.
-  private func handleHypothesis(_ hypothesis: Hypothesis) {
+  /// With the live recognizer off this is exactly what it has always been:
+  /// record the text for diagnostics. The live recognizer adds two arrivals — a
+  /// finalized *segment* (a delta, accumulate it) and a volatile tail (replace
+  /// the rough draft) — and never rewrites what an earlier segment produced.
+  ///
+  /// The delivery queue, not the arrival, decides whether a finalized segment
+  /// goes anywhere. A review session has no queue: its segments accumulate and
+  /// nothing is injected until the owner applies the panel's text, which is the
+  /// whole difference between the two live modes.
+  ///
+  /// Internal for the same reason `deliver` is: this is the recognizer contract
+  /// in full, and a stub `Hypothesis` drives it without a microphone.
+  func handleHypothesis(_ hypothesis: Hypothesis) {
     if hypothesis.isSegment {
       streamingRecognized = StreamingDelivery.joined(streamingRecognized, hypothesis.text)
       lastHypothesis = streamingRecognized
       logger.debug("Segment finalized: \"\(hypothesis.text, privacy: .public)\"")
       // The volatile tail this finalized: the HUD must stop offering it as a
-      // rough draft of text that is already on its way into the document. No
-      // further volatile result is guaranteed to arrive and clear it.
+      // rough draft of text that is already recognized. No further volatile
+      // result is guaranteed to arrive and clear it.
       roughDraft = ""
       guard let deliveryQueue else { return }
       for segment in segmenter.append(hypothesis.text) {
@@ -539,7 +601,7 @@ final class DictationController: ObservableObject {
       return
     }
 
-    if isStreamingSession {
+    if isLiveDraftSession {
       roughDraft = hypothesis.text
       return
     }
@@ -746,6 +808,7 @@ final class DictationController: ObservableObject {
     deliveryQueue = nil
     sessionTarget = nil
     isStreamingSession = false
+    isLiveDraftSession = false
     segmenter = SentenceSegmenter()
     streamingRecognized = ""
     roughDraft = ""
@@ -1018,3 +1081,28 @@ final class DictationController: ObservableObject {
     }
   }
 }
+
+#if DEBUG
+// MARK: - Test seams
+
+/// Same-file extension so the session state stays private to everything except
+/// the tests that have to drive a recognizer that is not there. Session state
+/// is normally written only by `start()`, which needs a microphone, an analyzer
+/// and a permission grant; the claim under test — a review session accumulates
+/// segments and delivers nothing — needs none of them.
+extension DictationController {
+  /// The state a live-draft session is left in once its recognizer has started.
+  func beginLiveDraftSessionForTests() {
+    isLiveDraftSession = true
+    roughDraft = ""
+    streamingRecognized = ""
+    segmenter = SentenceSegmenter()
+  }
+
+  /// Everything the recognizer has finalized this session.
+  var recognizedSoFarForTests: String { streamingRecognized }
+
+  /// Whether this session has anywhere to deliver text mid-session.
+  var deliversMidSessionForTests: Bool { deliveryQueue != nil }
+}
+#endif

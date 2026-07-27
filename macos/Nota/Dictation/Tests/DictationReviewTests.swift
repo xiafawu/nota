@@ -330,6 +330,51 @@ final class ReviewHUDTests: XCTestCase {
   }
 }
 
+// MARK: - What a session asks the recognizer for
+
+/// Review and streaming share the live recognizer and share nothing else. The
+/// owner finding: with review on the batch recognizer there was no volatile
+/// feed, so the pill sat empty for the whole session.
+final class DictationSessionPlanTests: XCTestCase {
+  func testReviewRunsTheStreamingRecognizerButDeliversNothingMidSession() {
+    let plan = DictationSessionPlan.make(mode: .review, engine: .apple)
+    XCTAssertTrue(plan.wantsLiveDraft, "the pill is the only feedback while the owner talks")
+    XCTAssertFalse(plan.deliversMidSession, "review inserts nothing until Apply")
+    XCTAssertTrue(plan.capturesTarget, "Apply needs the pid the hotkey went down on")
+  }
+
+  func testStreamingStillDeliversWhileSpeaking() {
+    let plan = DictationSessionPlan.make(mode: .streaming, engine: .apple)
+    XCTAssertTrue(plan.wantsLiveDraft)
+    XCTAssertTrue(plan.deliversMidSession)
+    XCTAssertTrue(plan.capturesTarget)
+  }
+
+  func testImmediateAsksForNeither() {
+    let plan = DictationSessionPlan.make(mode: .immediate, engine: .apple)
+    XCTAssertFalse(plan.wantsLiveDraft)
+    XCTAssertFalse(plan.deliversMidSession)
+    XCTAssertFalse(plan.capturesTarget, "batch delivery captures at injection time")
+  }
+
+  func testAssemblyAIGetsNoLiveDraftInEitherMode() {
+    // Whole formatted turns, not deltas: there is no volatile tail to show and
+    // no segment to accumulate.
+    for mode in [DeliveryMode.streaming, .review] {
+      let plan = DictationSessionPlan.make(mode: mode, engine: .assemblyAIRealtime)
+      XCTAssertFalse(plan.wantsLiveDraft, "\(mode)")
+      XCTAssertFalse(plan.deliversMidSession, "\(mode)")
+    }
+  }
+
+  func testReviewStillCapturesTheTargetOnAnEngineWithNoLiveDraft() {
+    // The pid is what Apply injects through, however the audio was recognized.
+    XCTAssertTrue(
+      DictationSessionPlan.make(mode: .review, engine: .assemblyAIRealtime).capturesTarget
+    )
+  }
+}
+
 // MARK: - The controller's review branch
 
 /// Stands in for the panel so the branch runs with no window server: which
@@ -378,6 +423,46 @@ final class DictationReviewBranchTests: XCTestCase {
     settings.deliveryMode = mode
     DictationSettingsStore.save(settings)
     return DictationController(review: presenter)
+  }
+
+  /// The live recognizer, in the mode that must not act on it. A volatile
+  /// result is a rough draft for the pill; a finalized one accumulates. Neither
+  /// reaches the target app — there is nowhere for it to go until Apply.
+  func testAReviewSessionShowsADraftAndAccumulatesWithoutInsertingAnything() {
+    let controller = makeController(.review)
+    controller.beginLiveDraftSessionForTests()
+    XCTAssertFalse(controller.deliversMidSessionForTests, "review builds no delivery queue")
+
+    controller.handleHypothesis(Hypothesis(text: "ship the gency to", isFinal: false))
+    XCTAssertEqual(controller.roughDraft, "ship the gency to")
+    XCTAssertNil(controller.lastProcessedText, "a rough draft is not an insertion")
+
+    controller.handleHypothesis(
+      Hypothesis(text: "Ship the genc2rust patch.", isFinal: true, isSegment: true)
+    )
+    XCTAssertEqual(controller.roughDraft, "", "the tail this finalized is no longer a draft")
+    XCTAssertEqual(controller.recognizedSoFarForTests, "Ship the genc2rust patch.")
+
+    controller.handleHypothesis(
+      Hypothesis(text: "Then land it.", isFinal: true, isSegment: true)
+    )
+    XCTAssertEqual(
+      controller.recognizedSoFarForTests,
+      "Ship the genc2rust patch. Then land it.",
+      "segments accumulate in spoken order"
+    )
+    XCTAssertNil(controller.lastProcessedText, "nothing was inserted mid-session")
+    XCTAssertFalse(controller.isReviewing, "the panel opens on stop, not per segment")
+  }
+
+  /// The default mode never grew a live draft: its recognizer reports whole
+  /// hypotheses, and the pill stays a meter.
+  func testImmediateModeStillHasNoRoughDraft() {
+    let controller = makeController(.immediate)
+    controller.handleHypothesis(Hypothesis(text: "ship the patch", isFinal: false))
+
+    XCTAssertEqual(controller.roughDraft, "")
+    XCTAssertEqual(controller.lastHypothesis, "ship the patch")
   }
 
   func testReviewModeOpensThePanelAndInsertsNothing() {
