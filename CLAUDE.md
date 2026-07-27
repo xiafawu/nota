@@ -300,9 +300,17 @@ mic → DictationTranscriber → volatile tail ───────────
 delta/rough-draft/refine helpers) so the invariants are tested without a
 recognizer, a network call, or an Accessibility target.
 
-**Review (opt-in).** Capture and polish run exactly as `.immediate`, but the
-finished text goes into a small floating panel instead of the target app:
+**Review (opt-in).** Polish runs exactly as `.immediate` and the finished text
+goes into a small floating card instead of the target app:
 
+- **Live while speaking, silent until stop.** Review runs on the **streaming**
+  recognizer (`DictationSessionPlan.wantsLiveDraft`), so the pill shows the same
+  rough draft `.streaming` does — on the batch recognizer there is no volatile
+  feed and the pill sat empty for the whole session. It builds no delivery
+  queue: finalized segments only accumulate (`handleHypothesis` returns at
+  `guard let deliveryQueue`), and the whole text goes L2 → polish → panel once,
+  at stop. The streaming path's in-order refinement queue is deliberately not
+  involved — nothing is delivered mid-session, so there is no order to keep.
 - **Nothing is inserted until Apply.** ⌘↩ applies, Escape discards, and a
   discard injects nothing at all — not an empty write. The panel is the only
   place in the pipeline where a session's text can be thrown away after it was
@@ -310,23 +318,34 @@ finished text goes into a small floating panel instead of the target app:
 - **Apply inserts what is in the box**, not what the pipeline produced. A
   trailing newline is a keystroke, not an edit; emptying the box and applying is
   a discard by another name.
-- **The panel takes key focus** — the owner types in it — so it is a titled
-  utility panel and Nota activates when it opens. Safe here in a way it is not
-  mid-session: the injection target was captured when the hotkey went down, and
-  `TextInjector` addresses it by pid. A fresh `FocusedTarget.capture()` at Apply
-  time would find Nota's own panel. Two consequences the panel is responsible
-  for: **every** way out of it hands the front back to that pid (discard as much
-  as apply — Nota is an accessory app, so a closed panel leaves it active with
-  no window and the owner's next keystroke goes nowhere), and reviewed text is
-  **refused** rather than inserted when the recorded target is Nota's own
-  process, which is what a session begun while the panel was up would record.
+- **The panel takes key focus without activating Nota.** The owner types in it,
+  so it overrides `canBecomeKey`; it carries `.nonactivatingPanel`, so it takes
+  keystrokes while the app being dictated into stays frontmost (the Spotlight
+  pattern). Nothing on the review path calls `NSApp.activate` — an earlier build
+  did, which is what raised the home window over the target app on every
+  session. Two consequences: there is **no focus to hand back** on the way out
+  (the target never lost it, and the code that used to restore it is gone), and
+  a fresh `FocusedTarget.capture()` at Apply time would still read the panel's
+  own editor — so injection goes to the pid captured when the hotkey went down,
+  and reviewed text is **refused** rather than inserted when that pid is Nota's
+  own process.
 - **One decision per review, delivered exactly once.** The two buttons, the key
-  monitor, the title-bar close and a pre-empting `dismiss()` all route through
+  monitor, a programmatic close and a pre-empting `dismiss()` all route through
   `DictationReviewPresenter.finish`, which *takes* the pending request before
   running its callback. Clearing the handler in the caller and invoking it after
   is the shape that broke: the callback's own "is a review still open?" guard
-  then answered no, the close button's discard was swallowed, and `isReviewing`
+  then answered no, the close route's discard was swallowed, and `isReviewing`
   stayed true — suppressing the pill until an unrelated session cleared it.
+- **The card, not a text box.** Same grammar as the HUD pill: one borderless
+  panel, `Color(white: 0.09).opacity(0.9)` fill, hairline stroke, its own shadow
+  inside a 24pt transparent margin (a window cannot draw outside its frame), and
+  `colorScheme` forced dark in both system themes. Title row with a word count,
+  a borderless editor with no bezel or focus-ring box, and a footer of Discard
+  (esc, subdued) + Apply (⌘↩, accent). The buttons are drawn by the card rather
+  than `.bordered`/`.borderedProminent`, which would put system light-mode
+  chrome on a surface that has committed to being dark. Level is `.statusBar`,
+  not `.floating`: activation used to be what raised the panel over a fullscreen
+  app, and nothing does now.
 - **⌘↩ and Escape come from a local key monitor**, not `.keyboardShortcut`
   alone: `NSTextView` answers `cancelOperation:` itself, so Escape would never
   reach a SwiftUI cancel button. The monitor is scoped to the panel's own events
@@ -433,9 +452,18 @@ The cache feeds cost computation for usage tracking.
   start, and per-sentence fallback to offline text when polish fails.
 - Review delivery is the opposite trade: nothing at all reaches the target until
   the owner applies it, which buys the highest-quality dictionary signal the app
-  can get (a human correcting the model) at the cost of a keystroke per session
-  and Nota taking focus. Its diffs are learned only on Apply — text the owner
-  discarded teaches nothing. See Dictation Delivery.
+  can get (a human correcting the model) at the cost of a keystroke per session.
+  It costs no *focus*: the panel is nonactivating, so the app being dictated into
+  stays frontmost throughout. Its diffs are learned only on Apply — text the
+  owner discarded teaches nothing. See Dictation Delivery.
+- What a delivery mode asks of the recognizer is a pure decision
+  (`DictationSessionPlan.make(mode:engine:)`), separate from what it may do with
+  the results. "Show a live rough draft" and "put text in the user's document"
+  are independent, and collapsing them into one `wantsStreaming` flag is what
+  left review mode on the batch recognizer with a silent pill for a whole
+  session. Only the Apple analyzer can supply either; AssemblyAI realtime
+  reports whole formatted turns, so a review session on it runs the batch path
+  and still captures the target pid Apply needs.
 - The dictation HUD pill has exactly **one animation authority**: the panel's
   window frame, animated by `NSAnimationContext` in `DictationHUDPanel.update`.
   SwiftUI used to animate the pill's own layout at the same time
