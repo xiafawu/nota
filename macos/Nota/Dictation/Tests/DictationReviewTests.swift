@@ -60,12 +60,63 @@ final class DeliveryModeMigrationTests: XCTestCase {
     XCTAssertEqual(DictationSettingsStore.load().deliveryMode, .review)
   }
 
-  func testTheLegacyBoolIsNotWrittenBackOut() throws {
+  func testTheEnumIsWritten() throws {
     var settings = DictationSettings()
     settings.deliveryMode = .review
     let json = String(decoding: try JSONEncoder().encode(settings), as: UTF8.self)
-    XCTAssertFalse(json.contains("streamingDelivery"))
     XCTAssertTrue(json.contains("review"))
+  }
+
+  /// The migration has to work in both directions. A build predating the enum
+  /// reads only this bool, and it re-saves without `deliveryMode` — so writing
+  /// the bool is what stops one launch of an older build from silently moving
+  /// a streaming user to insert-on-release for good.
+  func testTheLegacyBoolIsWrittenAlongsideTheEnum() throws {
+    func encoded(_ mode: DeliveryMode) throws -> DictationSettings {
+      var settings = DictationSettings()
+      settings.deliveryMode = mode
+      let data = try JSONEncoder().encode(settings)
+      // Decoded through the LEGACY reading of the payload: `deliveryMode`
+      // stripped, exactly what an older build would see.
+      var object = try XCTUnwrap(
+        JSONSerialization.jsonObject(with: data) as? [String: Any]
+      )
+      object.removeValue(forKey: "deliveryMode")
+      return try JSONDecoder().decode(
+        DictationSettings.self,
+        from: JSONSerialization.data(withJSONObject: object)
+      )
+    }
+
+    XCTAssertEqual(try encoded(.streaming).deliveryMode, .streaming)
+    XCTAssertEqual(try encoded(.immediate).deliveryMode, .immediate)
+    // The older build has no review mode; insert-on-release is the honest
+    // degradation, and it is what that build would have done anyway.
+    XCTAssertEqual(try encoded(.review).deliveryMode, .immediate)
+  }
+
+  func testTheWrittenBoolNeverOverridesTheEnumOnTheWayBackIn() throws {
+    var settings = DictationSettings()
+    settings.deliveryMode = .review
+    let data = try JSONEncoder().encode(settings)
+    XCTAssertEqual(
+      try JSONDecoder().decode(DictationSettings.self, from: data).deliveryMode,
+      .review
+    )
+  }
+
+  func testEverySettingSurvivesTheHandWrittenEncoder() throws {
+    var settings = DictationSettings()
+    settings.engine = .assemblyAIRealtime
+    settings.trigger = TriggerKey(kind: .keyCode, keyCode: 63)
+    settings.activation = .toggle
+    settings.polishEnabled = true
+    settings.polishModelID = "gpt-5.4-mini"
+    settings.showHUD = false
+    settings.deliveryMode = .streaming
+
+    let data = try JSONEncoder().encode(settings)
+    XCTAssertEqual(try JSONDecoder().decode(DictationSettings.self, from: data), settings)
   }
 }
 

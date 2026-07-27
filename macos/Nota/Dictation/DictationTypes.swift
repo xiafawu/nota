@@ -400,8 +400,9 @@ struct DictationSettings: Codable, Equatable, Sendable {
     case deliveryMode
   }
 
-  /// The boolean this enum replaced. Read only to migrate a payload written
-  /// before `deliveryMode` existed; never written again.
+  /// The boolean this enum replaced. Read to migrate a payload written before
+  /// `deliveryMode` existed, and written back alongside the enum so the
+  /// migration works in both directions.
   private enum LegacyCodingKeys: String, CodingKey {
     case streamingDelivery
   }
@@ -430,6 +431,29 @@ struct DictationSettings: Codable, Equatable, Sendable {
     showHUD = (try? container.decode(Bool.self, forKey: .showHUD)) ?? defaults.showHUD
     deliveryMode = Self.decodeDeliveryMode(from: decoder, container: container)
       ?? defaults.deliveryMode
+  }
+
+  /// Writes both the enum and the bool it replaced.
+  ///
+  /// The synthesized encoder would write only `deliveryMode`, which makes the
+  /// migration one-way: a build predating the enum reads no delivery key at
+  /// all, drops a streaming user back to insert-on-release, and — the moment it
+  /// saves anything — drops `deliveryMode` too, so the preference is gone for
+  /// this build as well. The extra bool costs one key and survives that
+  /// round trip. It can never confuse a build that understands the enum:
+  /// `decodeDeliveryMode` consults it only when `deliveryMode` is absent.
+  func encode(to encoder: Encoder) throws {
+    var container = encoder.container(keyedBy: CodingKeys.self)
+    try container.encode(engine, forKey: .engine)
+    try container.encode(trigger, forKey: .trigger)
+    try container.encode(activation, forKey: .activation)
+    try container.encode(polishEnabled, forKey: .polishEnabled)
+    try container.encodeIfPresent(polishModelID, forKey: .polishModelID)
+    try container.encode(showHUD, forKey: .showHUD)
+    try container.encode(deliveryMode, forKey: .deliveryMode)
+
+    var legacy = encoder.container(keyedBy: LegacyCodingKeys.self)
+    try legacy.encode(deliveryMode == .streaming, forKey: .streamingDelivery)
   }
 
   /// `deliveryMode`, or the `streamingDelivery` bool it replaced.
