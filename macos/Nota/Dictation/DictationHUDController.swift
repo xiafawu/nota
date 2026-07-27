@@ -1,6 +1,8 @@
 import AppKit
 import Combine
 import Foundation
+import UserNotifications
+import os
 
 // MARK: - DictationHUDController
 
@@ -14,13 +16,28 @@ import Foundation
 ///   configuration changes.
 /// - Handles auto-hide timers (`HUDState.autoHideDelay`) and marks the hidden
 ///   state consumed so a stale notice cannot resurrect the pill.
+/// - Detects and heals the zombie-WindowServer state by replacing the panel
+///   outright (`HUDVisibilityMonitor`).
 @MainActor
 final class DictationHUDController {
+  private static let logger = Logger(subsystem: "com.xiafawu.nota", category: "dictation.hud")
+
   private weak var controller: DictationController?
-  private let panel: DictationHUDPanel
+  /// Replaceable, not fixed: healing the zombie state means a NEW NSPanel, and
+  /// therefore a new server-side window. Nothing can revive a dead one.
+  private var panel: DictationHUDPanel
   private var cancellables = Set<AnyCancellable>()
   private var hideTask: Task<Void, Never>?
+  private var watchdogTask: Task<Void, Never>?
   private var screenObserver: NSObjectProtocol?
+
+  /// Reads through to whichever panel is current, so a recreate does not leave
+  /// the monitor watching the window it just threw away.
+  private lazy var visibility = HUDVisibilityMonitor { [weak self] in
+    self?.panel.windowNumber ?? 0
+  }
+  /// The rough draft last handed to the panel, replayed onto a fresh one.
+  private var lastRoughDraft: String?
 
   /// The state auto-hide dismissed. The underlying controller fields
   /// (`lastPolishWarning` / `lastSecureFieldNotice` / `lastProcessedText`)
@@ -100,23 +117,110 @@ final class DictationHUDController {
     // Kept out of `HUDState` on purpose: the auto-hide bookkeeping above
     // compares states for equality, and a line that changes on every syllable
     // would make `consumedState` never match.
-    panel.update(
-      state: hudState,
-      roughDraft: StreamingDelivery.roughDraftTail(controller.roughDraft)
-    )
+    lastRoughDraft = StreamingDelivery.roughDraftTail(controller.roughDraft)
+    panel.update(state: hudState, roughDraft: lastRoughDraft)
 
     if controller.settings.showHUD, hudState != .hidden {
       // Position once per show — repositioning every tick teleports the pill
       // and fights the animated resize; screen changes are handled above.
-      if !panel.isVisible {
+      let wasVisible = panel.isVisible
+      if !wasVisible {
         panel.reposition()
       }
       panel.show()
+      // Only the show that brings the pill onscreen is worth checking, and
+      // only it may arm the watchdog: `update()` runs on every throttled RMS
+      // tick, and re-arming a 1s timer 15 times a second means it never fires.
+      if !wasVisible {
+        heal()
+        scheduleWatchdog()
+      }
       scheduleAutoHide(for: hudState)
     } else {
       panel.hide()
       hideTask?.cancel()
+      watchdogTask?.cancel()
+      visibility.reset()
     }
+  }
+
+  // MARK: - Zombie self-heal
+
+  /// Act on the monitor's verdict about the panel we just tried to show.
+  private func heal() {
+    switch visibility.evaluate() {
+    case .none, .silent:
+      break
+    case .recreate:
+      recreatePanel()
+    case .reportUnavailable:
+      reportUnavailable()
+    }
+  }
+
+  /// Replace the panel and show the new one once.
+  ///
+  /// The old NSPanel's server-side window is the thing that is broken, so it is
+  /// closed rather than re-shown. `heal()` runs again on the replacement: a
+  /// second consecutive failure escalates to the notification and stops — the
+  /// monitor only ever returns `.recreate` for the first failure in a run of
+  /// them, so this cannot loop.
+  private func recreatePanel() {
+    Self.logger.error("Recreating the dictation HUD panel after a failed show.")
+    let dead = panel
+    dead.orderOut(nil)
+    dead.close()
+
+    let fresh = DictationHUDPanel()
+    panel = fresh
+    fresh.update(state: lastShownState, roughDraft: lastRoughDraft)
+    fresh.reposition()
+    fresh.show()
+    heal()
+  }
+
+  private func reportUnavailable() {
+    Self.logger.fault(
+      "Dictation HUD unavailable: a freshly created panel still has no window device."
+    )
+    Task { await Self.postUnavailableNotification() }
+  }
+
+  /// Once per run, and only after a recreate has already failed: the HUD is
+  /// the only feedback that dictation is listening, and silently losing it for
+  /// a day is what made the original incident expensive.
+  private static func postUnavailableNotification() async {
+    let center = UNUserNotificationCenter.current()
+    guard let granted = try? await center.requestAuthorization(options: [.alert]), granted
+    else { return }
+    let content = UNMutableNotificationContent()
+    content.title = "Dictation HUD unavailable"
+    content.body = "Restart Nota to bring the dictation pill back."
+    try? await center.add(
+      UNNotificationRequest(
+        identifier: "com.xiafawu.nota.dictation.hud-unavailable",
+        content: content,
+        trigger: nil
+      )
+    )
+  }
+
+  /// Second line of defence: some failures pass the immediate check and only
+  /// miss the screen a moment later.
+  private func scheduleWatchdog() {
+    watchdogTask?.cancel()
+    watchdogTask = Task { [weak self] in
+      try? await Task.sleep(
+        nanoseconds: UInt64(HUDVisibilityMonitor.watchdogDelay * 1_000_000_000)
+      )
+      guard !Task.isCancelled else { return }
+      self?.watchdogFired()
+    }
+  }
+
+  private func watchdogFired() {
+    guard let controller, controller.settings.showHUD, lastShownState != .hidden else { return }
+    heal()
   }
 
   private func computeState(from controller: DictationController) -> HUDState {
@@ -151,6 +255,8 @@ final class DictationHUDController {
     consumedState = scheduled
     lastShownState = .hidden
     panel.hide()
+    watchdogTask?.cancel()
+    visibility.reset()
   }
 
   // MARK: - Accessibility

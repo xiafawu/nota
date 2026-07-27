@@ -1,6 +1,7 @@
 import AppKit
 import ApplicationServices
 import SwiftUI
+import os
 
 // MARK: - DictationHUDPanel
 
@@ -11,6 +12,8 @@ import SwiftUI
 /// always targets the app the user is typing into.
 @MainActor
 final class DictationHUDPanel: NSPanel {
+  private static let logger = Logger(subsystem: "com.xiafawu.nota", category: "dictation.hud")
+
   private let hostingView: NSHostingView<DictationHUDContentView>
 
   init() {
@@ -37,6 +40,10 @@ final class DictationHUDPanel: NSPanel {
     ignoresMouseEvents = true
     hidesOnDeactivate = false
     isFloatingPanel = true
+    // The zombie self-heal throws this panel away and builds another; with the
+    // NSWindow default (true) the `close()` that does it would over-release a
+    // panel the controller still holds.
+    isReleasedWhenClosed = false
     // AFTER isFloatingPanel: setting it to true silently rewrites `level` to
     // .floating (CGWindowLayer 3), which sits BELOW a fullscreen app. Assigning
     // the level first — as this did — looked correct and shipped a pill that
@@ -204,10 +211,13 @@ final class DictationHUDPanel: NSPanel {
     return NSRect(x: topLeft.x, y: cocoaY, width: size.width, height: size.height)
   }
 
-  func show() {
+  /// Order the pill onscreen. Returns whether it actually got there — see
+  /// `verifyWindowDevice`.
+  @discardableResult
+  func show() -> Bool {
     guard !isVisible else {
       orderFrontRegardless()
-      return
+      return verifyWindowDevice()
     }
     // Fade in with a small rise — HUDs that blink into place read as cheap.
     alphaValue = 0
@@ -222,6 +232,29 @@ final class DictationHUDPanel: NSPanel {
       animator().alphaValue = 1
       animator().setFrame(frame, display: true)
     }
+    return verifyWindowDevice()
+  }
+
+  /// True when AppKit gave this panel a server-side window.
+  ///
+  /// `orderFrontRegardless()` returns nothing and fails silently: on
+  /// 2026-07-27 it left the panel with `windowNumber == 0` for an entire day,
+  /// rendering and resizing into a window that did not exist. This one log
+  /// line is what turns a repeat of that into a `log show` one-liner instead of
+  /// a mystery.
+  @discardableResult
+  func verifyWindowDevice() -> Bool {
+    let number = windowNumber
+    guard number <= 0 else { return true }
+    Self.logger.error(
+      """
+      HUD panel has no window device after orderFrontRegardless \
+      (windowNumber=\(number, privacy: .public), \
+      isVisible=\(self.isVisible, privacy: .public), \
+      frame=\(NSStringFromRect(self.frame), privacy: .public)) — zombie WindowServer state.
+      """
+    )
+    return false
   }
 
   func hide() {
