@@ -376,6 +376,49 @@ enum DeliveryMode: String, Codable, CaseIterable, Sendable {
   }
 }
 
+/// Which shape the dictation HUD takes on screen.
+///
+/// `.pill` is the default *and* the regression baseline: nothing on its path
+/// branches on this setting, so a pill session renders exactly as it did before
+/// the setting existed. The other two are different answers to "how much of
+/// what you are saying belongs on screen" — one always-one-line strip, or a
+/// card holding the whole session.
+enum HUDStyle: String, Codable, CaseIterable, Sendable {
+  /// Today's capsule: meter, and a two-line rough draft above it when there is
+  /// one. Grows once when text starts, then holds still.
+  case pill
+  /// A fixed 520×40 strip: meter left, one tail-anchored line right.
+  case bar
+  /// A 600pt card showing the whole session, growing to a six-line cap.
+  case prompter
+
+  var label: String {
+    switch self {
+    case .pill: return "Pill"
+    case .bar: return "Bar"
+    case .prompter: return "Prompter"
+    }
+  }
+
+  var detail: String {
+    switch self {
+    case .pill:
+      return "A compact capsule with the level meter and the last couple of lines you said."
+    case .bar:
+      return "A slim strip that never changes size — the newest words stay at the right edge and older ones fade out to the left."
+    case .prompter:
+      return "A wide card showing everything you have said this session, with the words still being recognized dimmed."
+    }
+  }
+
+  /// Whether a size change on this style may be animated.
+  ///
+  /// The bar is a constant 520×40 by construction, so it has no growth to
+  /// animate — and an animated frame change on it could only be a layout
+  /// artifact wobbling a window that is supposed to be perfectly still.
+  var animatesGrowth: Bool { self != .bar }
+}
+
 /// Swift-only dictation preferences persisted via UserDefaults.
 struct DictationSettings: Codable, Equatable, Sendable {
   var engine: EngineChoice = .apple
@@ -386,6 +429,8 @@ struct DictationSettings: Codable, Equatable, Sendable {
   var polishModelID: String? = nil
   /// Show floating HUD pill during dictation sessions.
   var showHUD: Bool = true
+  /// Which shape the HUD takes. `.pill` is the pre-existing behavior.
+  var hudStyle: HUDStyle = .pill
   /// How the finished text reaches the target app.
   ///
   /// Default `.immediate`, and deliberately so: the other two modes each change
@@ -398,6 +443,7 @@ struct DictationSettings: Codable, Equatable, Sendable {
   private enum CodingKeys: String, CodingKey {
     case engine, trigger, activation, polishEnabled, polishModelID, showHUD
     case deliveryMode
+    case hudStyle
   }
 
   /// The boolean this enum replaced. Read to migrate a payload written before
@@ -431,6 +477,11 @@ struct DictationSettings: Codable, Equatable, Sendable {
     showHUD = (try? container.decode(Bool.self, forKey: .showHUD)) ?? defaults.showHUD
     deliveryMode = Self.decodeDeliveryMode(from: decoder, container: container)
       ?? defaults.deliveryMode
+    // New key, no migration: a payload written before the styles existed simply
+    // has no `hudStyle`, and the pill is what that payload's owner was looking
+    // at. An unknown value (a newer build's style, a hand-edited typo) is the
+    // same situation and gets the same answer.
+    hudStyle = (try? container.decode(HUDStyle.self, forKey: .hudStyle)) ?? defaults.hudStyle
   }
 
   /// Writes both the enum and the bool it replaced.
@@ -451,6 +502,7 @@ struct DictationSettings: Codable, Equatable, Sendable {
     try container.encodeIfPresent(polishModelID, forKey: .polishModelID)
     try container.encode(showHUD, forKey: .showHUD)
     try container.encode(deliveryMode, forKey: .deliveryMode)
+    try container.encode(hudStyle, forKey: .hudStyle)
 
     var legacy = encoder.container(keyedBy: LegacyCodingKeys.self)
     try legacy.encode(deliveryMode == .streaming, forKey: .streamingDelivery)

@@ -18,6 +18,48 @@ enum HUDState: Equatable {
   case error(message: String)
 }
 
+// MARK: - HUDDraft
+
+/// What the HUD is told about the recognition still in flight.
+///
+/// Two full-length strings, not one merged line. The pill and the bar each show
+/// a single bounded line and never needed more; the prompter shows the whole
+/// session with the un-finalized tail dimmed, and a 120-character merge cannot
+/// be un-merged. So the split lives here, at the source, rather than in
+/// whichever view happens to need it.
+///
+/// Deliberately NOT folded into `HUDState`: `DictationHUDController` compares
+/// states for equality to decide whether an auto-hidden notice has been
+/// consumed, and a field that changes on every syllable would make every one of
+/// those comparisons miss.
+struct HUDDraft: Equatable, Sendable {
+  /// Everything the recognizer has finalized this session, at full length.
+  var finalized: String = ""
+  /// The recognizer's current un-finalized tail, at full length.
+  var volatileTail: String = ""
+
+  static let empty = HUDDraft()
+
+  var isEmpty: Bool { finalized.isEmpty && volatileTail.isEmpty }
+
+  /// The one bounded line the pill and the bar show.
+  ///
+  /// Exactly what the pill was handed before the other styles existed:
+  /// `StreamingDelivery.roughDraftTail` over the volatile tail *alone*. Folding
+  /// the finalized text in would read better on both — the line stops blanking
+  /// each time a segment finalizes — but the pill is the default style and its
+  /// behavior is the baseline this change is not allowed to move. The bar takes
+  /// the same string for the same reason it takes the same feed: one line, one
+  /// definition of what that line is.
+  var boundedTail: String? { StreamingDelivery.roughDraftTail(volatileTail) }
+
+  /// The whole session as the prompter renders it: finalized, then the tail.
+  var fullText: String { StreamingDelivery.joined(finalized, volatileTail) }
+
+  /// Live word count over everything recognized so far, for the prompter header.
+  var wordCount: Int { fullText.split(whereSeparator: \.isWhitespace).count }
+}
+
 extension HUDState {
   /// Seconds the HUD stays visible before auto-hiding, or nil to persist.
   /// Success lingers long enough to read the snippet; fatal errors outlast

@@ -127,8 +127,13 @@ final class DictationController: ObservableObject {
   private var segmenter = SentenceSegmenter()
   private var deliveryQueue: StreamingDeliveryQueue?
   private var hypothesisTask: Task<Void, Never>?
-  /// Everything the recognizer has finalized this session, for diagnostics.
-  private var streamingRecognized = ""
+  /// Everything the recognizer has finalized this session.
+  ///
+  /// Published, not private: the prompter HUD style renders it in full next to
+  /// the volatile tail. `roughDraft` alone can never stand in for it — it holds
+  /// only the un-finalized fragment and is *cleared* the moment a segment
+  /// finalizes, which is precisely when this grows.
+  @Published private(set) var finalizedDraft = ""
   /// Concurrent polish calls in flight; `isPolishInProgress` is this > 0.
   private var polishInFlight = 0
   /// Terms auto-learn may still store this session. Streaming polishes once
@@ -591,8 +596,8 @@ final class DictationController: ObservableObject {
   /// in full, and a stub `Hypothesis` drives it without a microphone.
   func handleHypothesis(_ hypothesis: Hypothesis) {
     if hypothesis.isSegment {
-      streamingRecognized = StreamingDelivery.joined(streamingRecognized, hypothesis.text)
-      lastHypothesis = streamingRecognized
+      finalizedDraft = StreamingDelivery.joined(finalizedDraft, hypothesis.text)
+      lastHypothesis = finalizedDraft
       logger.debug("Segment finalized: \"\(hypothesis.text, privacy: .public)\"")
       // The volatile tail this finalized: the HUD must stop offering it as a
       // rough draft of text that is already recognized. No further volatile
@@ -814,7 +819,7 @@ final class DictationController: ObservableObject {
     isStreamingSession = false
     isLiveDraftSession = false
     segmenter = SentenceSegmenter()
-    streamingRecognized = ""
+    finalizedDraft = ""
     roughDraft = ""
   }
 
@@ -1108,7 +1113,7 @@ extension DictationController {
     let plan = DictationSessionPlan.make(mode: settings.deliveryMode, engine: engine)
     isLiveDraftSession = plan.wantsLiveDraft
     roughDraft = ""
-    streamingRecognized = ""
+    finalizedDraft = ""
     segmenter = SentenceSegmenter()
 
     if plan.capturesTarget { sessionTarget = target }
@@ -1119,7 +1124,7 @@ extension DictationController {
   }
 
   /// Everything the recognizer has finalized this session.
-  var recognizedSoFarForTests: String { streamingRecognized }
+  var recognizedSoFarForTests: String { finalizedDraft }
 
   /// Whether this session has anywhere to deliver text mid-session.
   var deliversMidSessionForTests: Bool { deliveryQueue != nil }
