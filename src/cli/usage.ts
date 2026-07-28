@@ -80,9 +80,22 @@ export async function usageSummary(window?: AggregateWindow, historyDir?: string
   // price exists, it just lives on the provider's dashboard. `row.costNote`
   // carries where to look, and those runs stay out of the "unknown cost" tally,
   // which exists to flag gaps in *our* data.
+  //
+  // They must not fall out of the *reckoning* too. A noted row contributes 0 to
+  // `costUSD`, so leaving it unannounced would print a total that silently
+  // understates the bill by however much OpenRouter charged — the one failure
+  // mode a cost report may not have. They get their own tally and their own
+  // marker on the total instead.
   let unknownCount = 0;
+  let notedCount = 0;
+  const notes = new Set<string>();
   for (const row of rows) {
-    if (row.hasUnknown && row.costNote === undefined) unknownCount += row.runs;
+    if (row.costNote !== undefined) {
+      notedCount += row.runs;
+      notes.add(row.costNote);
+    } else if (row.hasUnknown) {
+      unknownCount += row.runs;
+    }
   }
 
   // stderr: header + totals
@@ -111,10 +124,18 @@ export async function usageSummary(window?: AggregateWindow, historyDir?: string
   const totalTokensOut = rows.reduce((s, r) => s + r.tokensOut, 0);
   const totalCost = rows.reduce((s, r) => s + r.costUSD, 0);
   const totalEstMark = rows.some((r) => r.hasEstimated) ? "~" : "";
+  // `+` reads as "at least": rows Nota stores no price for contributed nothing
+  // to this figure, so it is a floor rather than the bill.
+  const partialMark = notedCount > 0 ? "+" : "";
   process.stderr.write("──\n");
   process.stderr.write(
-    `total\t\t${totalRuns}\t${totalCalls}\t${totalTokensIn}\t${totalTokensOut}\t${totalEstMark}${formatCost(totalCost)}\n`,
+    `total\t\t${totalRuns}\t${totalCalls}\t${totalTokensIn}\t${totalTokensOut}\t${totalEstMark}${formatCost(totalCost)}${partialMark}\n`,
   );
+  if (notedCount > 0) {
+    process.stderr.write(
+      `${notedCount} runs not in total (${[...notes].join(", ")})\n`,
+    );
+  }
   if (unknownCount > 0) {
     process.stderr.write(`${unknownCount} runs have unknown cost\n`);
   }

@@ -430,4 +430,71 @@ describe("usageSummary — a model Nota stores no pricing for", () => {
     // "unknown cost" is for gaps in Nota's own data; this is not one of them.
     expect(stderr.join("")).not.toContain("runs have unknown cost");
   });
+
+  it("marks the total as a floor and says how many runs are missing from it", async () => {
+    // Two priced runs and one unpriced. The unpriced one contributes 0 to the
+    // sum, so a bare `$0.02` would be an understatement of the bill with
+    // nothing on the line to say so.
+    writeRecord(
+      recordWithUsage("priced", [
+        {
+          modelId: "gpt-5-mini",
+          task: "summary",
+          provider: "assemblyai",
+          calls: 1,
+          tokensIn: 40_000,
+          tokensOut: 2_000,
+          costUSD: 0.014,
+          estimated: false,
+        },
+      ]),
+    );
+    writeRecord(
+      recordWithUsage("noted", [
+        {
+          modelId: "openrouter/z-ai/glm-5.2",
+          task: "summary",
+          provider: "assemblyai",
+          calls: 1,
+          tokensIn: 100_000,
+          tokensOut: 5_000,
+          costUSD: null,
+          estimated: false,
+        },
+      ]),
+    );
+
+    await usageSummary(undefined, dir);
+
+    const err = stderr.join("");
+    const totalLine = err.split("\n").find((l) => l.startsWith("total"))!;
+    // "+" reads as "at least" — the figure is a floor, not the bill.
+    expect(totalLine).toMatch(/\$0\.01\+$/);
+    expect(err).toContain("1 runs not in total (refer to OpenRouter)");
+    // Still not conflated with a gap in Nota's own data.
+    expect(err).not.toContain("runs have unknown cost");
+  });
+
+  it("leaves an all-priced total unmarked", async () => {
+    writeRecord(
+      recordWithUsage("priced-only", [
+        {
+          modelId: "gpt-5-mini",
+          task: "summary",
+          provider: "assemblyai",
+          calls: 1,
+          tokensIn: 40_000,
+          tokensOut: 2_000,
+          costUSD: 0.014,
+          estimated: false,
+        },
+      ]),
+    );
+
+    await usageSummary(undefined, dir);
+
+    const err = stderr.join("");
+    expect(err.split("\n").find((l) => l.startsWith("total"))!).not.toContain("+");
+    expect(err).not.toContain("not in total");
+  });
 });
