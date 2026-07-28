@@ -400,19 +400,38 @@ goes into a small floating card instead of the target app:
     a continuation is recording, both are refused (buttons disabled, and
     `DictationReviewModel.apply/discard` beep) — the decision is about a batch
     that is still being spoken. `finishReview` refuses too, as the backstop.
-  - **Target pid: each press re-captures, and the newest capture wins**
-    (`sessionTarget ?? open.target`). The owner may have moved between
-    sessions, and the app they were dictating into when they last spoke is the
-    one they mean. A capture that *failed* keeps the one that worked — nil is a
-    refusal to insert anywhere, and the earlier session already found somewhere
-    valid.
+  - **Target pid: each press re-captures, and the newest USABLE capture wins**
+    (`reviewTarget(sessionTarget) ?? open.target`). The owner may have moved
+    between sessions, and the app they were dictating into when they last spoke
+    is the one they mean. But "newest" has to mean one Apply could actually use:
+    `injectReviewed` requires a pid and requires it not to be Nota's own, and it
+    checks *after* `finishReview` has taken the card down — so a capture that
+    fails either test would destroy the whole batch at Apply. Both are therefore
+    refused at capture time and the working target survives. Nota's own pid is
+    not hypothetical: the card is nonactivating, but the owner can bring Nota
+    forward (menu-bar icon, Cmd-, for the Dictionary tab) and press the trigger
+    from there.
   - **Extended is not superseded.** A continuation keeps the review's `id` and
     bumps `generation`; only a genuine replacement (the card could not be
-    written to, so a fresh one was opened carrying the accumulated text) gets a
-    new id. That distinction is what the `id` guard in `finishReview` is for:
-    the decision callbacks the open card is already holding were made for the
-    *first* session, and ⌘↩ after a continuation must still land. A decision
-    from a card that was replaced must not.
+    written to, so a fresh one was opened) gets a new id. That distinction is
+    what the `id` guard in `finishReview` is for: the decision callbacks the
+    open card is already holding were made for the *first* session, and ⌘↩ after
+    a continuation must still land. A decision from a card that was replaced
+    must not. A replacement still **carries the batch** — the fresh card opens
+    on `open.polished` plus the new text, and `generation` comes forward. What
+    it cannot carry is the owner's editing, because the editor is precisely what
+    could not be read; the pipeline's own accumulation is the best account of
+    the batch left.
+  - **A card belongs to the mode that can fill it.** The Delivery picker can
+    move while a card is on screen, and only `.review` ever reaches
+    `presentReview` — the one success-path clear of the listening flag. So the
+    press is gated on the mode: in `.immediate` or `.streaming` it starts no
+    continuation and *cancels* the orphaned card instead (plan 07's old rule,
+    inserting nothing), and `deliver`'s non-review branch clears the flag as a
+    backstop for a mode that changed mid-session. Ungated, one Settings visit
+    left `isReviewRecording` true with nothing to clear it: `finishReview`
+    refuses every decision while it is set, so the card took neither ⌘↩ nor
+    Escape for the rest of the run.
   - Auto-learn's budget stays **per session** — each continuation is a session
     for `AutoLearn` purposes, and its polish is its own.
   - **The HUD comes back while a continuation records.** `isReviewing` alone
@@ -441,7 +460,11 @@ goes into a small floating card instead of the target app:
   claims success. That is not an exotic path — every terminal in
   `defaultOverrideTable` is forced onto `.keyEvents`, and the AX strategy (the
   one modifiers cannot touch) is exactly the one those apps skip, which is why
-  it reproduced for the owner and not in a plain Cocoa text field. Two fixes,
+  it reproduced for the owner and not in a plain Cocoa text field. It stops
+  there, though: the `.paste`-forced bundles build their Cmd-V with
+  `flags = .maskCommand` on purpose and were never affected — reading the fix
+  as covering Chrome or Slack sends the next investigation to the wrong file.
+  Two fixes,
   because either alone leaves a hole: `TextInjector` now assigns `flags = []`
   to both events it builds (a keystroke carrying text is never a shortcut,
   whatever the keyboard is doing), and `injectReviewed` first awaits
@@ -895,8 +918,15 @@ The cache feeds cost computation for usage tracking.
   the events it builds (our event never claims to be a shortcut), and
   `ModifierClearance.wait()` bounds-waits for the real modifiers to come up
   (the *target's* modifier state comes from the keyboard, not from our event).
-  This is what made review-mode ⌘↩ drop every session's text into terminals and
-  Chromium apps while the Apply button worked — see Dictation Delivery.
+  This is what made review-mode ⌘↩ drop a session's text while the Apply button
+  worked. Scope it correctly when reading the next report: the missing `flags`
+  assignment was in `tryCGEventInject` only, so it hit the `.keyEvents`
+  terminals and any target that got there by AX writing having failed. The
+  `.paste`-forced bundles (Chrome, Chromium, Edge, Slack, VSCode, Copilot,
+  Spotify) were never affected by it — `PasteInjector.synthesizeCommandV` sets
+  `.maskCommand` deliberately, because its event *is* a shortcut. The wait runs
+  before every injection anyway, since the strategy is chosen inside
+  `TextInjector` at delivery time. See Dictation Delivery.
 - What a delivery mode asks of the recognizer is a pure decision
   (`DictationSessionPlan.make(mode:engine:)`), separate from what it may do with
   the results. "Show a live rough draft" and "put text in the user's document"

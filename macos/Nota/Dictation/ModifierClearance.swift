@@ -19,17 +19,28 @@ import Foundation
 /// the text as a Unicode payload — was posting it tagged `⌘`. An app receiving
 /// a ⌘-tagged key-down routes it to key-equivalent/menu dispatch and never
 /// inserts the payload: the text is dropped silently while `lastProcessedText`
-/// claims a success. That path is not the exotic one — every terminal in
-/// `TextInjector.defaultOverrideTable` is forced onto `.keyEvents`, and the AX
-/// strategy (the one strategy modifiers cannot affect) is exactly the one those
-/// apps skip.
+/// claims a success.
+///
+/// **Which targets that reached, precisely.** Only the strategies that build a
+/// text-carrying keystroke: `.keyEvents` — every terminal in
+/// `TextInjector.defaultOverrideTable` is forced onto it — and the default
+/// chain's CGEvent step, taken whenever the AX write fails. It did **not**
+/// reach the `.paste`-forced bundles (Chrome, Chromium, Edge, Slack, VSCode,
+/// Copilot, Spotify): `PasteInjector.synthesizeCommandV` has always assigned
+/// `flags = .maskCommand` deliberately, because its event *is* a shortcut. Do
+/// not read the `flags = []` fix as covering them — a debugger who does will
+/// look in the wrong place for the next Chrome report. (`injectReviewed`'s
+/// separate `reviewKeyRestoreSettleNs` wait is the one that covers both, and
+/// for a different reason: key-window restoration, not modifiers.)
 ///
 /// Two defences, because either alone leaves a hole. `TextInjector` now assigns
 /// `flags = []` to the events it builds, so a keystroke carrying text is never
 /// a shortcut whatever the keyboard is doing. And injection waits here first,
 /// because a real ⌘ that is still down also reaches the target as its own
 /// `flagsChanged` — the app's own idea of the modifier state, which no flag we
-/// set on our event can correct.
+/// set on our event can correct. The wait is unconditional because the caller
+/// does not know which strategy `TextInjector` will pick: the override table is
+/// consulted at delivery time, inside the injector.
 ///
 /// Bounded on purpose: a stuck or genuinely-held modifier must delay the text,
 /// never swallow it. At the cap the injection goes ahead anyway.

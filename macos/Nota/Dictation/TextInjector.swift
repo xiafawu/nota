@@ -197,6 +197,13 @@ final class TextInjector {
   /// never a shortcut, whatever the keyboard happens to be doing.
   /// `ModifierClearance` covers the other half — the target's own idea of the
   /// modifier state, which no flag set here can correct.
+  ///
+  /// This is a rule for *this* strategy, not a house style:
+  /// `PasteInjector.synthesizeCommandV` sets `.maskCommand` on purpose and
+  /// always has, because its event is a shortcut rather than a payload. So the
+  /// apps `defaultOverrideTable` forces onto `.paste` were never affected by
+  /// the missing assignment — the ones that were are the `.keyEvents` terminals
+  /// and any target that got here by AX writing having failed.
   private func tryCGEventInject(_ text: String, target: FocusedTarget) -> Bool {
     guard let pid = target.processID ?? frontmostAppPID() else {
       logger.debug("CGEvent: no target or frontmost PID")
