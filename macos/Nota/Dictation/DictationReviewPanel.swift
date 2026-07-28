@@ -79,6 +79,25 @@ enum DictationReview {
     }
   }
 
+  /// What the card holds after a continuation session's text is added to it.
+  ///
+  /// Append-only, for the same reason streaming delivery into a live document
+  /// is: `buffer` is what the OWNER has in the box, edits and all, and those
+  /// edits are theirs. The earlier text is never regenerated from the pipeline
+  /// — only extended.
+  ///
+  /// The separator is `StreamingDelivery.joined`'s: exactly one space, unless
+  /// one side already brings whitespace. That covers both cases the same way —
+  /// a buffer cut off mid-sentence and one ending in a full stop both want a
+  /// single space — and it keeps a deliberate newline the owner typed at the
+  /// end of the box intact rather than collapsing it.
+  static func appended(buffer: String, addition: String) -> String {
+    let addition = addition.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !addition.isEmpty else { return buffer }
+    guard !buffer.isEmpty else { return addition }
+    return StreamingDelivery.joined(buffer, addition)
+  }
+
   /// Words in the editor, for the card's title row.
   ///
   /// Whitespace-separated runs, which is what a person counts when they glance
@@ -119,6 +138,20 @@ protocol DictationReviewPresenting: AnyObject {
   /// here.
   @discardableResult
   func present(_ request: DictationReviewRequest) -> Bool
+  /// What is in the editor right now, or nil when no card is up.
+  ///
+  /// A continuation appends to *this*, not to the text the pipeline last
+  /// produced: by the time the owner triggers another session they may have
+  /// already corrected half the card, and regenerating from the pipeline would
+  /// throw those edits away.
+  var editorText: String? { get }
+  /// Replace the editor's contents. False when no card is up to replace.
+  @discardableResult
+  func replaceEditorText(_ text: String) -> Bool
+  /// Show (or clear) the card's "a continuation is recording into me" state.
+  /// While it is set the card refuses Apply and Discard — the decision is about
+  /// a batch that is still being spoken.
+  func setListening(_ listening: Bool)
   /// Take the panel down without applying. Idempotent, and safe to call from
   /// inside a decision callback.
   func dismiss()
@@ -132,7 +165,10 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
   private static let logger = Logger(subsystem: "com.xiafawu.nota", category: "dictation.review")
 
   private var panel: DictationReviewPanel?
-  private let model = DictationReviewModel()
+  /// The card's editable text and its two decisions. Internal rather than
+  /// private: the buttons and the key monitor both act through it, so a test
+  /// that drives it is driving exactly what the owner drives.
+  let model = DictationReviewModel()
   private var keyMonitor: Any?
   /// The review currently on screen. Taken — not merely read — the instant a
   /// decision lands, which is what makes Apply-then-close fire exactly one
@@ -140,6 +176,20 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
   private var pending: DictationReviewRequest?
 
   var isPresenting: Bool { pending != nil }
+
+  var editorText: String? { pending == nil ? nil : model.text }
+
+  @discardableResult
+  func replaceEditorText(_ text: String) -> Bool {
+    guard pending != nil else { return false }
+    model.text = text
+    return true
+  }
+
+  func setListening(_ listening: Bool) {
+    guard pending != nil else { return }
+    model.isListening = listening
+  }
 
   @discardableResult
   func present(_ request: DictationReviewRequest) -> Bool {
@@ -149,6 +199,7 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
 
     pending = request
     model.text = request.text
+    model.isListening = false
     model.onApply = { [weak self] text in self?.finish(.apply(text)) }
     model.onDiscard = { [weak self] in self?.finish(.discard) }
 
@@ -228,6 +279,7 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
   private func finish(_ decision: DictationReview.Decision) {
     guard let request = pending else { return }
     pending = nil
+    model.isListening = false
     close()
     switch decision {
     case .apply(let text): request.onApply(text)
@@ -247,6 +299,14 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
   /// reach a SwiftUI cancel button. Scoped to this panel's own events, and torn
   /// down with it — a monitor left installed would swallow Escape everywhere
   /// else in the app.
+  ///
+  /// Both cases go through `model.apply()` / `model.discard()` — the *same*
+  /// call the card's two buttons make — rather than reaching into `finish`
+  /// directly. There is then exactly one expression of what Apply means (take
+  /// what is in the box, and refuse while a continuation is still recording),
+  /// so the shortcut and the button cannot drift apart. They did not differ in
+  /// code when ⌘↩ was dropping text (that was the physically-held ⌘ — see
+  /// `ModifierClearance`), and this is what keeps that true.
   private func installKeyMonitor(for panel: NSPanel) {
     removeKeyMonitor()
     keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak panel] event in
@@ -254,10 +314,10 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
       let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
       switch event.keyCode {
       case 53: // Escape
-        self.finish(.discard)
+        self.model.discard()
         return nil
       case 36 where flags.contains(.command): // Return
-        self.finish(.apply(self.model.text))
+        self.model.apply()
         return nil
       default:
         return event
@@ -286,12 +346,31 @@ extension DictationReviewPresenter: NSWindowDelegate {
 @MainActor
 final class DictationReviewModel: ObservableObject {
   @Published var text: String = ""
+  /// True while a continuation session is recording into this card.
+  ///
+  /// One decision per review, and it is about the whole batch — so while more
+  /// of that batch is still being spoken there is nothing to decide about yet.
+  @Published var isListening: Bool = false
 
   var onApply: ((String) -> Void)?
   var onDiscard: (() -> Void)?
 
-  func apply() { onApply?(text) }
-  func discard() { onDiscard?() }
+  /// Apply and Discard, refused while a continuation is recording.
+  ///
+  /// The gate lives here rather than in the buttons because the key monitor is
+  /// the other caller, and the ⌘↩ bug was expensive enough to be worth having
+  /// exactly one place where "what Apply means" is written down. The buttons
+  /// are disabled too — this is the backstop, and the beep is what a keystroke
+  /// that has been swallowed owes the person who typed it.
+  func apply() {
+    guard !isListening else { return NSSound.beep() }
+    onApply?(text)
+  }
+
+  func discard() {
+    guard !isListening else { return NSSound.beep() }
+    onDiscard?()
+  }
 }
 
 // MARK: - DictationReviewPanel
@@ -529,10 +608,28 @@ struct DictationReviewView: View {
     RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
   }
 
+  /// Title, a mic dot while a continuation is recording, and the word count.
+  ///
+  /// The dot is the card borrowing the HUD pill's own grammar rather than
+  /// growing a second visual language: the pill's listening state is a filled
+  /// accent circle, and this is that circle in the header row. Nothing else
+  /// moves — the card must not resize under the owner's cursor while they are
+  /// mid-edit.
   private var titleRow: some View {
     HStack(alignment: .firstTextBaseline, spacing: 12) {
       Text("Review dictation")
         .font(.headline)
+      if model.isListening {
+        HStack(spacing: 5) {
+          Circle()
+            .fill(Color.accentColor)
+            .frame(width: 7, height: 7)
+          Text("Listening…")
+            .font(.caption)
+        }
+        .foregroundStyle(.secondary)
+        .transition(.opacity)
+      }
       Spacer(minLength: 12)
       Text(wordCountLabel)
         .font(.caption)
@@ -559,7 +656,7 @@ struct DictationReviewView: View {
 
   private var footer: some View {
     HStack(spacing: 10) {
-      Text("Nothing is inserted until you apply.")
+      Text(footerCaption)
         .font(.caption)
         .foregroundStyle(.secondary)
       Spacer(minLength: 12)
@@ -569,14 +666,26 @@ struct DictationReviewView: View {
       }
       .buttonStyle(ReviewButtonStyle(prominent: false))
       .keyboardShortcut(.cancelAction)
+      .disabled(model.isListening)
 
       Button { model.apply() } label: {
         ReviewButtonLabel(title: "Apply", shortcut: "⌘↩")
       }
       .buttonStyle(ReviewButtonStyle(prominent: true))
       .keyboardShortcut(.return, modifiers: .command)
-      .disabled(model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+      .disabled(
+        model.isListening
+          || model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      )
     }
+  }
+
+  /// While a continuation records, the card says what it is waiting for. Both
+  /// decisions are about the whole batch, and the batch is not finished.
+  private var footerCaption: String {
+    model.isListening
+      ? "Keep talking — this will be added when you stop."
+      : "Nothing is inserted until you apply."
   }
 }
 

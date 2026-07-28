@@ -156,7 +156,8 @@ struct DictationSettingsView: View {
             footerText("Requires the Apple On-Device engine; other engines insert on release as usual.")
           }
         case .review:
-          footerText("The panel takes keyboard focus, so Nota comes to the front while you edit. Applying inserts into the app you were dictating into, not whatever is frontmost.")
+          footerText("The panel takes keyboard focus without bringing Nota to the front, so the app you were dictating into stays where it is. Applying inserts there, not into whatever is frontmost.")
+          footerText("Pressing the trigger again while the panel is open adds to it instead of replacing it — keep talking as many times as you like, then apply the whole thing at once. Anything you have already edited by hand is left exactly as you typed it.")
           footerText("Corrections you make are learned: the term you typed is remembered, and the wrong spelling you replaced becomes one of its spoken forms.")
         }
       }

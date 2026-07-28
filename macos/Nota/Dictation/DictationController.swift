@@ -159,21 +159,43 @@ final class DictationController: ObservableObject {
   /// decision needs — its target pid, what it started from — belongs to that
   /// session and not to whatever came after it.
   private struct PendingReview {
-    let id = UUID()
-    /// What the panel was opened with (polished, or the offline text when
-    /// polish is off or failed).
-    let polished: String
-    /// The rules + dictionary result behind `polished`.
-    let offline: String
-    /// The target captured when the hotkey went down.
-    let target: FocusedTarget?
-    let latency: TimeInterval
+    /// Identity of the REVIEW, not of the session that filled it. A
+    /// continuation carries this forward: it extends the batch rather than
+    /// replacing it, so a decision made after it must still land. Only a
+    /// genuinely new card — one that replaced this one on screen — gets a new
+    /// id, and that is what makes a decision from the old one ignorable.
+    var id = UUID()
+    /// How many sessions have added to this review. Extending bumps it;
+    /// replacing does not exist for it, because a replacement is a new id.
+    /// Distinguishes "extended" from "superseded" for anything that has to
+    /// tell them apart after the fact.
+    var generation: Int = 0
+    /// The whole batch as the PIPELINE produced it — every session's polished
+    /// text, appended. Not what is in the box: the owner's edits belong to the
+    /// owner, and this is the `before` side of the diff Apply learns from.
+    var polished: String
+    /// The rules + dictionary result behind `polished`, accumulated the same
+    /// way.
+    var offline: String
+    /// The target captured when the hotkey last went down. **Newest capture
+    /// wins**: the owner may have moved to another app between the first
+    /// session and the continuation, and the app they were dictating into when
+    /// they last spoke is the one they mean.
+    var target: FocusedTarget?
+    var latency: TimeInterval
   }
 
   private var pendingReview: PendingReview? {
     didSet { isReviewing = pendingReview != nil }
   }
   private let review: any DictationReviewPresenting
+
+  /// True while a continuation session is recording into an open review card.
+  ///
+  /// Published because the HUD needs it: `isReviewing` alone suppresses the
+  /// pill outright, which is right for a card sitting there waiting on the
+  /// owner and wrong the moment the microphone is open again.
+  @Published private(set) var isReviewRecording = false
 
   /// How long Apply waits after the card goes away before posting keystrokes,
   /// so the target app's own window has key status back. See `injectReviewed`.
@@ -321,9 +343,10 @@ final class DictationController: ObservableObject {
       return
     }
 
-    // The panel belongs to the session that produced its text: a new one
-    // cancels it, and cancelling inserts nothing.
-    discardPendingReview()
+    // A trigger press with a card already open EXTENDS that review rather than
+    // throwing it away (plan 14). The card stays on screen showing that it is
+    // listening, and this session's text is appended to its buffer on stop.
+    beginReviewContinuationIfOpen()
 
     isSessionPending = true
 
@@ -416,6 +439,7 @@ final class DictationController: ObservableObject {
         self.isSessionPending = false
         self.speechStream = nil
         self.resetStreamingSession()
+        self.endReviewContinuation()
         self.state = .failed(message: error.localizedDescription)
         self.logger.error("SpeechStream.start failed: \(error.localizedDescription, privacy: .public)")
         return
@@ -436,6 +460,7 @@ final class DictationController: ObservableObject {
         stream.cancel()
         self.speechStream = nil
         self.resetStreamingSession()
+        self.endReviewContinuation()
         return
       }
       do {
@@ -449,6 +474,7 @@ final class DictationController: ObservableObject {
         self.isSessionPending = false
         self.speechStream = nil
         self.resetStreamingSession()
+        self.endReviewContinuation()
         self.state = .failed(message: error.localizedDescription)
         self.logger.error("microphone capture failed: \(error.localizedDescription, privacy: .public)")
       }
@@ -462,6 +488,7 @@ final class DictationController: ObservableObject {
       speechStream?.cancel()
       speechStream = nil
       resetStreamingSession()
+      endReviewContinuation()
       state = .idle
       logger.info("Dictation session cancelled before speech started")
       return
@@ -488,6 +515,7 @@ final class DictationController: ObservableObject {
       } catch is CancellationError {
         await MainActor.run {
           self.isSessionPending = false
+          self.endReviewContinuation()
           self.state = .idle
           self.speechStream = nil
         }
@@ -495,6 +523,7 @@ final class DictationController: ObservableObject {
       } catch {
         await MainActor.run {
           self.isSessionPending = false
+          self.endReviewContinuation()
           self.state = .failed(message: error.localizedDescription)
           self.speechStream = nil
           self.logger.error("SpeechStream.finish failed: \(error.localizedDescription, privacy: .public)")
@@ -841,7 +870,40 @@ final class DictationController: ObservableObject {
     presentReview(polished: text, offline: offline, latency: latency)
   }
 
-  /// Open the review panel on this session's text.
+  /// A trigger press while a review card is open starts a CONTINUATION of that
+  /// review rather than a new, independent session (plan 14, user feedback
+  /// 2026-07-28).
+  ///
+  /// Before this, the press discarded the card and the text in it was gone —
+  /// which made the mode punishing to use exactly when it was working, because
+  /// "one more sentence" cost everything already reviewed. Now the card stays,
+  /// shows that it is listening, and refuses Apply/Discard until this session's
+  /// text has landed in it.
+  ///
+  /// Returns whether a continuation was started. Internal rather than private:
+  /// `beginCaptureAndSpeech` needs a microphone, an analyzer and three
+  /// permission grants, and the claim under test — a press extends rather than
+  /// discards — needs none of them.
+  @discardableResult
+  func beginReviewContinuationIfOpen() -> Bool {
+    guard pendingReview != nil else { return false }
+    pendingReview?.generation += 1
+    isReviewRecording = true
+    review.setListening(true)
+    logger.info("Review continuation started (generation \(self.pendingReview?.generation ?? 0))")
+    return true
+  }
+
+  /// Stop showing the card as listening. Idempotent, and safe on a session that
+  /// was never a continuation.
+  private func endReviewContinuation() {
+    guard isReviewRecording else { return }
+    isReviewRecording = false
+    review.setListening(false)
+  }
+
+  /// Open the review panel on this session's text — or, when a card is already
+  /// open, add this session's text to it.
   private func presentReview(polished: String, offline: String, latency: TimeInterval) {
     isPolishInProgress = false
     speechStream = nil
@@ -850,30 +912,75 @@ final class DictationController: ObservableObject {
     // the HUD's success snippet comes from this field, and the last session's
     // text is still in it.
     lastProcessedText = nil
+    endReviewContinuation()
 
     guard !polished.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-      // Nothing was recognized; an empty panel is worse than no panel.
+      // Nothing was recognized. An empty panel is worse than no panel — and a
+      // continuation that heard nothing leaves the card exactly as it was
+      // rather than closing it.
       state = .idle
       return
     }
 
-    // Anything still open belongs to an earlier session; close it out first so
-    // its decision cannot be attributed to this one.
-    discardPendingReview()
+    if let open = pendingReview,
+       extendReview(open, polished: polished, offline: offline, latency: latency) {
+      state = .idle
+      return
+    }
 
-    let pending = PendingReview(
-      polished: polished,
-      offline: offline,
-      target: sessionTarget,
-      latency: latency
+    openReview(
+      PendingReview(
+        polished: polished,
+        offline: offline,
+        target: sessionTarget,
+        latency: latency
+      ),
+      text: polished
     )
+  }
+
+  /// Add a continuation's finished text to the open card.
+  ///
+  /// Appends to what is in the EDITOR, not to what the pipeline produced: by
+  /// now the owner may have corrected half the card, and those edits are
+  /// theirs. Returns false when the card is not there to write to, which sends
+  /// the caller down the open-a-fresh-one path rather than losing the batch.
+  private func extendReview(
+    _ open: PendingReview,
+    polished: String,
+    offline: String,
+    latency: TimeInterval
+  ) -> Bool {
+    guard let buffer = review.editorText else { return false }
+    let combined = DictationReview.appended(buffer: buffer, addition: polished)
+    guard review.replaceEditorText(combined) else { return false }
+
+    var extended = open
+    // Same id: this review was EXTENDED, not replaced, so the decision
+    // callbacks the card is already holding stay valid.
+    extended.polished = DictationReview.appended(buffer: open.polished, addition: polished)
+    extended.offline = DictationReview.appended(buffer: open.offline, addition: offline)
+    // Newest capture wins. A capture that failed keeps the one that worked —
+    // a nil target is a refusal to insert anywhere, and the earlier session
+    // already found somewhere valid.
+    extended.target = sessionTarget ?? open.target
+    extended.latency = latency
+    pendingReview = extended
+    logger.info(
+      "Review extended to \(combined.count) characters (generation \(extended.generation))"
+    )
+    return true
+  }
+
+  /// Put a fresh card on screen for `pending`, replacing anything already up.
+  private func openReview(_ pending: PendingReview, text: String) {
     pendingReview = pending
     state = .idle
 
     let id = pending.id
     let shown = review.present(
       DictationReviewRequest(
-        text: polished,
+        text: text,
         onApply: { [weak self] edited in
           self?.finishReview(.apply(edited), id: id)
         },
@@ -894,22 +1001,26 @@ final class DictationController: ObservableObject {
       state = .failed(message: "Nota could not show the review card. Restart Nota to fix it.")
       return
     }
-    logger.info("Review panel opened with \(polished.count) characters")
-  }
-
-  /// Close an open review as a discard. Nothing is inserted.
-  private func discardPendingReview() {
-    guard let pending = pendingReview else { return }
-    finishReview(.discard, id: pending.id)
+    logger.info("Review panel opened with \(text.count) characters")
   }
 
   /// Land a review decision.
   ///
   /// `id` is the same guard the streaming epoch is: the panel outlives the
-  /// session that filled it, and a decision that arrives after another session
-  /// has taken over must not be attributed to that session's text or target.
+  /// session that filled it, and a decision that arrives after the card was
+  /// REPLACED must not be attributed to whatever replaced it. A continuation is
+  /// not a replacement — it keeps the id and bumps `generation` — so the
+  /// callbacks the open card is already holding stay valid across one, which is
+  /// the whole point: ⌘↩ applies the batch, however many sessions built it.
   private func finishReview(_ decision: DictationReview.Decision, id: UUID) {
     guard let pending = pendingReview, pending.id == id else { return }
+    // A decision may not land while more of this batch is still being spoken.
+    // The card refuses both routes itself; this is the backstop for anything
+    // that reaches the controller anyway.
+    guard !isReviewRecording else {
+      logger.notice("Review decision ignored — a continuation is still recording")
+      return
+    }
     pendingReview = nil
     review.dismiss()
 
@@ -964,6 +1075,26 @@ final class DictationController: ObservableObject {
     )
 
     Task {
+      // FIRST, and this is the ⌘↩ bug (2026-07-28): wait for the owner's own
+      // modifier keys to come up.
+      //
+      // The two ways out of the card run identical code — the key monitor and
+      // the Apply button both end in `model.apply()` → `finish(.apply(…))` →
+      // here — so the difference was never in Nota. On the shortcut route the
+      // owner's ⌘ is *physically down* when this runs, and a `CGEvent` built
+      // from `.combinedSessionState` inherits the real keyboard's modifiers. A
+      // ⌘-tagged key-down is a shortcut, not text: the target routed it to
+      // key-equivalent dispatch and dropped the payload, silently, while
+      // `lastProcessedText` claimed success. `TextInjector` now zeroes the
+      // flags on the events it builds; this covers the other half, which is
+      // the target app's own modifier state arriving from the real keyboard.
+      // Bounded — at the cap the text goes anyway, because a stuck modifier
+      // may delay a session's output and never swallow it.
+      let clearance = await ModifierClearance.wait()
+      if clearance != .alreadyClear {
+        self.logger.debug("Modifier clearance before review injection: \(String(describing: clearance), privacy: .public)")
+      }
+
       // The card that just ordered out was the KEY window. It never activated
       // Nota — the target app stayed frontmost the whole time — but its own
       // window resigned key while the owner typed in the card, and AppKit hands
@@ -1078,6 +1209,10 @@ final class DictationController: ObservableObject {
     capture.stop()
     lastCaptureDiagnostics = capture.diagnostics
     resetStreamingSession()
+    // The card itself is left alone: a permission that dropped mid-session is
+    // no reason to throw away text the owner has already reviewed. It just
+    // stops claiming to be listening, and its buttons come back.
+    endReviewContinuation()
   }
 
   deinit {
@@ -1128,5 +1263,21 @@ extension DictationController {
 
   /// Whether this session has anywhere to deliver text mid-session.
   var deliversMidSessionForTests: Bool { deliveryQueue != nil }
+
+  /// Identity of the open review. Unchanged across a continuation (extended)
+  /// and different after a replacement (superseded) — the distinction every
+  /// late decision is judged by.
+  var pendingReviewIDForTests: UUID? { pendingReview?.id }
+
+  /// How many sessions have added to the open review.
+  var pendingReviewGenerationForTests: Int? { pendingReview?.generation }
+
+  /// The pid the open review would inject through. Newest capture wins.
+  var pendingReviewTargetPIDForTests: pid_t? { pendingReview?.target?.processID }
+
+  /// The batch as the pipeline produced it, before any owner edit — the
+  /// `before` side of what Apply learns from.
+  var pendingReviewPolishedForTests: String? { pendingReview?.polished }
+  var pendingReviewOfflineForTests: String? { pendingReview?.offline }
 }
 #endif

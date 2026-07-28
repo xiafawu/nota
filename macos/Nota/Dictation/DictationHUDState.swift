@@ -87,6 +87,16 @@ extension HUDState {
   /// `isReviewing` outranks everything: while the review panel is open it is
   /// the session's feedback, and a pill hanging under it would be a second
   /// opinion about a session whose text has not been inserted at all.
+  ///
+  /// With one exception, and it is what `isReviewRecording` is for. A card
+  /// being *extended* by a continuation (plan 14) is not a card waiting on its
+  /// owner: the microphone is open again, and the live states — the level
+  /// meter, and the rough draft the bar and prompter styles exist to show — are
+  /// the only thing on screen that says so. The card shows a mic dot, not a
+  /// transcript. The idle-derived states stay suppressed either way: a success
+  /// snippet or a polish warning speaks for text that is still sitting in the
+  /// card, uninserted. A `.failed` always shows — a review card has nowhere to
+  /// put an error, and swallowing one is how a session goes missing.
   static func compute(
     controllerState: DictationState,
     isPolishInProgress: Bool,
@@ -94,9 +104,21 @@ extension HUDState {
     lastSecureFieldNotice: String?,
     lastProcessedText: String?,
     rmsLevel: Float,
-    isReviewing: Bool = false
+    isReviewing: Bool = false,
+    isReviewRecording: Bool = false
   ) -> HUDState {
-    guard !isReviewing else { return .hidden }
+    if isReviewing {
+      switch controllerState {
+      case .failed(let message):
+        return .error(message: message)
+      case .listening where isReviewRecording:
+        return .listening(level: rmsLevel)
+      case .finalizing where isReviewRecording:
+        return .processing(step: isPolishInProgress ? "Polishing…" : "Transcribing…")
+      default:
+        return .hidden
+      }
+    }
 
     switch controllerState {
     case .disabled:

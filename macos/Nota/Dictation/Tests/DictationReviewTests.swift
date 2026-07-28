@@ -351,6 +351,213 @@ final class ReviewHUDTests: XCTestCase {
       .success(snippet: "Ship it.")
     )
   }
+
+  /// A card being extended is not a card waiting on its owner: the microphone
+  /// is open, and the meter and the rough draft are the only thing on screen
+  /// that says so. The card shows a mic dot, not a transcript.
+  func testThePillComesBackWhileAContinuationIsRecording() {
+    XCTAssertEqual(
+      HUDState.compute(
+        controllerState: .listening,
+        isPolishInProgress: false,
+        lastPolishWarning: nil,
+        lastSecureFieldNotice: nil,
+        lastProcessedText: nil,
+        rmsLevel: 0.4,
+        isReviewing: true,
+        isReviewRecording: true
+      ),
+      .listening(level: 0.4)
+    )
+    XCTAssertEqual(
+      HUDState.compute(
+        controllerState: .finalizing,
+        isPolishInProgress: true,
+        lastPolishWarning: nil,
+        lastSecureFieldNotice: nil,
+        lastProcessedText: nil,
+        rmsLevel: 0,
+        isReviewing: true,
+        isReviewRecording: true
+      ),
+      .processing(step: "Polishing…")
+    )
+  }
+
+  /// The idle-derived states stay suppressed either way: a success snippet
+  /// speaks for text that is still sitting in the card, uninserted.
+  func testTheSuccessSnippetStaysSuppressedDuringAContinuation() {
+    XCTAssertEqual(
+      HUDState.compute(
+        controllerState: .idle,
+        isPolishInProgress: false,
+        lastPolishWarning: "Polish failed: offline.",
+        lastSecureFieldNotice: nil,
+        lastProcessedText: "Ship the genc2rust patch.",
+        rmsLevel: 0,
+        isReviewing: true,
+        isReviewRecording: true
+      ),
+      .hidden
+    )
+  }
+
+  /// A review card has nowhere to put an error, so a failure is the one thing
+  /// the pill still says while one is open.
+  func testAFailureIsStillShownWhileAReviewIsOpen() {
+    XCTAssertEqual(
+      HUDState.compute(
+        controllerState: .failed(message: "Microphone unavailable"),
+        isPolishInProgress: false,
+        lastPolishWarning: nil,
+        lastSecureFieldNotice: nil,
+        lastProcessedText: nil,
+        rmsLevel: 0,
+        isReviewing: true
+      ),
+      .error(message: "Microphone unavailable")
+    )
+  }
+}
+
+// MARK: - The ⌘↩ gate
+
+/// The bounded wait that keeps the owner's own held modifiers out of Nota's
+/// synthetic keystrokes.
+///
+/// This is the pure half of the ⌘↩ fix (2026-07-28): with the review card open,
+/// the shortcut took the card down and inserted nothing while the Apply button
+/// inserted fine. Both routes run identical code; what differed was that the
+/// owner's ⌘ was physically down on one of them, and a `CGEvent` built from
+/// `.combinedSessionState` inherits the real keyboard's modifiers — so the
+/// keystroke carrying the text arrived tagged as a command and was dispatched
+/// as a shortcut instead of inserted.
+final class ModifierClearanceTests: XCTestCase {
+  private let command = CGEventFlags.maskCommand
+
+  func testCommandControlAndOptionBlockButShiftDoesNot() {
+    XCTAssertTrue(ModifierClearance.isBlocked(.maskCommand))
+    XCTAssertTrue(ModifierClearance.isBlocked(.maskControl))
+    XCTAssertTrue(ModifierClearance.isBlocked(.maskAlternate))
+    XCTAssertFalse(ModifierClearance.isBlocked([]))
+    // Nota posts a Unicode payload, not a virtual key, so shift cannot change
+    // what the target reads — and waiting on it would delay every capitalized
+    // sentence for nothing.
+    XCTAssertFalse(ModifierClearance.isBlocked(.maskShift))
+  }
+
+  /// The Apply *button*'s case, and the common one: nothing is held, so nothing
+  /// is waited for.
+  func testAnUnheldKeyboardNeverSleeps() async {
+    var sleeps = 0
+    let outcome = await ModifierClearance.wait(
+      flags: { [] },
+      sleep: { _ in sleeps += 1 }
+    )
+    XCTAssertEqual(outcome, .alreadyClear)
+    XCTAssertEqual(sleeps, 0)
+  }
+
+  func testItReturnsAsSoonAsTheModifierComesUp() async {
+    var polls = 0
+    let outcome = await ModifierClearance.wait(
+      timeoutNs: 500_000_000,
+      pollIntervalNs: 10_000_000,
+      flags: {
+        defer { polls += 1 }
+        // Down for the initial check and the first two polls.
+        return polls < 3 ? self.command : []
+      },
+      sleep: { _ in }
+    )
+    XCTAssertEqual(outcome, .cleared(afterNs: 30_000_000))
+  }
+
+  /// A stuck modifier may delay the text and never swallow it.
+  func testAHeldModifierIsBoundedAndTheTextGoesAnyway() async {
+    var slept: UInt64 = 0
+    let outcome = await ModifierClearance.wait(
+      timeoutNs: 500_000_000,
+      pollIntervalNs: 10_000_000,
+      flags: { self.command },
+      sleep: { slept += $0 }
+    )
+    XCTAssertEqual(outcome, .timedOut(afterNs: 500_000_000))
+    XCTAssertEqual(slept, 500_000_000, "the cap is a cap on real time, not on polls")
+  }
+
+  /// A poll interval longer than the cap must not overshoot it.
+  func testTheLastSliceIsTrimmedToTheCap() async {
+    var slept: UInt64 = 0
+    let outcome = await ModifierClearance.wait(
+      timeoutNs: 25_000_000,
+      pollIntervalNs: 10_000_000,
+      flags: { self.command },
+      sleep: { slept += $0 }
+    )
+    XCTAssertEqual(outcome, .timedOut(afterNs: 25_000_000))
+    XCTAssertEqual(slept, 25_000_000)
+  }
+
+  /// What the target app actually receives, read back through AppKit.
+  ///
+  /// This is the shape of the ⌘↩ failure. `TextInjector` builds one keyboard
+  /// event carrying the whole text as a Unicode payload, from a
+  /// `CGEventSource(stateID: .combinedSessionState)` — a source whose state
+  /// includes the physical keyboard — and used to assign no `flags` at all.
+  /// The modifier the owner is still holding therefore rode along, and what
+  /// arrived was a ⌘-tagged key-down: a **key equivalent**, which an app routes
+  /// to menu/shortcut dispatch instead of inserting. Below, the same event is
+  /// read the way AppKit reads it: the characters are right there, and so is
+  /// the ⌘ that stops them being typed.
+  ///
+  /// The physically-held modifier cannot be staged from a test — synthesizing
+  /// one means posting a global `flagsChanged` — so the flag is set directly.
+  /// That is the same bit the source hands over, which is the point. The
+  /// second half is the fix: an explicit assignment wins whatever the keyboard
+  /// is doing, and it is what `tryCGEventInject` now does.
+  func testAUnicodeKeystrokeCarryingCommandReadsAsAShortcutNotAsText() throws {
+    let source = try XCTUnwrap(CGEventSource(stateID: .combinedSessionState))
+    let event = try XCTUnwrap(
+      CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: true)
+    )
+    let payload = Array("hello".utf16)
+    payload.withUnsafeBufferPointer { buffer in
+      event.keyboardSetUnicodeString(
+        stringLength: payload.count,
+        unicodeString: buffer.baseAddress
+      )
+    }
+
+    event.flags = .maskCommand
+    let tagged = try XCTUnwrap(NSEvent(cgEvent: event))
+    XCTAssertEqual(tagged.characters, "hello", "the text is right there…")
+    XCTAssertTrue(
+      tagged.modifierFlags.contains(.command),
+      "…and so is the ⌘ that makes it a key equivalent rather than text"
+    )
+    XCTAssertTrue(ModifierClearance.isBlocked(event.flags))
+
+    event.flags = []
+    let plain = try XCTUnwrap(NSEvent(cgEvent: event))
+    XCTAssertEqual(plain.characters, "hello")
+    XCTAssertFalse(
+      plain.modifierFlags.contains(.command),
+      "zeroing the flags is what makes a text-carrying keystroke never a shortcut"
+    )
+    XCTAssertFalse(ModifierClearance.isBlocked(event.flags))
+  }
+
+  /// A zero interval would otherwise spin forever against a held key.
+  func testAZeroPollIntervalStillTerminates() async {
+    let outcome = await ModifierClearance.wait(
+      timeoutNs: 1_000,
+      pollIntervalNs: 0,
+      flags: { self.command },
+      sleep: { _ in }
+    )
+    XCTAssertEqual(outcome, .timedOut(afterNs: 1_000))
+  }
 }
 
 // MARK: - What a session asks the recognizer for
@@ -410,6 +617,14 @@ final class StubReviewPresenter: DictationReviewPresenting {
   /// The zombie-WindowServer case the real presenter reports by returning
   /// false: the card never reached the screen and no decision will ever come.
   var canPresent = true
+  /// A card that is no longer there to write into — the case that sends a
+  /// continuation down the open-a-fresh-review path instead of losing the batch.
+  var canEdit = true
+  /// What the owner has in the box, edits and all.
+  var buffer: String?
+  /// Whether the card is showing that a continuation is recording into it.
+  private(set) var isShowingListening = false
+  private(set) var listeningChanges: [Bool] = []
 
   var latest: DictationReviewRequest? { presented.last }
 
@@ -417,13 +632,38 @@ final class StubReviewPresenter: DictationReviewPresenting {
   func present(_ request: DictationReviewRequest) -> Bool {
     presented.append(request)
     isPresenting = canPresent
+    buffer = canPresent ? request.text : nil
+    isShowingListening = false
     return canPresent
+  }
+
+  var editorText: String? {
+    guard isPresenting, canEdit else { return nil }
+    return buffer
+  }
+
+  @discardableResult
+  func replaceEditorText(_ text: String) -> Bool {
+    guard isPresenting, canEdit else { return false }
+    buffer = text
+    return true
+  }
+
+  func setListening(_ listening: Bool) {
+    guard isPresenting else { return }
+    isShowingListening = listening
+    listeningChanges.append(listening)
   }
 
   func dismiss() {
     dismissCount += 1
     isPresenting = false
+    isShowingListening = false
+    buffer = nil
   }
+
+  /// The owner typing in the card.
+  func edit(_ text: String) { buffer = text }
 }
 
 /// The half of review delivery that lives in the controller: what opens a
@@ -592,36 +832,222 @@ final class DictationReviewBranchTests: XCTestCase {
     )
   }
 
-  func testANewReviewCancelsTheOpenOneWithoutInserting() {
-    let controller = makeController(.review)
-    controller.deliver("First session.", offline: "First session.", latency: 1)
-    let stale = presenter.latest
-    controller.deliver("Second session.", offline: "Second session.", latency: 1)
+  // MARK: - Continuation (plan 14)
 
-    XCTAssertEqual(presenter.presented.count, 2)
-    XCTAssertEqual(presenter.presented.first?.text, "First session.")
-    XCTAssertEqual(presenter.latest?.text, "Second session.")
-    XCTAssertTrue(controller.isReviewing, "the second review is the open one")
-    XCTAssertNil(controller.lastProcessedText, "the cancelled session inserted nothing")
-    XCTAssertNotNil(stale)
+  /// The rule this replaced: a trigger press used to discard the open card and
+  /// the reviewed text went with it. "One more sentence" cost everything
+  /// already reviewed, which made the mode worst exactly when it was working.
+  func testAnotherSessionExtendsTheOpenReviewInsteadOfDiscardingIt() {
+    let controller = makeController(.review)
+    controller.deliver("Ship the patch.", offline: "Ship the patch.", latency: 1)
+    let opened = controller.pendingReviewIDForTests
+
+    XCTAssertTrue(controller.beginReviewContinuationIfOpen(), "a press with a card open extends it")
+    XCTAssertTrue(presenter.isShowingListening)
+    controller.deliver("Then land it.", offline: "Then land it.", latency: 2)
+
+    XCTAssertEqual(presenter.presented.count, 1, "the card stayed — no second present")
+    XCTAssertEqual(presenter.buffer, "Ship the patch. Then land it.")
+    XCTAssertEqual(controller.pendingReviewIDForTests, opened, "extended, not replaced")
+    XCTAssertEqual(controller.pendingReviewGenerationForTests, 1)
+    XCTAssertFalse(presenter.isShowingListening, "the continuation's text has landed")
+    XCTAssertNil(controller.lastProcessedText, "still nothing inserted")
   }
 
-  /// The panel outlives the session that filled it, so a decision can arrive
-  /// after another session has taken over. It carries that review's id for the
-  /// same reason the streaming path carries an epoch.
-  func testADecisionFromASupersededReviewIsIgnored() {
+  /// The one thing a continuation may never do. The owner's corrections are
+  /// theirs; the pipeline may add after them and must not regenerate them.
+  func testAContinuationPreservesTheOwnersEditsVerbatim() {
     let controller = makeController(.review)
-    controller.deliver("First session.", offline: "First session.", latency: 1)
-    let stale = presenter.latest
-    controller.deliver("Second session.", offline: "Second session.", latency: 1)
+    controller.deliver("Ship the gency to rust patch.", offline: "Ship it.", latency: 1)
+    presenter.edit("Ship the genc2rust patch.")
 
-    stale?.onApply("First session, edited.")
-    XCTAssertTrue(controller.isReviewing, "the second review is still waiting")
+    controller.beginReviewContinuationIfOpen()
+    controller.deliver("Then land it.", offline: "Then land it.", latency: 2)
+
+    XCTAssertEqual(presenter.buffer, "Ship the genc2rust patch. Then land it.")
+    // The pipeline's own accumulation is kept separately: it is the `before`
+    // side of the diff Apply learns from, and it never sees the owner's edit.
+    XCTAssertEqual(
+      controller.pendingReviewPolishedForTests,
+      "Ship the gency to rust patch. Then land it."
+    )
+    XCTAssertEqual(controller.pendingReviewOfflineForTests, "Ship it. Then land it.")
+  }
+
+  func testAContinuationThatHeardNothingLeavesTheCardAsItWas() {
+    let controller = makeController(.review)
+    controller.deliver("Ship the patch.", offline: "Ship the patch.", latency: 1)
+    controller.beginReviewContinuationIfOpen()
+    controller.deliver("   \n ", offline: "", latency: 2)
+
+    XCTAssertTrue(controller.isReviewing, "an empty continuation must not close the card")
+    XCTAssertEqual(presenter.buffer, "Ship the patch.")
+    XCTAssertFalse(presenter.isShowingListening)
+    XCTAssertEqual(presenter.dismissCount, 0)
+  }
+
+  /// Apply is about the whole batch, so while more of the batch is still being
+  /// spoken there is nothing to decide about yet.
+  func testApplyAndDiscardAreRefusedWhileAContinuationIsRecording() {
+    let controller = makeController(.review)
+    controller.deliver("Ship the patch.", offline: "Ship the patch.", latency: 1)
+    controller.beginReviewContinuationIfOpen()
+
+    presenter.latest?.onApply("Ship the patch.")
+    XCTAssertTrue(controller.isReviewing, "the card is still holding the batch")
+    XCTAssertNil(controller.lastProcessedText)
+
+    presenter.latest?.onDiscard()
+    XCTAssertTrue(controller.isReviewing, "a discard mid-recording throws the batch away")
+    XCTAssertEqual(presenter.dismissCount, 0)
+  }
+
+  /// The owner may have moved to another app between the first session and the
+  /// continuation. The app they were dictating into when they last spoke is
+  /// the one they mean.
+  func testTheNewestCaptureWinsTheTargetPid() {
+    let controller = makeController(.review)
+    controller.beginSessionForTests(target: target)
+    controller.deliver("Ship the patch.", offline: "Ship the patch.", latency: 1)
+    XCTAssertEqual(controller.pendingReviewTargetPIDForTests, 4242)
+
+    controller.beginReviewContinuationIfOpen()
+    controller.beginSessionForTests(
+      target: FocusedTarget(
+        bundleID: "com.apple.Notes",
+        isSecureInput: false,
+        accessibilityElement: nil,
+        processID: 7777
+      )
+    )
+    controller.deliver("Then land it.", offline: "Then land it.", latency: 2)
+
+    XCTAssertEqual(controller.pendingReviewTargetPIDForTests, 7777)
+  }
+
+  /// A capture that failed is not an instruction to insert nowhere: the
+  /// earlier session already found somewhere valid.
+  func testAContinuationWithNoTargetKeepsTheOneThatWorked() {
+    let controller = makeController(.review)
+    controller.beginSessionForTests(target: target)
+    controller.deliver("Ship the patch.", offline: "Ship the patch.", latency: 1)
+
+    controller.beginReviewContinuationIfOpen()
+    controller.beginSessionForTests(target: nil)
+    controller.deliver("Then land it.", offline: "Then land it.", latency: 2)
+
+    XCTAssertEqual(controller.pendingReviewTargetPIDForTests, 4242)
+  }
+
+  /// One decision, one batch: discarding after two sessions throws away both,
+  /// and inserts nothing.
+  func testDiscardDropsTheWholeBatch() {
+    let controller = makeController(.review)
+    controller.deliver("Ship the patch.", offline: "Ship the patch.", latency: 1)
+    controller.beginReviewContinuationIfOpen()
+    controller.deliver("Then land it.", offline: "Then land it.", latency: 2)
+
+    presenter.latest?.onDiscard()
+
+    XCTAssertFalse(controller.isReviewing)
+    XCTAssertNil(controller.lastProcessedText)
+    XCTAssertEqual(controller.state, .idle)
+    XCTAssertEqual(presenter.dismissCount, 1)
+  }
+
+  /// The decision callbacks the card is holding were made for the FIRST
+  /// session. A continuation keeps the review's id precisely so they stay
+  /// valid — otherwise ⌘↩ after a continuation would be ignored as stale.
+  func testTheOriginalCallbacksStillApplyTheWholeBatchAfterAContinuation() {
+    let controller = makeController(.review)
+    controller.beginSessionForTests(target: target)
+    controller.deliver("Ship the patch.", offline: "Ship the patch.", latency: 1)
+    let original = presenter.latest
+
+    controller.beginReviewContinuationIfOpen()
+    controller.deliver("Then land it.", offline: "Then land it.", latency: 2)
+
+    original?.onApply(presenter.buffer ?? "")
+    XCTAssertFalse(controller.isReviewing)
+    XCTAssertEqual(controller.lastProcessedText, "Ship the patch. Then land it.")
+  }
+
+  /// A trigger press with no card open is an ordinary new session.
+  func testNoOpenCardMeansNoContinuation() {
+    let controller = makeController(.review)
+    XCTAssertFalse(controller.beginReviewContinuationIfOpen())
+    XCTAssertFalse(controller.isReviewRecording)
+  }
+
+  // MARK: - Extended vs superseded
+
+  /// A card that is no longer there to write into. The batch must not be lost:
+  /// a fresh card is opened carrying the accumulated text, and because it is a
+  /// genuine REPLACEMENT it gets a new id — which is what makes a late decision
+  /// from the old one ignorable.
+  func testACardThatCannotBeEditedIsReplacedNotExtended() {
+    let controller = makeController(.review)
+    controller.deliver("Ship the patch.", offline: "Ship the patch.", latency: 1)
+    let stale = presenter.latest
+    let firstID = controller.pendingReviewIDForTests
+
+    controller.beginReviewContinuationIfOpen()
+    presenter.canEdit = false
+    controller.deliver("Then land it.", offline: "Then land it.", latency: 2)
+
+    XCTAssertEqual(presenter.presented.count, 2, "a fresh card was opened")
+    XCTAssertEqual(presenter.latest?.text, "Then land it.")
+    XCTAssertNotEqual(controller.pendingReviewIDForTests, firstID, "superseded, not extended")
+    XCTAssertTrue(controller.isReviewing)
+
+    // The replaced card's callbacks are dead.
+    stale?.onApply("Ship the patch, edited.")
+    XCTAssertTrue(controller.isReviewing, "the live review is still waiting")
     XCTAssertNil(controller.lastProcessedText)
     XCTAssertEqual(controller.state, .idle, "a stale apply must not report a failure either")
 
     stale?.onDiscard()
     XCTAssertTrue(controller.isReviewing, "a stale discard must not close the live review")
+  }
+}
+
+// MARK: - Appending a continuation to the card
+
+/// The separator rule, in isolation: what a continuation's text joins onto.
+final class ReviewContinuationAppendTests: XCTestCase {
+  func testASentenceIsJoinedWithOneSpace() {
+    XCTAssertEqual(
+      DictationReview.appended(buffer: "Ship the patch.", addition: "Then land it."),
+      "Ship the patch. Then land it."
+    )
+  }
+
+  func testAnUnfinishedBufferGetsTheSameSingleSpace() {
+    XCTAssertEqual(
+      DictationReview.appended(buffer: "Ship the patch and", addition: "then land it."),
+      "Ship the patch and then land it."
+    )
+  }
+
+  func testWhitespaceTheOwnerTypedIsNotDoubled() {
+    // A deliberate newline at the end of the box is a layout choice, not a
+    // missing separator.
+    XCTAssertEqual(
+      DictationReview.appended(buffer: "Ship the patch.\n", addition: "Then land it."),
+      "Ship the patch.\nThen land it."
+    )
+    XCTAssertEqual(
+      DictationReview.appended(buffer: "Ship the patch. ", addition: "Then land it."),
+      "Ship the patch. Then land it."
+    )
+  }
+
+  func testAnEmptyAdditionLeavesTheBufferExactlyAsItWas() {
+    XCTAssertEqual(DictationReview.appended(buffer: "Ship it.", addition: "   \n "), "Ship it.")
+  }
+
+  func testAnEmptyBufferTakesTheAdditionAlone() {
+    XCTAssertEqual(DictationReview.appended(buffer: "", addition: "Ship it."), "Ship it.")
   }
 }
 
@@ -669,6 +1095,44 @@ final class DictationReviewPresenterTests: XCTestCase {
 
     XCTAssertEqual(discards, 1)
     XCTAssertFalse(presenter.isPresenting)
+  }
+
+  /// The card is the controller's window onto the owner's edits, and a
+  /// continuation writes back through it.
+  func testTheEditorCanBeReadAndReplacedOnlyWhileACardIsUp() {
+    let presenter = DictationReviewPresenter()
+    XCTAssertNil(presenter.editorText, "no card, no buffer")
+    XCTAssertFalse(presenter.replaceEditorText("anything"))
+
+    presenter.present(request(onDiscard: {}))
+    XCTAssertEqual(presenter.editorText, "Ship the genc2rust patch.")
+    XCTAssertTrue(presenter.replaceEditorText("Ship the genc2rust patch. Then land it."))
+    XCTAssertEqual(presenter.editorText, "Ship the genc2rust patch. Then land it.")
+
+    presenter.dismiss()
+    XCTAssertNil(presenter.editorText)
+  }
+
+  /// Both routes out of the card go through `model.apply()` / `model.discard()`
+  /// — the key monitor no longer reaches into `finish` on its own — so the
+  /// refusal is written down exactly once and the shortcut cannot drift from
+  /// the button.
+  func testNoDecisionLandsWhileTheCardIsListening() {
+    let presenter = DictationReviewPresenter()
+    var applies = 0
+    var discards = 0
+    presenter.present(request(onApply: { _ in applies += 1 }, onDiscard: { discards += 1 }))
+    presenter.setListening(true)
+
+    presenter.model.apply()
+    presenter.model.discard()
+    XCTAssertEqual(applies, 0)
+    XCTAssertEqual(discards, 0)
+    XCTAssertTrue(presenter.isPresenting)
+
+    presenter.setListening(false)
+    presenter.model.apply()
+    XCTAssertEqual(applies, 1)
   }
 
   /// A second present without a decision would strand the first session's text.
