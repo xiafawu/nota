@@ -37,3 +37,30 @@ config` reports binary presence alongside the API-key rows.
   drift — accepted for one bounded path, refused for dictation.
 - If a future CLI ships a low-latency server mode, revisiting the polish-path
   exclusion means reopening this ADR.
+
+## Amendment — 2026-07-28: scope of "never in the macOS app"
+
+Status: accepted. The Decision above is unchanged in substance; this narrows
+one sentence that was written wider than its own rationale.
+
+"They never appear in the macOS app" is replaced by **"they never appear in any
+dictation-polish surface."** The rationale given was latency, and it is a claim
+about polish: a per-sentence network call in a streaming session cannot wait
+minutes for a subprocess. It is not a claim about the app as a whole.
+
+The app's *summary* path is not an in-app HTTP call at all — it shells out to
+the TS pipeline (`nota-app-run.sh`), which is the CLI path this ADR already
+permits. So the Models tab's summary picker may offer the seven CLI engines and
+persist one to the shared `~/.nota/settings.json`, exactly like any other pin;
+the run that follows is the same subprocess the `nota` command would spawn.
+
+What does not change:
+
+- The polish picker stays `ModelRegistry.httpModels(for:)`, filtering on the
+  execution kind and never on an id prefix. CLI engines are not `ModelEntry`
+  values in the app at all, so there is no row for that filter to miss.
+- CLI engines still never join the key-aware default chain, in either process.
+- The app still probes no binaries and shows no CLI rows in API Keys: a
+  subscription login is not an API key, and there is nothing for that tab to
+  hold. A missing binary or a stale login fails at the summary step with the
+  error the CLI path already raises.

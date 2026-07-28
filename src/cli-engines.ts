@@ -13,10 +13,17 @@
  * `nota models refresh` — which only ever rewrites the auto-admitted cache —
  * cannot remove them.
  *
- * They are **never** mirrored into the macOS app. Dictation polish is
- * latency-bound (per sentence in streaming mode) and every app-side surface
- * filters on `execution === "http"`, so nothing here can leak into it. That
- * exclusion is structural, not a convention about id prefixes (ADR 0002).
+ * They never reach a **dictation-polish** surface. Polish is latency-bound (per
+ * sentence in streaming mode) and every polish-side surface filters on
+ * `execution === "http"`, so nothing here can leak into it. That exclusion is
+ * structural, not a convention about id prefixes (ADR 0002).
+ *
+ * The macOS app's *summary* pin is a different surface and may name one of
+ * these (ADR 0003, amended 2026-07-28): the app's summary path shells out to
+ * this very pipeline, so a `claude-code/*` pin in the shared settings.json runs
+ * exactly the subprocess the `nota` command would. The app mirrors the ids and
+ * a human label for its picker in `macos/Nota/App/ModelRegistry.swift`; this
+ * file stays the source of truth for the list.
  *
  * Verified 2026-07-28 against the installed binaries — `claude --version`
  * 2.1.220 and `codex-cli 0.144.0`:

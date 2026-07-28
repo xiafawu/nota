@@ -117,15 +117,24 @@ struct ModelsSettingsView: View {
     Form {
       modelSection(
         title: "Transcription",
-        models: ModelRegistry.models(for: .transcription),
+        groups: ModelRegistry.pickerGroups(for: ModelRegistry.models(for: .transcription)),
         selection: $transcriptionModel,
         task: .transcription
       )
+      // The one picker that may offer a subprocess engine: the app's summary
+      // path is `nota-app-run.sh`, i.e. the TS pipeline, which is exactly where
+      // ADR 0003 says a CLI engine belongs. Dictation polish — the surface that
+      // exclusion is really about — reads `httpModels(for:)` and can never see
+      // these, because they are not `ModelEntry` values at all.
       modelSection(
         title: "Summary",
-        models: catalog.summaryEntries,
+        groups: ModelRegistry.pickerGroups(
+          for: catalog.summaryEntries,
+          appendingCLIEngines: true
+        ),
         selection: $summaryModel,
-        task: .summary
+        task: .summary,
+        footer: ModelRegistry.cliEngineFooter
       )
 
       if let zombie = zombieID, !zombieDismissed {
@@ -167,18 +176,20 @@ struct ModelsSettingsView: View {
     zombieID = ModelCatalogLoader.isZombie(storedID: stored, in: catalog.catalog) ? stored : nil
   }
 
+  @ViewBuilder
   private func modelSection(
     title: String,
-    models: [ModelEntry],
+    groups: [ModelPickerGroup],
     selection: Binding<String>,
-    task: ModelTask
+    task: ModelTask,
+    footer: String? = nil
   ) -> some View {
-    Section(title) {
+    Section {
       Picker(title, selection: selection) {
-        ForEach(providerGroups(from: models), id: \.provider) { group in
-          Section(group.provider.displayName) {
-            ForEach(group.models) { model in
-              Text(model.label).tag(model.id)
+        ForEach(groups) { group in
+          Section(group.title) {
+            ForEach(group.items) { item in
+              Text(item.label).tag(item.id)
             }
           }
         }
@@ -187,6 +198,14 @@ struct ModelsSettingsView: View {
       .labelsHidden()
       .onChange(of: selection.wrappedValue) { _, newValue in
         persist(newValue, for: task)
+      }
+    } header: {
+      Text(title)
+    } footer: {
+      if let footer {
+        Text(footer)
+          .font(Tokens.settingsCaptionFont)
+          .foregroundStyle(.secondary)
       }
     }
   }
@@ -236,16 +255,6 @@ struct ModelsSettingsView: View {
           .font(Tokens.settingsCaptionFont)
           .foregroundStyle(.secondary)
       }
-    }
-  }
-
-  private struct ProviderGroup { let provider: ModelProvider; let models: [ModelEntry] }
-
-  private func providerGroups(from models: [ModelEntry]) -> [ProviderGroup] {
-    var order: [ModelProvider] = []
-    for m in models where !order.contains(m.provider) { order.append(m.provider) }
-    return order.map { provider in
-      ProviderGroup(provider: provider, models: models.filter { $0.provider == provider })
     }
   }
 

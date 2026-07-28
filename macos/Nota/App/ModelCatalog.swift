@@ -284,17 +284,25 @@ enum ModelCatalogLoader {
     return (bakedSnapshot.sanitized().mergingCurated(), .baked)
   }
 
-  /// True when `storedID` is a non-empty summary preference that is absent from
-  /// `catalog` (a "zombie": a retired model that the user still has pinned).
+  /// True when `id` names a summary model this machine can actually run.
   ///
-  /// CLI-engine ids are consulted separately: they are valid pins in the shared
-  /// settings.json but are never members of the app's catalog (ADR 0003), and
-  /// asking only the catalog is what made the Models pane call a working
-  /// `claude-code/*` pin "no longer available".
+  /// Two populations, one question. The catalog holds every model reached over
+  /// HTTP; the CLI engines are reached by spawning a binary and are therefore
+  /// never catalog rows (ADR 0003) — but they are perfectly valid pins in the
+  /// shared `~/.nota/settings.json`, because the app's summary path shells out
+  /// to the same TS pipeline the `nota` command runs. Asking only the catalog
+  /// is what made the Models pane call a working `claude-code/*` pin "no longer
+  /// available", and `effectiveModel(for: .summary)` silently substitute the
+  /// default chain for it.
+  static func isValidSummaryPin(_ id: String, in catalog: ModelCatalog) -> Bool {
+    catalog.contains(id) || ModelRegistry.cliEngineModelIDs.contains(id)
+  }
+
+  /// True when `storedID` is a non-empty summary preference this build can no
+  /// longer run (a "zombie": a retired model that the user still has pinned).
   static func isZombie(storedID: String?, in catalog: ModelCatalog) -> Bool {
     guard let storedID, !storedID.isEmpty else { return false }
-    if ModelRegistry.cliEngineModelIDs.contains(storedID) { return false }
-    return !catalog.contains(storedID)
+    return !isValidSummaryPin(storedID, in: catalog)
   }
 
   // MARK: Baked snapshot

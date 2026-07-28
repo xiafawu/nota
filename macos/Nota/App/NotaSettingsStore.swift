@@ -19,10 +19,12 @@ enum NotaSettingsStore {
   /// Transcription: the value in settings.json when it is a valid transcription
   /// model, else the built-in default.
   ///
-  /// Summary: the value in settings.json when it is present in the effective
-  /// catalog (cache → baked), else the key-aware default chain. A stored id
-  /// that is absent from the catalog (a zombie) is not resolved and not
-  /// rewritten — the UI surfaces it and runs fall back to the default.
+  /// Summary: the value in settings.json when it is one this machine can run —
+  /// a member of the effective catalog (cache → baked) or a CLI engine, which
+  /// is never a catalog row but is a valid pin for the TS pipeline the app
+  /// shells out to (ADR 0003 as amended). Else the key-aware default chain. A
+  /// stored id that is neither (a zombie) is not resolved and not rewritten —
+  /// the UI surfaces it and runs fall back to the default.
   static func effectiveModel(for task: ModelTask) -> String {
     if task == .transcription {
       if let stored = storedModel(for: task),
@@ -34,7 +36,8 @@ enum NotaSettingsStore {
     }
 
     let catalog = ModelCatalogLoader.effective().catalog
-    if let stored = storedModel(for: .summary), catalog.contains(stored) {
+    if let stored = storedModel(for: .summary),
+       ModelCatalogLoader.isValidSummaryPin(stored, in: catalog) {
       return stored
     }
     return ModelRegistry.defaultSummaryModel(keyConfigured: { provider in

@@ -109,6 +109,31 @@ struct ModelEntry: Identifiable, Hashable {
   var wireID: String { ModelID.wire(id) }
 }
 
+/// A summary engine that is a local subprocess rather than an endpoint
+/// (ADR 0003). Id plus the name a person reads — there is nothing else about it
+/// the app can know: no provider, no key, no price.
+struct CLIEngineModel: Identifiable, Hashable {
+  let id: String
+  let label: String
+}
+
+/// One labelled row in a model picker: the id that gets persisted and the text
+/// the owner reads.
+struct ModelPickerItem: Identifiable, Hashable {
+  let id: String
+  let label: String
+}
+
+/// One `Section` of a model picker. Grouped by provider for everything that has
+/// one, plus a trailing group for the CLI engines, which do not.
+struct ModelPickerGroup: Identifiable, Hashable {
+  /// The section heading, which is also unique within a picker.
+  let title: String
+  let items: [ModelPickerItem]
+
+  var id: String { title }
+}
+
 enum ModelRegistry {
   static let defaultTranscriptionModel = "universal"
   /// Keyless static fallback for callers that need one id without inspecting
@@ -130,17 +155,49 @@ enum ModelRegistry {
     ModelEntry(id: "gpt-4o-mini-transcribe", task: .transcription, provider: .openai, label: "GPT-4o mini Transcribe (OpenAI)"),
   ]
 
-  /// The CLI-engine ids, mirroring `src/cli-engines.ts` — that file is the
-  /// source of truth, this is the copy. These deliberately never enter the
-  /// app's catalog or any picker (ADR 0003: CLI engines belong to the CLI
-  /// summary path alone), but the shared `~/.nota/settings.json` can hold one
-  /// as a perfectly valid summary pin — so the zombie check must know the ids
-  /// exist, or the Models pane calls a working configuration "retired".
-  static let cliEngineModelIDs: Set<String> = [
-    "claude-code/sonnet", "claude-code/opus", "claude-code/haiku",
-    "codex/gpt-5.6-sol", "codex/gpt-5.6-terra", "codex/gpt-5.6-luna",
-    "codex/gpt-5.4-mini",
+  /// The CLI engines as the Models tab offers them, mirroring the order and the
+  /// membership of `CLI_ENGINE_MODELS` in `src/cli-engines.ts` — that file is
+  /// the source of truth, this is the copy.
+  ///
+  /// Not `ModelEntry` values, and deliberately so. A CLI engine has no
+  /// `ModelProvider`: no API key, no base URL, no key row to show in the API
+  /// Keys tab. Inventing a provider case for one would put a "paste your key"
+  /// field under a login that lives in the CLI's own config, and
+  /// `ModelProvider.allCases` is what builds that tab. They are also not
+  /// catalog rows: `ModelCatalog.contains` answers "is this a live
+  /// auto-admitted/curated pin", and these are neither.
+  ///
+  /// ADR 0003 as amended 2026-07-28: they may be pinned as the **summary**
+  /// model from the app, because the app's summary path shells out to the TS
+  /// pipeline (`nota-app-run.sh`), which is the CLI path. They still may not
+  /// reach any dictation-polish surface — that exclusion is `httpModels(for:)`,
+  /// and it is structural: these never become `ModelEntry` values at all.
+  static let cliEngineModels: [CLIEngineModel] = [
+    CLIEngineModel(id: "claude-code/sonnet", label: "Claude Sonnet (subscription)"),
+    CLIEngineModel(id: "claude-code/opus", label: "Claude Opus (subscription)"),
+    CLIEngineModel(id: "claude-code/haiku", label: "Claude Haiku (subscription)"),
+    CLIEngineModel(id: "codex/gpt-5.6-sol", label: "Codex GPT-5.6 Sol (subscription)"),
+    CLIEngineModel(id: "codex/gpt-5.6-terra", label: "Codex GPT-5.6 Terra (subscription)"),
+    CLIEngineModel(id: "codex/gpt-5.6-luna", label: "Codex GPT-5.6 Luna (subscription)"),
+    CLIEngineModel(id: "codex/gpt-5.4-mini", label: "Codex GPT-5.4 Mini (subscription)"),
   ]
+
+  /// The CLI-engine ids. Derived from `cliEngineModels` rather than written a
+  /// second time: the shared `~/.nota/settings.json` can hold one of these as a
+  /// perfectly valid summary pin, and a set that had drifted from the picker
+  /// would make the Models pane call a model it just offered "retired".
+  static let cliEngineModelIDs: Set<String> = Set(cliEngineModels.map(\.id))
+
+  /// Section title the CLI engines sit under in the summary picker.
+  static let cliEngineGroupTitle = "Subscription CLIs"
+
+  /// What the Models tab says under the summary picker about that group.
+  static let cliEngineFooter = """
+    Subscription CLIs run through the `claude` or `codex` command installed on \
+    this Mac and are billed to that subscription, not to an API key. They need \
+    the binary on your PATH and an active login, and they take minutes rather \
+    than seconds.
+    """
 
   /// The OpenRouter shortlist, mirroring `OPENROUTER_MODELS` in
   /// `src/openrouter.ts` — that file is the source of truth, this is the copy.
@@ -197,6 +254,38 @@ enum ModelRegistry {
 
   static func model(id: String) -> ModelEntry? {
     all.first { $0.id == id }
+  }
+
+  /// The groups a model picker shows, in order: one per provider in the order
+  /// the entries introduce them, then — when asked for — the CLI engines.
+  ///
+  /// Pure and shared by both pickers in the Models tab, so "the summary picker
+  /// offers every CLI engine, after the catalog, and the transcription picker
+  /// offers none" is one assertion about one function rather than a claim about
+  /// a `View`'s body. `appendingCLIEngines` is passed explicitly at each call
+  /// site: a surface that can host a subprocess has to say so.
+  static func pickerGroups(
+    for entries: [ModelEntry],
+    appendingCLIEngines: Bool = false
+  ) -> [ModelPickerGroup] {
+    var order: [ModelProvider] = []
+    for entry in entries where !order.contains(entry.provider) { order.append(entry.provider) }
+    var groups = order.map { provider in
+      ModelPickerGroup(
+        title: provider.displayName,
+        items: entries
+          .filter { $0.provider == provider }
+          .map { ModelPickerItem(id: $0.id, label: $0.label) }
+      )
+    }
+    guard appendingCLIEngines else { return groups }
+    groups.append(
+      ModelPickerGroup(
+        title: cliEngineGroupTitle,
+        items: cliEngineModels.map { ModelPickerItem(id: $0.id, label: $0.label) }
+      )
+    )
+    return groups
   }
 
   static func defaultModel(for task: ModelTask) -> String {

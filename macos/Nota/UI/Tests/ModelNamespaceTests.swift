@@ -296,12 +296,18 @@ final class ModelNamespaceTests: XCTestCase {
         ModelCatalogLoader.isZombie(storedID: id, in: catalog),
         "\(id) wrongly classified as a retired model"
       )
-      // And still structurally absent from every app surface: not in the
-      // catalog itself, so no picker can offer it (ADR 0003).
+      XCTAssertTrue(
+        ModelCatalogLoader.isValidSummaryPin(id, in: catalog),
+        "\(id) must resolve as a summary pin, not fall back to the default chain"
+      )
+      // Still not a catalog row, and that stays true: `contains` answers
+      // "is this a live auto-admitted or curated entry", which these are not.
+      // The summary picker offers them alongside the catalog, not inside it.
       XCTAssertFalse(catalog.contains(id))
     }
     // The check stays a real check: junk is still a zombie.
     XCTAssertTrue(ModelCatalogLoader.isZombie(storedID: "gpt-2", in: catalog))
+    XCTAssertFalse(ModelCatalogLoader.isValidSummaryPin("gpt-2", in: catalog))
   }
 
   func testCliEngineMirrorIsInLockstepWithTheTypeScriptSource() {
@@ -312,5 +318,78 @@ final class ModelNamespaceTests: XCTestCase {
       "codex/gpt-5.6-sol", "codex/gpt-5.6-terra", "codex/gpt-5.6-luna",
       "codex/gpt-5.4-mini",
     ])
+    // Ordered list and derived set cannot drift: the set is built from the list.
+    XCTAssertEqual(ModelRegistry.cliEngineModels.count, 7)
+    XCTAssertEqual(
+      Set(ModelRegistry.cliEngineModels.map(\.id)),
+      ModelRegistry.cliEngineModelIDs
+    )
+    XCTAssertTrue(
+      ModelRegistry.cliEngineModels.allSatisfy { $0.label.contains("(subscription)") },
+      "the picker has to say what pays for these"
+    )
+  }
+
+  // MARK: - Which picker may offer a subprocess engine (plan 13)
+
+  func testTheSummaryPickerOffersEveryCliEngineAfterTheCatalog() throws {
+    let entries = ModelCatalogLoader.bakedSnapshot.sanitized().mergingCurated()
+      .summaryModelEntries()
+    let groups = ModelRegistry.pickerGroups(for: entries, appendingCLIEngines: true)
+
+    let last = try XCTUnwrap(groups.last)
+    XCTAssertEqual(last.title, ModelRegistry.cliEngineGroupTitle, "appended, not interleaved")
+    XCTAssertEqual(
+      last.items.map(\.id),
+      ModelRegistry.cliEngineModels.map(\.id),
+      "every CLI engine, in the order src/cli-engines.ts lists them"
+    )
+
+    // The catalog groups are untouched: same ids, same order, ahead of the
+    // CLI group.
+    let catalogIDs = groups.dropLast().flatMap { $0.items.map(\.id) }
+    XCTAssertEqual(Set(catalogIDs), Set(entries.map(\.id)))
+    XCTAssertTrue(catalogIDs.allSatisfy { !ModelRegistry.cliEngineModelIDs.contains($0) })
+  }
+
+  func testTheTranscriptionPickerOffersNoCliEngine() {
+    let groups = ModelRegistry.pickerGroups(for: ModelRegistry.models(for: .transcription))
+    let ids = groups.flatMap { $0.items.map(\.id) }
+    XCTAssertFalse(ids.isEmpty)
+    XCTAssertTrue(ids.allSatisfy { !ModelRegistry.cliEngineModelIDs.contains($0) })
+    XCTAssertFalse(groups.contains { $0.title == ModelRegistry.cliEngineGroupTitle })
+  }
+
+  /// The exclusion ADR 0003 is actually about. Polish is a per-sentence network
+  /// call; a subprocess that takes minutes may never reach it. The filter is
+  /// `httpModels(for:)` — an execution kind, not an id prefix — and a CLI
+  /// engine is not a `ModelEntry` in the app at all, so there is nothing for
+  /// that filter to miss.
+  func testNoCliExecutionEntryCanAppearInThePolishPicker() {
+    let polishOptions = ModelRegistry.httpModels(for: .summary)
+    XCTAssertFalse(polishOptions.isEmpty, "an empty picker would pass this vacuously")
+    XCTAssertTrue(polishOptions.allSatisfy { $0.execution == .http })
+    for id in ModelRegistry.cliEngineModelIDs {
+      XCTAssertFalse(
+        polishOptions.contains { $0.id == id },
+        "\(id) reached the dictation polish picker"
+      )
+      XCTAssertNil(ModelRegistry.model(id: id), "\(id) must not be a registry ModelEntry")
+    }
+  }
+
+  /// Structural, not by id: a catalog row that *declares* `cli` is withheld
+  /// from polish even when its id is an ordinary flat one no prefix rule would
+  /// catch.
+  func testAnHttpLookingIdDeclaringCliIsStillWithheldFromPolish() throws {
+    let json = catalogJSON(models: """
+      {"id":"gpt-5-mini","provider":"openai","label":"GPT-5 mini","task":"summary",
+       "cost":{"input":1,"output":2,"tiers":[]},"limit":{"context":1000},
+       "execution":"cli"}
+      """)
+    let catalog = try XCTUnwrap(decode(json))
+    let entries = catalog.summaryModelEntries()
+    XCTAssertEqual(entries.map(\.id), ["gpt-5-mini"])
+    XCTAssertTrue(entries.filter { $0.execution == .http }.isEmpty)
   }
 }
