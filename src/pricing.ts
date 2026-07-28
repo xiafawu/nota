@@ -70,6 +70,11 @@ export function costForUsage(entry: UsageEntry): number | null {
  * Build a summary {@link UsageEntry} from raw token totals and compute its
  * cost from the effective catalog. Centralizes construction so callers
  * (orchestrator, re-summarize CLI) don't duplicate the wiring.
+ *
+ * A CLI engine reports no usage, so its token counts were estimated from the
+ * text (see `makeSummaryCall`) and the entry says so. Its cost is `null` because
+ * the catalog stores no rate for it — which is not zero: the display prints
+ * "included w/ subscription" from the entry's `costNote`.
  */
 export function makeSummaryUsage(
   modelId: string,
@@ -91,6 +96,6 @@ export function makeSummaryUsage(
     tokensOut: tokenUsage.tokensOut,
     costUSD,
     pricedAsOf: catalog.fetchedAt,
-    estimated: false,
+    estimated: catEntry?.execution === "cli",
   };
 }

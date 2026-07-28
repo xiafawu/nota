@@ -13,13 +13,22 @@
  * `registry.ts` imports) can use it without a cycle.
  */
 
-/** Every provider Nota can reach. Namespaces are drawn from this set. */
+/**
+ * Every provider Nota can reach. Namespaces are drawn from this set.
+ *
+ * `claude-code` and `codex` are not HTTP services: they name a local CLI whose
+ * `--model` flag takes the wire id (ADR 0003). They are providers all the same —
+ * one string still fully names a summarizer, and the namespace is still the only
+ * thing that decides who serves it.
+ */
 export const MODEL_PROVIDERS = [
   "assemblyai",
   "openai",
   "gemini",
   "deepseek",
   "openrouter",
+  "claude-code",
+  "codex",
 ] as const;
 
 export type ModelProvider = (typeof MODEL_PROVIDERS)[number];
@@ -32,9 +41,10 @@ export function isModelProvider(value: unknown): value is ModelProvider {
 
 /**
  * How a model runs. `http` is an OpenAI-compatible endpoint reached with an API
- * key; `cli` is a local subprocess (ADR 0003 — no entry uses it yet). Surfaces
- * that cannot host a subprocess filter on this **structurally**; matching on id
- * prefixes is explicitly not the mechanism (ADR 0002).
+ * key; `cli` is a local subprocess authenticated by the CLI's own login and
+ * billed through a subscription (ADR 0003 — `claude-code/*` and `codex/*`).
+ * Surfaces that cannot host a subprocess filter on this **structurally**;
+ * matching on id prefixes is explicitly not the mechanism (ADR 0002).
  */
 export const EXECUTION_KINDS = ["http", "cli"] as const;
 

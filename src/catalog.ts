@@ -21,6 +21,7 @@ import {
   resolveExecutionKind,
   type ExecutionKind,
 } from "./model-id.js";
+import { CLI_ENGINE_MODELS } from "./cli-engines.js";
 import { OPENROUTER_MODELS } from "./openrouter.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -45,8 +46,13 @@ export interface CatalogModelLimit {
   input?: number;
 }
 
-/** Where an entry came from — see {@link mergeCurated}. */
-export type CatalogEntryOrigin = "auto" | "curated";
+/**
+ * Where an entry came from — see {@link mergeCurated}. `auto` is the weekly
+ * models.dev admit; `curated` and `cli` are both hand-written in code and merged
+ * at read time, and they are kept apart only so a reader of `nota models list`
+ * can tell an HTTP shortlist entry from a local subprocess engine at a glance.
+ */
+export type CatalogEntryOrigin = "auto" | "curated" | "cli";
 
 export interface CatalogModelEntry {
   id: string;
@@ -514,6 +520,17 @@ export function sanitizeCatalog(cache: CatalogCache): CatalogCache {
 }
 
 /**
+ * Every entry that lives in code rather than in the cache: the OpenRouter
+ * shortlist and the CLI engines. One list because they are merged the same way
+ * and for the same reason; two modules because one is an HTTP provider and the
+ * other is a subprocess.
+ */
+export const CURATED_MODELS: readonly CatalogModelEntry[] = [
+  ...OPENROUTER_MODELS,
+  ...CLI_ENGINE_MODELS,
+];
+
+/**
  * Merge the curated shortlist into a catalog. Curated entries live in code, not
  * in the cache, which is exactly what makes them survive `nota models refresh`:
  * a refresh rewrites the auto-admitted cache, and the cache has never held
@@ -522,7 +539,7 @@ export function sanitizeCatalog(cache: CatalogCache): CatalogCache {
  */
 export function mergeCurated(
   cache: CatalogCache,
-  curated: readonly CatalogModelEntry[] = OPENROUTER_MODELS,
+  curated: readonly CatalogModelEntry[] = CURATED_MODELS,
 ): CatalogCache {
   const present = new Set(cache.models.map((m) => m.id));
   const additions = curated.filter((m) => !present.has(m.id));

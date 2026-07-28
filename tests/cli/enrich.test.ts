@@ -409,6 +409,9 @@ describe("a namespaced summary model", () => {
       "or-test-key",
       "anthropic/claude-sonnet-5",
       OPENROUTER_BASE_URL,
+      // An http model carries no CLI engine — the summary path's branch is on
+      // this argument, not on the id.
+      undefined,
     );
     // The record still names the canonical id — persisting the wire id would
     // orphan it from the registry entry that chose it.
@@ -429,6 +432,7 @@ describe("a namespaced summary model", () => {
       "anthropic/claude-sonnet-5",
       expect.anything(),
       OPENROUTER_BASE_URL,
+      undefined,
     );
     expect(updated.usage?.[0].modelId).toBe(SONNET);
   });

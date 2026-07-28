@@ -16,7 +16,13 @@ import {
   summarizeTranscript,
 } from "../pipeline/summarize.js";
 import { defaultOutputPath, writeOutputFromRecord } from "../pipeline/write.js";
-import { DEFAULT_SUMMARY_MODEL, requireModel, type ModelEntry } from "../registry.js";
+import { cliEngineFor } from "../pipeline/cli-engine.js";
+import {
+  DEFAULT_SUMMARY_MODEL,
+  requireModel,
+  requiresApiKey,
+  type ModelEntry,
+} from "../registry.js";
 import { shouldChunkTranscript } from "../utils/tokens.js";
 import { loadSettings, type NotaSettings } from "../utils/settings.js";
 
@@ -49,6 +55,9 @@ function resolveSummaryModel(settings?: NotaSettings): ModelEntry {
 }
 
 function requireApiKey(entry: ModelEntry): string {
+  // A CLI engine authenticates through its own login, so there is no key to
+  // demand (ADR 0003). Asked of the execution kind, never of the id.
+  if (!requiresApiKey(entry)) return "";
   const apiKey = process.env[entry.apiKeyEnv];
   if (!apiKey) {
     throw new EnrichError(
@@ -106,9 +115,10 @@ export async function summarizeRecord(
   // Edited tags are protected: regenerate without a tags section and keep the
   // record's tags verbatim (E1 summary-only op).
   const preserveTags = !!record.tagsEdited && (record.summary?.tags.length ?? 0) > 0;
+  const cli = cliEngineFor(entry);
   const { summary, tokenUsage } = preserveTags
-    ? await summarizeOnly(record.transcriptText, apiKey, entry.wireId, segments, entry.baseURL)
-    : await summarizeTranscript(record.transcriptText, apiKey, entry.wireId, segments, entry.baseURL);
+    ? await summarizeOnly(record.transcriptText, apiKey, entry.wireId, segments, entry.baseURL, cli)
+    : await summarizeTranscript(record.transcriptText, apiKey, entry.wireId, segments, entry.baseURL, cli);
   if (!summary.narrative.trim()) {
     throw new EnrichError("Summary model returned an empty summary; record left unchanged.");
   }
@@ -175,6 +185,7 @@ export async function tagRecord(
     apiKey,
     entry.wireId,
     entry.baseURL,
+    cliEngineFor(entry),
   );
 
   const usage = makeSummaryUsage(entry.id, record.provider, tokenUsage);

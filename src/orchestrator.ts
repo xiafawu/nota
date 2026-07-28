@@ -361,6 +361,7 @@ async function runAssemblyAIPipelineInner(
       config.summaryWireModel,
       segments,
       config.summaryBaseURL,
+      config.summaryCliEngine,
     );
     summary = summarized.summary;
     summaryUsage = makeSummaryUsage(config.summaryModel, config.provider, summarized.tokenUsage);
@@ -714,6 +715,7 @@ async function runWhisperPipeline(
       config.summaryWireModel,
       diarization ? merged.segments : undefined,
       config.summaryBaseURL,
+      config.summaryCliEngine,
     );
     summary = summarized.summary;
     summaryUsageW = makeSummaryUsage(config.summaryModel, config.provider, summarized.tokenUsage);

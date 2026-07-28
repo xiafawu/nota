@@ -16,6 +16,9 @@
  *   hand-curated in `src/openrouter.ts` and merged in at read time.
  * - Gemini, DeepSeek and OpenRouter summarization all go through the same
  *   OpenAI-compatible client with a swapped base URL and their own API key.
+ * - `claude-code/*` and `codex/*` go through no client at all: they are local
+ *   subprocesses with `execution: "cli"`, no API key and no base URL
+ *   (`src/cli-engines.ts`, ADR 0003).
  */
 
 import { effectiveCatalog, findCatalogEntry } from "./catalog.js";
@@ -48,9 +51,12 @@ export interface ModelEntry {
   wireId: string;
   task: ModelTask;
   provider: ModelProvider;
-  /** How this model runs (ADR 0002). Everything today is `http`. */
+  /** How this model runs (ADR 0002): an HTTP endpoint or a local subprocess. */
   execution: ExecutionKind;
-  /** Name of the env var holding the API key this model needs. */
+  /**
+   * Name of the env var holding the API key this model needs — empty for a
+   * `cli` engine, which needs none. Ask {@link requiresApiKey}, not this field.
+   */
   apiKeyEnv: string;
   /** Human-facing label for pickers / diagnostics. */
   label: string;
@@ -73,12 +79,21 @@ export const GEMINI_OPENAI_BASE_URL =
  */
 export const DEEPSEEK_BASE_URL = "https://api.deepseek.com";
 
+/**
+ * The env var each provider's key lives in. Empty for a CLI provider: a local
+ * subprocess authenticates through its own login and is billed to a
+ * subscription (ADR 0003). Callers must decide "does this need a key?" from the
+ * **execution kind** — see {@link requiresApiKey} — never from an empty string
+ * or from the id.
+ */
 const API_KEY_ENV: Record<ModelProvider, string> = {
   assemblyai: "ASSEMBLYAI_API_KEY",
   openai: "OPENAI_API_KEY",
   gemini: "GEMINI_API_KEY",
   deepseek: "DEEPSEEK_API_KEY",
   openrouter: OPENROUTER_API_KEY_ENV,
+  "claude-code": "",
+  codex: "",
 };
 
 /** OpenAI-compatible base URL per provider, where one is needed. */
@@ -229,6 +244,17 @@ export function getModel(id: string): ModelEntry | undefined {
  */
 export function httpModelsForTask(task: ModelTask): ModelEntry[] {
   return modelsForTask(task).filter((m) => m.execution === "http");
+}
+
+/**
+ * Whether resolving this model requires an API key. The question is answered by
+ * the execution kind and nothing else: a `cli` engine's precondition is a binary
+ * on PATH and a login, so demanding a key would refuse a run that would have
+ * worked (ADR 0003). Reading `apiKeyEnv` for emptiness would be the same test
+ * spelled less honestly.
+ */
+export function requiresApiKey(entry: ModelEntry): boolean {
+  return entry.execution === "http";
 }
 
 /** All models for a given task, in registry order. */

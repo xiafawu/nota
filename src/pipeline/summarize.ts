@@ -1,6 +1,11 @@
 import OpenAI from "openai";
-import { shouldChunkTranscript, splitTranscriptIntoSections } from "../utils/tokens.js";
+import {
+  estimateTokens,
+  shouldChunkTranscript,
+  splitTranscriptIntoSections,
+} from "../utils/tokens.js";
 import type { TranscriptSegment } from "./transcribe.js";
+import { runCliPrompt, type CliEngineSpec } from "./cli-engine.js";
 
 // The gemini base URL and provider check are owned by the model registry (the
 // single source of truth). Re-exported here so existing importers keep working.
@@ -310,18 +315,68 @@ export function isOutputLimitError(err: unknown): boolean {
   );
 }
 
+/**
+ * One completion, however it is produced. The HTTP client and the CLI
+ * subprocess are two implementations of this and nothing downstream knows which
+ * it got — which is what lets the sectioned >100k-token flow route every section
+ * *and* the roll-up through a CLI engine without a second copy of the loop.
+ */
+type SummaryCall = (
+  prompt: string,
+  maxTokens: number,
+) => Promise<{
+  content: string;
+  usage: { promptTokens: number; completionTokens: number };
+}>;
+
+/**
+ * Build the caller for a resolved summary model.
+ *
+ * `cli` wins when present, and it is only ever present because the registry
+ * entry said `execution: "cli"` — the model string is never inspected to decide
+ * this (ADR 0002). A CLI engine reports no token counts, so they are estimated
+ * from the text at the same 4-chars-per-token rate the chunker uses; the usage
+ * record marks them estimated, and the cost line prints
+ * "included w/ subscription" rather than a figure derived from them.
+ */
+function makeSummaryCall(
+  apiKey: string,
+  model: string,
+  baseURL: string | undefined,
+  cli: CliEngineSpec | undefined,
+): SummaryCall {
+  if (cli) {
+    return async (prompt) => {
+      const content = await runCliPrompt(cli, prompt);
+      return {
+        content,
+        usage: {
+          promptTokens: estimateTokens(prompt),
+          completionTokens: estimateTokens(content),
+        },
+      };
+    };
+  }
+  const client = new OpenAI({
+    apiKey,
+    baseURL: baseURL ?? (isGeminiModel(model) ? GEMINI_OPENAI_BASE_URL : undefined),
+  });
+  return (prompt, maxTokens) => callGPT(client, model, prompt, maxTokens);
+}
+
+/** Default output cap for a summary or roll-up completion. */
+const SUMMARY_TOKEN_CAP = 4096;
+
 async function runSummarization(
   transcript: string,
   apiKey: string,
   model: string,
   segments: TranscriptSegment[] | undefined,
   baseURL: string | undefined,
-  includeTags: boolean
+  includeTags: boolean,
+  cli?: CliEngineSpec,
 ): Promise<{ summary: MeetingSummary; tokenUsage: { calls: number; tokensIn: number; tokensOut: number } }> {
-  const client = new OpenAI({
-    apiKey,
-    baseURL: baseURL ?? (isGeminiModel(model) ? GEMINI_OPENAI_BASE_URL : undefined),
-  });
+  const call = makeSummaryCall(apiKey, model, baseURL, cli);
 
   const textToSummarize = segments
     ? buildSpeakerLabeledTranscript(segments)
@@ -329,7 +384,7 @@ async function runSummarization(
 
   if (!shouldChunkTranscript(textToSummarize)) {
     const prompt = buildSummaryPrompt(textToSummarize, !!segments, { includeTags });
-    const { content, usage } = await callGPT(client, model, prompt);
+    const { content, usage } = await call(prompt, SUMMARY_TOKEN_CAP);
     return {
       summary: parseSummaryResponse(content),
       tokenUsage: { calls: 1, tokensIn: usage.promptTokens, tokensOut: usage.completionTokens },
@@ -344,14 +399,17 @@ async function runSummarization(
 
   for (const section of sections) {
     const prompt = buildSummaryPrompt(section, !!segments, { includeTags });
-    const { content, usage } = await callGPT(client, model, prompt);
+    const { content, usage } = await call(prompt, SUMMARY_TOKEN_CAP);
     totalTokensIn += usage.promptTokens;
     totalTokensOut += usage.completionTokens;
     sectionSummaries.push(content);
   }
 
   const rollupPrompt = buildRollupPrompt(sectionSummaries, includeTags);
-  const { content: rollupContent, usage: rollupUsage } = await callGPT(client, model, rollupPrompt);
+  const { content: rollupContent, usage: rollupUsage } = await call(
+    rollupPrompt,
+    SUMMARY_TOKEN_CAP,
+  );
   totalTokensIn += rollupUsage.promptTokens;
   totalTokensOut += rollupUsage.completionTokens;
   const calls = sections.length + 1;
@@ -362,14 +420,23 @@ async function runSummarization(
   };
 }
 
+/**
+ * Summarize a transcript with the resolved summary model.
+ *
+ * `cli` is present only for a `cli`-execution registry entry (ADR 0003); when it
+ * is, `apiKey` and `baseURL` are unused and the work runs as a local
+ * subprocess. Callers get it from `cliEngineFor(entry)` rather than deciding
+ * from the id.
+ */
 export async function summarizeTranscript(
   transcript: string,
   apiKey: string,
   model: string,
   segments?: TranscriptSegment[],
-  baseURL?: string
+  baseURL?: string,
+  cli?: CliEngineSpec,
 ): Promise<{ summary: MeetingSummary; tokenUsage: { calls: number; tokensIn: number; tokensOut: number } }> {
-  return runSummarization(transcript, apiKey, model, segments, baseURL, true);
+  return runSummarization(transcript, apiKey, model, segments, baseURL, true, cli);
 }
 
 /**
@@ -383,9 +450,10 @@ export async function summarizeOnly(
   apiKey: string,
   model: string,
   segments?: TranscriptSegment[],
-  baseURL?: string
+  baseURL?: string,
+  cli?: CliEngineSpec,
 ): Promise<{ summary: MeetingSummary; tokenUsage: { calls: number; tokensIn: number; tokensOut: number } }> {
-  const result = await runSummarization(transcript, apiKey, model, segments, baseURL, false);
+  const result = await runSummarization(transcript, apiKey, model, segments, baseURL, false, cli);
   if (!result.summary.narrative.trim()) {
     throw new Error("Summary model returned an empty summary");
   }
@@ -410,13 +478,11 @@ export async function generateTags(
   text: string,
   apiKey: string,
   model: string,
-  baseURL?: string
+  baseURL?: string,
+  cli?: CliEngineSpec,
 ): Promise<{ tags: string[]; tokenUsage: { calls: number; tokensIn: number; tokensOut: number } }> {
-  const client = new OpenAI({
-    apiKey,
-    baseURL: baseURL ?? (isGeminiModel(model) ? GEMINI_OPENAI_BASE_URL : undefined),
-  });
-  const { content, usage } = await callGPT(client, model, buildTagsPrompt(text), TAGS_TOKEN_CAP);
+  const call = makeSummaryCall(apiKey, model, baseURL, cli);
+  const { content, usage } = await call(buildTagsPrompt(text), TAGS_TOKEN_CAP);
   const tags = parseTags(content);
   if (tags.length === 0) {
     throw new Error("Tag generation returned no usable tags");

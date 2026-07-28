@@ -141,9 +141,9 @@ describe("sanitizeCatalog", () => {
   });
 
   it("keeps a cli entry — it is known, just not runnable over HTTP", () => {
-    // `cli` has no members yet (ADR 0003 / plan 12); the point is that the kind
-    // is recognized, so the entry survives sanitizing and is excluded later by
-    // the surfaces that filter on execution rather than by being dropped here.
+    // The point is that the kind is recognized, so the entry survives
+    // sanitizing and is excluded later by the surfaces that filter on execution
+    // rather than by being dropped here (ADR 0003 gives `cli` its members).
     const sane = sanitizeCatalog(cacheWith([entry({ execution: "cli" })]));
     expect(sane.models).toHaveLength(1);
     expect(sane.models[0].execution).toBe("cli");
@@ -331,7 +331,14 @@ describe("nota config", () => {
     });
     vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     try {
-      await printConfig();
+      // Stub the CLI probe: this test is about a key row, and the real probe
+      // would spawn whatever `claude`/`codex` happen to be on the machine.
+      await printConfig(async (provider) => ({
+        provider,
+        binary: provider === "codex" ? "codex" : "claude",
+        found: false,
+        detail: "stubbed",
+      }));
       expect(stdout.join("")).toContain("OPENROUTER_API_KEY\tabsent\tabsent");
     } finally {
       process.env = originalEnv;

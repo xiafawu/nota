@@ -1,5 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { defaultEnvFilePath, parseEnvFile } from "../utils/env-file.js";
+import { CLI_BINARY, CLI_PROVIDERS } from "../cli-engines.js";
+import { probeCliEngine, type CliProbe } from "../pipeline/cli-engine.js";
 
 type KeySource = "env" | "file" | "absent";
 
@@ -41,13 +43,23 @@ function maskValue(value: string): string {
   return `${value.slice(0, 2)}…${value.slice(-4)}`;
 }
 
+/** Injected by tests so `nota config` never spawns the real CLIs. */
+export type CliProbeFn = (typeof probeCliEngine);
+
 /**
  * Report which API keys resolve and from where (env vs ~/.nota/config), with
  * values masked so secrets are never printed. Data rows go to stdout so the
  * output stays scriptable; the header and hints go to stderr. Reads the config
  * file directly and does not mutate process.env.
+ *
+ * CLI summary engines get their own block: their precondition is not a key at
+ * all but a binary and a login (ADR 0003), and a diagnostics command that
+ * listed only keys would answer "everything resolves" on a machine where
+ * `claude-code/sonnet` cannot run at all.
  */
-export async function printConfig(): Promise<void> {
+export async function printConfig(
+  probe: CliProbeFn = probeCliEngine,
+): Promise<void> {
   const filePath = defaultEnvFilePath();
   const fileExists = existsSync(filePath);
   let fileMap: Record<string, string> = {};
@@ -83,5 +95,18 @@ export async function printConfig(): Promise<void> {
     process.stderr.write(
       "No ~/.nota/config found; create it (chmod 600) or set env vars.\n",
     );
+  }
+
+  process.stderr.write(
+    "\nCLI summary engines (no API key — the CLI's own login; ADR 0003):\n",
+  );
+  process.stderr.write("ENGINE\tBINARY\tSTATUS\n");
+  const probes: CliProbe[] = await Promise.all(
+    CLI_PROVIDERS.map((provider) => probe(provider)),
+  );
+  for (const p of probes) {
+    // The version string doubles as the "found" answer, so one column carries
+    // both — `not found on PATH …` is exactly as informative as a version.
+    process.stdout.write(`${p.provider}\t${CLI_BINARY[p.provider]}\t${p.detail}\n`);
   }
 }

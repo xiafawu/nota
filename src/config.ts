@@ -2,8 +2,10 @@ import { applyEnvFile } from "./utils/env-file.js";
 import {
   DEFAULT_TRANSCRIPTION_MODEL,
   requireModel,
+  requiresApiKey,
   type ModelEntry,
 } from "./registry.js";
+import { cliEngineFor, type CliEngineSpec } from "./pipeline/cli-engine.js";
 import { loadSettings, type NotaSettings } from "./utils/settings.js";
 import { effectiveCatalog } from "./catalog.js";
 
@@ -52,6 +54,13 @@ export interface AppConfig {
   summaryApiKey: string;
   /** OpenAI-compatible base URL for the summary model (set for gemini). */
   summaryBaseURL?: string;
+  /**
+   * Present when the resolved summary model is a local subprocess engine
+   * (ADR 0003). Its presence — not the model id — is what routes the summary
+   * call away from the HTTP client, and it is also why `summaryApiKey` is empty
+   * for these runs without that being a misconfiguration.
+   */
+  summaryCliEngine?: CliEngineSpec;
   language?: string;
   verbose: boolean;
   diarize: boolean;
@@ -92,6 +101,13 @@ function requireKey(entry: ModelEntry): string {
  *
  * Each chain entry is verified against the effective catalog; if a chain id is
  * absent from the catalog, it falls to the next.
+ *
+ * No CLI engine is in the chain and none may be added to it (ADR 0003). "Free
+ * but slow" must never win a default: a summary that takes minutes of local
+ * wall time is a choice the owner makes explicitly with `-m` or
+ * `nota settings set summary.model`, and the error below lists API models only
+ * for the same reason — offering a subprocess as the rescue for a missing key
+ * would make it the effective default on any machine without one.
  */
 function resolveDefaultSummaryId(): string {
   const { catalog } = effectiveCatalog();
@@ -205,9 +221,14 @@ export function loadConfig(
   const provider: Provider =
     transcriptionEntry.provider === "assemblyai" ? "assemblyai" : "whisper";
 
-  // Require only the keys the resolved models need.
-  const readKey = (entry: ModelEntry): string =>
-    requireKeys ? requireKey(entry) : (process.env[entry.apiKeyEnv] ?? "");
+  // Require only the keys the resolved models need. A `cli` engine needs none:
+  // its preconditions are a binary on PATH and the CLI's own login (ADR 0003),
+  // and demanding a key here would refuse a run that would have worked. Decided
+  // on the execution kind, never on the id.
+  const readKey = (entry: ModelEntry): string => {
+    if (!requiresApiKey(entry)) return "";
+    return requireKeys ? requireKey(entry) : (process.env[entry.apiKeyEnv] ?? "");
+  };
   const transcriptionApiKey = readKey(transcriptionEntry);
   const summaryApiKey = readKey(summaryEntry);
 
@@ -219,6 +240,7 @@ export function loadConfig(
     transcriptionApiKey,
     summaryApiKey,
     summaryBaseURL: summaryEntry.baseURL,
+    summaryCliEngine: cliEngineFor(summaryEntry),
     language: options.language,
     verbose: options.verbose ?? false,
     diarize: provider === "assemblyai" ? true : (options.diarize ?? true),

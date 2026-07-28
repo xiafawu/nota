@@ -12,9 +12,10 @@ import { effectiveCatalog, readCache, refreshCatalog } from "../catalog.js";
  * Tab-separated columns: id, provider, label, source, fetchedAt.
  *
  * Source is per entry, not per catalog: "cache" or "baked" for the weekly
- * auto-admitted half, and "curated" for a hand-picked entry (the OpenRouter
- * shortlist), which lives in code and is therefore as fresh as the build
- * whatever `fetchedAt` says about the rest. Header on stderr.
+ * auto-admitted half, "curated" for a hand-picked HTTP entry (the OpenRouter
+ * shortlist), and "cli" for a local subprocess engine (ADR 0003). The last two
+ * live in code and are therefore as fresh as the build whatever `fetchedAt` says
+ * about the rest. Header on stderr.
  */
 export async function modelsList(): Promise<void> {
   const { catalog, source } = effectiveCatalog();
@@ -22,7 +23,9 @@ export async function modelsList(): Promise<void> {
 
   process.stderr.write("id\tprovider\tlabel\tsource\tfetchedAt\n");
   for (const m of catalog.models) {
-    const origin = m.origin === "curated" ? "curated" : sourceLabel;
+    // Anything that names its own origin keeps it; only the auto-admitted half
+    // is described by where the *catalog* came from.
+    const origin = m.origin && m.origin !== "auto" ? m.origin : sourceLabel;
     process.stdout.write(`${m.id}\t${m.provider}\t${m.label}\t${origin}\t${catalog.fetchedAt}\n`);
   }
 }

@@ -7,7 +7,13 @@ import {
 import { makeSummaryUsage } from "../pricing.js";
 import { summarizeTranscript } from "../pipeline/summarize.js";
 import { defaultOutputPath, writeOutput } from "../pipeline/write.js";
-import { DEFAULT_SUMMARY_MODEL, getModel, requireModel } from "../registry.js";
+import { cliEngineFor } from "../pipeline/cli-engine.js";
+import {
+  DEFAULT_SUMMARY_MODEL,
+  getModel,
+  requireModel,
+  requiresApiKey,
+} from "../registry.js";
 import { loadSettings, type NotaSettings } from "../utils/settings.js";
 
 export interface SummarizeHistoryOptions {
@@ -53,13 +59,20 @@ export async function summarizeHistory(
 
   // Registry is the single source of truth for provider, key, and base URL.
   const entry = requireModel(modelId, "summary");
-  const apiKey = process.env[entry.apiKeyEnv];
-  if (!apiKey) {
-    throw new Error(
-      entry.provider === "gemini"
-        ? `${entry.apiKeyEnv} environment variable is required for gemini models. Get one at https://aistudio.google.com/apikey`
-        : `${entry.apiKeyEnv} environment variable is required. Get one at https://platform.openai.com/api-keys`,
-    );
+  // A CLI engine has no key to require: it runs as a local subprocess and
+  // authenticates through its own login (ADR 0003).
+  const cli = cliEngineFor(entry);
+  let apiKey = "";
+  if (requiresApiKey(entry)) {
+    const resolved = process.env[entry.apiKeyEnv];
+    if (!resolved) {
+      throw new Error(
+        entry.provider === "gemini"
+          ? `${entry.apiKeyEnv} environment variable is required for gemini models. Get one at https://aistudio.google.com/apikey`
+          : `${entry.apiKeyEnv} environment variable is required. Get one at https://platform.openai.com/api-keys`,
+      );
+    }
+    apiKey = resolved;
   }
 
   const segments =
@@ -71,6 +84,7 @@ export async function summarizeHistory(
     entry.wireId,
     segments,
     entry.baseURL,
+    cli,
   );
   const summaryUsage = makeSummaryUsage(entry.id, record.provider, tokenUsage);
 

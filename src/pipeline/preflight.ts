@@ -27,6 +27,7 @@ import type { AppConfig } from "../config.js";
 import { checkFfmpeg } from "../utils/ffmpeg.js";
 import { getModel } from "../registry.js";
 import { canaryAssemblyAI } from "./assemblyai.js";
+import { probeCliEngine, type CliEngineSpec } from "./cli-engine.js";
 import { canarySummaryModel } from "./summarize.js";
 import { isIdentityAvailable } from "./embed.js";
 import { checkPython, checkHuggingFaceToken } from "./validate.js";
@@ -160,10 +161,39 @@ async function checkTranscription(config: AppConfig): Promise<PreflightCheck> {
   }
 }
 
+/**
+ * Preflight for a `cli`-execution summary model: is the binary on PATH, and
+ * does it answer `--version`?
+ *
+ * Deliberately **not** a canary completion. The HTTP canary is a one-token
+ * request that costs a fraction of a cent; a CLI completion costs minutes of
+ * wall time, on every single run, for a gate whose whole purpose is to be
+ * cheaper than the transcription it guards. So presence is verified and a stale
+ * login is not — the detail line says which, and an unauthenticated engine
+ * fails at the summary step with an error naming the login.
+ */
+async function checkCliSummary(
+  base: { id: string; label: string; blocking: boolean },
+  cli: CliEngineSpec,
+): Promise<PreflightCheck> {
+  const probe = await probeCliEngine(cli.provider);
+  if (!probe.found) {
+    return { ...base, status: "fail", detail: probe.detail };
+  }
+  return {
+    ...base,
+    status: "ok",
+    detail: `${probe.detail} — presence verified; login is not probed`,
+  };
+}
+
 async function checkSummary(config: AppConfig): Promise<PreflightCheck> {
   const entry = getModel(config.summaryModel);
   const label = `Summary — ${entry?.label ?? config.summaryModel}`;
   const base = { id: "summary", label, blocking: true };
+  if (config.summaryCliEngine) {
+    return checkCliSummary(base, config.summaryCliEngine);
+  }
   if (!config.summaryApiKey) {
     return {
       ...base,
