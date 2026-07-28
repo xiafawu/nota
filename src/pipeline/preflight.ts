@@ -172,9 +172,13 @@ async function checkSummary(config: AppConfig): Promise<PreflightCheck> {
     };
   }
   try {
+    // The canary is a real request, so it carries the *wire* id: OpenRouter is
+    // asked for `anthropic/claude-sonnet-5`, never `openrouter/…`. Sending the
+    // canonical id here would 400 on an unknown slug and block every run behind
+    // a gate whose whole job is to be cheaper than the transcription it guards.
     await canarySummaryModel(
       config.summaryApiKey,
-      config.summaryModel,
+      config.summaryWireModel,
       config.summaryBaseURL,
     );
     return { ...base, status: "ok", detail: "Request shape and key verified" };

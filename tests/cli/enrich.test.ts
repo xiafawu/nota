@@ -32,6 +32,7 @@ import {
 } from "../../src/pipeline/history.js";
 import type { CreateHistoryInput } from "../../src/pipeline/history.js";
 import type { MeetingSummary } from "../../src/pipeline/summarize.js";
+import { OPENROUTER_BASE_URL } from "../../src/openrouter.js";
 
 const GENERATED_SUMMARY: MeetingSummary = {
   title: "Enriched Meeting",
@@ -372,5 +373,63 @@ describe("parseEnrichmentPayload", () => {
     ['{"summaryEdited": "yes"}', /summaryEdited must be a boolean/],
   ])("rejects malformed payload %s", (raw, message) => {
     expect(() => parseEnrichmentPayload(raw)).toThrow(message);
+  });
+});
+
+describe("a namespaced summary model", () => {
+  const SONNET = "openrouter/anthropic/claude-sonnet-5";
+  const settings = { summary: { model: SONNET } };
+  let originalOpenRouterKey: string | undefined;
+
+  beforeEach(() => {
+    originalOpenRouterKey = process.env.OPENROUTER_API_KEY;
+    process.env.OPENROUTER_API_KEY = "or-test-key";
+  });
+
+  afterEach(() => {
+    if (originalOpenRouterKey === undefined) {
+      delete process.env.OPENROUTER_API_KEY;
+    } else {
+      process.env.OPENROUTER_API_KEY = originalOpenRouterKey;
+    }
+  });
+
+  it("asks OpenRouter for its own slug when generating tags", async () => {
+    const record = await createHistoryRecord(
+      transcribedInput({ outputPath }),
+      historyDir,
+    );
+
+    const updated = await tagRecord(record.id, { historyDir, settings });
+
+    // OpenRouter's own slug goes on the wire; its 400 on the namespaced id is
+    // what this asserts against.
+    expect(generateTags).toHaveBeenCalledWith(
+      expect.any(String),
+      "or-test-key",
+      "anthropic/claude-sonnet-5",
+      OPENROUTER_BASE_URL,
+    );
+    // The record still names the canonical id — persisting the wire id would
+    // orphan it from the registry entry that chose it.
+    expect(updated.usage?.[0].modelId).toBe(SONNET);
+  });
+
+  it("does the same when summarizing, and records the canonical id", async () => {
+    const record = await createHistoryRecord(
+      transcribedInput({ outputPath }),
+      historyDir,
+    );
+
+    const updated = await summarizeRecord(record.id, { historyDir, settings });
+
+    expect(summarizeTranscript).toHaveBeenCalledWith(
+      expect.any(String),
+      "or-test-key",
+      "anthropic/claude-sonnet-5",
+      expect.anything(),
+      OPENROUTER_BASE_URL,
+    );
+    expect(updated.usage?.[0].modelId).toBe(SONNET);
   });
 });

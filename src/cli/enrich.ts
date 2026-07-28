@@ -173,7 +173,7 @@ export async function tagRecord(
   const { tags, tokenUsage } = await generateTags(
     tagsSourceText(record),
     apiKey,
-    entry.id,
+    entry.wireId,
     entry.baseURL,
   );
 
