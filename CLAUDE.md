@@ -412,15 +412,40 @@ does not know, decodes to `.pill` — which is what its owner was looking at.
   tail-anchored (`.truncationMode(.head)`), and a leading gradient mask makes
   older words read as *leaving* rather than as being chopped off.
 - **Prompter.** A 600pt card: header (mic dot, meter, "Dictating", live word
-  count) over the whole session's text, finalized at full opacity and the
-  volatile tail dimmed to 55% white. It grows **downward** from a 3-line floor to
-  a 6-line cap (`HUDPrompterMetrics`, arithmetic and testable), animated by the
+  count) over the session's text, finalized at full opacity and the volatile
+  tail dimmed to 55% white. It grows **downward** from a 3-line floor to a
+  6-line cap (`HUDPrompterMetrics`, arithmetic and testable), animated by the
   one authority — the window frame in `DictationHUDPanel.update`. Past the cap
-  the body is not a `ScrollView`: the full text is laid out inside a clipped,
+  the body is not a `ScrollView`: the text is laid out inside a clipped,
   **bottom-aligned** frame, so the newest line is pinned to the bottom edge and
   older ones slide out of the top. Auto-following by construction, with no scroll
   animation racing the window's and no scroll position to keep in sync — and the
   panel ignores mouse events, so there was never a user scroll to preserve.
+  Three things the card owes that construction:
+  - **It measures a bounded window, not the session.** `HUDPrompterMetrics.windowed`
+    head-trims to `windowBudget` characters before anything is measured or laid
+    out. Six lines is all that can be seen, and the HUD is re-rendered on every
+    66 ms RMS tick against a string that grows for as long as the user talks —
+    measuring and laying out all of it put an unbounded main-actor cost on a
+    feed that ticks 15 times a second. The budget is more than twice what six
+    lines can hold at the font's narrowest glyphs, so the *clamped* line count
+    (the only thing the height depends on) is unchanged. The head is quantized
+    to `windowStep`, because greedy wrapping starts wherever the window starts
+    and a head that advanced by a character per tick would re-wrap the visible
+    lines on every one of them.
+  - **What it draws is what it measured.** The two `Text` runs come from
+    `HUDPrompterMetrics.runs`, which carries the separator
+    `StreamingDelivery.joined` used — never an unconditional `Text(" ")`. Apple's
+    volatile results sometimes arrive with their leading space attached, and the
+    card would then draw a double space it had sized itself without.
+  - **It is placed with its growth room already reserved.** `reposition()` asks
+    `HUDStyle.reservedCardHeight` for the tallest the card can get and, via
+    `HUDPanelLayout.pillOriginY`, keeps the fully grown card 8pt inside the
+    screen. Growing downward pins the top edge, but `clamped` then shoves an
+    off-screen frame back up — so under a window whose own bottom edge is at the
+    screen's bottom, every new line used to move the top edge up into that
+    window. Reserved, the clamp has nothing left to correct. The pill and the
+    bar reserve nothing and keep the placement arithmetic they always had.
 
 **The draft feed is split at the source.** The controller publishes
 `finalizedDraft` (everything the recognizer has finalized) alongside `roughDraft`
@@ -434,9 +459,23 @@ The prompter is the reason for the split — a 120-character merge cannot be
 un-merged. `HUDDraft` stays out of `HUDState` for the same reason the rough draft
 always did: the auto-hide bookkeeping compares states for equality.
 
+**A style switch is not growth.** `DictationHUDPanel` remembers the style it is
+showing and sets the frame *without* animating when the style changes, because
+the controller repositions immediately afterwards: an animation still in flight
+means `reposition()` reads an interpolated frame and is then overwritten by the
+animation's destination — the off-center panel the reposition exists to prevent.
+The controller asks the panel which style is on screen rather than keeping a
+second copy of the bookkeeping; a recreated panel starts on `.pill` whatever the
+setting has been saying.
+
 Non-goals, still true: the prompter does not morph into the review card (stop
-hands off to the existing card), and `.immediate` shows no live draft in any
-style, because it runs the batch recognizer.
+hands off to the existing card). A style that is *about* text
+(`HUDStyle.isAboutLiveText`) shows none when the session runs the batch
+recognizer, which happens two ways — `.immediate`, and any mode on AssemblyAI
+realtime. The Dictation pane names whichever one applies via
+`HUDStyle.liveTextCaveat`, asked of `DictationSessionPlan` rather than of the
+delivery mode alone: a pane that knows only about `.immediate` leaves an
+AssemblyAI user staring at a permanently blank prompter with no explanation.
 
 ## Model Settings
 
@@ -548,7 +587,16 @@ The cache feeds cost computation for usage tracking.
   panel not to animate a size that cannot change. The prompter's 6-line cap is
   the pill's rule restated: a HUD hanging under the focused window may not grow
   up into it, so past the cap the text is clipped bottom-aligned rather than laid
-  out taller.
+  out taller — and the card is *placed* with all of that growth already reserved
+  below it (`HUDStyle.reservedCardHeight`), because the clamp that keeps a panel
+  on screen would otherwise undo the fixed top edge one line at a time.
+- A HUD style that draws text may only measure and lay out what it can show.
+  The prompter's body is head-trimmed to a bounded window before it is measured
+  (`HUDPrompterMetrics.windowed`): the HUD re-renders on every 66 ms RMS tick and
+  a session's text has no upper bound, so "lay out the whole session, then clip
+  it to six lines" is an unbounded cost on the main actor. The window is wide
+  enough that the clamped line count — the only thing the card's height depends
+  on — is the one the full text would have produced.
 - The HUD draft feed is split at the source (`finalizedDraft` + `roughDraft` →
   `HUDDraft`), not merged and re-split downstream: a 120-character tail cannot be
   un-merged, and the prompter needs the finalized and volatile halves at full
