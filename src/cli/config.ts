@@ -46,6 +46,10 @@ function maskValue(value: string): string {
 /** Injected by tests so `nota config` never spawns the real CLIs. */
 export type CliProbeFn = (typeof probeCliEngine);
 
+export interface PrintConfigOptions {
+  probe?: CliProbeFn;
+}
+
 /**
  * Report which API keys resolve and from where (env vs ~/.nota/config), with
  * values masked so secrets are never printed. Data rows go to stdout so the
@@ -56,10 +60,18 @@ export type CliProbeFn = (typeof probeCliEngine);
  * all but a binary and a login (ADR 0003), and a diagnostics command that
  * listed only keys would answer "everything resolves" on a machine where
  * `claude-code/sonnet` cannot run at all.
+ *
+ * The test seam is a field on an options **object**, not a bare parameter with
+ * a default: this function is Commander's action handler, and Commander invokes
+ * an action with `(options, command)`. A bare `probe = probeCliEngine` parameter
+ * was therefore overwritten by Commander's own options object on every real
+ * `nota config`, which crashed with "probe is not a function". A bag whose
+ * `probe` field is simply absent falls through to the default instead.
  */
 export async function printConfig(
-  probe: CliProbeFn = probeCliEngine,
+  options: PrintConfigOptions = {},
 ): Promise<void> {
+  const probe = options.probe ?? probeCliEngine;
   const filePath = defaultEnvFilePath();
   const fileExists = existsSync(filePath);
   let fileMap: Record<string, string> = {};

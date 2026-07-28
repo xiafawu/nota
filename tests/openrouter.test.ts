@@ -333,12 +333,14 @@ describe("nota config", () => {
     try {
       // Stub the CLI probe: this test is about a key row, and the real probe
       // would spawn whatever `claude`/`codex` happen to be on the machine.
-      await printConfig(async (provider) => ({
-        provider,
-        binary: provider === "codex" ? "codex" : "claude",
-        found: false,
-        detail: "stubbed",
-      }));
+      await printConfig({
+        probe: async (provider) => ({
+          provider,
+          binary: provider === "codex" ? "codex" : "claude",
+          found: false,
+          detail: "stubbed",
+        }),
+      });
       expect(stdout.join("")).toContain("OPENROUTER_API_KEY\tabsent\tabsent");
     } finally {
       process.env = originalEnv;

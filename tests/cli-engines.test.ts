@@ -393,17 +393,20 @@ describe("nota config", () => {
       return true;
     });
     try {
-      await printConfig(async (provider) => ({
-        provider,
-        binary: CLI_BINARY[provider],
-        found: provider === "claude-code",
-        path: provider === "claude-code" ? "/usr/local/bin/claude" : undefined,
-        version: provider === "claude-code" ? "2.1.220 (Claude Code)" : undefined,
-        detail:
-          provider === "claude-code"
-            ? "2.1.220 (Claude Code) at /usr/local/bin/claude"
-            : "codex not found on PATH — install Codex CLI",
-      }));
+      await printConfig({
+        probe: async (provider) => ({
+          provider,
+          binary: CLI_BINARY[provider],
+          found: provider === "claude-code",
+          path: provider === "claude-code" ? "/usr/local/bin/claude" : undefined,
+          version:
+            provider === "claude-code" ? "2.1.220 (Claude Code)" : undefined,
+          detail:
+            provider === "claude-code"
+              ? "2.1.220 (Claude Code) at /usr/local/bin/claude"
+              : "codex not found on PATH — install Codex CLI",
+        }),
+      });
       const out = stdout.join("");
       expect(out).toContain("claude-code\tclaude\t2.1.220 (Claude Code) at /usr/local/bin/claude");
       expect(out).toContain("codex\tcodex\tcodex not found on PATH");
