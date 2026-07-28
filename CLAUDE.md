@@ -486,9 +486,10 @@ model is **CLI flag > settings.json > key-aware default chain**.
 
 Summary models are auto-admitted weekly from `models.dev/api.json` through an
 allowlist (mainline chat models only: gpt-5.x, gemini flash/pro, deepseek v4+).
-Transcription model ids remain statically curated.
+Transcription model ids remain statically curated, and the OpenRouter shortlist
+is hand-curated in code (see Namespaced Model Ids below).
 
-- `nota models list` — print the effective summary catalog (id, provider, label, source) as tab-separated rows
+- `nota models list` — print the effective summary catalog (id, provider, label, source) as tab-separated rows; `source` is `cache`/`baked` for auto-admitted entries and `curated` for the OpenRouter shortlist
 - `nota models refresh` — force a fetch from models.dev, showing added/removed ids
 - `nota settings list` — effective model + source (settings.json vs default); tab-separated rows on stdout, header on stderr
 - `nota settings get <path>` — print the effective value for a dot-path (`transcription.model` or `summary.model`)
@@ -503,8 +504,76 @@ Transcription model ids (static):
 Summary model ids (auto-admitted; run `nota models list` for the current set):
 - Example: `gpt-5-mini`, `gpt-5`, `gpt-5.1`, `gpt-5.4-mini` (OpenAI); `gemini-2.5-flash`, `gemini-2.5-pro`, `gemini-3.6-flash` (Gemini); `deepseek-v4-flash`, `deepseek-v4-pro` (DeepSeek)
 
+Summary model ids (curated OpenRouter shortlist, `src/openrouter.ts`):
+- `openrouter/anthropic/claude-sonnet-5`, `openrouter/anthropic/claude-haiku-4.5`,
+  `openrouter/moonshotai/kimi-k2.6`, `openrouter/qwen/qwen3.7-max`,
+  `openrouter/z-ai/glm-5.2`, `openrouter/meta-llama/llama-4-maverick`
+
 The macOS Settings window (Cmd+,) exposes the same pickers plus masked API-key
 management; it mirrors the registry in `macos/Nota/App/ModelRegistry.swift`.
+
+## Namespaced Model Ids
+
+ADR 0002. A model id is one string that fully names a summarizer, and it is
+either **flat** (`gpt-5-mini`) or **namespaced**
+(`openrouter/anthropic/claude-sonnet-5`). Provider is still never stored and
+never chosen — it is *derived*: the first path segment for a namespaced id, the
+registry's lookup for a flat one. An id whose namespace names no provider Nota
+has is **refused**, not rescued by whatever `provider` field arrived with it —
+that fallback would reintroduce exactly the invalid state ADR 0001 removed.
+
+Two ids exist per model and they are not interchangeable. `ModelEntry.id` is
+canonical: it is what settings.json holds, what history and usage records name,
+what a picker shows. `ModelEntry.wireId` is that id with the provider namespace
+stripped, and it is the only thing that goes on the wire — OpenRouter wants
+`anthropic/claude-sonnet-5` back, not its own name in front of it. Persisting
+the wire id would orphan a record from the registry entry that named it.
+
+Every registry/catalog entry also carries an **execution kind**: `http` (an
+OpenAI-compatible endpoint plus an API key — everything that exists today) or
+`cli` (a local subprocess; no members until plan 12). Surfaces that cannot host
+a subprocess filter on the kind **structurally** — `httpModelsForTask` in TS,
+`ModelRegistry.httpModels(for:)` in Swift, which is what the dictation polish
+picker and `PolishClient` use. Matching on id prefixes is explicitly not the
+mechanism: a catalog refresh must not be able to leak a subprocess engine into
+a per-sentence streaming path.
+
+An unrecognized execution kind resolves to *nothing*, not to `http`, and the
+entry is dropped — **per entry**, on both sides (`sanitizeCatalog` in
+`src/catalog.ts`, a non-throwing element wrapper in `ModelCatalog.init(from:)`).
+A build that cannot name a kind must not assume it is safe to run in-process,
+and one row written by a newer Nota must not blank every model picker in the
+app. Same rule for an unknown namespace.
+
+`src/model-id.ts` and the `ModelID` / `ExecutionKind` types in
+`macos/Nota/App/ModelRegistry.swift` are the two halves; they must stay in
+lockstep on the grammar, the provider set, and the kinds.
+
+## OpenRouter
+
+A fifth provider (`OPENROUTER_API_KEY`, base URL `https://openrouter.ai/api/v1`),
+reached through the same OpenAI-compatible client as Gemini and DeepSeek. What
+differs is admission and pricing.
+
+- **Admission is by hand.** models.dev's weekly auto-admit never sees
+  OpenRouter — 300+ ids would drown every picker. Six frontier slugs are curated
+  in `src/openrouter.ts` (mirrored in `ModelRegistry.openRouterModels`; the TS
+  file is the source of truth) and **merged into the effective catalog at read
+  time**. That is what makes them refresh-proof: `nota models refresh` rewrites
+  the auto-admitted cache, and the cache has never contained them. A real cache
+  entry with the same id wins over the hand-written stub.
+- **No pricing is stored.** OpenRouter routes one slug across providers whose
+  rates differ and change without our knowing, so `cost` is *absent* — which is
+  not zero. `computeSummaryCost` returns null and `nota usage` prints
+  "refer to OpenRouter" where a figure would go, keeping those runs out of the
+  unknown-cost tally (that tally flags gaps in Nota's own data, not a price that
+  lives on someone else's dashboard).
+- **Defaults are untouched.** The key-aware chain stays
+  `deepseek-v4-flash > gpt-5.4-mini > gemini-3.6-flash`; no OpenRouter model
+  joins it, and `--provider` is unchanged. Choosing one is always explicit.
+- Slugs were verified against a live `GET https://openrouter.ai/api/v1/models`
+  (no auth needed) rather than recalled — re-verify before editing the list, and
+  keep them undated so they do not rot on a vendor's schedule.
 
 ## Model Catalog (self-updating)
 
