@@ -12,6 +12,18 @@ struct ModelUsageRow: Codable, Equatable {
   let costUSD: Double
   let hasUnknown: Bool
   let hasEstimated: Bool
+  /// Present when Nota stores no pricing for this model (OpenRouter): print it
+  /// *instead of* a dollar figure. Distinct from `hasUnknown`, which is a gap
+  /// in Nota's own data and renders "—". Optional so a row written by an older
+  /// CLI still decodes.
+  var costNote: String?
+
+  /// What the cost column should read for this row.
+  var costDisplay: String {
+    if let costNote { return costNote }
+    if hasUnknown && costUSD == 0 { return "—" }
+    return CostCardViewModel.formatUSD(costUSD)
+  }
 }
 
 struct UsageSummaryResponse: Codable, Equatable {
@@ -179,14 +191,19 @@ struct CostCardViewModel: Equatable {
   init(rows: [ModelUsageRow], window: String) {
     let totalCost = rows.reduce(0) { $0 + $1.costUSD }
     let anyEstimated = rows.contains(where: \.hasEstimated)
-    let unknownRuns = rows.filter(\.hasUnknown).reduce(0) { $0 + $1.runs }
+    let unknownRuns = rows
+      .filter { $0.hasUnknown && $0.costNote == nil }
+      .reduce(0) { $0 + $1.runs }
 
     let prefix = anyEstimated ? "~" : ""
     headlineCost = "\(prefix)$\(String(format: "%.2f", totalCost))"
     hasEstimated = anyEstimated
     unknownNote = unknownRuns > 0 ? "\(unknownRuns) run\(unknownRuns == 1 ? "" : "s") unknown cost" : nil
 
-    let knownRows = rows.filter { !($0.hasUnknown && $0.costUSD == 0) }
+    // A row that carries a cost note is not a row of unknown cost — its price
+    // lives on the provider's dashboard. It keeps its place in the list (with
+    // the note where a figure would go) and stays out of the unknown footnote.
+    let knownRows = rows.filter { $0.costNote != nil || !($0.hasUnknown && $0.costUSD == 0) }
     let sorted = knownRows.sorted { $0.costUSD > $1.costUSD }
     topModels = Array(sorted.prefix(5))
     totalModelCount = rows.count
@@ -214,7 +231,8 @@ extension ModelUsageRow {
     tokensOut: Int = 100,
     costUSD: Double = 0.03,
     hasEstimated: Bool = false,
-    hasUnknown: Bool = false
+    hasUnknown: Bool = false,
+    costNote: String? = nil
   ) -> ModelUsageRow {
     ModelUsageRow(
       modelId: modelId,
@@ -225,7 +243,8 @@ extension ModelUsageRow {
       tokensOut: tokensOut,
       costUSD: costUSD,
       hasUnknown: hasUnknown,
-      hasEstimated: hasEstimated
+      hasEstimated: hasEstimated,
+      costNote: costNote
     )
   }
 }

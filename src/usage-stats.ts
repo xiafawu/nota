@@ -8,6 +8,7 @@
 import type { HistoryRecord } from "./pipeline/history.js";
 import type { Provider } from "./config.js";
 import { costForUsage } from "./pricing.js";
+import { costNoteFor, effectiveCatalog } from "./catalog.js";
 
 /** Aggregation window. */
 export type AggregateWindow = "all" | "30d" | "month";
@@ -25,6 +26,14 @@ export interface ModelSummaryRow {
   /** True when any contribution to this row was estimated (e.g. legacy
    *  duration×rate reclamation) rather than API-reported. Display as `~`. */
   hasEstimated: boolean;
+  /**
+   * Present when Nota stores no pricing for this model (OpenRouter). Displays
+   * print it *instead of* a dollar figure — the price exists, it just lives on
+   * the provider's dashboard, which is a different thing from `hasUnknown`
+   * (a gap in Nota's own data, rendered "—"). Computed here rather than in each
+   * renderer so the CLI and the macOS dashboard cannot disagree.
+   */
+  costNote?: string;
 }
 
 /** One row in the per-run log. */
@@ -122,6 +131,14 @@ export function perModelSummary(
       });
       runsCounted.add(runKey);
     }
+  }
+
+  // A row is keyed by model id, so the note is a pure function of the finished
+  // row — annotating once here beats threading it through every increment.
+  const { catalog } = effectiveCatalog();
+  for (const row of rows.values()) {
+    const note = costNoteFor(catalog, row.modelId);
+    if (note !== undefined) row.costNote = note;
   }
 
   return [...rows.values()].sort((a, b) => b.costUSD - a.costUSD);

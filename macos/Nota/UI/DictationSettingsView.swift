@@ -102,7 +102,11 @@ struct DictationSettingsView: View {
       Toggle("LLM Polish", isOn: $settings.polishEnabled)
 
       if settings.polishEnabled {
-        let summaryModels = ModelRegistry.models(for: .summary)
+        // Only models that are an HTTP endpoint: polish is a network call per
+        // sentence. The filter is on the execution kind, not on the id
+        // (ADR 0002) — a future subprocess engine must be excluded by what it
+        // *is*, so no catalog refresh can slip one into this picker.
+        let summaryModels = ModelRegistry.httpModels(for: .summary)
 
         Picker("Model", selection: $settings.polishModelID) {
           Text("Default (\(ModelRegistry.defaultModel(for: .summary)))")

@@ -324,7 +324,9 @@ private struct CostCardView: View {
 
             Spacer()
 
-            Text(CostCardViewModel.formatUSD(row.costUSD))
+            // `costDisplay`, not a raw format call: a model Nota stores no
+            // pricing for must never render as a dollar figure.
+            Text(row.costDisplay)
               .font(.callout)
               .fontWeight(.medium)
           }
@@ -410,7 +412,7 @@ private struct CostCardView: View {
           Text("\(row.calls)")
           Text("\(row.tokensIn)")
           Text("\(row.tokensOut)")
-          Text(row.hasUnknown && row.costUSD == 0 ? "—" : CostCardViewModel.formatUSD(row.costUSD))
+          Text(row.costDisplay)
         }
         .font(.caption)
       }

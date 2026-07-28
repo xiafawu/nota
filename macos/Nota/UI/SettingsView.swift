@@ -369,8 +369,9 @@ struct ApiKeysSettingsView: View {
   }
 
   private static func providerName(for env: String) -> String {
-    let providers: [ModelProvider] = [.openai, .assemblyai, .gemini, .deepseek]
-    return providers.first { $0.apiKeyEnv == env }?.displayName ?? env
+    // Every provider, asked of the enum rather than of a hand-kept list: a new
+    // provider's key row would otherwise show its raw env var as its name.
+    ModelProvider.allCases.first { $0.apiKeyEnv == env }?.displayName ?? env
   }
 
   private func beginEditing(_ env: String) {

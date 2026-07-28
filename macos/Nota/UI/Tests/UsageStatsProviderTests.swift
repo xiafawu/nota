@@ -56,6 +56,50 @@ final class UsageStatsProviderTests: XCTestCase {
     XCTAssertEqual(row.costUSD, 0.0, accuracy: 0.001)
   }
 
+  func testDecodeModelUsageRow_costNoteReplacesTheFigure() throws {
+    let json = """
+    {
+      "modelId": "openrouter/anthropic/claude-sonnet-5",
+      "provider": "assemblyai",
+      "runs": 1,
+      "calls": 1,
+      "tokensIn": 1000,
+      "tokensOut": 500,
+      "costUSD": 0.0,
+      "hasUnknown": true,
+      "hasEstimated": false,
+      "costNote": "refer to OpenRouter"
+    }
+    """
+
+    let data = try XCTUnwrap(json.data(using: .utf8))
+    let row = try JSONDecoder().decode(ModelUsageRow.self, from: data)
+
+    // A price that lives on someone else's dashboard is not a gap in Nota's
+    // data: it must never read as "$0.00", and it must not read as "—" either.
+    XCTAssertEqual(row.costDisplay, "refer to OpenRouter")
+
+    let viewModel = CostCardViewModel(rows: [row], window: "all")
+    XCTAssertNil(viewModel.unknownNote, "an unpriced row is not an unknown-cost run")
+    XCTAssertEqual(viewModel.topModels.map(\.modelId), [row.modelId])
+  }
+
+  func testDecodeModelUsageRow_rowWithoutACostNoteStillDecodes() throws {
+    // Rows written by a CLI predating the field carry no `costNote`.
+    let row = try JSONDecoder().decode(
+      ModelUsageRow.self,
+      from: Data(
+        """
+        {"modelId":"gpt-5-mini","provider":"assemblyai","runs":1,"calls":1,
+         "tokensIn":10,"tokensOut":5,"costUSD":0.25,"hasUnknown":false,
+         "hasEstimated":false}
+        """.utf8
+      )
+    )
+    XCTAssertNil(row.costNote)
+    XCTAssertEqual(row.costDisplay, "$0.25")
+  }
+
   func testDecodeModelUsageRow_smallCost() throws {
     let json = """
     {

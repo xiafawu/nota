@@ -28,6 +28,25 @@ final class DictationSettingsStoreTests: XCTestCase {
     XCTAssertEqual(DictationSettingsStore.load(), settings)
   }
 
+  func testNamespacedPolishModelRoundTrips() {
+    // A namespaced id is an ordinary model id (ADR 0002) — nothing on the
+    // settings path may split it, normalize it, or store a provider beside it.
+    var settings = DictationSettingsStore.load()
+    settings.polishEnabled = true
+    settings.polishModelID = "openrouter/anthropic/claude-sonnet-5"
+
+    DictationSettingsStore.save(settings)
+    let loaded = DictationSettingsStore.load()
+    XCTAssertEqual(loaded.polishModelID, "openrouter/anthropic/claude-sonnet-5")
+
+    // And it still resolves through the registry to a usable entry, with the
+    // provider's own slug on the wire.
+    let entry = ModelRegistry.model(id: loaded.polishModelID ?? "")
+    XCTAssertEqual(entry?.provider, .openrouter)
+    XCTAssertEqual(entry?.execution, .http)
+    XCTAssertEqual(entry?.wireID, "anthropic/claude-sonnet-5")
+  }
+
   func testShowHUDRoundTrip() {
     // Default is true
     XCTAssertEqual(DictationSettings().showHUD, true)

@@ -22,6 +22,7 @@ enum PolishClient {
   private static let baseURLs: [ModelProvider: String] = [
     .gemini: "https://generativelanguage.googleapis.com/v1beta/openai/",
     .deepseek: "https://api.deepseek.com",
+    .openrouter: "https://openrouter.ai/api/v1",
   ]
 
   /// The default base URL for OpenAI models.
@@ -43,7 +44,13 @@ enum PolishClient {
     vocabulary: [String] = [],
     context: ContextSnapshot? = nil
   ) async throws -> String {
-    guard let entry = ModelRegistry.model(id: modelID), entry.task == .summary else {
+    // Polish is a per-sentence network call on the streaming path; a model that
+    // is not an HTTP endpoint has no business here, and the check is on the
+    // execution kind rather than on the id (ADR 0002).
+    guard let entry = ModelRegistry.model(id: modelID),
+          entry.task == .summary,
+          entry.execution == .http
+    else {
       throw PolishError.invalidModel(modelID)
     }
 
@@ -60,7 +67,9 @@ enum PolishClient {
     let prompt = systemPrompt(vocabulary: vocabulary, context: context)
 
     let body: [String: Any] = [
-      "model": entry.id,
+      // The provider's own slug, not Nota's namespaced id: OpenRouter wants
+      // `anthropic/claude-sonnet-5` back, not its own name in front of it.
+      "model": entry.wireID,
       "messages": [
         ["role": "system", "content": prompt],
         ["role": "user", "content": text],

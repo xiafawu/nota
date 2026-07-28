@@ -52,13 +52,70 @@ struct CatalogLimit: Codable, Hashable {
   var input: Int?
 }
 
+/// Where an entry came from: the weekly allowlist, or a hand-picked shortlist.
+enum CatalogEntryOrigin: String, Codable, Hashable {
+  case auto
+  case curated
+}
+
 struct CatalogModel: Codable, Hashable, Identifiable {
   var id: String
   var provider: String
   var label: String
   var task: String
-  var cost: CatalogCost
+  /// Absent when Nota stores no pricing for this model. Absent is not zero —
+  /// displays print `costNote` rather than "$0.00".
+  var cost: CatalogCost?
+  /// What to print instead of a dollar figure when `cost` is absent.
+  var costNote: String?
   var limit: CatalogLimit
+  /// How the model runs. Absent means `.http` (everything auto-admitted).
+  var execution: ExecutionKind
+  /// Absent means `.auto`.
+  var origin: CatalogEntryOrigin
+
+  init(
+    id: String,
+    provider: String,
+    label: String,
+    task: String,
+    cost: CatalogCost?,
+    costNote: String? = nil,
+    limit: CatalogLimit,
+    execution: ExecutionKind = .http,
+    origin: CatalogEntryOrigin = .auto
+  ) {
+    self.id = id
+    self.provider = provider
+    self.label = label
+    self.task = task
+    self.cost = cost
+    self.costNote = costNote
+    self.limit = limit
+    self.execution = execution
+    self.origin = origin
+  }
+
+  // `execution` is the one field that is deliberately *strict*: an unrecognized
+  // kind throws, and `ModelCatalog`'s decoder turns that into "drop this one
+  // entry". Defaulting it to `.http` would be a build guessing that something
+  // it cannot name is safe to run in-process (ADR 0002).
+  //
+  // `origin` is the opposite, because it is only provenance for a label: an
+  // unfamiliar value degrades to `.auto` rather than costing the model its
+  // place in the picker.
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    id = try c.decode(String.self, forKey: .id)
+    provider = try c.decode(String.self, forKey: .provider)
+    label = try c.decode(String.self, forKey: .label)
+    task = try c.decode(String.self, forKey: .task)
+    cost = try c.decodeIfPresent(CatalogCost.self, forKey: .cost)
+    costNote = try c.decodeIfPresent(String.self, forKey: .costNote)
+    limit = try c.decode(CatalogLimit.self, forKey: .limit)
+    execution = try c.decodeIfPresent(ExecutionKind.self, forKey: .execution) ?? .http
+    origin = (try? c.decode(CatalogEntryOrigin.self, forKey: .origin)) ?? .auto
+  }
 }
 
 struct ModelCatalog: Codable {
@@ -68,35 +125,100 @@ struct ModelCatalog: Codable {
   var fetchedAt: String
   var costUnit: String
   var models: [CatalogModel]
+
+  init(
+    schemaVersion: Int,
+    source: String,
+    etag: String,
+    fetchedAt: String,
+    costUnit: String,
+    models: [CatalogModel]
+  ) {
+    self.schemaVersion = schemaVersion
+    self.source = source
+    self.etag = etag
+    self.fetchedAt = fetchedAt
+    self.costUnit = costUnit
+    self.models = models
+  }
+
+  /// Wrapper whose decode never throws, so one bad element advances the
+  /// unkeyed container instead of failing the array — a throwing element decode
+  /// does not move `currentIndex`, which is what turns "skip this entry" into
+  /// an infinite loop or a whole-catalog failure.
+  private struct LenientModel: Decodable {
+    let model: CatalogModel?
+    init(from decoder: Decoder) throws {
+      model = try? CatalogModel(from: decoder)
+    }
+  }
+
+  /// Decoding is tolerant per entry: an entry written by a newer Nota — an
+  /// execution kind or an origin this build cannot name — costs only itself.
+  /// The alternative is a single unreadable row blanking every model picker in
+  /// the app, which is the failure mode the dictionary store already refuses.
+  init(from decoder: Decoder) throws {
+    let c = try decoder.container(keyedBy: CodingKeys.self)
+    schemaVersion = try c.decode(Int.self, forKey: .schemaVersion)
+    source = try c.decode(String.self, forKey: .source)
+    etag = try c.decode(String.self, forKey: .etag)
+    fetchedAt = try c.decode(String.self, forKey: .fetchedAt)
+    costUnit = try c.decode(String.self, forKey: .costUnit)
+    models = try c.decode([LenientModel].self, forKey: .models).compactMap(\.model)
+  }
 }
 
 // MARK: - Bridge to ModelRegistry (ModelEntry / ModelProvider)
 
-extension ModelProvider {
-  /// Map a catalog `provider` string (already Nota-normalized upstream:
-  /// openai | gemini | deepseek) to the app's provider enum.
-  init?(catalogProvider: String) {
-    switch catalogProvider {
-    case "openai": self = .openai
-    case "gemini": self = .gemini
-    case "deepseek": self = .deepseek
-    default: return nil
-    }
-  }
-}
-
 extension ModelCatalog {
   /// The catalog's models as `ModelEntry` values for the summary pickers.
-  /// Entries whose provider can't be mapped are dropped.
+  ///
+  /// Provider comes from `ModelID.provider(for:declared:)`: the namespace for a
+  /// namespaced id, the entry's own `provider` field for a flat one. Entries
+  /// whose provider can't be derived are dropped — an id in a namespace this
+  /// build has no provider for is not a model it can run.
   func summaryModelEntries() -> [ModelEntry] {
     models.compactMap { model in
-      guard let provider = ModelProvider(catalogProvider: model.provider) else { return nil }
-      return ModelEntry(id: model.id, task: .summary, provider: provider, label: model.label)
+      guard let provider = ModelID.provider(for: model.id, declared: model.provider) else {
+        return nil
+      }
+      return ModelEntry(
+        id: model.id,
+        task: .summary,
+        provider: provider,
+        label: model.label,
+        execution: model.execution
+      )
     }
   }
 
   func contains(_ modelID: String) -> Bool {
     models.contains { $0.id == modelID }
+  }
+
+  /// The text a cost display must print instead of a dollar figure for
+  /// `modelID`, or nil when the model is priced (or simply unknown — an unknown
+  /// model is an unknown cost, which is a different thing).
+  func costNote(for modelID: String) -> String? {
+    guard let model = models.first(where: { $0.id == modelID }), model.cost == nil else {
+      return nil
+    }
+    return model.costNote ?? "unpriced"
+  }
+
+  /// Merge the curated shortlist in. Curated entries live in code, not in the
+  /// cache, which is exactly what makes them survive `nota models refresh`: a
+  /// refresh rewrites the auto-admitted cache, and the cache has never held
+  /// them. A cache entry with the same id wins.
+  func mergingCurated(
+    _ curated: [CatalogModel] = ModelRegistry.openRouterModels
+  ) -> ModelCatalog {
+    let present = Set(models.map(\.id))
+    let additions = curated.filter { !present.contains($0.id) }
+    guard !additions.isEmpty else { return self }
+    var merged = self
+    merged.models = (models + additions).sorted { $0.id < $1.id }
+    return merged
   }
 }
 
@@ -126,12 +248,15 @@ enum ModelCatalogLoader {
     return catalog
   }
 
-  /// Effective catalog: on-disk cache first, then the baked snapshot.
+  /// Effective catalog: on-disk cache first, then the baked snapshot, with the
+  /// curated shortlist merged into whichever won. `source` describes where the
+  /// *auto-admitted* half came from; a curated entry carries `origin: .curated`.
+  /// Mirrors `effectiveCatalog()` in src/catalog.ts.
   static func effective(cacheURL: URL = defaultCacheURL) -> (catalog: ModelCatalog, source: ModelCatalogSource) {
     if let cached = load(from: cacheURL) {
-      return (cached, .cache)
+      return (cached.mergingCurated(), .cache)
     }
-    return (bakedSnapshot, .baked)
+    return (bakedSnapshot.mergingCurated(), .baked)
   }
 
   /// True when `storedID` is a non-empty summary preference that is absent from

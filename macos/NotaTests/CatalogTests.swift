@@ -47,6 +47,14 @@ struct CatalogTests {
     "gemini-3.5-flash", "gemini-3.6-flash", "deepseek-v4-flash", "deepseek-v4-pro",
   ]
 
+  /// What `effective()` serves: the baked snapshot plus the curated OpenRouter
+  /// shortlist, which lives in code rather than in any cache. The two sets are
+  /// kept apart on purpose — a test that folded them together could not tell a
+  /// shortlist entry going missing from the snapshot gaining one.
+  static let expectedCuratedIDs: Set<String> = Set(ModelRegistry.openRouterModels.map(\.id))
+
+  static var expectedEffectiveIDs: Set<String> { expectedBakedIDs.union(expectedCuratedIDs) }
+
   // A cache with a tiered entry, a flat entry with cacheRead, and an entry that
   // omits every optional field (no cacheRead, no tiers key, limit context-only).
   static let fixtureJSON = #"""
@@ -90,20 +98,20 @@ struct CatalogTests {
       guard let pro = catalog.models.first(where: { $0.id == "gemini-2.5-pro" }) else {
         throw NSError(domain: "Test", code: 1, userInfo: [NSLocalizedDescriptionKey: "gemini-2.5-pro missing"])
       }
-      try expect(pro.cost.input == 1.25, "pro input")
-      try expect(pro.cost.cacheRead == 0.125, "pro cacheRead")
-      try expect(pro.cost.tiers.count == 1, "pro should have one tier")
-      try expect(pro.cost.tiers[0].thresholdTokens == 200000, "pro tier threshold")
-      try expect(pro.cost.tiers[0].input == 2.5, "pro tier input")
-      try expect(pro.cost.tiers[0].cacheRead == 0.25, "pro tier cacheRead")
+      try expect(pro.cost?.input == 1.25, "pro input")
+      try expect(pro.cost?.cacheRead == 0.125, "pro cacheRead")
+      try expect(pro.cost?.tiers.count == 1, "pro should have one tier")
+      try expect(pro.cost?.tiers[0].thresholdTokens == 200000, "pro tier threshold")
+      try expect(pro.cost?.tiers[0].input == 2.5, "pro tier input")
+      try expect(pro.cost?.tiers[0].cacheRead == 0.25, "pro tier cacheRead")
       try expect(pro.limit.context == 1048576, "pro context")
       try expect(pro.limit.output == 65536, "pro output limit")
 
       guard let flat = catalog.models.first(where: { $0.id == "gpt-5-mini" }) else {
         throw NSError(domain: "Test", code: 1, userInfo: [NSLocalizedDescriptionKey: "gpt-5-mini missing"])
       }
-      try expect(flat.cost.tiers.isEmpty, "flat entry should have no tiers")
-      try expect(flat.cost.cacheRead == 0.025, "flat cacheRead")
+      try expect(flat.cost?.tiers.isEmpty == true, "flat entry should have no tiers")
+      try expect(flat.cost?.cacheRead == 0.025, "flat cacheRead")
     }
 
     test("omitted optional fields decode as nil / empty") {
@@ -113,8 +121,8 @@ struct CatalogTests {
             let minModel = catalog.models.first(where: { $0.id == "min-model" }) else {
         throw NSError(domain: "Test", code: 1, userInfo: [NSLocalizedDescriptionKey: "min-model missing"])
       }
-      try expect(minModel.cost.cacheRead == nil, "omitted cacheRead should be nil")
-      try expect(minModel.cost.tiers.isEmpty, "omitted tiers should default to []")
+      try expect(minModel.cost != nil && minModel.cost?.cacheRead == nil, "omitted cacheRead should be nil")
+      try expect(minModel.cost?.tiers.isEmpty == true, "omitted tiers should default to []")
       try expect(minModel.limit.output == nil, "omitted limit.output should be nil")
       try expect(minModel.limit.input == nil, "omitted limit.input should be nil")
     }
@@ -146,20 +154,22 @@ struct CatalogTests {
       defer { try? FileManager.default.removeItem(at: url) }
       let effective = ModelCatalogLoader.effective(cacheURL: url)
       try expect(effective.source == .baked, "expected baked fallback for unknown schemaVersion")
-      try expect(Set(effective.catalog.models.map(\.id)) == expectedBakedIDs, "baked ids mismatch")
+      try expect(Set(effective.catalog.models.map(\.id)) == expectedEffectiveIDs, "effective ids mismatch")
     }
   }
 
   static func runFallbackTests() {
     print("\nBaked fallback")
 
-    test("missing cache file → effective serves the baked 14-id list") {
+    test("missing cache file → effective serves the baked list plus the shortlist") {
       let missing = FileManager.default.temporaryDirectory
         .appendingPathComponent("nota-catalog-missing-\(UUID().uuidString).json")
       let effective = ModelCatalogLoader.effective(cacheURL: missing)
       try expect(effective.source == .baked, "expected baked source")
-      try expect(effective.catalog.models.count == 14, "expected 14 baked models, got \(effective.catalog.models.count)")
-      try expect(Set(effective.catalog.models.map(\.id)) == expectedBakedIDs, "baked ids mismatch")
+      // The curated entries are merged in on every read, which is exactly what
+      // makes them survive a refresh: they are never in a cache to be removed.
+      try expect(Set(effective.catalog.models.map(\.id)) == expectedEffectiveIDs, "effective ids mismatch")
+      try expect(expectedCuratedIDs.count == 6, "expected a six-model OpenRouter shortlist")
     }
 
     test("baked snapshot decodes and maps to 14 provider-tagged entries") {
@@ -172,7 +182,7 @@ struct CatalogTests {
 
     test("ModelRegistry summary list matches the baked catalog") {
       let ids = Set(ModelRegistry.models(for: .summary).map(\.id))
-      try expect(ids == expectedBakedIDs, "registry summary ids drifted from baked catalog")
+      try expect(ids == expectedEffectiveIDs, "registry summary ids drifted from the effective catalog")
       // slam-1 / nano must be gone from transcription.
       let tIDs = Set(ModelRegistry.models(for: .transcription).map(\.id))
       try expect(!tIDs.contains("slam-1"), "slam-1 should be removed")

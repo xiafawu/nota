@@ -25,12 +25,14 @@ enum ApiKeyStore {
       .appendingPathComponent("config")
   }
 
-  /// Env var names surfaced in the Settings UI.
+  /// Env var names surfaced in the Settings UI. One row per provider Nota can
+  /// reach; mirrors KNOWN_KEYS in src/cli/config.ts.
   static let keys = [
     "OPENAI_API_KEY",
     "ASSEMBLYAI_API_KEY",
     "GEMINI_API_KEY",
     "DEEPSEEK_API_KEY",
+    "OPENROUTER_API_KEY",
   ]
 
   static func status(for env: String) -> ApiKeyStatus {
