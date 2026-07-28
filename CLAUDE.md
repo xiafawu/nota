@@ -379,11 +379,79 @@ goes into a small floating card instead of the target app:
   immediate mode learns unconditionally, now endorsed). Discarding learns
   nothing. A human edit is a reason to trust a correction, never a reason to let
   prose into the dictionary.
-- **A new session cancels an open review**, inserting nothing: the panel belongs
-  to the session that filled it, and its target pid is that session's. Decisions
-  are tagged with the review's id for the same reason the streaming path carries
-  an epoch — a decision that arrives late must not be attributed to whatever
-  session came after.
+- **A new press EXTENDS an open review; it does not cancel it** (changed
+  2026-07-28 on user feedback — the old rule was "a new session cancels an open
+  review, inserting nothing"). The rationale for the old rule still stands and
+  is why the new one is shaped the way it is: the panel belongs to the session
+  that filled it, and its target pid is that session's. What was wrong was the
+  conclusion. Discarding made the mode punishing exactly when it was working —
+  "one more sentence" cost everything already reviewed. So:
+  - The card **stays on screen** and shows a mic dot plus "Listening…" in its
+    header row (`DictationReviewModel.isListening`). The continuation session
+    recognizes, L2s and polishes exactly like any other review session.
+  - On stop its text is **appended to the editor's buffer**
+    (`DictationReview.appended`, one space via `StreamingDelivery.joined`).
+    Appended to what the OWNER has in the box, edits and all — never
+    regenerated from the pipeline. The pipeline's own accumulation is kept
+    separately on `PendingReview.polished` / `.offline`, because that is the
+    `before` side of the diff Apply learns from and it must not see the edit it
+    is being compared against.
+  - **⌘↩ applies the whole batch once; Escape discards the whole batch.** While
+    a continuation is recording, both are refused (buttons disabled, and
+    `DictationReviewModel.apply/discard` beep) — the decision is about a batch
+    that is still being spoken. `finishReview` refuses too, as the backstop.
+  - **Target pid: each press re-captures, and the newest capture wins**
+    (`sessionTarget ?? open.target`). The owner may have moved between
+    sessions, and the app they were dictating into when they last spoke is the
+    one they mean. A capture that *failed* keeps the one that worked — nil is a
+    refusal to insert anywhere, and the earlier session already found somewhere
+    valid.
+  - **Extended is not superseded.** A continuation keeps the review's `id` and
+    bumps `generation`; only a genuine replacement (the card could not be
+    written to, so a fresh one was opened carrying the accumulated text) gets a
+    new id. That distinction is what the `id` guard in `finishReview` is for:
+    the decision callbacks the open card is already holding were made for the
+    *first* session, and ⌘↩ after a continuation must still land. A decision
+    from a card that was replaced must not.
+  - Auto-learn's budget stays **per session** — each continuation is a session
+    for `AutoLearn` purposes, and its polish is its own.
+  - **The HUD comes back while a continuation records.** `isReviewing` alone
+    still suppresses the pill; `isReviewRecording` is what re-admits the *live*
+    states (`listening`, `finalizing`) — the microphone is open and the meter
+    and rough draft are the only thing on screen that says so. Success and
+    warning snippets stay suppressed either way: they speak for text still
+    sitting in the card. A `.failed` always shows, because a review card has
+    nowhere to put an error. If the style is `prompter`, it shows the
+    *continuation session's* transcript only, not the card's accumulated batch
+    — `resetStreamingSession` clears `finalizedDraft` at every session start,
+    and the card already shows the batch.
+- **⌘↩ and the Apply button are one code path, and the keyboard is why it did
+  not look like one** (fixed 2026-07-28). Symptom: with the card open, ⌘↩ took
+  the card down and inserted **nothing**, while clicking Apply inserted fine.
+  The two routes were already identical in code — the key monitor and the
+  button both end in `finish(.apply(model.text))` → `finishReview` →
+  `injectReviewed` — so no amount of reading the branch explained it. What
+  differed was the keyboard: on the shortcut route the owner's ⌘ is
+  *physically down* when injection runs 80 ms later. A `CGEvent` built from a
+  `CGEventSource` inherits that source's modifier state, and
+  `.combinedSessionState` includes the physical keyboard, so
+  `TextInjector.tryCGEventInject` posted its Unicode-payload keystroke tagged
+  ⌘. A ⌘-tagged key-down is a shortcut: the target routes it to key-equivalent
+  dispatch and never inserts the payload, silently, while `lastProcessedText`
+  claims success. That is not an exotic path — every terminal in
+  `defaultOverrideTable` is forced onto `.keyEvents`, and the AX strategy (the
+  one modifiers cannot touch) is exactly the one those apps skip, which is why
+  it reproduced for the owner and not in a plain Cocoa text field. Two fixes,
+  because either alone leaves a hole: `TextInjector` now assigns `flags = []`
+  to both events it builds (a keystroke carrying text is never a shortcut,
+  whatever the keyboard is doing), and `injectReviewed` first awaits
+  `ModifierClearance.wait()` — a bounded 500 ms poll of
+  `CGEventSource.flagsState(.combinedSessionState)` — because the target app's
+  *own* idea of the modifier state comes from the real keyboard and no flag we
+  set on our event can correct it. Bounded on purpose: a stuck modifier may
+  delay a session's text, never swallow it. The key monitor now calls
+  `model.apply()` / `model.discard()`, the same call the buttons make, so
+  "what Apply means" is written down once.
 
 `macos/Nota/Dictation/DictationReviewPanel.swift` holds `DictationReview` (the
 pure apply/discard core), the panel, and the presenter behind
@@ -512,12 +580,15 @@ Summary model ids (curated OpenRouter shortlist, `src/openrouter.ts`):
   `openrouter/moonshotai/kimi-k2.6`, `openrouter/qwen/qwen3.7-max`,
   `openrouter/z-ai/glm-5.2`, `openrouter/meta-llama/llama-4-maverick`
 
-Summary model ids (CLI engines, `src/cli-engines.ts` — CLI only, never the app):
+Summary model ids (CLI engines, `src/cli-engines.ts` — never a *polish* model):
 - `claude-code/sonnet`, `claude-code/opus`, `claude-code/haiku`
 - `codex/gpt-5.6-sol`, `codex/gpt-5.6-terra`, `codex/gpt-5.6-luna`, `codex/gpt-5.4-mini`
 
 The macOS Settings window (Cmd+,) exposes the same pickers plus masked API-key
 management; it mirrors the registry in `macos/Nota/App/ModelRegistry.swift`.
+Its Models tab's **summary** picker offers those seven under a "Subscription
+CLIs" group, appended after the catalog, and pins one to the same
+`~/.nota/settings.json` any other model goes to — see CLI Engines.
 
 ## Namespaced Model Ids
 
@@ -615,14 +686,37 @@ differs is admission and pricing.
 
 ## CLI Engines
 
-ADR 0003. `claude-code/*` and `codex/*` are summary models that are not
-endpoints: Nota spawns the `claude` or `codex` binary already installed on the
-machine. No API key, no base URL — the CLI authenticates with its own login and
-the work is billed to the owner's subscription, which is the whole point. They
-are the **CLI's** summary path only (including its sectioned >100k-token mode,
-which spawns once per section plus the roll-up) and never appear in the macOS
-app: dictation polish is latency-bound and stays `http`, enforced by the
-execution-kind filter rather than by convention.
+ADR 0003 (amended 2026-07-28). `claude-code/*` and `codex/*` are summary models
+that are not endpoints: Nota spawns the `claude` or `codex` binary already
+installed on the machine. No API key, no base URL — the CLI authenticates with
+its own login and the work is billed to the owner's subscription, which is the
+whole point. They are a **summary** path only (including its sectioned
+>100k-token mode, which spawns once per section plus the roll-up) and never
+reach **dictation polish**, which is latency-bound and stays `http`, enforced by
+the execution-kind filter rather than by convention.
+
+- **The macOS app may pin one as its summary model.** The original ADR said
+  "never in the macOS app"; its rationale was latency, which is a claim about
+  polish and not about the app. The app's summary path is `nota-app-run.sh` —
+  the TS pipeline, i.e. the CLI path — so a `claude-code/*` pin in the shared
+  settings.json runs exactly the subprocess `nota` would. The Models tab's
+  summary picker therefore offers the seven under a "Subscription CLIs" group
+  after the catalog (`ModelRegistry.cliEngineModels`, ordered; the id set is
+  *derived* from that list so the two cannot drift), with a footer naming what
+  they need and what pays for them. They are deliberately **not** `ModelEntry`
+  values in Swift: a CLI engine has no `ModelProvider`, and inventing one would
+  put a "paste your key" row in the API Keys tab (which is built from
+  `ModelProvider.allCases`) for a login that lives in the CLI's own config.
+  That is also why nothing can leak into the polish picker — `httpModels(for:)`
+  filters `ModelEntry` values, and there is no such value to miss.
+  They are still not catalog rows: `ModelCatalog.contains` answers "is this a
+  live auto-admitted/curated entry". The question "may this be pinned" is
+  `ModelCatalogLoader.isValidSummaryPin`, which is the union, and `isZombie` is
+  its negation. Asking `contains` for both is what made the pane call a working
+  pin "no longer available" *and* made `effectiveModel(for: .summary)` quietly
+  substitute the default chain for it. The app probes no binaries and shows no
+  CLI rows in API Keys — a missing binary or a stale login fails at the summary
+  step with the error the CLI path already raises.
 
 - **Never a default.** They are absent from the key-aware chain and may not be
   added to it, however installed the binaries are. "Free but slow" must never
@@ -782,6 +876,27 @@ The cache feeds cost computation for usage tracking.
   It costs no *focus*: the panel is nonactivating, so the app being dictated into
   stays frontmost throughout. Its diffs are learned only on Apply — text the
   owner discarded teaches nothing. See Dictation Delivery.
+- A review card is a **batch**, not a session (changed 2026-07-28 on user
+  feedback). Pressing the trigger with one open continues it: the card stays,
+  the new session's text is appended to whatever the owner has in the box, and
+  one ⌘↩ applies all of it. The card therefore needs a state the pipeline never
+  needed before — "a decision is not available yet" — and the review keeps one
+  `id` across continuations while bumping a `generation`, so "extended" and
+  "superseded" stay distinguishable to the guard that judges a late decision.
+  Appending to the *editor* rather than to the pipeline's own accumulation is
+  the load-bearing half: the owner's corrections are theirs, and a mode whose
+  whole purpose is to capture them may not regenerate over them.
+- Nota's synthetic keystrokes must not inherit the owner's fingers. A `CGEvent`
+  built from a `CGEventSource` carries that source's modifier state, and
+  `.combinedSessionState` includes the physical keyboard — so a keystroke posted
+  while ⌘ is held arrives tagged as a command and is dispatched as a shortcut
+  rather than inserted, silently, while the controller reports success. Two
+  independent defences, and both are needed: `TextInjector` zeroes `flags` on
+  the events it builds (our event never claims to be a shortcut), and
+  `ModifierClearance.wait()` bounds-waits for the real modifiers to come up
+  (the *target's* modifier state comes from the keyboard, not from our event).
+  This is what made review-mode ⌘↩ drop every session's text into terminals and
+  Chromium apps while the Apply button worked — see Dictation Delivery.
 - What a delivery mode asks of the recognizer is a pure decision
   (`DictationSessionPlan.make(mode:engine:)`), separate from what it may do with
   the results. "Show a live rough draft" and "put text in the user's document"
