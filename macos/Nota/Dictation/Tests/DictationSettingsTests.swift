@@ -74,11 +74,21 @@ final class DictationSettingsStoreTests: XCTestCase {
   }
 
   func testCorruptPayloadFallsBackToDefaults() {
-    UserDefaults.standard.set(
+    // Through the store's own defaults — under XCTest that is an isolated
+    // suite, and writing UserDefaults.standard here would corrupt the real
+    // app domain the isolation exists to protect.
+    DictationSettingsStore.defaults.set(
       Data("not json".utf8),
       forKey: "com.xiafawu.nota.dictationSettings"
     )
     XCTAssertEqual(DictationSettingsStore.load(), DictationSettings())
+  }
+
+  func testStoreIsIsolatedFromTheRealDomainUnderXCTest() {
+    // The guard for this whole suite: if the store ever backs onto
+    // `.standard` under XCTest again, every test-gated deploy deletes the
+    // owner's saved settings (2026-07-28: polish model, HUD style).
+    XCTAssertNotEqual(DictationSettingsStore.defaults, UserDefaults.standard)
   }
 }
 

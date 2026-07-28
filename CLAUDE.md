@@ -631,6 +631,15 @@ The cache feeds cost computation for usage tracking.
 - Output saved as markdown file next to input by default
 - Byte-level (SHA-256) duplicate detection: when history is enabled (the default), Nota hashes the raw audio once in `runPipeline` and, if an identical file already has a *completed* history record whose output `.md` still exists, reuses that summary and skips transcription. `--force` overrides; a hash failure warns but still transcribes. This gates the common case (same file shared twice) cheaply before any paid call; it is a byte hash, not an acoustic fingerprint, so a re-encoded copy of the same recording is not detected. Legacy records (pre-feature) have no `contentHash` and never match. Example: `nota recording.m4a --force` reprocesses a file already in history.
 - The custom dictionary (`~/.nota/dictionary.json`, schema v1) is one file with two writers — `src/utils/dictionary.ts` and `macos/Nota/Dictation/DictionaryStore.swift`. Both write atomically (temp file + rename) and both *read* a missing or corrupt file as an empty dictionary with a warning, never a hard failure: dictation must not be blocked by a bad dictionary. Decoding is tolerant per entry on both sides (one damaged entry costs only itself; unknown `source` degrades to `manual`, missing optionals default), so a hand-edited typo or a file written by a newer version still loads. Reading-as-empty is safe only for reads: before a *write*, a wholly unparseable file is copied to `dictionary.json.corrupt-<epoch>` and the store starts over, because auto-learn calls `add` unattended and would otherwise replace every unreadable term with the one it just learned. In-process writers (Settings pane, auto-learn) are serialized by a lock in `DictionaryStore`; the CLI is a separate process and stays last-write-wins.
+- `DictationSettingsStore` backs onto a private, wiped-at-start UserDefaults
+  suite whenever it runs under XCTest (env-var detection, like the
+  single-instance guard's bypass). An unhosted test bundle's
+  `UserDefaults.standard` reaches the real `com.xiafawu.nota` domain, so the
+  store tests' `reset()` used to delete the owner's saved dictation settings on
+  every test-gated deploy — experienced as "Nota forgets my settings on every
+  redeploy" (2026-07-28: polish model, HUD style). Tests must touch defaults
+  only through `DictationSettingsStore.defaults`;
+  `testStoreIsIsolatedFromTheRealDomainUnderXCTest` pins the isolation.
 - `DictationSettings` decodes field by field (`init(from:)` in
   `DictationTypes.swift`), never through the synthesized `Decodable`. The
   synthesized one ignores property defaults and throws on a missing key, and
