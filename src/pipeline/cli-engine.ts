@@ -361,6 +361,30 @@ export function looksUnauthenticated(text: string): boolean {
   );
 }
 
+/**
+ * How much exit-0 output may still be sniffed for an auth complaint.
+ *
+ * The sniff has to be bounded because {@link looksUnauthenticated} matches
+ * `401` and `unauthorized`, and a *meeting* is allowed to have been about an
+ * HTTP status. Nothing this short is a summary: the prompt asks for a title, a
+ * narrative, key topics, decisions, action items and tags, and the shortest
+ * real answer any of these engines has produced is several times this. So an
+ * output under the bound that also reads as an auth complaint is exactly that,
+ * not a summary that happens to mention one.
+ */
+export const CLI_AUTH_SNIFF_MAX_CHARS = 400;
+
+/**
+ * True when a CLI's exit-0 output is an auth complaint standing in for an
+ * answer. Both CLIs can report an expired login on the happy exit path, printing
+ * one line where a summary should be — and one line parsed as a summary is
+ * written over the user's notes.
+ */
+export function isAuthComplaint(content: string, stderr = ""): boolean {
+  if (content.length > CLI_AUTH_SNIFF_MAX_CHARS) return false;
+  return looksUnauthenticated(`${stderr}\n${content}`);
+}
+
 /** Keep error messages readable when a CLI dumps a stack trace. */
 function tail(text: string, maxChars = 600): string {
   const trimmed = text.trim();
@@ -524,17 +548,20 @@ export function runCliPrompt(
           return;
         }
 
-        // Exit 0 with nothing to show still fails: some CLIs report an expired
-        // login on the happy exit path, and an empty summary would be written
-        // over the user's notes.
+        // Exit 0 is not on its own a success. Both CLIs report an expired login
+        // on the happy exit path — sometimes with nothing on stdout, sometimes
+        // with the complaint itself where the summary should be — and either
+        // one, taken as an answer, is parsed into a summary and written over the
+        // user's notes.
         const content = cleanCliOutput(stdout);
-        if (!content) {
-          if (looksUnauthenticated(stderr)) {
+        if (!content || isAuthComplaint(content, stderr)) {
+          if (looksUnauthenticated(`${stderr}\n${content}`)) {
+            const said = tail(stderr.trim() ? stderr : content);
             reject(
               new CliEngineError(
                 `Summary engine ${engineLabel(spec)}: ${binary} is not authenticated — ` +
                   `${CLI_LOGIN_HINT[spec.provider]}, then re-run. ` +
-                  `No API model was substituted. ${binary} said: ${tail(stderr)}`,
+                  `No API model was substituted. ${binary} said: ${said}`,
                 spec.provider,
               ),
             );
@@ -605,6 +632,27 @@ export function resolveBinaryPath(
 const PROBE_TIMEOUT_MS = 10_000;
 
 /**
+ * The version a `--version` probe reported: the first non-blank line of
+ * **stdout**, falling back to stderr only when stdout said nothing at all.
+ *
+ * The two streams are kept apart on purpose. Interleaving them into one buffer
+ * and taking its first line makes the answer whatever arrived first, and startup
+ * noise on stderr is the thing that arrives first — a Node deprecation warning
+ * from an exported `NODE_OPTIONS` (which {@link sanitizedEnv} deliberately does
+ * not strip) would be printed by `nota config` as the CLI's version. Neither CLI
+ * writes its version to stderr, so the fallback is only ever a last resort for a
+ * wrapper script that does.
+ */
+export function firstVersionLine(stdout: string, stderr = ""): string | undefined {
+  const firstLine = (text: string): string | undefined =>
+    text
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) => line.length > 0);
+  return firstLine(stdout) ?? firstLine(stderr);
+}
+
+/**
  * Cheap health check for one engine: is the binary on PATH, and does it answer
  * `--version`?
  *
@@ -651,7 +699,8 @@ export function probeCliEngine(
       return;
     }
 
-    let out = "";
+    let stdout = "";
+    let stderr = "";
     let settled = false;
     const done = (probe: CliProbe): void => {
       if (settled) return;
@@ -673,11 +722,11 @@ export function probeCliEngine(
 
     child.stdout?.setEncoding("utf-8");
     child.stdout?.on("data", (chunk: string) => {
-      out += chunk;
+      stdout += chunk;
     });
     child.stderr?.setEncoding("utf-8");
     child.stderr?.on("data", (chunk: string) => {
-      out += chunk;
+      stderr += chunk;
     });
     child.on("error", (err: Error) => {
       done({
@@ -687,7 +736,7 @@ export function probeCliEngine(
       });
     });
     child.on("close", (code: number | null) => {
-      const version = out.trim().split("\n")[0]?.trim();
+      const version = firstVersionLine(stdout, stderr);
       if (code === 0 && version) {
         done({
           ...base,
@@ -701,7 +750,9 @@ export function probeCliEngine(
       done({
         ...base,
         path: resolved,
-        detail: `${binary} at ${resolved} exited ${code} for --version`,
+        detail:
+          `${binary} at ${resolved} exited ${code} for --version` +
+          (stderr.trim() ? ` — ${tail(stderr, 200)}` : ""),
       });
     });
   });

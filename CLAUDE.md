@@ -694,7 +694,12 @@ execution-kind filter rather than by convention.
   wall time on every run, for a gate whose purpose is to be cheaper than the
   transcription it guards. Presence is verified and a stale login is not — the
   detail line says so, and an unauthenticated engine fails at the summary step
-  with an error naming the login.
+  with an error naming the login. The reported version is the first non-blank
+  line of **stdout**; stderr is kept in its own buffer and used only if stdout
+  said nothing. Interleaved, the answer is whatever arrived first, and startup
+  noise arrives first — an exported `NODE_OPTIONS` (which `sanitizedEnv`
+  deliberately keeps, being neither a credential nor session state) makes
+  `nota config` print a deprecation warning as the CLI's version.
 - **Cost is a note, not a figure.** No `cost` is stored, so `computeSummaryCost`
   returns null and displays print "included w/ subscription" through the same
   `costNote` mechanism OpenRouter uses. Those runs stay out of the unknown-cost

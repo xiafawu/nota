@@ -27,13 +27,16 @@ import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 import {
+  CLI_AUTH_SNIFF_MAX_CHARS,
   CLI_TIMEOUT_BASE_MS,
   CLI_TIMEOUT_MAX_MS,
   cleanCliOutput,
   cliArgs,
   cliEngineFor,
   cliTimeoutMs,
+  firstVersionLine,
   formatWait,
+  isAuthComplaint,
   isDeniedEnvKey,
   looksUnauthenticated,
   notaCodexHome,
@@ -283,6 +286,51 @@ describe("a non-zero exit", () => {
       /exited cleanly but produced no output/,
     );
   });
+
+  it("refuses a clean exit whose 'answer' is a login complaint", async () => {
+    // Both CLIs report an expired login on the happy exit path, printing the
+    // complaint where the summary should be. Resolving that would parse one
+    // line into a summary and write it over the user's notes.
+    fakeBinary(
+      "claude",
+      'cat > /dev/null\necho "Invalid API key · Please run /login"\nexit 0',
+    );
+    await expect(runCliPrompt(SONNET, "hi")).rejects.toThrow(
+      /not authenticated — run `claude` once and sign in/,
+    );
+  });
+
+  it("quotes what the CLI actually printed when only stdout carried it", async () => {
+    fakeBinary("claude", 'cat > /dev/null\necho "Not logged in."\nexit 0');
+    await expect(runCliPrompt(SONNET, "hi")).rejects.toThrow(/Not logged in\./);
+  });
+
+  it("does not mistake a summary that mentions a 401 for a failed login", async () => {
+    // `looksUnauthenticated` matches "401" and "unauthorized"; a meeting is
+    // allowed to have been about an HTTP status. The bound is what keeps the
+    // sniff from eating real answers.
+    const aboutAuth = SUMMARY_ANSWER.replace(
+      "They agreed on the roadmap.",
+      `They agreed on the roadmap. ${"The 401 unauthorized responses were the topic. ".repeat(12)}`,
+    );
+    expect(aboutAuth.length).toBeGreaterThan(CLI_AUTH_SNIFF_MAX_CHARS);
+    fakeBinary(
+      "claude",
+      ["cat > /dev/null", "cat <<'NOTA_EOF'", aboutAuth, "NOTA_EOF"].join("\n"),
+    );
+    await expect(runCliPrompt(SONNET, "hi")).resolves.toBe(aboutAuth);
+  });
+});
+
+describe("isAuthComplaint", () => {
+  it("is true only for output short enough not to be a summary", () => {
+    expect(isAuthComplaint("Please run /login")).toBe(true);
+    expect(isAuthComplaint("", "session expired")).toBe(true);
+    expect(isAuthComplaint(`401 unauthorized ${"x".repeat(CLI_AUTH_SNIFF_MAX_CHARS)}`)).toBe(
+      false,
+    );
+    expect(isAuthComplaint("### Title\nSync")).toBe(false);
+  });
 });
 
 describe("a timeout", () => {
@@ -518,6 +566,27 @@ describe("probeCliEngine", () => {
     expect(probe.found).toBe(false);
     expect(probe.path).toBeUndefined();
     expect(probe.detail).toMatch(/codex not found on PATH — install Codex CLI/);
+  });
+
+  it("reports the version from stdout, not whatever noise stderr made first", async () => {
+    // `NODE_OPTIONS` survives `sanitizedEnv` (it is neither a credential nor
+    // agent-session state), and the warnings it provokes land on stderr before
+    // the version lands on stdout. Merged into one buffer, `nota config` prints
+    // the warning as the CLI's version.
+    fakeBinary(
+      "claude",
+      'echo "(node:1) ExperimentalWarning: VM Modules is experimental" >&2\necho "2.1.220 (Claude Code)"',
+    );
+    const probe = await probeCliEngine("claude-code");
+    expect(probe.found).toBe(true);
+    expect(probe.version).toBe("2.1.220 (Claude Code)");
+    expect(probe.detail).not.toContain("ExperimentalWarning");
+  });
+
+  it("falls back to stderr only when stdout said nothing at all", () => {
+    expect(firstVersionLine("\n\n1.2.3\ntrailing", "noise")).toBe("1.2.3");
+    expect(firstVersionLine("   \n", "codex-cli 0.144.0")).toBe("codex-cli 0.144.0");
+    expect(firstVersionLine("", "")).toBeUndefined();
   });
 
   it("is not a summary call — preflight may not spend minutes per run", async () => {
