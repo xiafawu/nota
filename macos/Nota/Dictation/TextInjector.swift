@@ -187,6 +187,16 @@ final class TextInjector {
   /// the capture could not record one. Posting to whatever is frontmost at
   /// delivery time is what made a streaming sentence land in the app the user
   /// switched to while it was being polished.
+  ///
+  /// Both events are posted with **explicitly empty flags**. A `CGEvent` built
+  /// from a `CGEventSource` inherits that source's modifier state, and
+  /// `.combinedSessionState` includes the physical keyboard — so a keystroke
+  /// posted while the owner still holds ⌘ (the review card's ⌘↩, for one)
+  /// arrived tagged as a command, was routed to key-equivalent dispatch by the
+  /// target, and never inserted its payload. This event carries text, so it is
+  /// never a shortcut, whatever the keyboard happens to be doing.
+  /// `ModifierClearance` covers the other half — the target's own idea of the
+  /// modifier state, which no flag set here can correct.
   private func tryCGEventInject(_ text: String, target: FocusedTarget) -> Bool {
     guard let pid = target.processID ?? frontmostAppPID() else {
       logger.debug("CGEvent: no target or frontmost PID")
@@ -209,6 +219,7 @@ final class TextInjector {
       logger.debug("CGEvent: failed to create key-down event")
       return false
     }
+    keyDown.flags = []
     utf16.withUnsafeBufferPointer { ptr in
       keyDown.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: ptr.baseAddress)
     }
@@ -219,6 +230,7 @@ final class TextInjector {
       logger.debug("CGEvent: failed to create key-up event")
       return false
     }
+    keyUp.flags = []
     utf16.withUnsafeBufferPointer { ptr in
       keyUp.keyboardSetUnicodeString(stringLength: utf16.count, unicodeString: ptr.baseAddress)
     }
