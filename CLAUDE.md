@@ -390,6 +390,54 @@ server in it. `DictationController.deliver` is internal for the same reason: it
 is where the branch begins, and with a stub presenter injected it drives apply,
 discard and a superseded review from a unit test.
 
+## Dictation HUD Styles
+
+Three shapes for the same panel, chosen by the **Style** picker in the Dictation
+tab's HUD section (`DictationSettings.hudStyle`, default `.pill`). A new key with
+no migration: a payload written before it existed, or carrying a value this build
+does not know, decodes to `.pill` — which is what its owner was looking at.
+
+- **Pill (default).** Today's capsule, unchanged. It is also the regression
+  baseline: nothing on its path branches on the style, `DictationHUDContentView`
+  was not edited, and `HUDPillBaselineTests` asserts that routing it through the
+  new `DictationHUDRootView` lays out identically to hosting the content view
+  directly. The bar and the prompter therefore carry their own copies of the HUD
+  material (`HUDSurface`) and their own meter (`HUDCompactMeter`) rather than
+  refactoring the pill's into something shared.
+- **Bar.** A fixed 520×40 strip: mic dot + meter left, one 13pt line right. Its
+  one promise is that it **never** changes size — the content view is a hard
+  `.frame(width:height:)`, so long text truncates into the lane instead of
+  widening it, and `HUDStyle.animatesGrowth` is false for this style alone so
+  `DictationHUDPanel.update` skips the animation group entirely. The line is
+  tail-anchored (`.truncationMode(.head)`), and a leading gradient mask makes
+  older words read as *leaving* rather than as being chopped off.
+- **Prompter.** A 600pt card: header (mic dot, meter, "Dictating", live word
+  count) over the whole session's text, finalized at full opacity and the
+  volatile tail dimmed to 55% white. It grows **downward** from a 3-line floor to
+  a 6-line cap (`HUDPrompterMetrics`, arithmetic and testable), animated by the
+  one authority — the window frame in `DictationHUDPanel.update`. Past the cap
+  the body is not a `ScrollView`: the full text is laid out inside a clipped,
+  **bottom-aligned** frame, so the newest line is pinned to the bottom edge and
+  older ones slide out of the top. Auto-following by construction, with no scroll
+  animation racing the window's and no scroll position to keep in sync — and the
+  panel ignores mouse events, so there was never a user scroll to preserve.
+
+**The draft feed is split at the source.** The controller publishes
+`finalizedDraft` (everything the recognizer has finalized) alongside `roughDraft`
+(the volatile tail); `HUDDraft` carries both at full length. The pill and the bar
+read `HUDDraft.boundedTail`, which is `StreamingDelivery.roughDraftTail` over the
+volatile tail *alone* — byte-identical to the single string the pill was handed
+before the styles existed. Folding the finalized text into that line would read
+better on both (it would stop blanking each time a segment finalizes) and is
+deliberately not done: the pill is the default and its behavior is the baseline.
+The prompter is the reason for the split — a 120-character merge cannot be
+un-merged. `HUDDraft` stays out of `HUDState` for the same reason the rough draft
+always did: the auto-hide bookkeeping compares states for equality.
+
+Non-goals, still true: the prompter does not morph into the review card (stop
+hands off to the existing card), and `.immediate` shows no live draft in any
+style, because it runs the batch recognizer.
+
 ## Model Settings
 
 Non-secret model preferences live in `~/.nota/settings.json` (schema exactly
@@ -489,6 +537,22 @@ The cache feeds cost computation for usage tracking.
   `.floating` (below fullscreen apps), so `.statusBar` must be assigned *after*
   it; and the pill hangs below the focused window, so a taller pill has to grow
   downward or it walks up into that window.
+- The HUD's three styles (`DictationSettings.hudStyle`) are three shapes for one
+  panel, not three HUDs. `.pill` is the default *and* the regression baseline:
+  `DictationHUDContentView` and its `ListeningView` are untouched, `.pill` gets
+  the same bounded tail it always got, and a test asserts that routing it through
+  `DictationHUDRootView` lays out identically to hosting it alone. That is why
+  the bar and prompter carry their own material and meter instead of a shared
+  extraction of the pill's. The bar is the one style with no growth animation —
+  it is a hard-framed 520×40, and `HUDStyle.animatesGrowth` is what tells the
+  panel not to animate a size that cannot change. The prompter's 6-line cap is
+  the pill's rule restated: a HUD hanging under the focused window may not grow
+  up into it, so past the cap the text is clipped bottom-aligned rather than laid
+  out taller.
+- The HUD draft feed is split at the source (`finalizedDraft` + `roughDraft` →
+  `HUDDraft`), not merged and re-split downstream: a 120-character tail cannot be
+  un-merged, and the prompter needs the finalized and volatile halves at full
+  length and drawn at different opacities.
 - `orderFrontRegardless()` can silently fail to produce a window (2026-07-27:
   `windowNumber == 0` for a day, only a relaunch fixed it). Every HUD show is
   therefore checked, and `HUDVisibilityMonitor` escalates: recreate the NSPanel
