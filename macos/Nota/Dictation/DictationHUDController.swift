@@ -36,8 +36,13 @@ final class DictationHUDController {
   private lazy var visibility = HUDVisibilityMonitor { [weak self] in
     self?.panel.windowNumber ?? 0
   }
-  /// The rough draft last handed to the panel, replayed onto a fresh one.
-  private var lastRoughDraft: String?
+  /// The draft last handed to the panel, replayed onto a fresh one.
+  private var lastDraft: HUDDraft = .empty
+  /// The style last handed to the panel. Tracked so a style change can trigger
+  /// the one reposition it needs: the shapes have very different widths, and a
+  /// panel that only re-centered on its next show would sit visibly off-center
+  /// for the rest of the session.
+  private var lastStyle: HUDStyle = .pill
 
   /// The state auto-hide dismissed. The underlying controller fields
   /// (`lastPolishWarning` / `lastSecureFieldNotice` / `lastProcessedText`)
@@ -115,16 +120,28 @@ final class DictationHUDController {
     lastShownState = hudState
 
     // Kept out of `HUDState` on purpose: the auto-hide bookkeeping above
-    // compares states for equality, and a line that changes on every syllable
+    // compares states for equality, and a field that changes on every syllable
     // would make `consumedState` never match.
-    lastRoughDraft = StreamingDelivery.roughDraftTail(controller.roughDraft)
-    panel.update(state: hudState, roughDraft: lastRoughDraft)
+    //
+    // Both halves, full length: the pill and the bar take the bounded tail off
+    // `boundedTail` (identical to what the pill was handed before the other
+    // styles existed), and the prompter renders finalized and volatile
+    // separately. Merging them here would throw away the only thing the
+    // prompter is for.
+    lastDraft = HUDDraft(
+      finalized: controller.finalizedDraft,
+      volatileTail: controller.roughDraft
+    )
+    let style = controller.settings.hudStyle
+    let styleChanged = style != lastStyle
+    lastStyle = style
+    panel.update(state: hudState, draft: lastDraft, style: style)
 
     if controller.settings.showHUD, hudState != .hidden {
-      // Position once per show — repositioning every tick teleports the pill
+      // Position once per show — repositioning every tick teleports the HUD
       // and fights the animated resize; screen changes are handled above.
       let wasVisible = panel.isVisible
-      if !wasVisible {
+      if !wasVisible || styleChanged {
         panel.reposition()
       }
       panel.show()
@@ -173,7 +190,7 @@ final class DictationHUDController {
 
     let fresh = DictationHUDPanel()
     panel = fresh
-    fresh.update(state: lastShownState, roughDraft: lastRoughDraft)
+    fresh.update(state: lastShownState, draft: lastDraft, style: lastStyle)
     fresh.reposition()
     fresh.show()
     heal()

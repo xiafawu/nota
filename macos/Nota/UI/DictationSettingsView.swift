@@ -182,10 +182,27 @@ struct DictationSettingsView: View {
   private var hudSection: some View {
     Section {
       Toggle("Show Dictation HUD", isOn: $settings.showHUD)
+
+      if settings.showHUD {
+        Picker("Style", selection: $settings.hudStyle) {
+          ForEach(HUDStyle.allCases, id: \.self) { style in
+            Text(style.label).tag(style)
+          }
+        }
+        .pickerStyle(.radioGroup)
+      }
     } header: {
       Text("Heads-Up Display")
     } footer: {
-      footerText("Shows a floating pill with microphone level and status while dictating.")
+      VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
+        footerText("Shows a floating panel with microphone level and status while dictating.")
+        if settings.showHUD {
+          footerText(settings.hudStyle.detail)
+          if settings.hudStyle != .pill, settings.deliveryMode == .immediate {
+            footerText("Live text needs a delivery mode that recognizes as you speak — with Insert on Release, the panel shows status only.")
+          }
+        }
+      }
     }
   }
 

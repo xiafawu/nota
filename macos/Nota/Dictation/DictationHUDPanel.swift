@@ -14,11 +14,11 @@ import os
 final class DictationHUDPanel: NSPanel {
   private static let logger = Logger(subsystem: "com.xiafawu.nota", category: "dictation.hud")
 
-  private let hostingView: NSHostingView<DictationHUDContentView>
+  private let hostingView: NSHostingView<DictationHUDRootView>
 
   init() {
     hostingView = NSHostingView(
-      rootView: DictationHUDContentView(state: .hidden, roughDraft: nil)
+      rootView: DictationHUDRootView(style: .pill, state: .hidden, draft: .empty)
     )
 
     let rect = NSRect(x: 0, y: 0, width: 200, height: 48)
@@ -62,13 +62,17 @@ final class DictationHUDPanel: NSPanel {
   /// content view now animates nothing that can change its size, and every
   /// size/position change goes through the group below.
   ///
-  /// `roughDraft` is the streaming rough-draft line; nil (the only value a
-  /// non-streaming session ever passes) renders the pill exactly as before.
+  /// `draft` is the in-flight recognition. `.empty` (the only value a
+  /// non-live-draft session ever passes) renders the HUD exactly as before.
   /// It is deliberately not part of `HUDState`: the auto-hide bookkeeping
-  /// compares states for equality, and a line that changes on every syllable
+  /// compares states for equality, and a field that changes on every syllable
   /// would make every comparison miss.
-  func update(state: HUDState, roughDraft: String? = nil) {
-    hostingView.rootView = DictationHUDContentView(state: state, roughDraft: roughDraft)
+  ///
+  /// `style` picks the shape. `.pill` is the default and forwards the same
+  /// bounded tail the pill has always been handed, so nothing about the default
+  /// path is conditional on this parameter existing.
+  func update(state: HUDState, draft: HUDDraft = .empty, style: HUDStyle = .pill) {
+    hostingView.rootView = DictationHUDRootView(style: style, state: state, draft: draft)
     hostingView.layoutSubtreeIfNeeded()
     let size = hostingView.fittingSize
 
@@ -77,7 +81,7 @@ final class DictationHUDPanel: NSPanel {
     // runs on every throttled RMS tick.
     guard abs(size.width - frame.width) > 0.5 || abs(size.height - frame.height) > 0.5
     else { return }
-    // Grow DOWN, not up: the pill hangs 12pt below the focused window's bottom
+    // Grow DOWN, not up: the HUD hangs 12pt below the focused window's bottom
     // edge (see reposition()), so a bottom-anchored resize would push a
     // two-line draft up into that window. Fixed maxY keeps the gap.
     frame.origin.y -= size.height - frame.size.height
@@ -85,7 +89,10 @@ final class DictationHUDPanel: NSPanel {
     frame.size = size
     frame = Self.clamped(frame, to: screen ?? NSScreen.main)
 
-    if isVisible {
+    // The bar is a constant size, so the only frame change it can ever produce
+    // is the one-off switch into or out of the style. Animating that would be
+    // animating growth this style promises not to have.
+    if isVisible, style.animatesGrowth {
       NSAnimationContext.runAnimationGroup { context in
         context.duration = HUDPillMetrics.frameDuration
         context.timingFunction = HUDPillMetrics.frameTiming
