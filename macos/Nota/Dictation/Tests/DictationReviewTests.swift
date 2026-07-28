@@ -939,6 +939,37 @@ final class DictationReviewBranchTests: XCTestCase {
     XCTAssertEqual(controller.pendingReviewTargetPIDForTests, 4242)
   }
 
+  /// Newest capture wins — but "newest" has to mean one Apply could actually
+  /// use. Nota's own pid is refused by `injectReviewed` *after* the card has
+  /// been taken down, so letting one overwrite a working target destroys the
+  /// whole batch. The owner opening Settings (or the menu-bar icon) before
+  /// adding a sentence is exactly how a press captures Nota.
+  func testAContinuationCapturedOnNotaItselfKeepsTheRealTarget() {
+    let controller = makeController(.review)
+    controller.beginSessionForTests(target: target)
+    controller.deliver("Ship the patch.", offline: "Ship the patch.", latency: 1)
+
+    controller.beginReviewContinuationIfOpen()
+    controller.beginSessionForTests(
+      target: FocusedTarget(
+        bundleID: "com.xiafawu.nota",
+        isSecureInput: false,
+        accessibilityElement: nil,
+        processID: ProcessInfo.processInfo.processIdentifier
+      )
+    )
+    controller.deliver("Then land it.", offline: "Then land it.", latency: 2)
+
+    XCTAssertEqual(controller.pendingReviewTargetPIDForTests, 4242, "the usable pid survived")
+
+    presenter.latest?.onApply(presenter.buffer ?? "")
+    XCTAssertEqual(
+      controller.lastProcessedText,
+      "Ship the patch. Then land it.",
+      "the batch was still insertable"
+    )
+  }
+
   /// One decision, one batch: discarding after two sessions throws away both,
   /// and inserts nothing.
   func testDiscardDropsTheWholeBatch() {
@@ -996,7 +1027,17 @@ final class DictationReviewBranchTests: XCTestCase {
     controller.deliver("Then land it.", offline: "Then land it.", latency: 2)
 
     XCTAssertEqual(presenter.presented.count, 2, "a fresh card was opened")
-    XCTAssertEqual(presenter.latest?.text, "Then land it.")
+    XCTAssertEqual(
+      presenter.latest?.text,
+      "Ship the patch. Then land it.",
+      "the fresh card carries the batch, not just the continuation"
+    )
+    XCTAssertEqual(
+      controller.pendingReviewPolishedForTests,
+      "Ship the patch. Then land it.",
+      "the learn-from side accumulated too"
+    )
+    XCTAssertEqual(controller.pendingReviewOfflineForTests, "Ship the patch. Then land it.")
     XCTAssertNotEqual(controller.pendingReviewIDForTests, firstID, "superseded, not extended")
     XCTAssertTrue(controller.isReviewing)
 
@@ -1008,6 +1049,59 @@ final class DictationReviewBranchTests: XCTestCase {
 
     stale?.onDiscard()
     XCTAssertTrue(controller.isReviewing, "a stale discard must not close the live review")
+  }
+
+  // MARK: - The Delivery picker moving under an open card
+
+  /// The card is nonactivating, so Settings opens over it and `reloadSettings`
+  /// takes effect immediately. Only `.review` can ever fill a card, so a press
+  /// in any other mode must not start a continuation — nothing would ever end
+  /// it, and `finishReview` refuses every decision while one is running. It
+  /// cancels the orphaned card instead, which is what plan 07 always did.
+  func testAPressInANonReviewModeCancelsTheOpenCardRatherThanWedgingIt() {
+    let controller = makeController(.review)
+    controller.beginSessionForTests(target: target)
+    controller.deliver("Ship the patch.", offline: "Ship the patch.", latency: 1)
+    XCTAssertTrue(controller.isReviewing)
+
+    switchDelivery(controller, to: .immediate)
+
+    XCTAssertFalse(controller.beginReviewContinuationIfOpen(), "no card to continue in this mode")
+    XCTAssertFalse(controller.isReviewRecording, "nothing is left waiting on a decision")
+    XCTAssertFalse(controller.isReviewing, "the orphaned card is gone")
+    XCTAssertEqual(presenter.dismissCount, 1)
+    XCTAssertNil(controller.lastProcessedText, "cancelling a review inserts nothing")
+  }
+
+  /// The mode can also change while the continuation is *recording*, and then
+  /// `deliver` never reaches `presentReview` — the only success-path clear of
+  /// the listening flag. Without a backstop there the card would refuse ⌘↩ and
+  /// Escape for the rest of the run.
+  func testAModeChangeMidContinuationLeavesTheCardDecidable() {
+    let controller = makeController(.review)
+    controller.beginSessionForTests(target: target)
+    controller.deliver("Ship the patch.", offline: "Ship the patch.", latency: 1)
+    XCTAssertTrue(controller.beginReviewContinuationIfOpen())
+    XCTAssertTrue(controller.isReviewRecording)
+
+    switchDelivery(controller, to: .immediate)
+    controller.deliver("Then land it.", offline: "Then land it.", latency: 2)
+
+    XCTAssertFalse(controller.isReviewRecording, "the card is decidable again")
+    XCTAssertEqual(controller.lastProcessedText, "Then land it.", "immediate mode inserted it")
+    XCTAssertEqual(presenter.presented.count, 1, "no second card was opened")
+
+    presenter.latest?.onDiscard()
+    XCTAssertFalse(controller.isReviewing, "the decision the card was refusing now lands")
+  }
+
+  /// Both mode-change paths go through the store, because the controller reads
+  /// its settings only at init and on `reloadSettings`.
+  private func switchDelivery(_ controller: DictationController, to mode: DeliveryMode) {
+    var settings = DictationSettings()
+    settings.deliveryMode = mode
+    DictationSettingsStore.save(settings)
+    controller.reloadSettings()
   }
 }
 

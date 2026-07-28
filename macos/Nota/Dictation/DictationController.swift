@@ -864,6 +864,14 @@ final class DictationController: ObservableObject {
   /// exercise apply, discard, and a superseded review without a window server.
   func deliver(_ text: String, offline: String, latency: TimeInterval) {
     guard settings.deliveryMode == .review else {
+      // The card's listening state is cleared by `presentReview`, and this
+      // branch never reaches it. The Delivery picker can change *mid-session*
+      // (`reloadSettings`), so a continuation legitimately started against an
+      // open card can arrive here — and leaving `isReviewRecording` set would
+      // wedge that card for the rest of the run: `finishReview` refuses every
+      // decision while it is true, so neither ⌘↩ nor Escape would ever land.
+      // Idempotent, and a no-op for every session that was not a continuation.
+      endReviewContinuation()
       doInject(text, latency: latency)
       return
     }
@@ -880,6 +888,17 @@ final class DictationController: ObservableObject {
   /// shows that it is listening, and refuses Apply/Discard until this session's
   /// text has landed in it.
   ///
+  /// Only the mode that knows how to *fill* a card may extend one. The Delivery
+  /// picker can be changed while a card sits on screen — the panel is
+  /// nonactivating, so Settings opens over it perfectly happily, and
+  /// `reloadSettings` takes effect immediately — and nothing in `.immediate` or
+  /// `.streaming` ever reaches `presentReview`. A continuation started in one of
+  /// those modes would therefore never be *ended* on the success path, leaving
+  /// `isReviewRecording` true, every decision refused by `finishReview`, and the
+  /// card undecidable for the rest of the run. So a press in any other mode does
+  /// what plan 07 always did: cancels the open review, inserting nothing, and
+  /// this session's text goes to the target app as that mode promises.
+  ///
   /// Returns whether a continuation was started. Internal rather than private:
   /// `beginCaptureAndSpeech` needs a microphone, an analyzer and three
   /// permission grants, and the claim under test — a press extends rather than
@@ -887,11 +906,32 @@ final class DictationController: ObservableObject {
   @discardableResult
   func beginReviewContinuationIfOpen() -> Bool {
     guard pendingReview != nil else { return false }
+    guard settings.deliveryMode == .review else {
+      cancelOpenReview(reason: "delivery mode is no longer Review")
+      return false
+    }
     pendingReview?.generation += 1
     isReviewRecording = true
     review.setListening(true)
     logger.info("Review continuation started (generation \(self.pendingReview?.generation ?? 0))")
     return true
+  }
+
+  /// Take an open card down without a decision: nothing is inserted and nothing
+  /// is learned.
+  ///
+  /// `pendingReview` is cleared *before* the panel is dismissed, so the
+  /// presenter's own "one decision per review" route — `dismiss()` delivers the
+  /// pending request's discard — finds no review to attribute it to and stops
+  /// at the `id` guard in `finishReview`.
+  private func cancelOpenReview(reason: String) {
+    guard pendingReview != nil else { return }
+    endReviewContinuation()
+    pendingReview = nil
+    review.dismiss()
+    logger.notice(
+      "Open review cancelled — \(reason, privacy: .public); nothing was inserted"
+    )
   }
 
   /// Stop showing the card as listening. Idempotent, and safe on a session that
@@ -922,9 +962,32 @@ final class DictationController: ObservableObject {
       return
     }
 
-    if let open = pendingReview,
-       extendReview(open, polished: polished, offline: offline, latency: latency) {
-      state = .idle
+    if let open = pendingReview {
+      if extendReview(open, polished: polished, offline: offline, latency: latency) {
+        state = .idle
+        return
+      }
+
+      // The card is no longer there to write into, so this is a genuine
+      // REPLACEMENT — new id, which is what makes a late decision from the old
+      // card ignorable. The batch is not lost: the fresh card carries
+      // everything the pipeline accumulated plus this session's text. What
+      // cannot be carried is the owner's editing — the editor is exactly what
+      // could not be read — so the pipeline's own accumulation is the best
+      // available account of the batch, and `generation` comes forward because
+      // the same number of sessions built it.
+      let carried = DictationReview.appended(buffer: open.polished, addition: polished)
+      openReview(
+        PendingReview(
+          generation: open.generation,
+          polished: carried,
+          offline: DictationReview.appended(buffer: open.offline, addition: offline),
+          target: reviewTarget(sessionTarget) ?? open.target,
+          latency: latency
+        ),
+        text: carried
+      )
+      logger.notice("Review card could not be extended — reopened carrying the batch")
       return
     }
 
@@ -932,11 +995,34 @@ final class DictationController: ObservableObject {
       PendingReview(
         polished: polished,
         offline: offline,
-        target: sessionTarget,
+        target: reviewTarget(sessionTarget),
         latency: latency
       ),
       text: polished
     )
+  }
+
+  /// A capture this mode is allowed to insert through, or nil.
+  ///
+  /// `injectReviewed` requires a pid, and requires it not to be Nota's own —
+  /// injecting "wherever" is the failure review mode exists to prevent. That
+  /// check runs at Apply, by which point `finishReview` has already taken the
+  /// card down, so a target that fails it destroys the whole accumulated batch.
+  /// Applying the same rule when the target is *recorded* turns that into a
+  /// refusal to overwrite: a capture Apply could never use loses to the one
+  /// that already worked.
+  ///
+  /// Nota's own pid is not hypothetical. The card is nonactivating, so the
+  /// target app stays frontmost — but the owner can bring Nota forward between
+  /// two sentences (menu-bar icon, Cmd-, for the Dictionary tab) and press the
+  /// trigger from there, and `FocusedTarget.capture()` then records Nota.
+  private func reviewTarget(_ candidate: FocusedTarget?) -> FocusedTarget? {
+    guard let candidate, let pid = candidate.processID else { return nil }
+    guard pid != ProcessInfo.processInfo.processIdentifier else {
+      logger.notice("Ignoring a review capture that landed on Nota itself")
+      return nil
+    }
+    return candidate
   }
 
   /// Add a continuation's finished text to the open card.
@@ -960,10 +1046,13 @@ final class DictationController: ObservableObject {
     // callbacks the card is already holding stay valid.
     extended.polished = DictationReview.appended(buffer: open.polished, addition: polished)
     extended.offline = DictationReview.appended(buffer: open.offline, addition: offline)
-    // Newest capture wins. A capture that failed keeps the one that worked —
-    // a nil target is a refusal to insert anywhere, and the earlier session
+    // Newest *usable* capture wins. A capture that failed — or that landed on
+    // Nota itself, which a press made while Settings is frontmost does — keeps
+    // the one that worked: both are targets `injectReviewed` refuses, and it
+    // refuses them after the card is already down, so overwriting a good pid
+    // with one of them would destroy the batch at Apply. The earlier session
     // already found somewhere valid.
-    extended.target = sessionTarget ?? open.target
+    extended.target = reviewTarget(sessionTarget) ?? open.target
     extended.latency = latency
     pendingReview = extended
     logger.info(
