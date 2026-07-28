@@ -39,7 +39,8 @@ Two pipeline paths controlled by `--provider`:
 - **src/index.ts** — CLI entry point (commander). Parses args, calls orchestrator; hosts `nota settings`, `nota config`, and `nota models` verbs; runs background catalog freshness check on startup.
 - **src/config.ts** — Resolves transcription + summary models (CLI > settings.json > key-aware default chain) via the registry, requires only the needed API keys, and derives the pipeline branch.
 - **src/registry.ts** — Model registry: transcription models are statically curated; summary models are sourced dynamically from the catalog (`src/catalog.ts`).
-- **src/catalog.ts** — Self-updating model catalog: fetches models.dev/api.json, filters through allowlist predicates, validates, and atomically caches to `~/.nota/models-catalog.json`. Baked snapshot fallback. Provides cost computation helpers.
+- **src/catalog.ts** — Self-updating model catalog: fetches models.dev/api.json, filters through allowlist predicates, validates, and atomically caches to `~/.nota/models-catalog.json`. Baked snapshot fallback. Provides cost computation helpers. Merges the code-resident curated entries (`src/openrouter.ts`, `src/cli-engines.ts`) at read time.
+- **src/cli-engines.ts** — The curated `claude-code/*` and `codex/*` entries: binary names, login hints, the "included w/ subscription" cost note. See CLI Engines below.
 - **src/cli/settings.ts** — `nota settings list|get|set|unset` verbs.
 - **src/constants.ts** — Shared constants: `SEGMENT_DURATION`, `OVERLAP_DURATION`, `CHUNK_THRESHOLD_BYTES`.
 - **src/orchestrator.ts** — Branches on `provider` to run AssemblyAI or Whisper pipeline.
@@ -49,7 +50,8 @@ Two pipeline paths controlled by `--provider`:
   - `chunk.ts` — splits audio >20MB into ~10min segments with 30s overlap (whisper only)
   - `transcribe.ts` — parallel Whisper API calls, exports `TranscriptSegment` interface (shared)
   - `merge.ts` — concatenates transcripts, deduplicates overlap regions (whisper only)
-  - `summarize.ts` — sends transcript to the resolved summary model (OpenAI or Gemini via the OpenAI-compatible endpoint); for >100k tokens, does section-by-section then roll-up
+  - `summarize.ts` — sends transcript to the resolved summary model (OpenAI or Gemini via the OpenAI-compatible endpoint); for >100k tokens, does section-by-section then roll-up. Branches to the subprocess caller when the resolved entry's execution kind is `cli`
+  - `cli-engine.ts` — spawns `claude -p` / `codex exec` for a `cli` summary model: argv, stdin, env hygiene, timeout, failure contract, `--version` probe
   - `diarize.ts` — calls Python pyannote script, aligns speaker labels (whisper only)
   - `embed.ts` — computes ONNX WeSpeaker d-vectors in Node and compares them by cosine similarity
   - `speakers.ts` — loads the persistent v4 voiceprint store and matches diarized labels to enrolled speakers
@@ -486,17 +488,18 @@ model is **CLI flag > settings.json > key-aware default chain**.
 
 Summary models are auto-admitted weekly from `models.dev/api.json` through an
 allowlist (mainline chat models only: gpt-5.x, gemini flash/pro, deepseek v4+).
-Transcription model ids remain statically curated, and the OpenRouter shortlist
-is hand-curated in code (see Namespaced Model Ids below).
+Transcription model ids remain statically curated; the OpenRouter shortlist and
+the CLI engines are hand-curated in code (see Namespaced Model Ids and CLI
+Engines below).
 
-- `nota models list` — print the effective summary catalog (id, provider, label, source) as tab-separated rows; `source` is `cache`/`baked` for auto-admitted entries and `curated` for the OpenRouter shortlist
+- `nota models list` — print the effective summary catalog (id, provider, label, source) as tab-separated rows; `source` is `cache`/`baked` for auto-admitted entries, `curated` for the OpenRouter shortlist, and `cli` for a subprocess engine
 - `nota models refresh` — force a fetch from models.dev, showing added/removed ids
 - `nota settings list` — effective model + source (settings.json vs default); tab-separated rows on stdout, header on stderr
 - `nota settings get <path>` — print the effective value for a dot-path (`transcription.model` or `summary.model`)
 - `nota settings set <path> <value>` — validate against the registry and persist; invalid model exits non-zero listing valid ids
 - `nota settings unset <path>` — remove the key, reverting to the default
 
-The summary default is key-aware: `deepseek-v4-flash` if `DEEPSEEK_API_KEY` resolves → `gpt-5.4-mini` if `OPENAI_API_KEY` → `gemini-3.6-flash` if `GEMINI_API_KEY` → error listing the three options. If a configured summary model is absent from the catalog (retired), it warns once and falls back to the chain.
+The summary default is key-aware: `deepseek-v4-flash` if `DEEPSEEK_API_KEY` resolves → `gpt-5.4-mini` if `OPENAI_API_KEY` → `gemini-3.6-flash` if `GEMINI_API_KEY` → error listing the three options. No CLI engine is in that chain and none may be added to it, however installed and working the binaries are — the error names API models only. If a configured summary model is absent from the catalog (retired), it warns once and falls back to the chain.
 
 Transcription model ids (static):
 - `universal`, `whisper-1`, `gpt-4o-transcribe`, `gpt-4o-mini-transcribe`
@@ -508,6 +511,10 @@ Summary model ids (curated OpenRouter shortlist, `src/openrouter.ts`):
 - `openrouter/anthropic/claude-sonnet-5`, `openrouter/anthropic/claude-haiku-4.5`,
   `openrouter/moonshotai/kimi-k2.6`, `openrouter/qwen/qwen3.7-max`,
   `openrouter/z-ai/glm-5.2`, `openrouter/meta-llama/llama-4-maverick`
+
+Summary model ids (CLI engines, `src/cli-engines.ts` — CLI only, never the app):
+- `claude-code/sonnet`, `claude-code/opus`, `claude-code/haiku`
+- `codex/gpt-5.6-sol`, `codex/gpt-5.6-terra`, `codex/gpt-5.6-luna`, `codex/gpt-5.4-mini`
 
 The macOS Settings window (Cmd+,) exposes the same pickers plus masked API-key
 management; it mirrors the registry in `macos/Nota/App/ModelRegistry.swift`.
@@ -539,8 +546,8 @@ cheaper than the transcription it guards — and `entry.wireId` for every
 `entry.id`: `makeSummaryUsage` takes the canonical id.
 
 Every registry/catalog entry also carries an **execution kind**: `http` (an
-OpenAI-compatible endpoint plus an API key — everything that exists today) or
-`cli` (a local subprocess; no members until plan 12). Surfaces that cannot host
+OpenAI-compatible endpoint plus an API key) or `cli` (a local subprocess, no key
+— `claude-code/*` and `codex/*`, see CLI Engines). Surfaces that cannot host
 a subprocess filter on the kind **structurally** — `httpModelsForTask` in TS,
 `ModelRegistry.httpModels(for:)` in Swift, which is what the dictation polish
 picker and `PolishClient` use. Matching on id prefixes is explicitly not the
@@ -606,6 +613,68 @@ differs is admission and pricing.
   (no auth needed) rather than recalled — re-verify before editing the list, and
   keep them undated so they do not rot on a vendor's schedule.
 
+## CLI Engines
+
+ADR 0003. `claude-code/*` and `codex/*` are summary models that are not
+endpoints: Nota spawns the `claude` or `codex` binary already installed on the
+machine. No API key, no base URL — the CLI authenticates with its own login and
+the work is billed to the owner's subscription, which is the whole point. They
+are the **CLI's** summary path only (including its sectioned >100k-token mode,
+which spawns once per section plus the roll-up) and never appear in the macOS
+app: dictation polish is latency-bound and stays `http`, enforced by the
+execution-kind filter rather than by convention.
+
+- **Never a default.** They are absent from the key-aware chain and may not be
+  added to it, however installed the binaries are. "Free but slow" must never
+  win a default — a summary that takes minutes of local wall time is a choice
+  the owner makes explicitly with `-m` or `nota settings set summary.model`, and
+  the "no summary model available" error names API models only. Offering an
+  installed CLI as the rescue for a missing key would make it the effective
+  default on every machine without one.
+- **The prompt goes on stdin, never argv.** A transcript is megabytes and
+  `ARG_MAX` is not; quoting one into a command line is a bug waiting for the
+  first apostrophe. Both CLIs read a prompt from stdin when none is given as an
+  argument. The prompt itself is byte-identical to what the HTTP path sends —
+  same builders, same instructions.
+- **Nothing is inherited.** stdin is a pipe Nota writes and closes (never
+  `inherit`: a CLI that finds a TTY waits for a human who is not there), the cwd
+  is a scratch directory (`claude` auto-discovers `CLAUDE.md` from its cwd, and
+  a summary must depend on the transcript and nothing else), and every
+  `CLAUDE*`/`ANTHROPIC*`/`CODEX*` variable plus every provider API key is
+  withheld. `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are the two exceptions — they
+  say where the CLI's own login lives. Leaking `ANTHROPIC_API_KEY` would bill a
+  metered account for a run whose cost line says "included w/ subscription";
+  the report would be a lie and the invoice would be the first anyone heard.
+- **Failure is hard and no HTTP model is substituted.** Binary missing from
+  PATH, missing login (read from the CLI's own error output), non-zero exit,
+  timeout, or a clean exit with no output — each throws, naming the binary, the
+  fix, and for a timeout how long it waited. Falling back would silently bill a
+  provider the user did not configure. A blank answer is a failure too: it would
+  be parsed into a summary and written over the user's notes.
+- **The timeout is generous and scaled.** Three minutes plus 3s per 1000 prompt
+  characters, capped at 30 minutes. These engines are minutes slow by design.
+- **Preflight probes, it does not call.** For a `cli` summary model the check is
+  binary-on-PATH plus `--version`; a canary completion would cost minutes of
+  wall time on every run, for a gate whose purpose is to be cheaper than the
+  transcription it guards. Presence is verified and a stale login is not — the
+  detail line says so, and an unauthenticated engine fails at the summary step
+  with an error naming the login.
+- **Cost is a note, not a figure.** No `cost` is stored, so `computeSummaryCost`
+  returns null and displays print "included w/ subscription" through the same
+  `costNote` mechanism OpenRouter uses. Those runs stay out of the unknown-cost
+  tally (that flags gaps in Nota's own data) and appear in the
+  `N runs not in total (…)` footnote. Token counts are estimated from the text —
+  a subprocess reports none — and the usage entry says `estimated: true`.
+- `nota config` gains a CLI-engine block: binary, resolved path and version, or
+  "not found on PATH". `nota models list` marks their source `cli`.
+- Flags and ids were verified against the installed binaries on 2026-07-28
+  (`claude` 2.1.220, `codex-cli` 0.144.0): `claude -p --model <alias>
+  --output-format text --tools ""`, and `codex exec -m <slug> --sandbox
+  read-only --skip-git-repo-check --color never -`. Codex slugs come from the
+  CLI's own listed model set; Claude Code uses the tier **aliases**, which track
+  the vendor's rotation where a dated name would rot. Re-verify before editing
+  either list.
+
 ## Model Catalog (self-updating)
 
 Summary model ids, labels, limits, and pricing are sourced from a local cache
@@ -619,7 +688,8 @@ The cache feeds cost computation for usage tracking.
 - Nota is the primary name; MeetingSum references exist only for backward compatibility.
 - Model registry (`src/registry.ts`) is the single source of truth: model id → task, provider, required API key env, base URL. Transcription models are statically curated; summary models are sourced dynamically from the auto-refreshed catalog (`src/catalog.ts` + `~/.nota/models-catalog.json`) with a baked in-repo fallback. Only the API keys the resolved models actually need are required.
 - Summary model ids are auto-admitted weekly: mainline chat models (gpt-5.x, gemini flash/pro, deepseek v4+) matching allowlist predicates. Run `nota models list` for the current set.
-- Summary default is key-aware: `deepseek-v4-flash` > `gpt-5.4-mini` > `gemini-3.6-flash` based on which API key is set. A hint is printed when DeepSeek is skipped despite being the cheapest option.
+- Summary default is key-aware: `deepseek-v4-flash` > `gpt-5.4-mini` > `gemini-3.6-flash` based on which API key is set. A hint is printed when DeepSeek is skipped despite being the cheapest option. CLI engines never join that chain (ADR 0003).
+- A summary model that is not an endpoint is a first-class registry entry, not a special case: `claude-code/*` and `codex/*` carry `execution: "cli"`, and every decision about them is made on that kind — `requiresApiKey` (so a run is not refused for a key it was never going to use), `cliEngineFor` (which returns a spec or `undefined`, and is the argument the summary path branches on), `httpModelsForTask` (so no subprocess can reach dictation polish). The id is never pattern-matched. `makeSummaryCall` puts the HTTP client and the subprocess behind one shape, which is what lets the sectioned >100k-token flow route every section and the roll-up through a CLI engine without a second copy of the loop. See CLI Engines.
 - Pricing for summary models comes from the catalog via `computeSummaryCost` (tier-aware, ×1e-6 unit assertion). Pricing for transcription models remains a static table in `src/pricing.ts`.
 - AssemblyAI as default provider: transcription + diarization in one API call ($0.15/hr)
 - Whisper retained as fallback via `--provider whisper`
@@ -731,6 +801,7 @@ The cache feeds cost computation for usage tracking.
 - Environment variable: `GEMINI_API_KEY` — required when the resolved summary model is a Gemini model
 - Environment variable: `DEEPSEEK_API_KEY` — required when the resolved summary model is a DeepSeek model (`deepseek-v4-flash`/`deepseek-v4-pro`). Note: `deepseek-v4-flash` is the cheapest default and is selected first when `DEEPSEEK_API_KEY` is set.
 - Environment variable: `OPENROUTER_API_KEY` — required when the resolved summary model is an `openrouter/…` model. No OpenRouter model is ever chosen by default (it is absent from the key-aware chain), so this key is needed only after an explicit `-m` or `nota settings set summary.model`. `nota config` shows whether it resolves.
+- `claude` or `codex` on PATH, logged in — required only when the resolved summary model is a `claude-code/…` or `codex/…` id. No API key applies and none is passed; the CLI uses its own login. Never chosen by default, so this is needed only after an explicit `-m` or `nota settings set summary.model`. `nota config` shows which binaries resolve and at what version.
 - Speaker identity (`--identify` and `nota enroll`) needs no API key or Python. It uses `onnxruntime-node` and auto-downloads its checksum-pinned ONNX model on first use.
 - For `--provider whisper` with diarization only: Python 3.8+ with `pyannote.audio`, plus `HUGGINGFACE_TOKEN` (pyannote is not used for speaker identity)
 
@@ -742,4 +813,7 @@ line is loaded generically (no allowlist), so future providers like
 `GEMINI_API_KEY` work with zero code change. Real environment variables always
 override file values (the file only fills unset keys). Set `NOTA_ENV_FILE` to
 point at a different path. Run `nota config` to see which keys resolve and from
-where (values are masked; secrets are never printed).
+where (values are masked; secrets are never printed). The same command ends with
+a CLI-engine block — binary, path and version, or "not found on PATH" — because
+a diagnostics command that listed only keys would answer "everything resolves"
+on a machine where `claude-code/sonnet` cannot run at all.

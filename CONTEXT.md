@@ -30,7 +30,8 @@ _Avoid_: local model (it is not local inference)
 
 **Curated shortlist** — The hand-picked set of OpenRouter Models admitted to
 the catalog, edited in code — as opposed to the weekly auto-admitted mainline
-chat models.
+chat models. CLI engines are admitted the same way and marked separately, so a
+reader can tell an HTTP shortlist entry from a subprocess at a glance.
 
 **Model Registry** — The curated, closed list of Models Nota supports, mapping
 each Model to its Provider, execution kind, endpoint, and required API key or
