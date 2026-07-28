@@ -529,6 +529,15 @@ stripped, and it is the only thing that goes on the wire — OpenRouter wants
 `anthropic/claude-sonnet-5` back, not its own name in front of it. Persisting
 the wire id would orphan a record from the registry entry that named it.
 
+The split is only worth what its call sites honor, and every one of them is a
+place a canonical id 400s: `config.summaryWireModel` (not `summaryModel`) for
+the summary call *and* the preflight canary — the canary is a real request, and
+sending the namespaced id there blocks every run at the gate that exists to be
+cheaper than the transcription it guards — and `entry.wireId` for every
+`summarizeTranscript` / `summarizeOnly` / `generateTags` call in
+`src/cli/enrich.ts`. What is *recorded* alongside each of those stays
+`entry.id`: `makeSummaryUsage` takes the canonical id.
+
 Every registry/catalog entry also carries an **execution kind**: `http` (an
 OpenAI-compatible endpoint plus an API key — everything that exists today) or
 `cli` (a local subprocess; no members until plan 12). Surfaces that cannot host
@@ -544,6 +553,15 @@ entry is dropped — **per entry**, on both sides (`sanitizeCatalog` in
 A build that cannot name a kind must not assume it is safe to run in-process,
 and one row written by a newer Nota must not blank every model picker in the
 app. Same rule for an unknown namespace.
+
+Dropping happens to the **catalog**, not to the picker's view of it:
+`effectiveCatalog()` sanitizes before merging the curated shortlist, and
+`ModelCatalogLoader.effective` does the same through `ModelCatalog.sanitized()`.
+Filtering only inside `summaryModelEntries()` is what broke — `contains(_:)`
+asks a *different* question of the same array (is this stored preference a live
+pin or a zombie?), so an id no picker offered and no request could be built for
+still answered "valid", and the app and the CLI disagreed about the user's own
+settings.json.
 
 `src/model-id.ts` and the `ModelID` / `ExecutionKind` types in
 `macos/Nota/App/ModelRegistry.swift` are the two halves; they must stay in
@@ -567,7 +585,20 @@ differs is admission and pricing.
   not zero. `computeSummaryCost` returns null and `nota usage` prints
   "refer to OpenRouter" where a figure would go, keeping those runs out of the
   unknown-cost tally (that tally flags gaps in Nota's own data, not a price that
-  lives on someone else's dashboard).
+  lives on someone else's dashboard). Out of the tally is not out of the
+  **reckoning**: an unpriced row adds 0 to the total, so the totals line carries
+  a `+` ("at least") and a `N runs not in total (…)` footnote. A cost report
+  that quietly understates the bill is the one failure mode it may not have.
+- **The output cap is `max_tokens`, not `max_completion_tokens`.** OpenRouter
+  *drops* a parameter the route it picked does not support rather than erroring,
+  so OpenAI's spelling is worse than a rejection there — the cap silently would
+  not apply and only the bill would say so. `usesMaxTokensParam` decides from
+  the **base URL** rather than the model id, because the id that reaches
+  `summaryTokenLimit` is the *wire* id and has had the segment naming its
+  provider stripped off; the endpoint the request is addressed to is the last
+  thing that still names it, and it is the party that decides which parameters
+  it accepts. `callGPT` reads it back off the client it already built, so the
+  parameter key and the destination cannot drift apart.
 - **Defaults are untouched.** The key-aware chain stays
   `deepseek-v4-flash > gpt-5.4-mini > gemini-3.6-flash`; no OpenRouter model
   joins it, and `--provider` is unchanged. Choosing one is always explicit.
@@ -690,6 +721,7 @@ The cache feeds cost computation for usage tracking.
 - Environment variable: `ASSEMBLYAI_API_KEY` — required when the resolved transcription model is an AssemblyAI model (`universal`/`whisper-1`/`gpt-4o-transcribe`/`gpt-4o-mini-transcribe` — the default is `universal`)
 - Environment variable: `GEMINI_API_KEY` — required when the resolved summary model is a Gemini model
 - Environment variable: `DEEPSEEK_API_KEY` — required when the resolved summary model is a DeepSeek model (`deepseek-v4-flash`/`deepseek-v4-pro`). Note: `deepseek-v4-flash` is the cheapest default and is selected first when `DEEPSEEK_API_KEY` is set.
+- Environment variable: `OPENROUTER_API_KEY` — required when the resolved summary model is an `openrouter/…` model. No OpenRouter model is ever chosen by default (it is absent from the key-aware chain), so this key is needed only after an explicit `-m` or `nota settings set summary.model`. `nota config` shows whether it resolves.
 - Speaker identity (`--identify` and `nota enroll`) needs no API key or Python. It uses `onnxruntime-node` and auto-downloads its checksum-pinned ONNX model on first use.
 - For `--provider whisper` with diarization only: Python 3.8+ with `pyannote.audio`, plus `HUGGINGFACE_TOKEN` (pyannote is not used for speaker identity)
 
