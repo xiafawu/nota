@@ -9,8 +9,12 @@ import { effectiveCatalog, readCache, refreshCatalog } from "../catalog.js";
 
 /**
  * `nota models list` — print effective summary catalog rows to stdout.
- * Tab-separated columns: id, provider, label, source.
- * Source is "cache" or "baked". Header on stderr.
+ * Tab-separated columns: id, provider, label, source, fetchedAt.
+ *
+ * Source is per entry, not per catalog: "cache" or "baked" for the weekly
+ * auto-admitted half, and "curated" for a hand-picked entry (the OpenRouter
+ * shortlist), which lives in code and is therefore as fresh as the build
+ * whatever `fetchedAt` says about the rest. Header on stderr.
  */
 export async function modelsList(): Promise<void> {
   const { catalog, source } = effectiveCatalog();
@@ -18,7 +22,8 @@ export async function modelsList(): Promise<void> {
 
   process.stderr.write("id\tprovider\tlabel\tsource\tfetchedAt\n");
   for (const m of catalog.models) {
-    process.stdout.write(`${m.id}\t${m.provider}\t${m.label}\t${sourceLabel}\t${catalog.fetchedAt}\n`);
+    const origin = m.origin === "curated" ? "curated" : sourceLabel;
+    process.stdout.write(`${m.id}\t${m.provider}\t${m.label}\t${origin}\t${catalog.fetchedAt}\n`);
   }
 }
 

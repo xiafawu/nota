@@ -402,3 +402,32 @@ describe("usageSummaryJSON", () => {
     expect(parsed.rows).toHaveLength(0);
   });
 });
+
+describe("usageSummary — a model Nota stores no pricing for", () => {
+  it("points at OpenRouter instead of printing a dollar figure", async () => {
+    writeRecord(
+      recordWithUsage("or-run", [
+        {
+          modelId: "openrouter/anthropic/claude-sonnet-5",
+          task: "summary",
+          provider: "assemblyai",
+          calls: 1,
+          tokensIn: 100_000,
+          tokensOut: 5_000,
+          // Null because computeSummaryCost has no rates for this entry — the
+          // price exists, it just lives on OpenRouter's dashboard.
+          costUSD: null,
+          estimated: false,
+        },
+      ]),
+    );
+
+    await usageSummary(undefined, dir);
+
+    const rows = stdout.join("");
+    expect(rows).toContain("refer to OpenRouter");
+    expect(rows).not.toContain("$0.00");
+    // "unknown cost" is for gaps in Nota's own data; this is not one of them.
+    expect(stderr.join("")).not.toContain("runs have unknown cost");
+  });
+});

@@ -251,7 +251,7 @@ export async function describeSpeaker(
     name,
     segments,
     config.summaryApiKey,
-    config.summaryModel,
+    config.summaryWireModel,
     config.summaryBaseURL,
   );
 

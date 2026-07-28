@@ -5,32 +5,56 @@
  *
  * Rules enforced here:
  * - Only curated model ids are valid. There is no free-text model id and no
- *   user-chosen provider — the provider is ALWAYS derived from the model id.
+ *   user-chosen provider — the provider is ALWAYS derived from the model id
+ *   (ADR 0001, 0002). A namespaced id
+ *   (`openrouter/anthropic/claude-sonnet-5`) names its provider in the first
+ *   path segment; a flat id (`gpt-5-mini`) uses the lookup below.
  * - Transcription model ids are statically curated in `MODELS`.
  * - Summary model ids are sourced dynamically from the catalog
  *   (`~/.nota/models-catalog.json` or baked snapshot). They are auto-admitted
- *   weekly via `nota models refresh`.
- * - Gemini summarization is reached through the OpenAI-compatible endpoint
- *   (`GEMINI_OPENAI_BASE_URL`), so it uses the same OpenAI client with a
- *   swapped base URL and `GEMINI_API_KEY`.
+ *   weekly via `nota models refresh`, except the OpenRouter shortlist, which is
+ *   hand-curated in `src/openrouter.ts` and merged in at read time.
+ * - Gemini, DeepSeek and OpenRouter summarization all go through the same
+ *   OpenAI-compatible client with a swapped base URL and their own API key.
  */
 
 import { effectiveCatalog, findCatalogEntry } from "./catalog.js";
 import type { CatalogModelEntry } from "./catalog.js";
+import {
+  DEFAULT_EXECUTION,
+  deriveProvider,
+  resolveExecutionKind,
+  wireModelId,
+  type ExecutionKind,
+  type ModelProvider,
+} from "./model-id.js";
+import {
+  OPENROUTER_API_KEY_ENV,
+  OPENROUTER_BASE_URL,
+} from "./openrouter.js";
 
 export type ModelTask = "transcription" | "summary";
-export type ModelProvider = "assemblyai" | "openai" | "gemini" | "deepseek";
+
+export type { ExecutionKind, ModelProvider };
+export { OPENROUTER_BASE_URL };
 
 export interface ModelEntry {
   /** Canonical model id (what callers pass and what we persist). */
   id: string;
+  /**
+   * The model string the provider's own API expects — the canonical id with a
+   * provider namespace stripped. Equal to `id` for every flat id.
+   */
+  wireId: string;
   task: ModelTask;
   provider: ModelProvider;
+  /** How this model runs (ADR 0002). Everything today is `http`. */
+  execution: ExecutionKind;
   /** Name of the env var holding the API key this model needs. */
   apiKeyEnv: string;
   /** Human-facing label for pickers / diagnostics. */
   label: string;
-  /** OpenAI-compatible base URL, where the provider needs one (gemini). */
+  /** OpenAI-compatible base URL, where the provider needs one. */
   baseURL?: string;
 }
 
@@ -54,12 +78,14 @@ const API_KEY_ENV: Record<ModelProvider, string> = {
   openai: "OPENAI_API_KEY",
   gemini: "GEMINI_API_KEY",
   deepseek: "DEEPSEEK_API_KEY",
+  openrouter: OPENROUTER_API_KEY_ENV,
 };
 
 /** OpenAI-compatible base URL per provider, where one is needed. */
 const BASE_URL: Partial<Record<ModelProvider, string>> = {
   gemini: GEMINI_OPENAI_BASE_URL,
   deepseek: DEEPSEEK_BASE_URL,
+  openrouter: OPENROUTER_BASE_URL,
 };
 
 /** Built-in defaults used when neither a CLI flag nor settings.json applies. */
@@ -74,8 +100,10 @@ function entry(
 ): ModelEntry {
   return {
     id,
+    wireId: wireModelId(id),
     task,
     provider,
+    execution: DEFAULT_EXECUTION,
     apiKeyEnv: API_KEY_ENV[provider],
     label,
     baseURL: BASE_URL[provider],
@@ -105,22 +133,35 @@ const BY_ID = new Map(MODELS.map((m) => [m.id, m]));
 
 // ── Catalog bridging ─────────────────────────────────────────────────────────
 
-function catalogEntryToModel(cat: CatalogModelEntry): ModelEntry {
-  const p = cat.provider as ModelProvider;
+/**
+ * Bridge a catalog entry into a registry entry, or `undefined` when this build
+ * cannot serve it: an id whose namespace names no provider we have, or an
+ * execution kind we do not recognize. `effectiveCatalog` already drops both, so
+ * this is a second, local guard for callers that hand us an entry directly.
+ */
+function catalogEntryToModel(cat: CatalogModelEntry): ModelEntry | undefined {
+  const provider = deriveProvider(cat.id, cat.provider);
+  if (provider === undefined) return undefined;
+  const execution = resolveExecutionKind(cat.execution);
+  if (execution === undefined) return undefined;
   return {
     id: cat.id,
+    wireId: wireModelId(cat.id),
     task: "summary",
-    provider: p,
-    apiKeyEnv: API_KEY_ENV[p] ?? "OPENAI_API_KEY",
+    provider,
+    execution,
+    apiKeyEnv: API_KEY_ENV[provider],
     label: cat.label,
-    baseURL: BASE_URL[p],
+    baseURL: BASE_URL[provider],
   };
 }
 
 /** Resolve summary model entries from the effective catalog. */
 function summaryModelsFromCatalog(): ModelEntry[] {
   const { catalog } = effectiveCatalog();
-  return catalog.models.map(catalogEntryToModel);
+  return catalog.models
+    .map(catalogEntryToModel)
+    .filter((m): m is ModelEntry => m !== undefined);
 }
 
 /**
@@ -146,6 +187,16 @@ export function getModel(id: string): ModelEntry | undefined {
   if (catEntry) return catalogEntryToModel(catEntry);
 
   return undefined;
+}
+
+/**
+ * Models a surface may run in-process over HTTP. The dictation polish picker
+ * filters on this — structurally, on the execution kind, never by matching id
+ * prefixes (ADR 0002), so a catalog refresh can never leak a subprocess engine
+ * into a per-sentence streaming path.
+ */
+export function httpModelsForTask(task: ModelTask): ModelEntry[] {
+  return modelsForTask(task).filter((m) => m.execution === "http");
 }
 
 /** All models for a given task, in registry order. */

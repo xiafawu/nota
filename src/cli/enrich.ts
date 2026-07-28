@@ -107,8 +107,8 @@ export async function summarizeRecord(
   // record's tags verbatim (E1 summary-only op).
   const preserveTags = !!record.tagsEdited && (record.summary?.tags.length ?? 0) > 0;
   const { summary, tokenUsage } = preserveTags
-    ? await summarizeOnly(record.transcriptText, apiKey, entry.id, segments, entry.baseURL)
-    : await summarizeTranscript(record.transcriptText, apiKey, entry.id, segments, entry.baseURL);
+    ? await summarizeOnly(record.transcriptText, apiKey, entry.wireId, segments, entry.baseURL)
+    : await summarizeTranscript(record.transcriptText, apiKey, entry.wireId, segments, entry.baseURL);
   if (!summary.narrative.trim()) {
     throw new EnrichError("Summary model returned an empty summary; record left unchanged.");
   }

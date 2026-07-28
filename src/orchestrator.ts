@@ -358,7 +358,7 @@ async function runAssemblyAIPipelineInner(
     const summarized = await summarizeTranscript(
       result.text,
       config.summaryApiKey,
-      config.summaryModel,
+      config.summaryWireModel,
       segments,
       config.summaryBaseURL,
     );
@@ -524,7 +524,7 @@ export async function identifySpeakers(
       const verdicts = await verifySpeakers(
         { segments, matches: Object.fromEntries(Object.entries(matches).filter(([, m]) => !m.tentative)), speakerContexts },
         config.summaryApiKey,
-        config.summaryModel,
+        config.summaryWireModel,
         config.summaryBaseURL,
       );
       const updated = applyVerdicts(matches, verdicts);
@@ -711,7 +711,7 @@ async function runWhisperPipeline(
     const summarized = await summarizeTranscript(
       merged.text,
       config.summaryApiKey,
-      config.summaryModel,
+      config.summaryWireModel,
       diarization ? merged.segments : undefined,
       config.summaryBaseURL,
     );

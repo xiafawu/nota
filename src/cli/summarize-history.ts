@@ -68,7 +68,7 @@ export async function summarizeHistory(
   const { summary, tokenUsage } = await summarizeTranscript(
     record.transcriptText,
     apiKey,
-    entry.id,
+    entry.wireId,
     segments,
     entry.baseURL,
   );

@@ -16,6 +16,13 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { homedir } from "node:os";
 import path from "node:path";
 
+import {
+  deriveProvider,
+  resolveExecutionKind,
+  type ExecutionKind,
+} from "./model-id.js";
+import { OPENROUTER_MODELS } from "./openrouter.js";
+
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface CostTier {
@@ -38,13 +45,26 @@ export interface CatalogModelLimit {
   input?: number;
 }
 
+/** Where an entry came from — see {@link mergeCurated}. */
+export type CatalogEntryOrigin = "auto" | "curated";
+
 export interface CatalogModelEntry {
   id: string;
   provider: string;
   label: string;
   task: "summary";
-  cost: CatalogCost;
+  /**
+   * Absent when Nota stores no pricing for this model. Absent is not zero:
+   * callers must print {@link CatalogModelEntry.costNote} rather than "$0.00".
+   */
+  cost?: CatalogCost;
+  /** What to print instead of a dollar figure when `cost` is absent. */
+  costNote?: string;
   limit: CatalogModelLimit;
+  /** How the model runs. Absent means `http` (everything auto-admitted). */
+  execution?: ExecutionKind;
+  /** `auto` (weekly allowlist) or `curated` (hand-picked). Absent means auto. */
+  origin?: CatalogEntryOrigin;
 }
 
 export interface CatalogCache {
@@ -260,6 +280,12 @@ export function validateCatalog(
       continue;
     }
 
+    // An entry may legitimately carry no pricing (the OpenRouter shortlist):
+    // there is nothing to bounds-check, and the display path prints its
+    // `costNote` rather than a figure. Absent is not the same as zero, so it
+    // must not fall through into the numeric checks below.
+    if (m.cost === undefined) continue;
+
     if (typeof m.cost.input !== "number" || typeof m.cost.output !== "number") {
       errors.push(`${m.id}: cost.input and cost.output must be numbers`);
       continue;
@@ -301,6 +327,8 @@ export function validateCatalog(
     const oldEntry = prevCache?.models.find((m) => m.id === id);
     if (!newEntry) continue; // model absent from new cache → handled by zombie policy
     if (!oldEntry) continue; // no previous data to compare
+    // An unpriced entry has no figure to blank; it was never priced.
+    if (!newEntry.cost || !oldEntry.cost) continue;
 
     const newCost = newEntry.cost.input + newEntry.cost.output;
     const oldCost = oldEntry.cost.input + oldEntry.cost.output;
@@ -358,12 +386,18 @@ export function validateRawCatalog(raw: unknown): string[] {
  *
  * The tier with the largest `thresholdTokens ≤ promptTokens` is used; if none
  * matches, base rates apply.
+ *
+ * Returns `null` for an entry Nota stores no pricing for (the OpenRouter
+ * shortlist). Callers print {@link costNoteFor} in place of a figure — a zero
+ * would read as "this run was free".
  */
 export function computeSummaryCost(
   entry: CatalogModelEntry,
   tokensIn: number,
   tokensOut: number,
 ): number | null {
+  if (!entry.cost) return null;
+
   let inputRate = entry.cost.input;
   let outputRate = entry.cost.output;
 
@@ -393,6 +427,20 @@ export function findCatalogEntry(
   modelId: string,
 ): CatalogModelEntry | undefined {
   return catalog.models.find((m) => m.id === modelId);
+}
+
+/**
+ * The text a cost display must print instead of a dollar figure for `modelId`,
+ * or `undefined` when the model is priced (or simply unknown — an unknown model
+ * is an unknown cost, which is a different thing and already rendered as "—").
+ */
+export function costNoteFor(
+  catalog: CatalogCache,
+  modelId: string,
+): string | undefined {
+  const entry = findCatalogEntry(catalog, modelId);
+  if (!entry || entry.cost) return undefined;
+  return entry.costNote ?? "unpriced";
 }
 
 // ── Cache I/O ────────────────────────────────────────────────────────────────
@@ -444,9 +492,52 @@ export function loadBakedSnapshot(): CatalogCache {
   return BAKED_SNAPSHOT;
 }
 
+// ── Effective catalog: sanitize, then merge the curated shortlist ────────────
+
 /**
- * Resolve the effective catalog: on-disk cache first, then baked snapshot.
- * Returns the cache + a `source` indicator.
+ * Drop entries this build cannot honestly serve, per entry rather than per
+ * catalog: a namespaced id whose namespace is not a provider Nota has, and an
+ * `execution` value this build does not recognize. Both can only arrive from a
+ * cache written by a newer Nota, and both mean "we do not know how to run
+ * this" — guessing would either send a request to nowhere or, for an unknown
+ * execution kind, let a future non-HTTP engine leak into a picker that filters
+ * on `http`. One bad entry costs only itself.
+ */
+export function sanitizeCatalog(cache: CatalogCache): CatalogCache {
+  const kept = cache.models.filter((m) => {
+    if (deriveProvider(m.id, m.provider) === undefined) return false;
+    if (resolveExecutionKind(m.execution) === undefined) return false;
+    return true;
+  });
+  if (kept.length === cache.models.length) return cache;
+  return { ...cache, models: kept };
+}
+
+/**
+ * Merge the curated shortlist into a catalog. Curated entries live in code, not
+ * in the cache, which is exactly what makes them survive `nota models refresh`:
+ * a refresh rewrites the auto-admitted cache, and the cache has never held
+ * them. A cache entry with the same id wins (a real upstream listing beats our
+ * hand-written stub).
+ */
+export function mergeCurated(
+  cache: CatalogCache,
+  curated: readonly CatalogModelEntry[] = OPENROUTER_MODELS,
+): CatalogCache {
+  const present = new Set(cache.models.map((m) => m.id));
+  const additions = curated.filter((m) => !present.has(m.id));
+  if (additions.length === 0) return cache;
+  const models = [...cache.models, ...additions].sort((a, b) =>
+    a.id.localeCompare(b.id),
+  );
+  return { ...cache, models };
+}
+
+/**
+ * Resolve the effective catalog: on-disk cache first, then baked snapshot,
+ * sanitized, with the curated shortlist merged in. `source` describes where the
+ * *auto-admitted* half came from; a curated entry carries `origin: "curated"`
+ * and is labelled from that.
  */
 export function effectiveCatalog(): {
   catalog: CatalogCache;
@@ -454,9 +545,12 @@ export function effectiveCatalog(): {
 } {
   const cached = readCache();
   if (cached) {
-    return { catalog: cached, source: "cache" };
+    return { catalog: mergeCurated(sanitizeCatalog(cached)), source: "cache" };
   }
-  return { catalog: loadBakedSnapshot(), source: "baked" };
+  return {
+    catalog: mergeCurated(sanitizeCatalog(loadBakedSnapshot())),
+    source: "baked",
+  };
 }
 
 /**

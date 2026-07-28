@@ -37,7 +37,15 @@ export interface CLIOptions {
 export interface AppConfig {
   provider: Provider;
   transcriptionModel: string;
+  /** Canonical summary model id — what is persisted and reported. */
   summaryModel: string;
+  /**
+   * The same model as the summary provider's own API names it: the canonical id
+   * with its provider namespace stripped. OpenRouter is asked for
+   * `anthropic/claude-sonnet-5`, not `openrouter/anthropic/claude-sonnet-5`.
+   * Never persisted — history and usage records keep the canonical id.
+   */
+  summaryWireModel: string;
   /** API key for the transcription model's provider. */
   transcriptionApiKey: string;
   /** API key for the summary model's provider. */
@@ -207,6 +215,7 @@ export function loadConfig(
     provider,
     transcriptionModel: transcriptionEntry.id,
     summaryModel: summaryEntry.id,
+    summaryWireModel: summaryEntry.wireId,
     transcriptionApiKey,
     summaryApiKey,
     summaryBaseURL: summaryEntry.baseURL,

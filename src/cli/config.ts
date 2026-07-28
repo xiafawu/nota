@@ -14,6 +14,7 @@ const KNOWN_KEYS = [
   "HUGGINGFACE_TOKEN",
   "GEMINI_API_KEY",
   "DEEPSEEK_API_KEY",
+  "OPENROUTER_API_KEY",
 ];
 
 function resolveSource(

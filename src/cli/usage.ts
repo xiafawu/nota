@@ -8,7 +8,7 @@
 import type { AggregateWindow } from "../usage-stats.js";
 import { perModelSummary, perRunLog } from "../usage-stats.js";
 import { listHistoryRecords } from "../pipeline/history.js";
-import { effectiveCatalog } from "../catalog.js";
+import { costNoteFor, effectiveCatalog } from "../catalog.js";
 
 const VALID_WINDOWS = ["all", "30d", "month"] as const;
 
@@ -76,18 +76,34 @@ export async function usageSummary(window?: AggregateWindow, historyDir?: string
     return;
   }
 
+  // A model Nota stores no pricing for is not a model of unknown cost: the
+  // price exists, it just lives on the provider's dashboard. Print where to
+  // look instead of a figure, and keep those runs out of the "unknown cost"
+  // tally, which exists to flag gaps in *our* data.
+  const { catalog: costCatalog } = effectiveCatalog();
+  const notes = new Map<string, string | undefined>(
+    rows.map((row) => [row.modelId, costNoteFor(costCatalog, row.modelId)]),
+  );
+
   // Count unknown-cost rows
   let unknownCount = 0;
   for (const row of rows) {
-    if (row.hasUnknown) unknownCount += row.runs;
+    if (row.hasUnknown && notes.get(row.modelId) === undefined) {
+      unknownCount += row.runs;
+    }
   }
 
   // stderr: header + totals
   process.stderr.write("model\tprovider\truns\tcalls\ttokensIn\ttokensOut\tcostUSD\n");
   for (const row of rows) {
+    const note = notes.get(row.modelId);
     const cost =
-      row.hasUnknown && row.costUSD === 0 ? "—" : formatCost(row.costUSD);
-    const estMark = row.hasEstimated ? "~" : "";
+      note !== undefined
+        ? note
+        : row.hasUnknown && row.costUSD === 0
+          ? "—"
+          : formatCost(row.costUSD);
+    const estMark = note !== undefined ? "" : row.hasEstimated ? "~" : "";
     const parts = [
       row.modelId,
       row.provider,
