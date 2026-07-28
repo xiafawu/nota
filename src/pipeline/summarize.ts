@@ -5,7 +5,11 @@ import type { TranscriptSegment } from "./transcribe.js";
 // The gemini base URL and provider check are owned by the model registry (the
 // single source of truth). Re-exported here so existing importers keep working.
 export { GEMINI_OPENAI_BASE_URL, isGeminiModel } from "../registry.js";
-import { GEMINI_OPENAI_BASE_URL, isGeminiModel } from "../registry.js";
+import {
+  GEMINI_OPENAI_BASE_URL,
+  isGeminiModel,
+  usesMaxTokensParam,
+} from "../registry.js";
 
 export interface MeetingSummary {
   title: string;
@@ -204,18 +208,24 @@ export function parseSummaryResponse(response: string): MeetingSummary {
 }
 
 /**
- * The output-token cap parameter for a summary model, keyed correctly for its
- * provider. OpenAI chat models (incl. the gpt-5 reasoning family) require
- * `max_completion_tokens`; `max_tokens` is rejected outright by gpt-5*. Gemini's
- * OpenAI-compatible shim only understands `max_tokens` (it maps to Google's
- * maxOutputTokens), so branch on provider. Shared by the real summary call and
- * the preflight canary so the two request shapes can never drift.
+ * The output-token cap parameter for a summary model, keyed correctly for the
+ * endpoint it is being sent to. OpenAI chat models (incl. the gpt-5 reasoning
+ * family) require `max_completion_tokens`; `max_tokens` is rejected outright by
+ * gpt-5*. Gemini's and OpenRouter's OpenAI-compatible endpoints want
+ * `max_tokens` instead — see {@link usesMaxTokensParam}. Shared by the real
+ * summary call and the preflight canary so the two request shapes can never
+ * drift.
+ *
+ * `model` is the **wire** id, so for a namespaced model it no longer names its
+ * provider; `baseURL` does, and it is the address the request is going to.
+ * Passing it is not optional for anything but OpenAI's own endpoint.
  */
 export function summaryTokenLimit(
   model: string,
   max: number,
+  baseURL?: string,
 ): { max_tokens: number } | { max_completion_tokens: number } {
-  return isGeminiModel(model)
+  return usesMaxTokensParam(model, baseURL)
     ? { max_tokens: max }
     : { max_completion_tokens: max };
 }
@@ -228,7 +238,10 @@ async function callGPT(
 ): Promise<{ content: string; usage: { promptTokens: number; completionTokens: number } }> {
   const response = await client.chat.completions.create({
     model,
-    ...summaryTokenLimit(model, maxTokens),
+    // The client already resolved the endpoint (caller-supplied base URL, or
+    // the gemini fallback below); reading it back is what keeps the parameter
+    // key and the destination from ever disagreeing.
+    ...summaryTokenLimit(model, maxTokens, client.baseURL),
     messages: [{ role: "user", content: prompt }],
   });
 
@@ -268,7 +281,7 @@ export async function canarySummaryModel(
   try {
     await client.chat.completions.create({
       model,
-      ...summaryTokenLimit(model, 16),
+      ...summaryTokenLimit(model, 16, client.baseURL),
       messages: [{ role: "user", content: "ping" }],
     });
   } catch (err) {

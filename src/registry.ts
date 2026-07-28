@@ -88,6 +88,38 @@ const BASE_URL: Partial<Record<ModelProvider, string>> = {
   openrouter: OPENROUTER_BASE_URL,
 };
 
+function normalizeBaseURL(url: string): string {
+  return url.replace(/\/+$/, "");
+}
+
+/** Inverse of {@link BASE_URL} — which provider owns an OpenAI-compatible endpoint. */
+const PROVIDER_BY_BASE_URL: ReadonlyMap<string, ModelProvider> = new Map(
+  Object.entries(BASE_URL).map(([provider, url]) => [
+    normalizeBaseURL(url as string),
+    provider as ModelProvider,
+  ]),
+);
+
+/**
+ * The provider an OpenAI-compatible base URL belongs to, or `undefined` for
+ * OpenAI's own default endpoint (which is expressed as *no* base URL) and for
+ * anything unrecognized.
+ *
+ * This exists because a request carries the **wire** id, and a wire id has had
+ * the one segment that names its provider stripped off:
+ * `anthropic/claude-sonnet-5` is not a model the registry can look up. The
+ * endpoint the request is addressed to still names the provider, and it is the
+ * party that decides which request parameters are accepted — so where a request
+ * shape must be chosen per provider, the URL is the authority the id can no
+ * longer be.
+ */
+export function providerForBaseURL(
+  baseURL: string | undefined,
+): ModelProvider | undefined {
+  if (!baseURL) return undefined;
+  return PROVIDER_BY_BASE_URL.get(normalizeBaseURL(baseURL));
+}
+
 /** Built-in defaults used when neither a CLI flag nor settings.json applies. */
 export const DEFAULT_TRANSCRIPTION_MODEL = "universal";
 export const DEFAULT_SUMMARY_MODEL = "gpt-5-mini";
@@ -236,4 +268,38 @@ export function requireModel(id: string, task: ModelTask): ModelEntry {
 /** True when a model name targets Gemini rather than OpenAI. */
 export function isGeminiModel(id: string): boolean {
   return getModel(id)?.provider === "gemini";
+}
+
+/**
+ * Providers whose OpenAI-compatible endpoint caps output with `max_tokens`
+ * rather than OpenAI's `max_completion_tokens`.
+ *
+ * - **gemini** — the shim maps `max_tokens` onto Google's `maxOutputTokens` and
+ *   understands nothing else.
+ * - **openrouter** — `max_tokens` is the normalized parameter every route
+ *   accepts. OpenRouter *drops* a parameter the chosen route does not support
+ *   instead of erroring, so sending `max_completion_tokens` to a route that
+ *   wants `max_tokens` is worse than a failure: the cap is silently not applied
+ *   and only the bill says so.
+ *
+ * OpenAI itself is the other way round — `max_tokens` is rejected outright by
+ * the gpt-5 family — and DeepSeek accepts OpenAI's spelling, so both keep it.
+ */
+const MAX_TOKENS_PROVIDERS: ReadonlySet<ModelProvider> = new Set<ModelProvider>([
+  "gemini",
+  "openrouter",
+]);
+
+/**
+ * True when the summary request for this model+endpoint must cap output with
+ * `max_tokens`. The base URL is consulted first: it is where the request is
+ * actually going, and for a namespaced model it is the only thing left that
+ * names the provider (see {@link providerForBaseURL}).
+ */
+export function usesMaxTokensParam(
+  wireId: string,
+  baseURL?: string,
+): boolean {
+  const provider = providerForBaseURL(baseURL) ?? getModel(wireId)?.provider;
+  return provider !== undefined && MAX_TOKENS_PROVIDERS.has(provider);
 }

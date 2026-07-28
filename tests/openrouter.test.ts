@@ -19,11 +19,16 @@ import {
   OPENROUTER_MODELS,
 } from "../src/openrouter.js";
 import {
+  DEEPSEEK_BASE_URL,
+  GEMINI_OPENAI_BASE_URL,
   getModel,
   httpModelsForTask,
   modelsForTask,
+  providerForBaseURL,
   requireModel,
+  usesMaxTokensParam,
 } from "../src/registry.js";
+import { summaryTokenLimit } from "../src/pipeline/summarize.js";
 import { settingsSet, settingsGet } from "../src/cli/settings.js";
 import { printConfig } from "../src/cli/config.js";
 
@@ -332,5 +337,60 @@ describe("nota config", () => {
       process.env = originalEnv;
       vi.restoreAllMocks();
     }
+  });
+});
+
+// ── Request shape ────────────────────────────────────────────────────────────
+
+describe("the output cap sent to OpenRouter", () => {
+  it("is max_tokens, the parameter every OpenRouter route accepts", () => {
+    // OpenRouter *drops* a parameter the chosen route does not support instead
+    // of erroring, so `max_completion_tokens` here is worse than a failure: the
+    // cap silently does not apply and only the bill says so.
+    expect(summaryTokenLimit("anthropic/claude-sonnet-5", 4096, OPENROUTER_BASE_URL)).toEqual({
+      max_tokens: 4096,
+    });
+  });
+
+  it("is decided by the endpoint, because the wire id no longer names a provider", () => {
+    const wire = requireModel(SONNET, "summary").wireId;
+    // The id that goes on the wire is not a model the registry can look up —
+    // its namespace was stripped precisely so OpenRouter would accept it.
+    expect(getModel(wire)).toBeUndefined();
+    expect(usesMaxTokensParam(wire, OPENROUTER_BASE_URL)).toBe(true);
+    // Without the base URL there is nothing left to decide on, which is why
+    // every caller passes it.
+    expect(usesMaxTokensParam(wire, undefined)).toBe(false);
+  });
+
+  it("leaves OpenAI and DeepSeek on max_completion_tokens", () => {
+    expect(summaryTokenLimit("gpt-5-mini", 1)).toEqual({ max_completion_tokens: 1 });
+    expect(summaryTokenLimit("deepseek-v4-flash", 1, DEEPSEEK_BASE_URL)).toEqual({
+      max_completion_tokens: 1,
+    });
+  });
+
+  it("leaves Gemini on max_tokens whether or not the base URL is passed", () => {
+    expect(summaryTokenLimit("gemini-2.5-flash", 8)).toEqual({ max_tokens: 8 });
+    expect(summaryTokenLimit("gemini-2.5-flash", 8, GEMINI_OPENAI_BASE_URL)).toEqual({
+      max_tokens: 8,
+    });
+  });
+});
+
+describe("providerForBaseURL", () => {
+  it("names the provider each OpenAI-compatible endpoint belongs to", () => {
+    expect(providerForBaseURL(OPENROUTER_BASE_URL)).toBe("openrouter");
+    expect(providerForBaseURL(DEEPSEEK_BASE_URL)).toBe("deepseek");
+    expect(providerForBaseURL(GEMINI_OPENAI_BASE_URL)).toBe("gemini");
+    // The SDK may hand back the URL with or without its trailing slash.
+    expect(providerForBaseURL(`${OPENROUTER_BASE_URL}/`)).toBe("openrouter");
+    expect(providerForBaseURL(GEMINI_OPENAI_BASE_URL.replace(/\/$/, ""))).toBe("gemini");
+  });
+
+  it("is undefined for OpenAI's own endpoint (expressed as no base URL) and for strangers", () => {
+    expect(providerForBaseURL(undefined)).toBeUndefined();
+    expect(providerForBaseURL("")).toBeUndefined();
+    expect(providerForBaseURL("https://api.openai.com/v1")).toBeUndefined();
   });
 });
