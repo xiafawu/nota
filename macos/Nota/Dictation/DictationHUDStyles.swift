@@ -234,6 +234,9 @@ struct DictationHUDBarView: View {
 
 // MARK: - Prompter metrics
 
+/// The head-trimmed halves of the session the prompter measures and draws.
+typealias HUDPrompterWindow = (finalized: String, volatileTail: String)
+
 /// Sizing and growth math for the prompter style.
 ///
 /// Pure and AppKit-free apart from the font metric, so the cap — the one rule
@@ -287,6 +290,75 @@ enum HUDPrompterMetrics {
     cardHeight(lineCount: lines) + DictationHUDContentView.shadowMargin * 2
   }
 
+  // MARK: The measured window
+
+  /// Characters of the session the card measures and draws.
+  ///
+  /// The card shows `maxLines` lines and clips everything above them, but the
+  /// view used to measure (`boundingRect`) and lay out the *whole* session on
+  /// the main actor on every HUD tick — and `DictationHUDController.update()`
+  /// runs on every `objectWillChange` plus a 66 ms RMS tick, against a string
+  /// that grows for as long as the user keeps talking. That is an O(session
+  /// length) cost with no upper bound; this is the bound.
+  ///
+  /// Sized well past what `maxLines` lines can hold even at the narrowest
+  /// glyph widths the body font has, so no character that could be visible is
+  /// outside the window and the *clamped* line count — the only thing the card
+  /// height depends on — is the same as it would be for the full text.
+  /// `HUDPrompterWindowTests` asserts both ends of that.
+  ///
+  /// What is left per tick is a character count and a copy of the window: two
+  /// orders of magnitude under a text layout, and the layout itself no longer
+  /// grows at all.
+  static let windowBudget = 1800
+
+  /// How far the text may overrun `windowBudget` before the window's head moves.
+  ///
+  /// The head is quantized rather than sliding. Greedy wrapping starts at
+  /// whatever character the window begins with, so a head that advanced with
+  /// every syllable would re-wrap the visible lines on every tick; quantized,
+  /// the body re-wraps at most once per `windowStep` characters and is
+  /// otherwise laid out exactly as it was on the previous tick.
+  static let windowStep = 600
+
+  /// The `(finalized, volatileTail)` pair the card actually measures and draws.
+  ///
+  /// Head-trimmed only: the cut lands in text that is already clipped above the
+  /// top edge, and the newest words — the ones pinned to the bottom edge — are
+  /// never touched.
+  static func windowed(
+    finalized: String,
+    volatileTail: String
+  ) -> HUDPrompterWindow {
+    let overflow = finalized.count + volatileTail.count - windowBudget
+    guard overflow > 0 else { return (finalized, volatileTail) }
+    let cut = (overflow / windowStep) * windowStep
+    guard cut > 0 else { return (finalized, volatileTail) }
+    guard cut < finalized.count else {
+      return ("", String(volatileTail.dropFirst(cut - finalized.count)))
+    }
+    return (String(finalized.dropFirst(cut)), volatileTail)
+  }
+
+  /// The two runs the card draws: finalized text at full opacity, then the
+  /// volatile tail dimmed.
+  ///
+  /// The separator rides on the finalized run (a space carries no ink, so which
+  /// run owns it is invisible) because concatenating the runs has to reproduce
+  /// the string the card measured. `Text(a) + Text(" ") + Text(b)` does not:
+  /// Apple's volatile results sometimes arrive with their leading space already
+  /// attached, and `StreamingDelivery.joined` — what the measurement runs on —
+  /// does not add a second one.
+  static func runs(
+    finalized: String,
+    volatileTail: String
+  ) -> HUDPrompterWindow {
+    (
+      finalized + StreamingDelivery.joiningSeparator(finalized, volatileTail),
+      volatileTail
+    )
+  }
+
   /// How many lines `text` wraps to at `bodyWidth`.
   ///
   /// Unclamped — callers clamp — so the caller can tell "three lines" from
@@ -323,9 +395,16 @@ struct DictationHUDPrompterView: View {
   var draft: HUDDraft = .empty
 
   var body: some View {
+    // Bounded once, here, and used for both the measurement and the drawing:
+    // the two must agree, and neither may cost more as the session runs on.
+    let window = HUDPrompterMetrics.windowed(
+      finalized: draft.finalized,
+      volatileTail: draft.volatileTail
+    )
+
     VStack(alignment: .leading, spacing: HUDPrompterMetrics.headerSpacing) {
       header
-      bodyBlock(width: HUDPrompterMetrics.bodyWidth)
+      bodyBlock(window: window, width: HUDPrompterMetrics.bodyWidth)
     }
     .padding(.horizontal, HUDPrompterMetrics.horizontalPadding)
     .padding(.vertical, HUDPrompterMetrics.verticalPadding)
@@ -375,12 +454,13 @@ struct DictationHUDPrompterView: View {
   // MARK: Body
 
   @ViewBuilder
-  private func bodyBlock(width: CGFloat) -> some View {
+  private func bodyBlock(window: HUDPrompterWindow, width: CGFloat) -> some View {
+    let measured = bodyText(window: window)
     let visibleHeight = HUDPrompterMetrics.bodyHeight(
-      lineCount: HUDPrompterMetrics.lineCount(for: bodyText)
+      lineCount: HUDPrompterMetrics.lineCount(for: measured)
     )
 
-    text
+    text(window: window, measured: measured)
       .font(.system(size: HUDPrompterMetrics.bodyFontSize))
       .lineSpacing(0)
       .multilineTextAlignment(.leading)
@@ -396,23 +476,31 @@ struct DictationHUDPrompterView: View {
   /// Finalized text at full opacity, the volatile tail dimmed — the card's one
   /// piece of information beyond the words themselves: which of them the
   /// recognizer has committed to.
-  private var text: Text {
+  ///
+  /// Drawn from `HUDPrompterMetrics.runs`, so the glyphs on screen concatenate
+  /// to exactly the `measured` string the card sized itself from.
+  private func text(window: HUDPrompterWindow, measured: String) -> Text {
     guard case .listening = state else {
-      return Text(bodyText).foregroundStyle(.primary.opacity(0.85))
+      return Text(measured).foregroundStyle(.primary.opacity(0.85))
     }
-    let finalized = Text(draft.finalized).foregroundStyle(.primary.opacity(0.92))
-    guard !draft.volatileTail.isEmpty else { return finalized }
-    let tail = Text(draft.volatileTail).foregroundStyle(Color.white.opacity(0.55))
-    guard !draft.finalized.isEmpty else { return tail }
-    return finalized + Text(" ") + tail
+    let runs = HUDPrompterMetrics.runs(
+      finalized: window.finalized,
+      volatileTail: window.volatileTail
+    )
+    let finalized = Text(runs.finalized).foregroundStyle(.primary.opacity(0.92))
+    guard !runs.volatileTail.isEmpty else { return finalized }
+    let tail = Text(runs.volatileTail).foregroundStyle(Color.white.opacity(0.55))
+    guard !runs.finalized.isEmpty else { return tail }
+    return finalized + tail
   }
 
-  private var bodyText: String {
+  private func bodyText(window: HUDPrompterWindow) -> String {
     switch state {
     case .hidden, .listening:
-      return draft.fullText
+      return StreamingDelivery.joined(window.finalized, window.volatileTail)
     case .processing:
-      return draft.fullText.isEmpty ? "…" : draft.fullText
+      let text = StreamingDelivery.joined(window.finalized, window.volatileTail)
+      return text.isEmpty ? "…" : text
     case .success(let snippet):
       return snippet
     case .warning(let message), .error(let message):

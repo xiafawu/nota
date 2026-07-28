@@ -15,12 +15,24 @@ enum StreamingDelivery {
   /// together ("Hello" + "world."); always inserting a space doubles the ones
   /// that are already there. So: insert one only when neither side has any.
   static func joined(_ existing: String, _ addition: String) -> String {
-    guard !existing.isEmpty else { return addition }
-    guard !addition.isEmpty else { return existing }
+    existing + joiningSeparator(existing, addition) + addition
+  }
+
+  /// What `joined` puts between the two runs: one space, or nothing.
+  ///
+  /// Split out because the prompter draws the halves as two `Text` runs at
+  /// different opacities and has to concatenate them with *exactly* the
+  /// separator `joined` used to measure them. An unconditional `Text(" ")`
+  /// between the runs draws a double space whenever Apple's volatile result
+  /// arrives with its leading space already attached — the very case this
+  /// function exists to absorb — so the card would draw a string it never
+  /// measured.
+  static func joiningSeparator(_ existing: String, _ addition: String) -> String {
+    guard !existing.isEmpty, !addition.isEmpty else { return "" }
     if existing.last?.isWhitespace == true || addition.first?.isWhitespace == true {
-      return existing + addition
+      return ""
     }
-    return existing + " " + addition
+    return " "
   }
 
   /// The exact string to append to the target app so that everything delivered
