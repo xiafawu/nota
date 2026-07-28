@@ -130,6 +130,18 @@ enum ModelRegistry {
     ModelEntry(id: "gpt-4o-mini-transcribe", task: .transcription, provider: .openai, label: "GPT-4o mini Transcribe (OpenAI)"),
   ]
 
+  /// The CLI-engine ids, mirroring `src/cli-engines.ts` — that file is the
+  /// source of truth, this is the copy. These deliberately never enter the
+  /// app's catalog or any picker (ADR 0003: CLI engines belong to the CLI
+  /// summary path alone), but the shared `~/.nota/settings.json` can hold one
+  /// as a perfectly valid summary pin — so the zombie check must know the ids
+  /// exist, or the Models pane calls a working configuration "retired".
+  static let cliEngineModelIDs: Set<String> = [
+    "claude-code/sonnet", "claude-code/opus", "claude-code/haiku",
+    "codex/gpt-5.6-sol", "codex/gpt-5.6-terra", "codex/gpt-5.6-luna",
+    "codex/gpt-5.4-mini",
+  ]
+
   /// The OpenRouter shortlist, mirroring `OPENROUTER_MODELS` in
   /// `src/openrouter.ts` — that file is the source of truth, this is the copy.
   /// Slugs were verified against a live `GET https://openrouter.ai/api/v1/models`

@@ -283,4 +283,34 @@ final class ModelNamespaceTests: XCTestCase {
     XCTAssertEqual(ModelProvider.openrouter.apiKeyEnv, "OPENROUTER_API_KEY")
     XCTAssertEqual(ModelProvider.openrouter.displayName, "OpenRouter")
   }
+
+  // MARK: - CLI-engine pins are valid, not zombies
+
+  func testCliEnginePinIsNotAZombie() {
+    // A `claude-code/*` or `codex/*` pin in the shared settings.json is valid
+    // for the CLI pipeline even though the app's catalog never lists it —
+    // the Models pane must not call it "no longer available".
+    let catalog = ModelCatalogLoader.bakedSnapshot.sanitized().mergingCurated()
+    for id in ModelRegistry.cliEngineModelIDs {
+      XCTAssertFalse(
+        ModelCatalogLoader.isZombie(storedID: id, in: catalog),
+        "\(id) wrongly classified as a retired model"
+      )
+      // And still structurally absent from every app surface: not in the
+      // catalog itself, so no picker can offer it (ADR 0003).
+      XCTAssertFalse(catalog.contains(id))
+    }
+    // The check stays a real check: junk is still a zombie.
+    XCTAssertTrue(ModelCatalogLoader.isZombie(storedID: "gpt-2", in: catalog))
+  }
+
+  func testCliEngineMirrorIsInLockstepWithTheTypeScriptSource() {
+    // Mirrors src/cli-engines.ts (source of truth). A one-sided edit to either
+    // file must fail this test.
+    XCTAssertEqual(ModelRegistry.cliEngineModelIDs, [
+      "claude-code/sonnet", "claude-code/opus", "claude-code/haiku",
+      "codex/gpt-5.6-sol", "codex/gpt-5.6-terra", "codex/gpt-5.6-luna",
+      "codex/gpt-5.4-mini",
+    ])
+  }
 }

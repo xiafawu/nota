@@ -286,8 +286,14 @@ enum ModelCatalogLoader {
 
   /// True when `storedID` is a non-empty summary preference that is absent from
   /// `catalog` (a "zombie": a retired model that the user still has pinned).
+  ///
+  /// CLI-engine ids are consulted separately: they are valid pins in the shared
+  /// settings.json but are never members of the app's catalog (ADR 0003), and
+  /// asking only the catalog is what made the Models pane call a working
+  /// `claude-code/*` pin "no longer available".
   static func isZombie(storedID: String?, in catalog: ModelCatalog) -> Bool {
     guard let storedID, !storedID.isEmpty else { return false }
+    if ModelRegistry.cliEngineModelIDs.contains(storedID) { return false }
     return !catalog.contains(storedID)
   }
 
