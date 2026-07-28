@@ -192,6 +192,26 @@ extension ModelCatalog {
     }
   }
 
+  /// Drop every entry this build cannot serve, mirroring `sanitizeCatalog` in
+  /// `src/catalog.ts`. Today that is one rule — an id whose namespace names no
+  /// provider — because the other half (an unrecognized execution kind) is
+  /// already enforced by `CatalogModel.init(from:)`, which throws so the
+  /// per-entry wrapper drops it during decode.
+  ///
+  /// This has to run over the whole catalog and not just inside
+  /// `summaryModelEntries()`, because `contains(_:)` is a *different question*
+  /// asked of the same array: it decides whether a stored preference is a live
+  /// pin or a zombie. Filtering only the picker leaves an id that no picker
+  /// offers and no request can be built for still answering "yes, that's
+  /// valid" — the app and the CLI then disagree about the user's own settings.
+  func sanitized() -> ModelCatalog {
+    let kept = models.filter { ModelID.provider(for: $0.id, declared: $0.provider) != nil }
+    guard kept.count != models.count else { return self }
+    var out = self
+    out.models = kept
+    return out
+  }
+
   func contains(_ modelID: String) -> Bool {
     models.contains { $0.id == modelID }
   }
@@ -253,10 +273,15 @@ enum ModelCatalogLoader {
   /// *auto-admitted* half came from; a curated entry carries `origin: .curated`.
   /// Mirrors `effectiveCatalog()` in src/catalog.ts.
   static func effective(cacheURL: URL = defaultCacheURL) -> (catalog: ModelCatalog, source: ModelCatalogSource) {
+    // Sanitize *then* merge, in that order and on both sides — the same
+    // composition as `effectiveCatalog()` in src/catalog.ts. Sanitizing after
+    // the merge would put the curated shortlist through a filter it wrote the
+    // rules for; sanitizing only the cache would let a bad baked snapshot
+    // through.
     if let cached = load(from: cacheURL) {
-      return (cached.mergingCurated(), .cache)
+      return (cached.sanitized().mergingCurated(), .cache)
     }
-    return (bakedSnapshot.mergingCurated(), .baked)
+    return (bakedSnapshot.sanitized().mergingCurated(), .baked)
   }
 
   /// True when `storedID` is a non-empty summary preference that is absent from

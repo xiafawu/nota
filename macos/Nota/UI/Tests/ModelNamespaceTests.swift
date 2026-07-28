@@ -126,6 +126,46 @@ final class ModelNamespaceTests: XCTestCase {
     XCTAssertEqual(catalog.summaryModelEntries().map(\.id), ["gpt-5-mini"])
   }
 
+  // MARK: - Sanitizing (mirror of sanitizeCatalog in src/catalog.ts)
+
+  private let unknownNamespaceEntry = """
+    {"id":"bedrock/anthropic/claude","provider":"openai","label":"Claude",
+     "task":"summary","cost":{"input":1,"output":1,"tiers":[]},
+     "limit":{"context":200000}}
+    """
+
+  func testSanitizingRemovesAnUnknownNamespaceFromTheWholeCatalog() throws {
+    let catalog = try XCTUnwrap(decode(catalogJSON(models: """
+      \(flatEntry),
+      \(unknownNamespaceEntry)
+      """)))
+    XCTAssertEqual(catalog.sanitized().models.map(\.id), ["gpt-5-mini"])
+    // Idempotent, and it does not disturb a clean catalog.
+    XCTAssertEqual(catalog.sanitized().sanitized().models.map(\.id), ["gpt-5-mini"])
+  }
+
+  func testAnUnservableIdIsNotAValidPin() throws {
+    // `contains` decides whether a stored summary preference is live or a
+    // zombie. Filtering only `summaryModelEntries()` left an id that no picker
+    // offers and no request can be built for still answering "valid" — so the
+    // app and the CLI disagreed about the user's own settings.json.
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+      .appendingPathComponent("nota-sanitize-\(UUID().uuidString)", isDirectory: true)
+    try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+    let cacheURL = dir.appendingPathComponent("models-catalog.json")
+    try Data(catalogJSON(models: "\(flatEntry),\(unknownNamespaceEntry)").utf8)
+      .write(to: cacheURL)
+
+    let (catalog, source) = ModelCatalogLoader.effective(cacheURL: cacheURL)
+    XCTAssertEqual(source, .cache)
+    XCTAssertFalse(catalog.contains("bedrock/anthropic/claude"))
+    XCTAssertTrue(ModelCatalogLoader.isZombie(storedID: "bedrock/anthropic/claude", in: catalog))
+    // The servable half of the same cache, and the curated merge, both survive.
+    XCTAssertTrue(catalog.contains("gpt-5-mini"))
+    XCTAssertTrue(catalog.contains("openrouter/anthropic/claude-sonnet-5"))
+  }
+
   func testAnUnknownOriginDegradesRatherThanDroppingTheEntry() throws {
     // Origin is provenance for a label, not a safety property: an unfamiliar
     // value must not cost the model its place in the picker the way an
