@@ -18,3 +18,11 @@ macos/Nota.xcodeproj/
 .claude/worktrees/
 .claude/handoffs/
 .playwright-mcp/
+
+# Local agent tooling (session-local, not commit-worthy)
+.superpowers/
+WATCHDOG.yml
+
+# Local secrets guard (keys belong in ~/.nota/config, never here)
+.env
+.env.*
