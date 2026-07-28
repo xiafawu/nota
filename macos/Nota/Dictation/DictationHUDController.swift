@@ -38,10 +38,8 @@ final class DictationHUDController {
   }
   /// The draft last handed to the panel, replayed onto a fresh one.
   private var lastDraft: HUDDraft = .empty
-  /// The style last handed to the panel. Tracked so a style change can trigger
-  /// the one reposition it needs: the shapes have very different widths, and a
-  /// panel that only re-centered on its next show would sit visibly off-center
-  /// for the rest of the session.
+  /// The style last handed to the panel, replayed onto a fresh one after a
+  /// recreate (which starts out on `.pill`).
   private var lastStyle: HUDStyle = .pill
 
   /// The state auto-hide dismissed. The underlying controller fields
@@ -133,7 +131,13 @@ final class DictationHUDController {
       volatileTail: controller.roughDraft
     )
     let style = controller.settings.hudStyle
-    let styleChanged = style != lastStyle
+    // Asked of the panel rather than of a second copy of the bookkeeping: it is
+    // the panel's frame that needs repositioning, and a recreated panel starts
+    // on `.pill` whatever the setting has been saying. `panel.update` below
+    // draws the same conclusion and skips the frame animation, so the
+    // reposition that follows reads a settled frame instead of an interpolated
+    // one an animation is about to overwrite.
+    let styleChanged = style != panel.style
     lastStyle = style
     panel.update(state: hudState, draft: lastDraft, style: style)
 

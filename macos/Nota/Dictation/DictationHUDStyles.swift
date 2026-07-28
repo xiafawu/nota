@@ -509,6 +509,32 @@ struct DictationHUDPrompterView: View {
   }
 }
 
+// MARK: - Growth room
+
+extension HUDStyle {
+  /// The tallest this style's card can become, or nil when its height is not
+  /// the panel's to reserve.
+  ///
+  /// `DictationHUDPanel.reposition` holds this much room below the panel so a
+  /// later growth never reaches the bottom of the screen. Without it, a card
+  /// anchored under a window that already sits on the screen's bottom edge
+  /// grows downward, is shoved back up by `DictationHUDPanel.clamped`, and its
+  /// top edge — the one thing "grow DOWN" pins — walks into the window it hangs
+  /// under.
+  ///
+  /// The bar cannot grow at all, and the pill's positioning is the regression
+  /// baseline this change is not allowed to move: both return nil and go on
+  /// being placed by their current height.
+  var reservedCardHeight: CGFloat? {
+    switch self {
+    case .pill, .bar:
+      return nil
+    case .prompter:
+      return HUDPrompterMetrics.cardHeight(lineCount: HUDPrompterMetrics.maxLines)
+    }
+  }
+}
+
 // MARK: - Root
 
 /// One entry point for all three styles, so the panel holds a single hosting

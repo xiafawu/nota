@@ -16,6 +16,12 @@ final class DictationHUDPanel: NSPanel {
 
   private let hostingView: NSHostingView<DictationHUDRootView>
 
+  /// The style currently on screen. Read by `reposition()` (each shape reserves
+  /// a different amount of growth room) and by `update` (a switch between two
+  /// shapes is not growth and must not be animated). The controller reads it to
+  /// decide whether this update needs a reposition at all.
+  private(set) var style: HUDStyle = .pill
+
   init() {
     hostingView = NSHostingView(
       rootView: DictationHUDRootView(style: .pill, state: .hidden, draft: .empty)
@@ -72,6 +78,8 @@ final class DictationHUDPanel: NSPanel {
   /// bounded tail the pill has always been handed, so nothing about the default
   /// path is conditional on this parameter existing.
   func update(state: HUDState, draft: HUDDraft = .empty, style: HUDStyle = .pill) {
+    let styleChanged = style != self.style
+    self.style = style
     hostingView.rootView = DictationHUDRootView(style: style, state: state, draft: draft)
     hostingView.layoutSubtreeIfNeeded()
     let size = hostingView.fittingSize
@@ -89,10 +97,7 @@ final class DictationHUDPanel: NSPanel {
     frame.size = size
     frame = Self.clamped(frame, to: screen ?? NSScreen.main)
 
-    // The bar is a constant size, so the only frame change it can ever produce
-    // is the one-off switch into or out of the style. Animating that would be
-    // animating growth this style promises not to have.
-    if isVisible, style.animatesGrowth {
+    if Self.animatesFrameChange(style: style, styleChanged: styleChanged, isVisible: isVisible) {
       NSAnimationContext.runAnimationGroup { context in
         context.duration = HUDPillMetrics.frameDuration
         context.timingFunction = HUDPillMetrics.frameTiming
@@ -103,13 +108,39 @@ final class DictationHUDPanel: NSPanel {
     }
   }
 
+  /// Whether this frame change may be animated.
+  ///
+  /// Two reasons it may not. The bar is a constant size, so the only frame
+  /// change it can ever produce is the one-off switch into or out of the style,
+  /// and animating that would be animating growth the style promises not to
+  /// have. And a **style switch** is not growth in any style: the caller
+  /// repositions right after it, and an animation still in flight means the
+  /// reposition reads an interpolated frame and is then overwritten by the
+  /// animation's destination — which is exactly the off-center panel the
+  /// reposition exists to prevent.
+  static func animatesFrameChange(
+    style: HUDStyle,
+    styleChanged: Bool,
+    isVisible: Bool
+  ) -> Bool {
+    isVisible && style.animatesGrowth && !styleChanged
+  }
+
   /// Shift (never resize) a window frame so the pill inside it stays 8pt
   /// within the screen's visible area. Growing downward can otherwise walk the
   /// pill off the bottom of the screen.
-  private static func clamped(_ frame: NSRect, to screen: NSScreen?) -> NSRect {
+  ///
+  /// Internal, not private, so the interaction with the growth room
+  /// `HUDPanelLayout.pillOriginY` reserves can be asserted without a screen:
+  /// after a reposition that reserved room, growing a card to its full height
+  /// must leave this function with nothing to correct.
+  static func clamped(_ frame: NSRect, to screen: NSScreen?) -> NSRect {
     guard let screen else { return frame }
+    return clamped(frame, visibleFrame: screen.visibleFrame)
+  }
+
+  static func clamped(_ frame: NSRect, visibleFrame visible: NSRect) -> NSRect {
     let margin = DictationHUDContentView.shadowMargin
-    let visible = screen.visibleFrame
     let pill = frame.insetBy(dx: margin, dy: margin)
     guard pill.width > 0, pill.height > 0,
           pill.width + 16 <= visible.width, pill.height + 16 <= visible.height
@@ -148,27 +179,20 @@ final class DictationHUDPanel: NSPanel {
     else { return }
     let screenFrame = screen.visibleFrame
 
-    let pillCenterX: CGFloat
-    let pillOriginY: CGFloat
-
-    if let anchorFrame {
-      pillCenterX = anchorFrame.midX
-      // Pill top edge 12pt below the anchor window's bottom edge.
-      pillOriginY = anchorFrame.minY - 12 - pillSize.height
-    } else {
-      pillCenterX = screenFrame.midX
-      pillOriginY = screenFrame.minY + 60
-    }
-
     // Clamp the pill 8pt inside the visible screen, then convert back to a
     // window-frame origin by re-adding the shadow margin.
+    let pillCenterX = anchorFrame?.midX ?? screenFrame.midX
     let pillX = max(
       screenFrame.minX + 8,
       min(pillCenterX - pillSize.width / 2, screenFrame.maxX - pillSize.width - 8)
     )
-    let pillY = max(
-      screenFrame.minY + 8,
-      min(pillOriginY, screenFrame.maxY - pillSize.height - 8)
+    let pillY = HUDPanelLayout.pillOriginY(
+      anchorMinY: anchorFrame?.minY,
+      screenFrame: screenFrame,
+      pillHeight: pillSize.height,
+      // The prompter is the one style that grows after it is placed, and it is
+      // placed high enough for all of that growth. See `reservedCardHeight`.
+      reservedHeight: style.reservedCardHeight ?? pillSize.height
     )
 
     setFrameOrigin(NSPoint(x: pillX - margin, y: pillY - margin))
@@ -277,6 +301,46 @@ final class DictationHUDPanel: NSPanel {
       self?.orderOut(nil)
       self?.alphaValue = 1
     })
+  }
+}
+
+// MARK: - Panel layout
+
+/// Where the HUD hangs, as arithmetic — no NSScreen, no window server.
+enum HUDPanelLayout {
+  /// Gap between the anchor window's bottom edge and the pill's top edge.
+  static let anchorGap: CGFloat = 12
+  /// Smallest gap kept between the pill and the edges of the visible screen.
+  static let screenInset: CGFloat = 8
+
+  /// The pill's bottom-edge y for one anchor window, one screen, and a style
+  /// that may still grow to `reservedHeight`.
+  ///
+  /// `reservedHeight` is the whole point. `DictationHUDPanel.update` grows a
+  /// card **downward** with its top edge pinned, because the HUD hangs under
+  /// the focused window and a bottom-anchored resize would push it up into that
+  /// window. But `clamped` then shoves the frame back onto the screen, and when
+  /// the anchor window's own bottom edge is already at the screen's bottom
+  /// there is nowhere for the growth to go: every extra line moves the top edge
+  /// up into the window, one line at a time. Reserving the growth room at
+  /// placement time means the clamp never has anything to correct, so the top
+  /// edge really does hold still.
+  ///
+  /// Styles that cannot grow (or whose placement is the untouched baseline)
+  /// pass their current height and get exactly the old arithmetic.
+  static func pillOriginY(
+    anchorMinY: CGFloat?,
+    screenFrame: NSRect,
+    pillHeight: CGFloat,
+    reservedHeight: CGFloat
+  ) -> CGFloat {
+    let ceilingY = screenFrame.maxY - pillHeight - screenInset
+    let growth = max(0, reservedHeight - pillHeight)
+    // Never above the ceiling: on a screen too short to hold the fully grown
+    // card, staying on screen beats reserving room that does not exist.
+    let floorY = min(screenFrame.minY + screenInset + growth, ceilingY)
+    let desired = anchorMinY.map { $0 - anchorGap - pillHeight } ?? screenFrame.minY + 60
+    return max(floorY, min(desired, ceilingY))
   }
 }
 
