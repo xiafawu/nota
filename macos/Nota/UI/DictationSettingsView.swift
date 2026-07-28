@@ -198,8 +198,12 @@ struct DictationSettingsView: View {
         footerText("Shows a floating panel with microphone level and status while dictating.")
         if settings.showHUD {
           footerText(settings.hudStyle.detail)
-          if settings.hudStyle != .pill, settings.deliveryMode == .immediate {
-            footerText("Live text needs a delivery mode that recognizes as you speak — with Insert on Release, the panel shows status only.")
+          if settings.hudStyle.isAboutLiveText,
+            let caveat = HUDStyle.liveTextCaveat(
+              mode: settings.deliveryMode, engine: settings.engine
+            )
+          {
+            footerText(caveat)
           }
         }
       }

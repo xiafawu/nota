@@ -417,6 +417,35 @@ enum HUDStyle: String, Codable, CaseIterable, Sendable {
   /// animate — and an animated frame change on it could only be a layout
   /// artifact wobbling a window that is supposed to be perfectly still.
   var animatesGrowth: Bool { self != .bar }
+
+  /// Whether this style is chosen *for* the text it shows, and so sits visibly
+  /// empty when the session produces no live draft.
+  ///
+  /// The pill shows a rough draft too, but it is a compact meter first and
+  /// reads as finished without one.
+  var isAboutLiveText: Bool { self != .pill }
+
+  /// Why a live-text style will show no text under this configuration, or nil
+  /// when it will show text.
+  ///
+  /// Asked of `DictationSessionPlan` rather than of the delivery mode alone:
+  /// there are two ways to end up on the batch recognizer, and a settings pane
+  /// that names only one of them leaves an AssemblyAI user staring at a
+  /// permanently blank prompter with no explanation.
+  static func liveTextCaveat(mode: DeliveryMode, engine: EngineChoice) -> String? {
+    guard !DictationSessionPlan.make(mode: mode, engine: engine).wantsLiveDraft
+    else { return nil }
+    if mode == .immediate {
+      return """
+        Live text needs a delivery mode that recognizes as you speak — with \
+        Insert on Release, the panel shows status only.
+        """
+    }
+    return """
+      Live text needs the Apple On-Device engine — \(engine.label) reports whole \
+      turns at the end of a session, so the panel shows status only.
+      """
+  }
 }
 
 /// Swift-only dictation preferences persisted via UserDefaults.
