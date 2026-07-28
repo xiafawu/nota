@@ -1,0 +1,419 @@
+/**
+ * The subprocess summary engine (ADR 0003), exercised end to end against a
+ * **fake** binary: a shell script on a temp PATH that records what it was given
+ * and answers however the test needs.
+ *
+ * The real `claude` and `codex` are never spawned here. They cost subscription
+ * quota, they take minutes, and their answers are not deterministic — none of
+ * which a unit test may depend on. What the real binaries *do* accept was
+ * verified by hand against `claude --version` 2.1.220 and `codex-cli 0.144.0`
+ * on 2026-07-28, and is asserted below as the argument vector this module
+ * builds.
+ */
+
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
+
+import {
+  CLI_TIMEOUT_BASE_MS,
+  CLI_TIMEOUT_MAX_MS,
+  cleanCliOutput,
+  cliArgs,
+  cliEngineFor,
+  cliTimeoutMs,
+  formatWait,
+  isDeniedEnvKey,
+  looksUnauthenticated,
+  probeCliEngine,
+  resolveBinaryPath,
+  runCliPrompt,
+  sanitizedEnv,
+  type CliEngineSpec,
+} from "../../src/pipeline/cli-engine.js";
+import { requireModel } from "../../src/registry.js";
+import { summarizeTranscript } from "../../src/pipeline/summarize.js";
+
+const SONNET: CliEngineSpec = { provider: "claude-code", model: "sonnet" };
+
+const SUMMARY_ANSWER = [
+  "### Title",
+  "Quarterly planning sync",
+  "",
+  "### Summary",
+  "They agreed on the roadmap.",
+  "",
+  "### Key Topics",
+  "- **Roadmap** — next quarter",
+  "",
+  "### Decisions Made",
+  "- Ship in March — the customer asked",
+  "",
+  "### Action Items",
+  "- [ ] Draft the plan — assigned to Ada",
+  "",
+  "### Tags",
+  "planning, roadmap",
+].join("\n");
+
+let binDir: string;
+let stateDir: string;
+let originalPath: string | undefined;
+
+/** Write an executable shell script into the fake PATH directory. */
+function fakeBinary(name: string, body: string): void {
+  const file = path.join(binDir, name);
+  writeFileSync(file, `#!/bin/sh\n${body}\n`, "utf-8");
+  chmodSync(file, 0o755);
+}
+
+/**
+ * A fake that records argv, stdin and its inherited environment, then prints
+ * `SUMMARY_ANSWER`. Every capture path is absolute so the script does not care
+ * that the child runs in a scratch cwd.
+ */
+function fakeSuccessBinary(name: string): void {
+  fakeBinary(
+    name,
+    [
+      `printf '%s\\n' "$@" > "${stateDir}/argv"`,
+      `cat > "${stateDir}/stdin"`,
+      `env > "${stateDir}/env"`,
+      `echo call >> "${stateDir}/calls"`,
+      `cat <<'NOTA_EOF'`,
+      SUMMARY_ANSWER,
+      `NOTA_EOF`,
+    ].join("\n"),
+  );
+}
+
+beforeEach(() => {
+  binDir = mkdtempSync(path.join(tmpdir(), "nota-fake-bin-"));
+  stateDir = mkdtempSync(path.join(tmpdir(), "nota-fake-state-"));
+  originalPath = process.env.PATH;
+  process.env.PATH = `${binDir}${path.delimiter}${originalPath ?? ""}`;
+});
+
+afterEach(() => {
+  process.env.PATH = originalPath;
+  delete process.env.ANTHROPIC_API_KEY;
+  delete process.env.CLAUDECODE;
+  delete process.env.OPENAI_API_KEY;
+  rmSync(binDir, { recursive: true, force: true });
+  rmSync(stateDir, { recursive: true, force: true });
+});
+
+function capture(name: string): string {
+  const file = path.join(stateDir, name);
+  return existsSync(file) ? readFileSync(file, "utf-8") : "";
+}
+
+// ── The invocation ───────────────────────────────────────────────────────────
+
+describe("the argument vector", () => {
+  it("is claude's print mode with tools off, model on the flag", () => {
+    expect(cliArgs(SONNET)).toEqual([
+      "-p",
+      "--model",
+      "sonnet",
+      "--output-format",
+      "text",
+      "--tools",
+      "",
+    ]);
+  });
+
+  it("is codex's exec subcommand reading its prompt from stdin", () => {
+    expect(cliArgs({ provider: "codex", model: "gpt-5.6-sol" })).toEqual([
+      "exec",
+      "-m",
+      "gpt-5.6-sol",
+      "--sandbox",
+      "read-only",
+      "--skip-git-repo-check",
+      "--color",
+      "never",
+      "-",
+    ]);
+  });
+
+  it("carries the wire id the CLI's flag expects, not the canonical id", () => {
+    // `claude --model claude-code/sonnet` is not a model; `sonnet` is.
+    const entry = requireModel("claude-code/sonnet", "summary");
+    expect(entry.id).toBe("claude-code/sonnet");
+    expect(cliEngineFor(entry)).toEqual({ provider: "claude-code", model: "sonnet" });
+  });
+
+  it("is undefined for an http model, so nothing can route one to a subprocess", () => {
+    expect(cliEngineFor(requireModel("gpt-5-mini", "summary"))).toBeUndefined();
+    expect(
+      cliEngineFor(requireModel("openrouter/anthropic/claude-sonnet-5", "summary")),
+    ).toBeUndefined();
+  });
+});
+
+describe("a successful run", () => {
+  it("returns the CLI's stdout as the completion", async () => {
+    fakeSuccessBinary("claude");
+    await expect(runCliPrompt(SONNET, "summarize this")).resolves.toBe(SUMMARY_ANSWER);
+  });
+
+  it("puts the prompt on stdin and never on argv", async () => {
+    fakeSuccessBinary("claude");
+    // Long enough that argv would be a real risk, and full of the characters
+    // that make shell quoting a bug: quotes, backticks, newlines, `$`.
+    const prompt = `don't \`run\` $this\n${"x".repeat(5_000)}`;
+    await runCliPrompt(SONNET, prompt);
+
+    expect(capture("stdin")).toBe(prompt);
+    const argv = capture("argv");
+    // `--tools`'s value is the empty string, which the capture's line-per-arg
+    // form cannot distinguish from the trailing newline — hence the filter and
+    // the missing seventh entry.
+    expect(argv.split("\n").filter(Boolean)).toEqual([
+      "-p",
+      "--model",
+      "sonnet",
+      "--output-format",
+      "text",
+      "--tools",
+    ]);
+    expect(argv).not.toContain("x".repeat(50));
+  });
+
+  it("withholds credentials and agent-session state from the child", async () => {
+    fakeSuccessBinary("claude");
+    process.env.ANTHROPIC_API_KEY = "sk-must-not-leak";
+    process.env.OPENAI_API_KEY = "sk-also-not";
+    process.env.CLAUDECODE = "1";
+
+    await runCliPrompt(SONNET, "hi");
+
+    const env = capture("env");
+    // Leaking a key would bill a metered account for a run whose cost line
+    // says "included w/ subscription".
+    expect(env).not.toContain("sk-must-not-leak");
+    expect(env).not.toContain("sk-also-not");
+    expect(env).not.toMatch(/^CLAUDECODE=/m);
+    // What it still needs survives.
+    expect(env).toMatch(/^PATH=/m);
+  });
+});
+
+// ── Failure contract ─────────────────────────────────────────────────────────
+
+describe("a missing binary", () => {
+  it("fails hard, names the binary, and names the fix", async () => {
+    // Nothing was written into the fake PATH dir, and the temp dir is first.
+    await expect(
+      runCliPrompt({ provider: "claude-code", model: "sonnet" }, "hi", {
+        env: { PATH: binDir },
+      }),
+    ).rejects.toThrow(
+      /claude not found on PATH — install Claude Code or choose an API model/,
+    );
+  });
+
+  it("says plainly that nothing was substituted for it", async () => {
+    await expect(
+      runCliPrompt({ provider: "codex", model: "gpt-5.6-sol" }, "hi", {
+        env: { PATH: binDir },
+      }),
+    ).rejects.toThrow(/No API model was substituted/);
+  });
+});
+
+describe("a non-zero exit", () => {
+  it("surfaces the CLI's own stderr", async () => {
+    fakeBinary("claude", 'cat > /dev/null\necho "boom: model overloaded" >&2\nexit 3');
+    await expect(runCliPrompt(SONNET, "hi")).rejects.toThrow(
+      /exited with code 3.*boom: model overloaded/s,
+    );
+  });
+
+  it("is read as a missing login when the CLI says so", async () => {
+    fakeBinary("claude", 'cat > /dev/null\necho "Not logged in." >&2\nexit 1');
+    await expect(runCliPrompt(SONNET, "hi")).rejects.toThrow(
+      /not authenticated — run `claude` once and sign in/,
+    );
+  });
+
+  it("refuses a clean exit that produced nothing", async () => {
+    // An empty answer parsed into a summary would be written over the user's
+    // notes, so exit 0 is not on its own a success.
+    fakeBinary("claude", "cat > /dev/null\nexit 0");
+    await expect(runCliPrompt(SONNET, "hi")).rejects.toThrow(
+      /exited cleanly but produced no output/,
+    );
+  });
+});
+
+describe("a timeout", () => {
+  it("stops the process and says how long it waited", async () => {
+    fakeBinary("claude", "cat > /dev/null\nsleep 30");
+    await expect(
+      runCliPrompt(SONNET, "hi", { timeoutMs: 1_000 }),
+    ).rejects.toThrow(/did not finish within 1s \(waited 1s\)/);
+  });
+});
+
+describe("the wait budget", () => {
+  it("starts generous and grows with the prompt", () => {
+    expect(cliTimeoutMs(0)).toBe(CLI_TIMEOUT_BASE_MS);
+    expect(cliTimeoutMs(10_000)).toBeGreaterThan(CLI_TIMEOUT_BASE_MS);
+    expect(cliTimeoutMs(400_000)).toBeGreaterThan(cliTimeoutMs(10_000));
+  });
+
+  it("is capped — past the ceiling something is wrong, not slow", () => {
+    expect(cliTimeoutMs(100_000_000)).toBe(CLI_TIMEOUT_MAX_MS);
+  });
+
+  it("renders as minutes and seconds, which is what the error prints", () => {
+    expect(formatWait(180_000)).toBe("3m0s");
+    expect(formatWait(930_000)).toBe("15m30s");
+    expect(formatWait(45_000)).toBe("45s");
+  });
+});
+
+// ── Output handling ──────────────────────────────────────────────────────────
+
+describe("cleanCliOutput", () => {
+  it("keeps a summary's checkboxes intact", () => {
+    // The ANSI pattern without its ESC anchor also matches `[ ]`, which would
+    // silently delete every action item.
+    expect(cleanCliOutput("- [ ] Draft the plan\n- [x] Done")).toBe(
+      "- [ ] Draft the plan\n- [x] Done",
+    );
+  });
+
+  it("strips escape codes a CLI emitted anyway", () => {
+    expect(cleanCliOutput("\u001B[32m### Title\u001B[0m\nSync")).toBe("### Title\nSync");
+  });
+
+  it("unwraps a fence that encloses the whole answer", () => {
+    expect(cleanCliOutput("```markdown\n### Title\nSync\n```")).toBe("### Title\nSync");
+    // A fence *inside* the answer is content and stays.
+    expect(cleanCliOutput("### Title\n```\ncode\n```\ntail")).toBe(
+      "### Title\n```\ncode\n```\ntail",
+    );
+  });
+});
+
+describe("looksUnauthenticated", () => {
+  it("recognizes the ways these CLIs say 'log in'", () => {
+    expect(looksUnauthenticated("Not logged in")).toBe(true);
+    expect(looksUnauthenticated("Please run codex login")).toBe(true);
+    expect(looksUnauthenticated("401 Unauthorized")).toBe(true);
+    expect(looksUnauthenticated("stream error: model overloaded")).toBe(false);
+  });
+});
+
+describe("sanitizedEnv", () => {
+  it("drops session state and credentials, keeps everything else", () => {
+    const out = sanitizedEnv({
+      PATH: "/usr/bin",
+      HOME: "/Users/x",
+      CLAUDECODE: "1",
+      CLAUDE_CODE_ENTRYPOINT: "cli",
+      ANTHROPIC_API_KEY: "sk-x",
+      CODEX_SANDBOX: "1",
+      OPENAI_API_KEY: "sk-y",
+      OPENROUTER_API_KEY: "sk-z",
+    });
+    expect(out).toEqual({ PATH: "/usr/bin", HOME: "/Users/x" });
+  });
+
+  it("keeps the two variables that say where the CLI's own login lives", () => {
+    // Stripping these would leave the child unauthenticated for a reason
+    // nothing on screen explains.
+    expect(isDeniedEnvKey("CLAUDE_CONFIG_DIR")).toBe(false);
+    expect(isDeniedEnvKey("CODEX_HOME")).toBe(false);
+    expect(isDeniedEnvKey("CLAUDE_CODE_SSE_PORT")).toBe(true);
+  });
+});
+
+// ── Sectioned mode ───────────────────────────────────────────────────────────
+
+describe("a transcript too long for one call", () => {
+  it("runs every section and the roll-up through the same engine", async () => {
+    fakeSuccessBinary("claude");
+    // Over the 100k-token chunking threshold, in lines the splitter can cut.
+    const line = `Speaker 1: ${"word ".repeat(40)}`;
+    const transcript = Array.from({ length: 3_000 }, () => line).join("\n");
+
+    const { summary, tokenUsage } = await summarizeTranscript(
+      transcript,
+      "",
+      "sonnet",
+      undefined,
+      undefined,
+      SONNET,
+    );
+
+    const calls = capture("calls").split("\n").filter(Boolean).length;
+    expect(calls).toBeGreaterThan(1);
+    // Sections plus exactly one roll-up, and the reported call count agrees
+    // with how many processes actually ran.
+    expect(tokenUsage.calls).toBe(calls);
+    expect(summary.title).toBe("Quarterly planning sync");
+    // No usage comes back from a subprocess, so the counts are estimates —
+    // present, non-zero, and marked estimated by `makeSummaryUsage`.
+    expect(tokenUsage.tokensIn).toBeGreaterThan(0);
+    expect(tokenUsage.tokensOut).toBeGreaterThan(0);
+  }, 30_000);
+
+  it("sends the same prompt the HTTP path would have sent", async () => {
+    fakeSuccessBinary("claude");
+    const { summary } = await summarizeTranscript(
+      "Speaker 1: we shipped it.",
+      "",
+      "sonnet",
+      undefined,
+      undefined,
+      SONNET,
+    );
+    const stdin = capture("stdin");
+    expect(stdin).toContain("You are an expert meeting summarizer");
+    expect(stdin).toContain("Speaker 1: we shipped it.");
+    expect(stdin).toContain("### Action Items");
+    expect(summary.actionItems).toEqual(["[ ] Draft the plan — assigned to Ada"]);
+  });
+});
+
+// ── Diagnostics ──────────────────────────────────────────────────────────────
+
+describe("probeCliEngine", () => {
+  it("reports the version and the resolved path when the binary answers", async () => {
+    fakeBinary("claude", 'echo "9.9.9 (Fake Claude Code)"');
+    const probe = await probeCliEngine("claude-code");
+    expect(probe.found).toBe(true);
+    expect(probe.version).toBe("9.9.9 (Fake Claude Code)");
+    expect(probe.path).toBe(path.join(binDir, "claude"));
+    expect(probe.detail).toContain("9.9.9");
+  });
+
+  it("reports 'not found' without spawning anything", async () => {
+    const probe = await probeCliEngine("codex", { env: { PATH: binDir } });
+    expect(probe.found).toBe(false);
+    expect(probe.path).toBeUndefined();
+    expect(probe.detail).toMatch(/codex not found on PATH — install Codex CLI/);
+  });
+
+  it("is not a summary call — preflight may not spend minutes per run", async () => {
+    // The probe asks only for `--version`; a fake that answers that and nothing
+    // else is enough for a green check.
+    fakeBinary("claude", 'if [ "$1" = "--version" ]; then echo "1.0.0"; else exit 9; fi');
+    const probe = await probeCliEngine("claude-code");
+    expect(probe.found).toBe(true);
+  });
+});
+
+describe("resolveBinaryPath", () => {
+  it("finds the first executable of that name on PATH", () => {
+    fakeBinary("codex", "echo hi");
+    expect(resolveBinaryPath("codex", { PATH: binDir })).toBe(path.join(binDir, "codex"));
+    expect(resolveBinaryPath("nota-no-such-binary", { PATH: binDir })).toBeUndefined();
+  });
+});

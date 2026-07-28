@@ -498,3 +498,38 @@ describe("usageSummary — a model Nota stores no pricing for", () => {
     expect(err).not.toContain("not in total");
   });
 });
+
+describe("usageSummary — a run billed to a subscription", () => {
+  it("says what paid for it instead of printing $0.00", async () => {
+    // A CLI engine's cost is not unknown and it is not zero: it was paid for,
+    // just not per token and not on this ledger. It reaches the display through
+    // the same `costNote` mechanism OpenRouter uses — only the text differs
+    // (ADR 0003).
+    writeRecord(
+      recordWithUsage("cli-run", [
+        {
+          modelId: "claude-code/sonnet",
+          task: "summary",
+          provider: "assemblyai",
+          calls: 1,
+          tokensIn: 40_000,
+          tokensOut: 900,
+          costUSD: null,
+          // A subprocess reports no usage, so the counts were estimated.
+          estimated: true,
+        },
+      ]),
+    );
+
+    await usageSummary(undefined, dir);
+
+    const rows = stdout.join("");
+    expect(rows).toContain("included w/ subscription");
+    expect(rows).not.toContain("$0.00");
+    // No `~` estimate marker on a row that prints no figure to qualify it.
+    expect(rows).not.toContain("~included");
+    const err = stderr.join("");
+    expect(err).toContain("1 runs not in total (included w/ subscription)");
+    expect(err).not.toContain("runs have unknown cost");
+  });
+});

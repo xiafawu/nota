@@ -336,7 +336,7 @@ export function runCliPrompt(
           ),
         ),
       );
-    });
+    }, timeoutMs);
 
     child.stdout?.setEncoding("utf-8");
     child.stdout?.on("data", (chunk: string) => {
