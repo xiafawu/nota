@@ -638,19 +638,55 @@ execution-kind filter rather than by convention.
   same builders, same instructions.
 - **Nothing is inherited.** stdin is a pipe Nota writes and closes (never
   `inherit`: a CLI that finds a TTY waits for a human who is not there), the cwd
-  is a scratch directory (`claude` auto-discovers `CLAUDE.md` from its cwd, and
-  a summary must depend on the transcript and nothing else), and every
-  `CLAUDE*`/`ANTHROPIC*`/`CODEX*` variable plus every provider API key is
-  withheld. `CLAUDE_CONFIG_DIR` and `CODEX_HOME` are the two exceptions — they
-  say where the CLI's own login lives. Leaking `ANTHROPIC_API_KEY` would bill a
-  metered account for a run whose cost line says "included w/ subscription";
-  the report would be a lie and the invoice would be the first anyone heard.
+  is a scratch directory, and every `CLAUDE*`/`ANTHROPIC*`/`CODEX*` variable
+  plus every provider API key is withheld. `CLAUDE_CONFIG_DIR` and `CODEX_HOME`
+  are the two exceptions — they say where the CLI's own login lives, and
+  `CODEX_HOME` survives only so the login can be *found*; what the child is
+  finally handed is the jail described below. Leaking
+  `ANTHROPIC_API_KEY` would bill a metered account for a run whose cost line
+  says "included w/ subscription"; the report would be a lie and the invoice
+  would be the first anyone heard.
+- **No ambient instructions reach the model, and the cwd is not what does it.**
+  A scratch cwd stops only *project* discovery. Both CLIs load a **user-level**
+  guide from the home directory whatever the cwd — `~/.claude/CLAUDE.md` and
+  `$CODEX_HOME/AGENTS.md`, plus the skills, plugins and hooks their config turns
+  on — so left alone, the owner's personal agent guide is prepended to every
+  meeting summary. Measured from `tmpdir()` on 2026-07-28: the baseline argv
+  quoted this machine's global guide back verbatim on both engines. The two
+  engines need different mechanisms.
+  - **Claude Code: `--safe-mode`.** Its help lists exactly what it turns off
+    (CLAUDE.md, skills, plugins, hooks, MCP, custom commands) and says auth,
+    model selection and tools "work normally". `--bare` disables the same things
+    and was **rejected**: it also makes auth "strictly ANTHROPIC_API_KEY or
+    apiKeyHelper", i.e. the metered account this whole path exists to avoid.
+  - **Codex: a private `CODEX_HOME`.** There is no flag for it.
+    `--ignore-user-config` drops `config.toml` and its plugins and hooks but
+    **not** `$CODEX_HOME/AGENTS.md` — measured, as was `-c
+    project_doc_max_bytes=0`, which does not reach it either. So
+    `prepareCodexHome` builds `~/.nota/codex-home` containing one entry:
+    `auth.json`, symlinked to the real one. The login is the only thing from
+    that directory a summary run is entitled to. The link is **recreated every
+    run**, because a token refresh that writes-and-renames would replace it with
+    a regular file — stranding the refreshed token in Nota's directory and
+    leaving a credential copy behind. The directory is persistent rather than
+    per-call (codex bootstraps a model cache into any home it is given, and a
+    sectioned summary spawns once per section). Failing to build it is **fatal**:
+    running under the owner's whole agent configuration is the bug, so it may not
+    be the fallback for it. `--ignore-user-config` stays as the cheap half of the
+    same job. `--ignore-rules` was rejected — execpolicy `.rules` only restrict
+    what a shell command may do, so ignoring them loosens a rail the owner set
+    rather than removing an instruction.
 - **Failure is hard and no HTTP model is substituted.** Binary missing from
-  PATH, missing login (read from the CLI's own error output), non-zero exit,
-  timeout, or a clean exit with no output — each throws, naming the binary, the
-  fix, and for a timeout how long it waited. Falling back would silently bill a
-  provider the user did not configure. A blank answer is a failure too: it would
-  be parsed into a summary and written over the user's notes.
+  PATH, missing login, non-zero exit, timeout, or a clean exit with no answer —
+  each throws, naming the binary, the fix, and for a timeout how long it waited.
+  Falling back would silently bill a provider the user did not configure. A
+  blank answer is a failure too: it would be parsed into a summary and written
+  over the user's notes. So is a *non*-blank one that is really a login
+  complaint — both CLIs report an expired login on the happy exit path, printing
+  one line where the summary should be, so the auth sniff runs on exit-0 output
+  and not only on empty output. It is bounded to short output
+  (`CLI_AUTH_SNIFF_MAX_CHARS`) because the sniff matches "401" and
+  "unauthorized" and a meeting is allowed to have been about an HTTP status.
 - **The timeout is generous and scaled.** Three minutes plus 3s per 1000 prompt
   characters, capped at 30 minutes. These engines are minutes slow by design.
 - **Preflight probes, it does not call.** For a `cli` summary model the check is
@@ -668,12 +704,15 @@ execution-kind filter rather than by convention.
 - `nota config` gains a CLI-engine block: binary, resolved path and version, or
   "not found on PATH". `nota models list` marks their source `cli`.
 - Flags and ids were verified against the installed binaries on 2026-07-28
-  (`claude` 2.1.220, `codex-cli` 0.144.0): `claude -p --model <alias>
-  --output-format text --tools ""`, and `codex exec -m <slug> --sandbox
-  read-only --skip-git-repo-check --color never -`. Codex slugs come from the
-  CLI's own listed model set; Claude Code uses the tier **aliases**, which track
-  the vendor's rotation where a dated name would rot. Re-verify before editing
-  either list.
+  (`claude` 2.1.220, `codex-cli` 0.144.0): `claude -p --safe-mode --model
+  <alias> --output-format text --tools ""`, and `codex exec -m <slug> --sandbox
+  read-only --skip-git-repo-check --ignore-user-config --color never -` under a
+  jailed `CODEX_HOME`. Codex slugs come from the CLI's own listed model set;
+  Claude Code uses the tier **aliases**, which track the vendor's rotation where
+  a dated name would rot. Re-verify before editing either list — including the
+  isolation, which is a claim about two CLIs' behavior and not about ours:
+  ask a cheap model to quote its own instructions and check that nothing from
+  `~/.claude/CLAUDE.md` or `$CODEX_HOME/AGENTS.md` comes back.
 
 ## Model Catalog (self-updating)
 
@@ -690,6 +729,7 @@ The cache feeds cost computation for usage tracking.
 - Summary model ids are auto-admitted weekly: mainline chat models (gpt-5.x, gemini flash/pro, deepseek v4+) matching allowlist predicates. Run `nota models list` for the current set.
 - Summary default is key-aware: `deepseek-v4-flash` > `gpt-5.4-mini` > `gemini-3.6-flash` based on which API key is set. A hint is printed when DeepSeek is skipped despite being the cheapest option. CLI engines never join that chain (ADR 0003).
 - A summary model that is not an endpoint is a first-class registry entry, not a special case: `claude-code/*` and `codex/*` carry `execution: "cli"`, and every decision about them is made on that kind — `requiresApiKey` (so a run is not refused for a key it was never going to use), `cliEngineFor` (which returns a spec or `undefined`, and is the argument the summary path branches on), `httpModelsForTask` (so no subprocess can reach dictation polish). The id is never pattern-matched. `makeSummaryCall` puts the HTTP client and the subprocess behind one shape, which is what lets the sectioned >100k-token flow route every section and the roll-up through a CLI engine without a second copy of the loop. See CLI Engines.
+- A CLI engine's isolation from the owner's own agent configuration is a claim about *those* CLIs, so it is measured rather than assumed. A scratch cwd was assumed sufficient and was not: `claude -p` and `codex exec` both read a user-level guide out of the home directory whatever the cwd, and a meeting summary was being written under this machine's `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md`. The mechanism differs per engine because the CLIs differ — `--safe-mode` for one, a private `CODEX_HOME` for the other, since codex has no flag that reaches its AGENTS.md (`--ignore-user-config` and `project_doc_max_bytes=0` were both measured and both insufficient). Whichever mechanism is chosen must leave **auth** alone: `claude --bare` does the isolation and forces auth onto `ANTHROPIC_API_KEY`, which would move a run billed "included w/ subscription" onto a metered account. See CLI Engines.
 - Pricing for summary models comes from the catalog via `computeSummaryCost` (tier-aware, ×1e-6 unit assertion). Pricing for transcription models remains a static table in `src/pricing.ts`.
 - AssemblyAI as default provider: transcription + diarization in one API call ($0.15/hr)
 - Whisper retained as fallback via `--provider whisper`

@@ -12,9 +12,18 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import {
+  chmodSync,
+  existsSync,
+  lstatSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 import {
@@ -27,7 +36,10 @@ import {
   formatWait,
   isDeniedEnvKey,
   looksUnauthenticated,
+  notaCodexHome,
+  prepareCodexHome,
   probeCliEngine,
+  realCodexHome,
   resolveBinaryPath,
   runCliPrompt,
   sanitizedEnv,
@@ -116,6 +128,7 @@ describe("the argument vector", () => {
   it("is claude's print mode with tools off, model on the flag", () => {
     expect(cliArgs(SONNET)).toEqual([
       "-p",
+      "--safe-mode",
       "--model",
       "sonnet",
       "--output-format",
@@ -133,10 +146,30 @@ describe("the argument vector", () => {
       "--sandbox",
       "read-only",
       "--skip-git-repo-check",
+      "--ignore-user-config",
       "--color",
       "never",
       "-",
     ]);
+  });
+
+  it("turns off each CLI's user-level instruction discovery", () => {
+    // The scratch cwd only stops *project* discovery. `~/.claude/CLAUDE.md` and
+    // `$CODEX_HOME/AGENTS.md` load from the home directory whatever the cwd, and
+    // without these flags the owner's personal agent guide is prepended to every
+    // meeting summary (measured against both installed binaries, 2026-07-28).
+    expect(cliArgs(SONNET)).toContain("--safe-mode");
+    // Not `--bare`: it disables the same discovery but forces auth onto
+    // ANTHROPIC_API_KEY, i.e. the metered account this path exists to avoid.
+    expect(cliArgs(SONNET)).not.toContain("--bare");
+    expect(cliArgs({ provider: "codex", model: "gpt-5.4-mini" })).toContain(
+      "--ignore-user-config",
+    );
+    // `--ignore-rules` would loosen an execpolicy rail the owner set, not
+    // remove an instruction, so it is deliberately absent.
+    expect(cliArgs({ provider: "codex", model: "gpt-5.4-mini" })).not.toContain(
+      "--ignore-rules",
+    );
   });
 
   it("carries the wire id the CLI's flag expects, not the canonical id", () => {
@@ -174,6 +207,7 @@ describe("a successful run", () => {
     // the missing seventh entry.
     expect(argv.split("\n").filter(Boolean)).toEqual([
       "-p",
+      "--safe-mode",
       "--model",
       "sonnet",
       "--output-format",
@@ -220,6 +254,7 @@ describe("a missing binary", () => {
     await expect(
       runCliPrompt({ provider: "codex", model: "gpt-5.6-sol" }, "hi", {
         env: { PATH: binDir },
+        codexHomeRoot: path.join(stateDir, "codex-home"),
       }),
     ).rejects.toThrow(/No API model was substituted/);
   });
@@ -307,6 +342,90 @@ describe("looksUnauthenticated", () => {
     expect(looksUnauthenticated("Please run codex login")).toBe(true);
     expect(looksUnauthenticated("401 Unauthorized")).toBe(true);
     expect(looksUnauthenticated("stream error: model overloaded")).toBe(false);
+  });
+});
+
+// ── The Codex home jail ──────────────────────────────────────────────────────
+
+describe("prepareCodexHome", () => {
+  let realHome: string;
+  let jail: string;
+
+  beforeEach(() => {
+    realHome = path.join(stateDir, "real-codex");
+    jail = path.join(stateDir, "codex-home");
+    mkdirSync(realHome, { recursive: true });
+    writeFileSync(path.join(realHome, "auth.json"), '{"token":"real"}', "utf-8");
+    // The things a summary run may not see.
+    writeFileSync(path.join(realHome, "AGENTS.md"), "# Your personal guide", "utf-8");
+    writeFileSync(path.join(realHome, "config.toml"), "model = 'nope'", "utf-8");
+  });
+
+  it("hands the child a home holding the login and nothing else", () => {
+    // `codex` has no flag that excludes $CODEX_HOME/AGENTS.md — not
+    // --ignore-user-config, not -c project_doc_max_bytes=0 (both measured
+    // 2026-07-28). A different home is the only mechanism there is.
+    const out = prepareCodexHome({ env: { CODEX_HOME: realHome }, root: jail });
+    expect(out).toBe(jail);
+    expect(readdirSync(jail)).toEqual(["auth.json"]);
+    expect(readFileSync(path.join(jail, "auth.json"), "utf-8")).toBe('{"token":"real"}');
+  });
+
+  it("links the login rather than copying it, so a refresh is not stranded", () => {
+    prepareCodexHome({ env: { CODEX_HOME: realHome }, root: jail });
+    expect(lstatSync(path.join(jail, "auth.json")).isSymbolicLink()).toBe(true);
+  });
+
+  it("restores the link when a token refresh replaced it with a real file", () => {
+    prepareCodexHome({ env: { CODEX_HOME: realHome }, root: jail });
+    // What a write-and-rename token refresh leaves behind: a regular file
+    // holding a credential, and a real auth.json that no longer gets updated.
+    rmSync(path.join(jail, "auth.json"));
+    writeFileSync(path.join(jail, "auth.json"), '{"token":"stranded"}', "utf-8");
+
+    prepareCodexHome({ env: { CODEX_HOME: realHome }, root: jail });
+    expect(lstatSync(path.join(jail, "auth.json")).isSymbolicLink()).toBe(true);
+    expect(readFileSync(path.join(jail, "auth.json"), "utf-8")).toBe('{"token":"real"}');
+  });
+
+  it("leaves the jail loginless when there is no login to borrow", () => {
+    // Better an honest "not authenticated — run `codex login`" than silently
+    // reusing whatever an earlier run left here.
+    prepareCodexHome({ env: { CODEX_HOME: realHome }, root: jail });
+    rmSync(path.join(realHome, "auth.json"));
+    prepareCodexHome({ env: { CODEX_HOME: realHome }, root: jail });
+    expect(readdirSync(jail)).toEqual([]);
+  });
+
+  it("defaults to ~/.codex when the owner never moved it", () => {
+    expect(realCodexHome({})).toBe(path.join(homedir(), ".codex"));
+    expect(realCodexHome({ CODEX_HOME: "/elsewhere/codex" })).toBe("/elsewhere/codex");
+    expect(notaCodexHome()).toBe(path.join(homedir(), ".nota", "codex-home"));
+  });
+
+  it("does nothing when the owner already points CODEX_HOME at the jail", () => {
+    // Nothing to link and nothing to exclude — and above all nothing to delete.
+    const out = prepareCodexHome({ env: { CODEX_HOME: realHome }, root: realHome });
+    expect(out).toBe(realHome);
+    expect(existsSync(path.join(realHome, "AGENTS.md"))).toBe(true);
+    expect(readFileSync(path.join(realHome, "auth.json"), "utf-8")).toBe('{"token":"real"}');
+  });
+});
+
+describe("the child's CODEX_HOME", () => {
+  it("is the jail, not the owner's own", async () => {
+    fakeSuccessBinary("codex");
+    const jail = path.join(stateDir, "codex-home");
+    await runCliPrompt({ provider: "codex", model: "gpt-5.4-mini" }, "hi", {
+      codexHomeRoot: jail,
+    });
+    expect(capture("env")).toMatch(new RegExp(`^CODEX_HOME=${jail}$`, "m"));
+  });
+
+  it("is left alone for claude, which needs no jail", async () => {
+    fakeSuccessBinary("claude");
+    await runCliPrompt(SONNET, "hi");
+    expect(capture("env")).not.toMatch(/^CODEX_HOME=/m);
   });
 });
 

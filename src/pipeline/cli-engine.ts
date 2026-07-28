@@ -21,10 +21,14 @@
  *    a per-token API account for a run whose cost line says
  *    "included w/ subscription" — the report would be a lie, and the user would
  *    find out from an invoice.
- * 3. **The working directory is a scratch directory, not the user's project.**
- *    `claude` auto-discovers `CLAUDE.md` from its cwd; run inside a repo it
- *    would prepend that repo's guide to a meeting summary prompt. Summaries must
- *    depend on the transcript and nothing else.
+ * 3. **No ambient instructions reach the model.** A scratch cwd is necessary and
+ *    is *not* sufficient: both CLIs auto-discover a **user-level** guide
+ *    (`~/.claude/CLAUDE.md`, `$CODEX_HOME/AGENTS.md`) plus skills, plugins and
+ *    hooks from the home directory, whatever the cwd. A summary must depend on
+ *    the transcript and nothing else; without the exclusions the owner's
+ *    personal agent guide is prepended to every meeting summary. Claude Code has
+ *    a flag for it ({@link cliArgs}); codex does not, and gets a private
+ *    `CODEX_HOME` holding only its login ({@link prepareCodexHome}).
  * 4. **Every failure is hard and names its fix.** Missing binary, missing login,
  *    non-zero exit, timeout, empty output — all throw {@link CliEngineError}.
  *    There is deliberately no fallback to an HTTP model: falling back would
@@ -32,8 +36,15 @@
  */
 
 import { spawn, type ChildProcess } from "node:child_process";
-import { accessSync, constants } from "node:fs";
-import { tmpdir } from "node:os";
+import {
+  accessSync,
+  constants,
+  existsSync,
+  mkdirSync,
+  rmSync,
+  symlinkSync,
+} from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import path from "node:path";
 
 import {
@@ -92,17 +103,45 @@ export function engineLabel(spec: CliEngineSpec): string {
  * - `claude --tools ""` disables every built-in tool. A summarizer needs none,
  *   and a model that cannot read or write files cannot touch the user's disk,
  *   stall on a permission prompt, or interleave tool chatter into stdout.
+ * - `claude --safe-mode` is what actually keeps the owner's agent guide out of
+ *   the prompt. The cwd rule (module rule 3) only stops *project* discovery;
+ *   `~/.claude/CLAUDE.md`, skills, plugins, hooks and MCP servers load from the
+ *   home directory whatever the cwd — measured 2026-07-28 from `tmpdir()`, where
+ *   the model quoted this machine's global guide back verbatim, and did not
+ *   under `--safe-mode`. `--bare` disables the same things and was **rejected**:
+ *   its own help says auth becomes "strictly ANTHROPIC_API_KEY or apiKeyHelper",
+ *   which is the metered account module rule 2 exists to keep out of a run
+ *   billed "included w/ subscription". `--safe-mode` leaves auth alone.
  * - `codex exec` is its non-interactive subcommand; the trailing `-` says the
  *   prompt is on stdin. Its session preamble goes to **stderr** and the final
  *   message alone to stdout, which is why stdout needs no de-noising.
  * - `codex --sandbox read-only` is the same refusal as `--tools ""`: the agent
  *   may not write. `--skip-git-repo-check` is required because we run in a
  *   scratch cwd, and `--color never` keeps escape codes out of the answer.
+ * - `codex --ignore-user-config` drops `config.toml` and the plugins and hooks
+ *   it turns on, and its own help promises "auth still uses `CODEX_HOME`". It is
+ *   **not** sufficient on its own: measured on 2026-07-28 by asking the model to
+ *   list the headings in its context, `$CODEX_HOME/AGENTS.md` was still loaded
+ *   with this flag set, and with `-c project_doc_max_bytes=0` on top of it. That
+ *   file is excluded by {@link prepareCodexHome} instead; the flag stays as the
+ *   cheap half of the same job.
+ *   `--ignore-rules` was **not** added — execpolicy `.rules` files only ever
+ *   restrict what a shell command may do, so ignoring them loosens a rail the
+ *   owner set rather than removing an instruction.
  */
 export function cliArgs(spec: CliEngineSpec): string[] {
   switch (spec.provider) {
     case "claude-code":
-      return ["-p", "--model", spec.model, "--output-format", "text", "--tools", ""];
+      return [
+        "-p",
+        "--safe-mode",
+        "--model",
+        spec.model,
+        "--output-format",
+        "text",
+        "--tools",
+        "",
+      ];
     case "codex":
       return [
         "exec",
@@ -111,6 +150,7 @@ export function cliArgs(spec: CliEngineSpec): string[] {
         "--sandbox",
         "read-only",
         "--skip-git-repo-check",
+        "--ignore-user-config",
         "--color",
         "never",
         "-",
@@ -129,7 +169,9 @@ const DENIED_ENV_PREFIXES = ["CLAUDE", "ANTHROPIC", "CODEX"];
 /**
  * The two exceptions. Both name *where the CLI's own configuration and
  * credentials live* — a user who moved them deliberately would otherwise find
- * the child unauthenticated for reasons nothing on screen explains.
+ * the child unauthenticated for reasons nothing on screen explains. `CODEX_HOME`
+ * survives so {@link realCodexHome} can find the login; what the child is
+ * finally handed is {@link prepareCodexHome}'s jail, not this value.
  */
 const ALLOWED_ENV_KEYS: ReadonlySet<string> = new Set([
   "CLAUDE_CONFIG_DIR",
@@ -168,6 +210,89 @@ export function sanitizedEnv(
     out[key] = value;
   }
   return out;
+}
+
+// ── Codex home jail ──────────────────────────────────────────────────────────
+
+/**
+ * Where Codex's real configuration and login live — `$CODEX_HOME`, or `~/.codex`
+ * when the owner never moved it.
+ */
+export function realCodexHome(env: NodeJS.ProcessEnv = process.env): string {
+  const configured = env.CODEX_HOME?.trim();
+  return configured ? path.resolve(configured) : path.join(homedir(), ".codex");
+}
+
+/** Nota's own `CODEX_HOME`: the login, and deliberately nothing else. */
+export function notaCodexHome(): string {
+  return path.join(homedir(), ".nota", "codex-home");
+}
+
+/**
+ * Build the `CODEX_HOME` a summary run is given and return its path.
+ *
+ * `codex` has no flag that excludes `$CODEX_HOME/AGENTS.md`. `--ignore-user-config`
+ * does not (measured 2026-07-28 — the OMC guide on this machine survived it, and
+ * survived `-c project_doc_max_bytes=0` as well), so the only way to keep the
+ * owner's personal agent guide out of a meeting summary is to hand the child a
+ * different home. This one contains a single entry: `auth.json`, symlinked to
+ * the real one, because the login is the only thing from that directory a
+ * summary run is entitled to.
+ *
+ * The link is **recreated on every run**. A token refresh that writes a temp
+ * file and renames it over `auth.json` replaces the symlink with a regular file,
+ * which would strand the refreshed token here and leave this directory holding a
+ * copy of a credential; recreating means the real file is authoritative again by
+ * the next run.
+ *
+ * The directory is persistent (`~/.nota/codex-home`) rather than per-call: codex
+ * bootstraps a model cache and some state into whatever home it is given, and
+ * paying for that on every section of a sectioned summary would be absurd.
+ */
+export function prepareCodexHome(
+  options: { env?: NodeJS.ProcessEnv; root?: string } = {},
+): string {
+  const env = options.env ?? process.env;
+  const jail = options.root ?? notaCodexHome();
+  const real = realCodexHome(env);
+  mkdirSync(jail, { recursive: true });
+
+  // The owner pointed CODEX_HOME at the jail itself: there is nothing to link
+  // and nothing to exclude.
+  if (path.resolve(jail) === real) return jail;
+
+  const link = path.join(jail, "auth.json");
+  rmSync(link, { force: true });
+  const target = path.join(real, "auth.json");
+  // No login to borrow. Leave the jail without one so the child fails with the
+  // "not authenticated" error that names `codex login`, rather than silently
+  // reusing whatever a previous run left behind.
+  if (existsSync(target)) symlinkSync(target, link);
+  return jail;
+}
+
+/**
+ * The environment for one child: {@link sanitizedEnv}, plus the jailed
+ * `CODEX_HOME` for codex. A failure to build the jail is fatal — running with
+ * the owner's whole agent configuration loaded is the bug this exists to
+ * prevent, so it may not be the fallback for it.
+ */
+function childEnv(
+  spec: CliEngineSpec,
+  base: NodeJS.ProcessEnv,
+  root?: string,
+): NodeJS.ProcessEnv {
+  if (spec.provider !== "codex") return base;
+  try {
+    return { ...base, CODEX_HOME: prepareCodexHome({ env: base, root }) };
+  } catch (err) {
+    throw new CliEngineError(
+      `Summary engine ${engineLabel(spec)}: could not prepare a private CODEX_HOME — ` +
+        `${err instanceof Error ? err.message : String(err)}. Without it the summary ` +
+        `would be written under your own Codex instructions. No API model was substituted.`,
+      spec.provider,
+    );
+  }
 }
 
 // ── Timeout ──────────────────────────────────────────────────────────────────
@@ -255,6 +380,8 @@ export interface RunCliOptions {
   /** Overrides the scratch working directory. */
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  /** Overrides {@link notaCodexHome} — the jailed `CODEX_HOME`. Tests only. */
+  codexHomeRoot?: string;
 }
 
 function notFoundError(spec: CliEngineSpec): CliEngineError {
@@ -284,13 +411,23 @@ export function runCliPrompt(
   const spawnFn = options.spawnFn ?? spawn;
 
   return new Promise<string>((resolve, reject) => {
+    let env: NodeJS.ProcessEnv;
+    try {
+      env = childEnv(spec, options.env ?? sanitizedEnv(), options.codexHomeRoot);
+    } catch (err) {
+      reject(err);
+      return;
+    }
+
     let child: ChildProcess;
     try {
       child = spawnFn(binary, cliArgs(spec), {
-        // A scratch cwd: no CLAUDE.md / AGENTS.md discovery from the user's
-        // project, and nothing for a misbehaving agent to be near.
+        // A scratch cwd: no project-level CLAUDE.md / AGENTS.md discovery, and
+        // nothing for a misbehaving agent to be near. The *user*-level guides
+        // are excluded by `--safe-mode` and by the jailed CODEX_HOME above —
+        // cwd alone never reached them.
         cwd: options.cwd ?? tmpdir(),
-        env: options.env ?? sanitizedEnv(),
+        env,
         // Never `inherit`: the child must not get Nota's terminal, and a CLI
         // that finds a TTY on stdin waits for a human who is not there.
         stdio: ["pipe", "pipe", "pipe"],
