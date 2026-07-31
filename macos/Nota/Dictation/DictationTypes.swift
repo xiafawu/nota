@@ -250,6 +250,55 @@ struct FocusedTarget: Equatable {
     }
     return live.hasSecureRole
   }
+
+  /// Put the captured target back in front and wait until WindowServer reports
+  /// that process as frontmost. A pid-targeted CGEvent or Cmd-V can be posted
+  /// successfully while the target's window is still not key; Electron and
+  /// webview hosts commonly drop that input without reporting an error.
+  ///
+  /// This only proves that the target application is frontmost. macOS does not
+  /// expose a general, reliable postcondition for text acceptance, so callers
+  /// must treat the eventual injection as submitted-but-unverified.
+  @MainActor
+  func restoreAndWait(
+    timeoutNs: UInt64 = 500_000_000,
+    pollIntervalNs: UInt64 = 20_000_000
+  ) async -> FocusRestorationOutcome {
+    guard let processID,
+          processID != ProcessInfo.processInfo.processIdentifier,
+          let app = NSRunningApplication(processIdentifier: processID),
+          !app.isTerminated
+    else {
+      return .unavailable
+    }
+
+    if Self.frontmostProcessID() == processID {
+      return .alreadyActive
+    }
+
+    guard app.activate() else {
+      return .unavailable
+    }
+
+    let intervalNs = max(pollIntervalNs, 1)
+    var waitedNs: UInt64 = 0
+    while waitedNs < timeoutNs {
+      if Self.frontmostProcessID() == processID {
+        return .activated
+      }
+      let remaining = timeoutNs - waitedNs
+      let slice = min(intervalNs, remaining)
+      try? await Task.sleep(nanoseconds: slice)
+      waitedNs += slice
+    }
+
+    return Self.frontmostProcessID() == processID ? .activated : .timedOut
+  }
+
+  @MainActor
+  private static func frontmostProcessID() -> pid_t? {
+    NSWorkspace.shared.frontmostApplication?.processIdentifier
+  }
 }
 extension AXUIElement {
   /// Checks whether this AX element is a secure / password text field.
@@ -291,6 +340,16 @@ enum InjectionStrategy: Equatable, CustomStringConvertible {
   }
 }
 
+/// What the injector can say about one delivery attempt. A paste can be
+/// posted successfully but the target app does not provide an acknowledgement,
+/// so it remains distinguishable from AX/CGEvent's API-level success.
+enum InjectionResult: Equatable {
+  case delivered(strategy: InjectionStrategy)
+  case attempted(strategy: InjectionStrategy)
+  case refused(reason: String)
+  case failed(strategy: InjectionStrategy?, reason: String)
+}
+
 /// Whether an injection replaces the focused field's contents or extends them.
 enum InjectionMode: Equatable, Sendable {
   /// One insertion per session: AX writes the whole value, CGEvent and paste
@@ -309,6 +368,50 @@ struct PerAppOverride: Equatable {
   /// Extra delay in milliseconds before restoring the pasteboard after Cmd-V.
   /// `nil` means use the default (80 ms).
   let pasteRestoreDelayMs: UInt?
+}
+
+/// The result of attempting to submit text to a target.
+///
+/// `submitted` deliberately does not say that the target accepted the text:
+/// CGEvent and Cmd-V have no text-acceptance acknowledgement on macOS. It
+/// means that Nota reached the requested delivery primitive after restoring
+/// the captured target where applicable.
+enum InjectionOutcome: Equatable {
+  case skippedEmpty
+  case refusedSecureField
+  case submitted(strategy: InjectionStrategy)
+  case failed(reason: InjectionFailure)
+}
+
+enum InjectionFailure: Equatable, CustomStringConvertible {
+  case noUsableTarget
+  case noDeliveryPath
+
+  var description: String {
+    switch self {
+    case .noUsableTarget:
+      return "Nota could not restore the captured target app. No text was inserted. Try dictation again with the destination field focused."
+    case .noDeliveryPath:
+      return "Nota could not submit the dictated text to the captured target. No text was inserted. Try dictation again with the destination field focused."
+    }
+  }
+}
+
+/// Result of restoring the application that owned the captured input target.
+enum FocusRestorationOutcome: Equatable {
+  case alreadyActive
+  case activated
+  case unavailable
+  case timedOut
+
+  var isReady: Bool {
+    switch self {
+    case .alreadyActive, .activated:
+      return true
+    case .unavailable, .timedOut:
+      return false
+    }
+  }
 }
 
 // MARK: - P4 Settings types
@@ -458,6 +561,14 @@ struct DictationSettings: Codable, Equatable, Sendable {
   var polishModelID: String? = nil
   /// Show floating HUD pill during dictation sessions.
   var showHUD: Bool = true
+  /// Allow a bounded accessibility sample from the focused app to improve the
+  /// optional cleanup-model request. Disabled by default; never affects audio
+  /// recognition.
+  var screenContextEnabled: Bool = false
+  /// If focused accessibility text is unavailable or too short, allow one
+  /// frontmost-window screenshot/OCR attempt at dictation completion.
+  /// Disabled by default and meaningful only when `screenContextEnabled` is on.
+  var screenCaptureFallbackEnabled: Bool = false
   /// Which shape the HUD takes. `.pill` is the pre-existing behavior.
   var hudStyle: HUDStyle = .pill
   /// How the finished text reaches the target app.
@@ -471,6 +582,7 @@ struct DictationSettings: Codable, Equatable, Sendable {
 
   private enum CodingKeys: String, CodingKey {
     case engine, trigger, activation, polishEnabled, polishModelID, showHUD
+    case screenContextEnabled, screenCaptureFallbackEnabled
     case deliveryMode
     case hudStyle
   }
@@ -504,6 +616,11 @@ struct DictationSettings: Codable, Equatable, Sendable {
       ?? defaults.polishEnabled
     polishModelID = try? container.decode(String.self, forKey: .polishModelID)
     showHUD = (try? container.decode(Bool.self, forKey: .showHUD)) ?? defaults.showHUD
+    screenContextEnabled = (try? container.decode(Bool.self, forKey: .screenContextEnabled))
+      ?? defaults.screenContextEnabled
+    screenCaptureFallbackEnabled =
+      (try? container.decode(Bool.self, forKey: .screenCaptureFallbackEnabled))
+      ?? defaults.screenCaptureFallbackEnabled
     deliveryMode = Self.decodeDeliveryMode(from: decoder, container: container)
       ?? defaults.deliveryMode
     // New key, no migration: a payload written before the styles existed simply
@@ -530,6 +647,8 @@ struct DictationSettings: Codable, Equatable, Sendable {
     try container.encode(polishEnabled, forKey: .polishEnabled)
     try container.encodeIfPresent(polishModelID, forKey: .polishModelID)
     try container.encode(showHUD, forKey: .showHUD)
+    try container.encode(screenContextEnabled, forKey: .screenContextEnabled)
+    try container.encode(screenCaptureFallbackEnabled, forKey: .screenCaptureFallbackEnabled)
     try container.encode(deliveryMode, forKey: .deliveryMode)
     try container.encode(hudStyle, forKey: .hudStyle)
 

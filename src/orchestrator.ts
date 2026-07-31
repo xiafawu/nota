@@ -34,14 +34,21 @@ import {
   loadProfiles,
   saveProfiles,
   matchProfiles,
+  rankProfileCandidates,
   promptForSpeakerNames,
   applySpeakerNames,
 } from "./pipeline/speakers.js";
 import { applyVerdicts, verifySpeakers } from "./pipeline/verify-speakers.js";
 import {
+  createOpenAISpeakerRecommendationProvider,
+  getContextualSpeakerRecommendations,
+  type SpeakerResolutionRecommendation,
+} from "./pipeline/contextual-speakers.js";
+import {
   computeEmbedding,
   computeEmbeddings,
   isIdentityAvailable,
+  TENTATIVE_THRESHOLD,
 } from "./pipeline/embed.js";
 import { decodePcm, slicePcm, concatToSeconds, SAMPLE_RATE } from "./utils/pcm.js";
 import type { TranscriptSegment } from "./pipeline/transcribe.js";
@@ -481,6 +488,7 @@ export async function identifySpeakers(
     const labelEmbeddings = await computeEmbeddings(pcmByLabel);
     const store = await loadProfiles();
     const matches = matchProfiles(labelEmbeddings, store);
+    const acousticCandidates = rankProfileCandidates(labelEmbeddings, store);
     spinner?.succeed("Speaker identification complete");
 
     const nameMap: Record<string, string> = {};
@@ -543,22 +551,98 @@ export async function identifySpeakers(
     }
 
     const unmatched = labels.filter((l) => !nameMap[l] && !tentative[l]);
-    const needsPrompt =
-      unmatched.length > 0 || Object.keys(tentative).length > 0;
+    const unresolvedLabels = labels.filter((l) => !nameMap[l]);
+    const fallbackRecommendations: SpeakerResolutionRecommendation[] = unresolvedLabels.map(
+      (label) => {
+        const candidates = (acousticCandidates[label] ?? [])
+          .filter((candidate) => candidate.confidence >= TENTATIVE_THRESHOLD)
+          .map((candidate) => ({
+            ...candidate,
+            evidence: `Acoustic similarity ${Math.round(candidate.confidence * 100)}%`,
+          }));
+        return {
+          label,
+          category: tentative[label] || candidates.length > 0
+            ? "ambiguous-existing"
+            : "new-unrecognized",
+          candidates,
+        };
+      },
+    );
+
+    // Context is advisory and only receives unresolved labels. Confident
+    // acoustic assignments stay on the fast path and are never renamed by
+    // this recommendation pass. The provider reuses the configured summary
+    // endpoint/key; CLI-only summary engines safely fall back to acoustics.
+    let recommendations = fallbackRecommendations;
+    if (
+      unresolvedLabels.length > 0 &&
+      config.summaryApiKey &&
+      !config.summaryCliEngine
+    ) {
+      const provider = createOpenAISpeakerRecommendationProvider(
+        config.summaryApiKey,
+        config.summaryWireModel,
+        config.summaryBaseURL,
+      );
+      const contextual = await getContextualSpeakerRecommendations(
+        {
+          transcript: segments,
+          labels: fallbackRecommendations.map(({ label, category, candidates }) => ({
+            label,
+            category,
+            acousticCandidates: candidates,
+          })),
+          profiles: Object.entries(store.speakers).map(([name, profile]) => ({
+            name,
+            description: profile.description,
+          })),
+        },
+        provider,
+      );
+      const contextualByLabel = new Map(
+        contextual.map((recommendation) => [recommendation.label, recommendation]),
+      );
+      recommendations = fallbackRecommendations.map((fallback) => {
+        const recommendation = contextualByLabel.get(fallback.label);
+        if (!recommendation) return fallback;
+        // A contextual category is trusted only with a validated enrolled
+        // candidate. New names remain in the new/unrecognized category.
+        if (
+          recommendation.category === "ambiguous-existing" &&
+          recommendation.candidates.length === 0
+        ) {
+          return fallback;
+        }
+        return recommendation;
+      });
+      if (verbose && contextual.length === 0) {
+        console.log("  Contextual speaker recommendations unavailable; using acoustic candidates.");
+      }
+    }
+
+    const needsPrompt = recommendations.length > 0;
     if (needsPrompt && process.stdin.isTTY) {
-      const { names, enroll } = await promptForSpeakerNames(
+      const { names, enroll, learn = {} } = await promptForSpeakerNames(
         segments,
         unmatched,
         tentative,
+        recommendations,
       );
       Object.assign(nameMap, names);
 
       // Enroll freshly-typed names inline from their in-memory clip so a CLI
       // `--identify` run also persists voiceprints (the macOS viewer instead
-      // enrolls post-hoc from the stored clip via `nota enroll`). Tentative
-      // confirmations ("y") reuse the existing profile and are not in `enroll`.
+      // enrolls post-hoc from the stored clip via `nota enroll`). A selected
+      // existing candidate is in `learn` and is appended only as an explicit
+      // user correction.
       let enrolled = 0;
-      for (const [label, name] of Object.entries(enroll)) {
+      for (const [label, name] of Object.entries({ ...enroll, ...learn })) {
+        // A `learn` entry is only produced by selecting a known enrolled
+        // candidate. Never create a new profile from that correction path.
+        if (Object.prototype.hasOwnProperty.call(learn, label) && !store.speakers[name]) {
+          continue;
+        }
         const clip = clips[label];
         if (!clip) continue; // too little speech — skip, don't fail
         try {

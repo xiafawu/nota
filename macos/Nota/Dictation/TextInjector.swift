@@ -6,11 +6,13 @@ import os
 
 // MARK: - TextInjector
 
-/// Hybrid text injection with AX → CGEvent → paste fallback and a per-bundle override table.
+/// Hybrid text injection with AX → paste fallback and a per-bundle override table.
 ///
 /// Strategy selection per bundle:
 /// 1. Consult the per-app override table for a forced strategy.
-/// 2. Default: fallback chain `.accessibility` → `.keyEvents` → `.paste`.
+/// 2. Default: fallback chain `.accessibility` → `.paste`.
+/// 3. Terminal overrides use `.keyEvents` → `.paste` because terminal
+///    emulators handle Unicode keyboard events more reliably than AX.
 ///
 /// Secure / password fields are refused with a nonfatal notice.
 final class TextInjector {
@@ -43,57 +45,56 @@ final class TextInjector {
   /// insert at the caret, which already appends; AX sets the field's whole
   /// value, so appending means reading what is there and writing it back with
   /// the delta on the end.
-  func inject(_ text: String, target: FocusedTarget, mode: InjectionMode = .standard) async {
+  func inject(_ text: String, target: FocusedTarget, mode: InjectionMode = .standard) async -> InjectionResult {
     guard !text.isEmpty else {
       logger.info("Skipping injection — empty text")
-      return
+      return .failed(strategy: nil, reason: "There was no text to insert")
     }
 
     lastSecureFieldNotice = nil
 
-    // Check secure / password fields. Re-asked on every write, not read off the
-    // capture-time snapshot: a streaming session writes many times against one
-    // target and the focus inside that app can move into a password field
-    // between two sentences.
+    // Check secure / password fields on every write. A streaming session can
+    // outlive the field that was focused when it began.
     guard !target.isSecureInputNow() else {
       lastSecureFieldNotice = "Cannot dictate into a password or secure field"
       logger.notice("Refusing injection into secure field (bundle=\(target.bundleID ?? "nil", privacy: .public))")
-      return
+      return .refused(reason: lastSecureFieldNotice ?? "Cannot dictate into a secure field")
     }
 
-    // Resolve strategy.
-    let strategy = resolveStrategy(for: target.bundleID)
-    logger.info("Injection strategy for \(target.bundleID ?? "nil", privacy: .public): \(String(describing: strategy))")
-
-    // Fallback chain.
-    switch strategy {
-    case .accessibility:
-      if tryAXInject(text, target: target, mode: mode) {
-        logResolved(target.bundleID, strategy: "AX")
-        return
-      }
-      logger.debug("AX failed, falling back to CGEvent")
-      if tryCGEventInject(text, target: target) {
-        logResolved(target.bundleID, strategy: "CGEvent")
-        return
-      }
-      logger.debug("CGEvent failed, falling back to paste")
-      await tryPasteInject(text, for: target)
-      logResolved(target.bundleID, strategy: "paste")
-
-    case .keyEvents:
-      if tryCGEventInject(text, target: target) {
-        logResolved(target.bundleID, strategy: "CGEvent")
-        return
-      }
-      logger.debug("CGEvent failed, falling back to paste")
-      await tryPasteInject(text, for: target)
-      logResolved(target.bundleID, strategy: "paste")
-
-    case .paste:
-      await tryPasteInject(text, for: target)
-      logResolved(target.bundleID, strategy: "paste")
+    // Never fall back to whichever app happens to be frontmost when capture
+    // failed: that could put private dictated text in the wrong application.
+    guard target.processID != nil else {
+      let reason = "Nota could not identify the app to insert into"
+      logger.error("Injection refused — no target process was captured")
+      return .failed(strategy: nil, reason: reason)
     }
+
+    let chain = strategyChain(for: target.bundleID)
+    logger.info("Injection strategy chain for \(target.bundleID ?? "nil", privacy: .public): \(chain.map(\.description).joined(separator: " → "), privacy: .public)")
+
+    for strategy in chain {
+      switch strategy {
+      case .accessibility:
+        if tryAXInject(text, target: target, mode: mode) {
+          logSubmitted(target.bundleID, strategy: .accessibility)
+          return .delivered(strategy: .accessibility)
+        }
+        logger.debug("AX failed, falling back to the next reliable strategy")
+
+      case .keyEvents:
+        if tryCGEventInject(text, target: target) {
+          logSubmitted(target.bundleID, strategy: .keyEvents)
+          return .delivered(strategy: .keyEvents)
+        }
+        logger.debug("CGEvent could not be posted, falling back to paste")
+
+      case .paste:
+        return await tryPasteInject(text, for: target)
+      }
+    }
+
+    logger.error("No injection strategy could submit text to the captured target")
+    return .failed(strategy: nil, reason: "Nota could not submit text to the captured target")
   }
 
   // MARK: - Strategy resolution
@@ -105,6 +106,24 @@ final class TextInjector {
       return .accessibility
     }
     return forced
+  }
+
+  /// The ordered delivery chain for a target.
+  ///
+  /// A Unicode CGEvent only reports that WindowServer accepted the event post;
+  /// it cannot report that an Electron/webview editor accepted the characters.
+  /// Unknown applications therefore skip that unverifiable step and use paste
+  /// after AX fails. Explicit terminal overrides retain CGEvent as their first
+  /// choice, with paste as the recovery path.
+  func strategyChain(for bundleID: String?) -> [InjectionStrategy] {
+    switch resolveStrategy(for: bundleID) {
+    case .accessibility:
+      return [.accessibility, .paste]
+    case .keyEvents:
+      return [.keyEvents, .paste]
+    case .paste:
+      return [.paste]
+    }
   }
 
   /// Returns the pasteboard restore delay in nanoseconds for a bundle ID.
@@ -121,7 +140,7 @@ final class TextInjector {
   ///
   /// In `.append` mode a failed *read* returns false rather than writing the
   /// delta as the whole value — that would wipe the field. False sends the
-  /// caller down the CGEvent branch, which types the same delta at the caret.
+  /// caller down the paste branch, which inserts the same delta at the caret.
   private func tryAXInject(
     _ text: String,
     target: FocusedTarget,
@@ -138,7 +157,7 @@ final class TextInjector {
       value = text
     case .append:
       guard let current = Self.readAXValue(element) else {
-        logger.debug("AX: could not read current value for append — falling back to CGEvent")
+        logger.debug("AX: could not read current value for append — falling back to paste")
         return false
       }
       value = Self.appendedValue(current: current, delta: text)
@@ -183,10 +202,9 @@ final class TextInjector {
   /// Attempt to inject by posting a single CGEvent with UTF-16 string to the
   /// target's process.
   ///
-  /// The pid comes from the target, falling back to the frontmost app only when
-  /// the capture could not record one. Posting to whatever is frontmost at
-  /// delivery time is what made a streaming sentence land in the app the user
-  /// switched to while it was being polished.
+  /// The pid must come from the captured target. Posting to whatever is
+  /// frontmost at delivery time is what made a streaming sentence land in the
+  /// app the user switched to while it was being polished.
   ///
   /// Both events are posted with **explicitly empty flags**. A `CGEvent` built
   /// from a `CGEventSource` inherits that source's modifier state, and
@@ -205,8 +223,8 @@ final class TextInjector {
   /// the missing assignment — the ones that were are the `.keyEvents` terminals
   /// and any target that got here by AX writing having failed.
   private func tryCGEventInject(_ text: String, target: FocusedTarget) -> Bool {
-    guard let pid = target.processID ?? frontmostAppPID() else {
-      logger.debug("CGEvent: no target or frontmost PID")
+    guard let pid = target.processID else {
+      logger.debug("CGEvent: no captured target PID")
       return false
     }
 
@@ -252,22 +270,27 @@ final class TextInjector {
 
   /// Inject via clipboard save → Cmd-V → clipboard restore with per-app delay,
   /// serialized against every other paste (see `PasteInjector`).
-  private func tryPasteInject(_ text: String, for target: FocusedTarget) async {
-    await paster.paste(
+  private func tryPasteInject(_ text: String, for target: FocusedTarget) async -> InjectionResult {
+    let succeeded = await paster.paste(
       text,
       toPid: target.processID,
       restoreDelayNs: pasteRestoreDelayNs(for: target.bundleID)
     )
+    if succeeded {
+      logSubmitted(target.bundleID, strategy: .paste)
+      return .attempted(strategy: .paste)
+    }
+    let reason = "Nota could not prepare clipboard insertion"
+    logger.error("Paste injection failed")
+    return .failed(strategy: .paste, reason: reason)
   }
 
   // MARK: - Helpers
 
-  private func frontmostAppPID() -> pid_t? {
-    NSWorkspace.shared.frontmostApplication?.processIdentifier
-  }
-
-  private func logResolved(_ bundleID: String?, strategy: String) {
-    logger.info("Injected via \(strategy, privacy: .public) into bundle=\(bundleID ?? "nil", privacy: .public)")
+  private func logSubmitted(_ bundleID: String?, strategy: InjectionStrategy) {
+    logger.info(
+      "Submitted via \(strategy.description, privacy: .public) to bundle=\(bundleID ?? "nil", privacy: .public); target text acceptance is not observable"
+    )
   }
 }
 
@@ -276,7 +299,7 @@ final class TextInjector {
 extension TextInjector {
   /// Known bundle IDs with forced injection strategies.
   ///
-  /// Default fallback: AX → CGEvent → paste.
+  /// Default fallback: AX → paste.
   /// An override may skip early strategies for unreliable targets.
   static let defaultOverrideTable: [String: PerAppOverride] = [
     // Electron / Chrome family — AX value fails silently.
@@ -286,6 +309,7 @@ extension TextInjector {
     "com.microsoft.edgemac":       PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 150),
     "com.slack.Slack":             PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 150),
     "com.microsoft.VSCode":        PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 120),
+    "com.microsoft.VSCodeInsiders": PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 120),
     "com.github.copilot.Copilot":  PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 120),
     "com.spotify.client":          PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 120),
 
@@ -321,14 +345,14 @@ private actor PasteInjector {
   private let logger = Logger(subsystem: "com.xiafawu.nota", category: "dictation.injector")
 
   /// The most recently enqueued paste; the next one waits on it.
-  private var tail: Task<Void, Never>?
+  private var tail: Task<Bool, Never>?
 
-  func paste(_ text: String, toPid pid: pid_t?, restoreDelayNs: UInt64) async {
+  func paste(_ text: String, toPid pid: pid_t?, restoreDelayNs: UInt64) async -> Bool {
     let previous = tail
     let logger = self.logger
-    let task = Task {
+    let task = Task<Bool, Never> {
       _ = await previous?.value
-      await PasteInjector.perform(
+      return await PasteInjector.perform(
         text,
         toPid: pid,
         restoreDelayNs: restoreDelayNs,
@@ -336,7 +360,7 @@ private actor PasteInjector {
       )
     }
     tail = task
-    await task.value
+    return await task.value
   }
 
   private static func perform(
@@ -344,7 +368,7 @@ private actor PasteInjector {
     toPid pid: pid_t?,
     restoreDelayNs: UInt64,
     logger: Logger
-  ) async {
+  ) async -> Bool {
     let pasteboard = NSPasteboard.general
     let snapshot = capture(pasteboard)
 
@@ -352,17 +376,21 @@ private actor PasteInjector {
     guard pasteboard.setString(text, forType: .string) else {
       logger.error("Paste: failed to set string on pasteboard")
       restore(pasteboard, from: snapshot, logger: logger)
-      return
+      return false
     }
 
     // Brief settle for NSPasteboard to flush.
     try? await Task.sleep(nanoseconds: 10_000_000) // 10 ms
-    await synthesizeCommandV(toPid: pid, logger: logger)
+    let submitted = await synthesizeCommandV(toPid: pid, logger: logger)
 
     // Awaited, not deferred to a detached task: the user's clipboard has to be
-    // back before the next paste snapshots it.
-    try? await Task.sleep(nanoseconds: restoreDelayNs)
+    // back before the next paste snapshots it. Give a successfully submitted
+    // Cmd-V its app-specific settle time; on failure restore immediately.
+    if submitted {
+      try? await Task.sleep(nanoseconds: restoreDelayNs)
+    }
     restore(pasteboard, from: snapshot, logger: logger)
+    return submitted
   }
 
   // MARK: - Pasteboard save/restore
@@ -395,11 +423,11 @@ private actor PasteInjector {
 
   // MARK: - Synthetic Cmd-V
 
-  /// Posts Cmd-V to the target process when one is known.
+  /// Posts Cmd-V to the captured target process.
   ///
   /// The HID tap delivers to whatever is frontmost at delivery time, which is
   /// not necessarily the app the session started in.
-  private static func synthesizeCommandV(toPid pid: pid_t?, logger: Logger) async {
+  private static func synthesizeCommandV(toPid pid: pid_t?, logger: Logger) async -> Bool {
     let source = CGEventSource(stateID: .combinedSessionState)
     let vKey = CGKeyCode(0x09) // kVK_ANSI_V
 
@@ -407,23 +435,23 @@ private actor PasteInjector {
           let keyUp = CGEvent(keyboardEventSource: source, virtualKey: vKey, keyDown: false)
     else {
       logger.error("Paste: failed to create CGEvent for Cmd-V")
-      return
+      return false
     }
 
     keyDown.flags = .maskCommand
     keyUp.flags = .maskCommand
 
-    if let pid {
-      keyDown.postToPid(pid)
-      try? await Task.sleep(nanoseconds: 30_000_000) // 30 ms between down and up
-      keyUp.postToPid(pid)
-    } else {
-      keyDown.post(tap: .cghidEventTap)
-      try? await Task.sleep(nanoseconds: 30_000_000)
-      keyUp.post(tap: .cghidEventTap)
+    guard let pid else {
+      logger.error("Paste: no captured target PID")
+      return false
     }
 
+    keyDown.postToPid(pid)
+    try? await Task.sleep(nanoseconds: 30_000_000) // 30 ms between down and up
+    keyUp.postToPid(pid)
+
     logger.debug("Paste: posted synthetic Cmd-V")
+    return true
   }
 }
 

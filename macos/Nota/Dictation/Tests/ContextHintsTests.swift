@@ -62,6 +62,27 @@ final class ContextHintsTests: XCTestCase {
     XCTAssertFalse(snapshot.isEmpty)
   }
 
+  func testCleanupContextRequiresExplicitOptIn() {
+    let snapshot = ContextSnapshot(
+      appName: "Xcode",
+      bundleID: "com.apple.dt.Xcode",
+      windowTitle: "Nota — ContextSnapshot.swift",
+      focusedText: "let visibleText = focusedValue"
+    )
+    XCTAssertNil(snapshot.cleanupContext(enabled: false))
+    XCTAssertEqual(snapshot.cleanupContext(enabled: true), snapshot)
+    XCTAssertNil(ContextSnapshot.empty.cleanupContext(enabled: true))
+  }
+
+  func testFocusedTextIsFlattenedAndBoundedBeforePromptAssembly() {
+    let bounded = ContextSnapshot.boundedFocusedText(
+      "line one\n\tline two" + String(repeating: "x", count: 2_100)
+    )
+    XCTAssertEqual(bounded?.last, "…")
+    XCTAssertEqual(bounded?.count, 2_000)
+    XCTAssertNil(ContextSnapshot.boundedFocusedText("\n\t\u{0}"))
+  }
+
   // MARK: - Hint ranking
 
   private func term(

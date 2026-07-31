@@ -34,6 +34,38 @@ final class InjectionStrategyTests: XCTestCase {
     XCTAssertEqual(injector.resolveStrategy(for: "com.microsoft.VSCode"), .paste)
   }
 
+  func testVSCodeInsidersOverridesToPaste() {
+    let injector = TextInjector()
+    XCTAssertEqual(injector.resolveStrategy(for: "com.microsoft.VSCodeInsiders"), .paste)
+    XCTAssertEqual(injector.strategyChain(for: "com.microsoft.VSCodeInsiders"), [.paste])
+  }
+
+  func testKnownElectronTargetsNeverStartWithUnicodeCGEvent() {
+    let injector = TextInjector()
+
+    XCTAssertEqual(injector.strategyChain(for: "com.microsoft.VSCode"), [.paste])
+    XCTAssertEqual(injector.strategyChain(for: "com.microsoft.VSCodeInsiders"), [.paste])
+    XCTAssertEqual(injector.strategyChain(for: "com.slack.Slack"), [.paste])
+  }
+
+  func testUnknownTargetsUseAXThenPasteRecoveryWithoutUnverifiedCGEvent() {
+    let injector = TextInjector(overrides: [:])
+
+    XCTAssertEqual(
+      injector.strategyChain(for: "com.example.unknown-editor"),
+      [.accessibility, .paste]
+    )
+  }
+
+  func testTerminalTargetsKeepCGEventFirstWithPasteRecovery() {
+    let injector = TextInjector()
+
+    XCTAssertEqual(
+      injector.strategyChain(for: "com.apple.Terminal"),
+      [.keyEvents, .paste]
+    )
+  }
+
   // MARK: - Custom override table
 
   func testCustomOverrideRespected() {
@@ -101,6 +133,22 @@ final class InjectionStrategyTests: XCTestCase {
     XCTAssertNil(injector.lastSecureFieldNotice)
   }
 
+  func testMissingProcessIsReportedAsFailedDelivery() async {
+    let injector = TextInjector(overrides: [:])
+    let target = FocusedTarget(
+      bundleID: "com.example.Editor",
+      isSecureInput: false,
+      accessibilityElement: nil
+    )
+
+    let result = await injector.inject("recover me", target: target)
+
+    guard case .failed(strategy: nil, let reason) = result else {
+      return XCTFail("Expected a failed delivery when no target process is captured")
+    }
+    XCTAssertTrue(reason.contains("identify the app"))
+  }
+
   // MARK: - Strategy description
 
   func testStrategyDescriptionsReadable() {
@@ -124,6 +172,7 @@ final class InjectionStrategyTests: XCTestCase {
     XCTAssertNotNil(table["com.googlecode.iterm2"])
     // VSCode
     XCTAssertNotNil(table["com.microsoft.VSCode"])
+    XCTAssertNotNil(table["com.microsoft.VSCodeInsiders"])
   }
 
   func testDefaultOverrideTablePasteBundleUsesPaste() {
@@ -183,5 +232,38 @@ final class FocusedTargetTests: XCTestCase {
       processID: nil
     )
     XCTAssertFalse(target.isSecureInputNow())
+  }
+
+  func testAnUnavailableTargetCannotBeReportedReadyForDelivery() async {
+    let target = FocusedTarget(
+      bundleID: "com.example",
+      isSecureInput: false,
+      accessibilityElement: nil,
+      processID: nil
+    )
+
+    let outcome = await target.restoreAndWait(timeoutNs: 1, pollIntervalNs: 1)
+    XCTAssertEqual(outcome, .unavailable)
+    XCTAssertFalse(outcome.isReady)
+  }
+}
+
+final class InjectionOutcomeTests: XCTestCase {
+  func testSubmittedOutcomeDoesNotClaimTextAcceptance() {
+    let outcome = InjectionOutcome.submitted(strategy: .paste)
+
+    XCTAssertEqual(outcome, .submitted(strategy: .paste))
+    // The enum intentionally has no "accepted" case: macOS exposes no
+    // general acknowledgement for CGEvent or Cmd-V delivery.
+  }
+
+  func testDeliveryFailureHasRecoveryMessage() {
+    let outcome = InjectionOutcome.failed(reason: .noDeliveryPath)
+
+    guard case .failed(let reason) = outcome else {
+      return XCTFail("expected a delivery failure")
+    }
+    XCTAssertTrue(reason.description.contains("No text was inserted"))
+    XCTAssertTrue(reason.description.contains("Try dictation again"))
   }
 }

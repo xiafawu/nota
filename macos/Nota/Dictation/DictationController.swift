@@ -58,6 +58,11 @@ final class DictationController: ObservableObject {
   @Published private(set) var lastPolishWarning: String?
   /// True while a polish LLM call is in flight.
   @Published private(set) var isPolishInProgress: Bool = false
+  /// Completed dictations retained locally for recovery when insertion is
+  /// refused, unsupported, or otherwise cannot be confirmed.
+  @Published private(set) var dictationHistory: [DictationHistoryEntry] = []
+  @Published private(set) var historyNotice: String?
+  var dictationHistoryRetentionLimit: Int { historyStore.retentionLimit }
   /// The recognizer's un-finalized tail — the rough draft the HUD shows.
   ///
   /// Fed by every session that runs the streaming recognizer, which is both of
@@ -89,6 +94,7 @@ final class DictationController: ObservableObject {
 
   private let hotkeyMonitor: HotkeyMonitor
   private let logger = Logger(subsystem: "com.xiafawu.nota", category: "dictation.controller")
+  private let historyStore: DictationHistoryStore
   private var hasStarted = false
   private var launchObserver: NSObjectProtocol?
   private var activationObserver: NSObjectProtocol?
@@ -102,6 +108,10 @@ final class DictationController: ObservableObject {
   /// What the user was looking at when this session began (plan 02). Captured
   /// at start so the AX round-trip hides under the first syllable.
   private(set) var sessionContext: ContextSnapshot = .empty
+  /// Privacy settings are snapshotted with the session so changing Settings
+  /// mid-dictation cannot change what that session sends to a model.
+  private var sessionUsesScreenContext = false
+  private var sessionUsesScreenCaptureFallback = false
   /// Dictionary snapshot for this session, read once at start so mid-session
   /// edits can never change the vocabulary out from under the pipeline.
   private(set) var sessionDictionary: [DictionaryTerm] = []
@@ -126,6 +136,7 @@ final class DictationController: ObservableObject {
   private var sessionTarget: FocusedTarget?
   private var segmenter = SentenceSegmenter()
   private var deliveryQueue: StreamingDeliveryQueue?
+  private var streamingHistoryID: UUID?
   private var hypothesisTask: Task<Void, Never>?
   /// Everything the recognizer has finalized this session.
   ///
@@ -183,6 +194,9 @@ final class DictationController: ObservableObject {
     /// they last spoke is the one they mean.
     var target: FocusedTarget?
     var latency: TimeInterval
+    /// One durable entry represents the open review batch, including any
+    /// continuation that extends it.
+    var historyID: UUID? = nil
   }
 
   private var pendingReview: PendingReview? {
@@ -205,9 +219,12 @@ final class DictationController: ObservableObject {
     permissions: PermissionsCoordinator? = nil,
     capture: MicCapture? = nil,
     hotkeyMonitor: HotkeyMonitor? = nil,
-    review: (any DictationReviewPresenting)? = nil
+    review: (any DictationReviewPresenting)? = nil,
+    historyStore: DictationHistoryStore? = nil
   ) {
     self.settings = DictationSettingsStore.load()
+    self.historyStore = historyStore ?? DictationHistoryStore()
+    self.dictationHistory = self.historyStore.entries
     self.permissions = permissions ?? PermissionsCoordinator()
     self.capture = capture ?? MicCapture()
     self.review = review ?? DictationReviewPresenter()
@@ -355,6 +372,8 @@ final class DictationController: ObservableObject {
     // share nothing else: review accumulates and delivers exactly once, at the
     // end, into the panel.
     let plan = DictationSessionPlan.make(mode: settings.deliveryMode, engine: settings.engine)
+    let usesScreenContext = settings.screenContextEnabled
+    let usesScreenCaptureFallback = usesScreenContext && settings.screenCaptureFallbackEnabled
 
     // L1 context: frontmost app + focused window title, the custom dictionary,
     // and — for a streaming session — the target this session's text belongs
@@ -366,7 +385,7 @@ final class DictationController: ObservableObject {
     // here would do. An empty dictionary and an untrusted-for-AX process both
     // yield an empty hint list, which makes this a no-op.
     let contextLoad = Task.detached(priority: .userInitiated) {
-      async let snapshot = ContextSnapshot.capture()
+      async let snapshot = ContextSnapshot.capture(includeFocusedText: usesScreenContext)
       let target = plan.capturesTarget ? await FocusedTarget.capture() : nil
       let terms = DictionaryStore.load()
       return (await snapshot, terms, target)
@@ -382,6 +401,8 @@ final class DictationController: ObservableObject {
     polishInFlight = 0
     autoLearnBudget = AutoLearn.maxCandidatesPerSession
     resetStreamingSession()
+    sessionUsesScreenContext = usesScreenContext
+    sessionUsesScreenCaptureFallback = usesScreenCaptureFallback
 
     Task { [weak self] in
       let (snapshot, terms, startTarget) = await contextLoad.value
@@ -400,7 +421,7 @@ final class DictationController: ObservableObject {
       self.speechStream = stream
       self.logger.info("Using engine: \(self.settings.engine.label)")
       self.logger.debug(
-        "Session context: app=\(snapshot.appName ?? "nil", privacy: .public) hints=\(hints.count)"
+        "Session hints=\(hints.count) focusedText=\(snapshot.focusedText != nil)"
       )
 
       // The delivery queue must exist before the hypothesis loop starts, or a
@@ -568,11 +589,16 @@ final class DictationController: ObservableObject {
             terms: self.sessionDictionary,
             harvested: self.sessionContext.harvestIdentifiers()
           )
-          let context = self.sessionContext
 
           Task {
             let polished: String
             do {
+              // The optional visual fallback is deliberately reached only on
+              // this completion path. Streaming polish uses AX context from
+              // session start and never captures a screenshot mid-dictation.
+              let context = await self.cleanupContextForCurrentSession(
+                allowScreenCapture: true
+              )
               polished = try await PolishClient.polish(
                 rulesResult,
                 modelID: modelID,
@@ -585,7 +611,8 @@ final class DictationController: ObservableObject {
             } catch {
               self.lastPolishResult = nil
               self.lastPolishWarning = "Polish failed: \(error.localizedDescription). Using rules-only result."
-              self.logger.warning("Polish failed: \(error.localizedDescription, privacy: .public)")
+              let detail = (error as? PolishError)?.safeLogDescription ?? "unexpected error"
+              self.logger.warning("Polish failed: \(detail, privacy: .public)")
               // Fall back to rules-only.
               self.deliver(rulesResult, offline: rulesResult, latency: latency)
               return
@@ -650,6 +677,28 @@ final class DictationController: ObservableObject {
 
   // MARK: - Streaming delivery
 
+  /// Build the model context for this session. Screen content is never stored
+  /// in history or diagnostics; this value exists only until the request is
+  /// assembled and the task completes.
+  private func cleanupContextForCurrentSession(
+    allowScreenCapture: Bool
+  ) async -> ContextSnapshot? {
+    guard sessionUsesScreenContext else { return nil }
+
+    var context = sessionContext
+    if allowScreenCapture,
+       sessionUsesScreenCaptureFallback,
+       ScreenContextCapture.shouldUseVisualFallback(focusedText: context.focusedText),
+       let ocrText = await ScreenContextCapture.captureVisibleText(
+         processID: context.processID,
+         windowTitle: context.windowTitle
+       )
+    {
+      context.focusedText = ocrText
+    }
+    return context.cleanupContext(enabled: true)
+  }
+
   /// Build this session's delivery queue: the same L1 → L2 → L3 pipeline the
   /// batch path runs, applied per sentence, with delivery serialized.
   private func makeDeliveryQueue(
@@ -663,13 +712,17 @@ final class DictationController: ObservableObject {
       terms: terms,
       harvested: snapshot.harvestIdentifiers()
     )
+    // Streaming requests happen before dictation completion, so they may use
+    // the bounded AX sample captured at session start but never the visual
+    // screenshot fallback.
+    let context = snapshot.cleanupContext(enabled: sessionUsesScreenContext)
 
     let runPolish: @Sendable (String) async throws -> String = { text in
       try await PolishClient.polish(
         text,
         modelID: modelID,
         vocabulary: vocabulary,
-        context: snapshot
+        context: context
       )
     }
     let polish: (@Sendable (String) async throws -> String)? = polishEnabled ? runPolish : nil
@@ -690,7 +743,11 @@ final class DictationController: ObservableObject {
 
     let deliver: StreamingDeliveryQueue.Deliver = { [weak self] delta in
       guard let self else { return }
-      await self.injector.inject(delta, target: target, mode: .append)
+      let historyID = self.prepareStreamingHistory(delta, target: target)
+      let result = await self.injector.inject(delta, target: target, mode: .append)
+      if let historyID {
+        self.updateHistoryDelivery(historyID, result: result)
+      }
     }
 
     return StreamingDeliveryQueue(refine: refine, deliver: deliver)
@@ -715,7 +772,8 @@ final class DictationController: ObservableObject {
     if let error = refined.polishError {
       lastPolishResult = nil
       lastPolishWarning = "Polish failed: \(error.localizedDescription). Using rules-only result."
-      logger.warning("Polish failed: \(error.localizedDescription, privacy: .public)")
+      let detail = (error as? PolishError)?.safeLogDescription ?? "unexpected error"
+      logger.warning("Polish failed: \(detail, privacy: .public)")
       return
     }
     lastPolishResult = refined.text
@@ -824,6 +882,10 @@ final class DictationController: ObservableObject {
         self.injector.clearSecureFieldNotice()
         self.state = .idle
       }
+    } else if let historyID = streamingHistoryID,
+              let entry = historyStore.entry(id: historyID),
+              entry.status == .failed {
+      state = .failed(message: entry.statusDetail ?? "Nota could not insert the dictation")
     } else {
       state = .idle
     }
@@ -844,7 +906,11 @@ final class DictationController: ObservableObject {
     hypothesisTask?.cancel()
     hypothesisTask = nil
     deliveryQueue = nil
+    streamingHistoryID = nil
     sessionTarget = nil
+    sessionContext = .empty
+    sessionUsesScreenContext = false
+    sessionUsesScreenCaptureFallback = false
     isStreamingSession = false
     isLiveDraftSession = false
     segmenter = SentenceSegmenter()
@@ -873,9 +939,15 @@ final class DictationController: ObservableObject {
       // Idempotent, and a no-op for every session that was not a continuation.
       endReviewContinuation()
       doInject(text, latency: latency)
+      sessionContext = .empty
+      sessionUsesScreenContext = false
+      sessionUsesScreenCaptureFallback = false
       return
     }
     presentReview(polished: text, offline: offline, latency: latency)
+    sessionContext = .empty
+    sessionUsesScreenContext = false
+    sessionUsesScreenCaptureFallback = false
   }
 
   /// A trigger press while a review card is open starts a CONTINUATION of that
@@ -983,7 +1055,8 @@ final class DictationController: ObservableObject {
           polished: carried,
           offline: DictationReview.appended(buffer: open.offline, addition: offline),
           target: reviewTarget(sessionTarget) ?? open.target,
-          latency: latency
+          latency: latency,
+          historyID: open.historyID
         ),
         text: carried
       )
@@ -1054,6 +1127,10 @@ final class DictationController: ObservableObject {
     // already found somewhere valid.
     extended.target = reviewTarget(sessionTarget) ?? open.target
     extended.latency = latency
+    if let historyID = extended.historyID {
+      historyStore.update(id: historyID, text: combined, status: .pending, statusDetail: "Awaiting review")
+      syncDictationHistory()
+    }
     pendingReview = extended
     logger.info(
       "Review extended to \(combined.count) characters (generation \(extended.generation))"
@@ -1063,6 +1140,20 @@ final class DictationController: ObservableObject {
 
   /// Put a fresh card on screen for `pending`, replacing anything already up.
   private func openReview(_ pending: PendingReview, text: String) {
+    var pending = pending
+    if pending.historyID == nil {
+      pending.historyID = recordHistory(text: text, target: pending.target)
+    } else if let historyID = pending.historyID {
+      historyStore.update(
+        id: historyID,
+        text: text,
+        status: .pending,
+        statusDetail: "Awaiting review",
+        targetBundleID: pending.target?.bundleID,
+        targetProcessID: pending.target?.processID.map { Int32($0) }
+      )
+      syncDictationHistory()
+    }
     pendingReview = pending
     state = .idle
 
@@ -1086,6 +1177,13 @@ final class DictationController: ObservableObject {
       // inserted, which is the mode's promise; the failure is said out loud,
       // and clearing `pendingReview` lets the pill say it.
       pendingReview = nil
+      if let historyID = pending.historyID {
+        updateHistoryDelivery(
+          historyID,
+          status: .failed,
+          detail: "Nota could not show the review card"
+        )
+      }
       logger.error("Review panel could not be shown — the session's text was not inserted")
       state = .failed(message: "Nota could not show the review card. Restart Nota to fix it.")
       return
@@ -1124,12 +1222,23 @@ final class DictationController: ObservableObject {
       // teaches nothing. Nothing to hand back either — the panel never
       // activated Nota, so the app being dictated into was in front the whole
       // time and still is.
+      if let historyID = pending.historyID {
+        updateHistoryDelivery(historyID, status: .discarded, detail: "Discarded from review")
+      }
       logger.info("Review discarded — nothing inserted")
       state = .idle
       return
     }
 
-    injectReviewed(text, target: pending.target, latency: pending.latency)
+    if let historyID = pending.historyID {
+      updateHistoryDelivery(historyID, status: .pending, detail: "Waiting for insertion")
+    }
+    injectReviewed(
+      text,
+      target: pending.target,
+      latency: pending.latency,
+      historyID: pending.historyID
+    )
     // After injection, and only for text the owner actually applied.
     for pair in resolution.learn {
       learnTerms(before: pair.before, after: pair.after)
@@ -1144,7 +1253,12 @@ final class DictationController: ObservableObject {
   /// thing still pointing at the app being dictated into — and because the
   /// panel never activated Nota, that app is also still frontmost, so the
   /// events land without anything having to be brought back.
-  private func injectReviewed(_ text: String, target: FocusedTarget?, latency: TimeInterval) {
+  private func injectReviewed(
+    _ text: String,
+    target: FocusedTarget?,
+    latency: TimeInterval,
+    historyID: UUID?
+  ) {
     // A pid is required, and it may not be Nota's own. Injecting "wherever" is
     // exactly the failure this mode exists to prevent, so it refuses instead —
     // the text stays on the owner's screen in the panel they applied from.
@@ -1153,6 +1267,13 @@ final class DictationController: ObservableObject {
           pid != ProcessInfo.processInfo.processIdentifier
     else {
       logger.error("Reviewed text has no usable target — refusing to insert it anywhere")
+      if let historyID {
+        updateHistoryDelivery(
+          historyID,
+          status: .failed,
+          detail: "Nota lost track of the app you were dictating into"
+        )
+      }
       state = .failed(message: "Nota lost track of the app you were dictating into.")
       return
     }
@@ -1184,24 +1305,38 @@ final class DictationController: ObservableObject {
         self.logger.debug("Modifier clearance before review injection: \(String(describing: clearance), privacy: .public)")
       }
 
-      // The card that just ordered out was the KEY window. It never activated
-      // Nota — the target app stayed frontmost the whole time — but its own
-      // window resigned key while the owner typed in the card, and AppKit hands
-      // key status back through the window server a beat after the panel goes.
-      // Two of the three injection strategies post keystrokes to the target's
-      // pid (`tryCGEventInject`, and the paste strategy's synthetic Cmd-V), and
-      // an app routes those to whatever its key window is at delivery time: post
-      // them into that gap and Chrome, Slack, VSCode and every terminal —
-      // exactly the apps `defaultOverrideTable` forces down those two paths —
-      // drop them, while `lastProcessedText` still claims a success. AX writing
-      // does not care; the wait is imperceptible and covers all three.
+      // The card that just ordered out was the KEY window. Restore the
+      // originally captured app and wait until WindowServer confirms it is
+      // frontmost before sending a pid-targeted event. Without this, the
+      // EventServer post can succeed while Electron/webview editors still have
+      // no key window and silently drop the text.
+      let focus = await target.restoreAndWait()
+      guard focus.isReady else {
+        self.logger.error(
+          "Could not restore review target before injection: \(String(describing: focus), privacy: .public)"
+        )
+        let reason = InjectionFailure.noUsableTarget.description
+        if let historyID {
+          self.updateHistoryDelivery(historyID, status: .failed, detail: reason)
+        }
+        self.state = .failed(message: reason)
+        return
+      }
+
+      // The target's window may regain key status a beat after it becomes
+      // frontmost. Keep the bounded settle for that hand-off.
       try? await Task.sleep(nanoseconds: Self.reviewKeyRestoreSettleNs)
-      await self.injector.inject(text, target: target)
-      if let notice = self.injector.lastSecureFieldNotice {
-        self.state = .failed(message: notice)
+      let result = await self.injector.inject(text, target: target)
+      if let historyID {
+        self.updateHistoryDelivery(historyID, result: result)
+      }
+      if case .refused(let reason) = result {
+        self.state = .failed(message: reason)
         try? await Task.sleep(nanoseconds: 2_000_000_000)
         self.injector.clearSecureFieldNotice()
         self.state = .idle
+      } else if case .failed(_, let reason) = result {
+        self.state = .failed(message: reason)
       } else {
         self.state = .idle
       }
@@ -1252,6 +1387,83 @@ final class DictationController: ObservableObject {
     }
   }
 
+  // MARK: - Dictation history
+
+  private func syncDictationHistory() {
+    dictationHistory = historyStore.entries
+  }
+
+  @discardableResult
+  private func recordHistory(text: String, target: FocusedTarget?) -> UUID? {
+    let id = historyStore.record(
+      text: text,
+      targetBundleID: target?.bundleID,
+      targetProcessID: target?.processID.map { Int32($0) }
+    )
+    syncDictationHistory()
+    return id
+  }
+
+  private func updateHistoryDelivery(
+    _ id: UUID,
+    status: DictationDeliveryStatus,
+    detail: String?
+  ) {
+    historyStore.update(id: id, status: status, statusDetail: detail)
+    syncDictationHistory()
+  }
+
+  private func updateHistoryDelivery(_ id: UUID, result: InjectionResult) {
+    let status: DictationDeliveryStatus
+    let detail: String?
+    switch result {
+    case .delivered(let strategy):
+      status = .delivered
+      detail = "Inserted via \(strategy.description)"
+    case .attempted(let strategy):
+      status = .attempted
+      detail = "\(strategy.description) was sent; the target did not confirm insertion"
+    case .refused(let reason):
+      status = .failed
+      detail = reason
+    case .failed(let strategy, let reason):
+      status = .failed
+      detail = strategy.map { "\($0.description): \(reason)" } ?? reason
+    }
+    updateHistoryDelivery(id, status: status, detail: detail)
+  }
+
+  /// Streaming writes one durable entry before its first sentence is sent and
+  /// grows that entry before each later sentence. This keeps partial text
+  /// recoverable during a long session while still presenting one row per
+  /// completed dictation.
+  private func prepareStreamingHistory(_ delta: String, target: FocusedTarget) -> UUID? {
+    if let id = streamingHistoryID, let existing = historyStore.entry(id: id) {
+      let combined = existing.text + delta
+      if existing.status != .failed {
+        historyStore.update(
+          id: id,
+          text: combined,
+          status: .pending,
+          statusDetail: "Awaiting insertion",
+          targetBundleID: target.bundleID,
+          targetProcessID: target.processID.map { Int32($0) }
+        )
+      } else {
+        historyStore.update(
+          id: id,
+          text: combined,
+          statusDetail: existing.statusDetail
+        )
+      }
+      syncDictationHistory()
+      return id
+    }
+
+    streamingHistoryID = recordHistory(text: delta, target: target)
+    return streamingHistoryID
+  }
+
   /// Shared injection step after formatting/polish is resolved.
   private func doInject(_ text: String, latency: TimeInterval) {
     lastProcessedText = text
@@ -1269,10 +1481,17 @@ final class DictationController: ObservableObject {
         // is holding the HUD.
         let target = await FocusedTarget.capture()
         self.logger.info("Focused target: bundle=\(target.bundleID ?? "nil", privacy: .public) secure=\(target.isSecureInput)")
-        await self.injector.inject(text, target: target)
+        // Record first. If the target is secure, unavailable, or the
+        // pasteboard fails, the completed text is already durable.
+        let historyID = self.recordHistory(text: text, target: target)
+        let result = await self.injector.inject(text, target: target)
+        if let historyID {
+          self.updateHistoryDelivery(historyID, result: result)
+        }
         await MainActor.run {
-          if let notice = self.injector.lastSecureFieldNotice {
-            self.state = .failed(message: notice)
+          switch result {
+          case .refused(let reason):
+            self.state = .failed(message: reason)
             Task {
               try? await Task.sleep(nanoseconds: 2_000_000_000)
               await MainActor.run {
@@ -1280,7 +1499,9 @@ final class DictationController: ObservableObject {
                 self.state = .idle
               }
             }
-          } else {
+          case .failed(_, let reason):
+            self.state = .failed(message: reason)
+          case .delivered, .attempted:
             self.state = .idle
           }
           self.speechStream = nil
@@ -1302,6 +1523,91 @@ final class DictationController: ObservableObject {
     // no reason to throw away text the owner has already reviewed. It just
     // stops claiming to be listening, and its buttons come back.
     endReviewContinuation()
+  }
+
+  // MARK: - History actions
+
+  func copyDictationHistory(_ id: UUID) {
+    guard let entry = historyStore.entry(id: id) else { return }
+    let pasteboard = NSPasteboard.general
+    pasteboard.clearContents()
+    if pasteboard.setString(entry.text, forType: .string) {
+      historyNotice = "Copied dictation"
+    } else {
+      historyNotice = "Could not copy dictation"
+    }
+  }
+
+  func deleteDictationHistory(_ id: UUID) {
+    historyStore.delete(id: id)
+    syncDictationHistory()
+    historyNotice = "Dictation removed"
+  }
+
+  func clearDictationHistory() {
+    historyStore.clear()
+    syncDictationHistory()
+    historyNotice = "Dictation history cleared"
+  }
+
+  /// Retry a selected entry against its original process when that process is
+  /// still alive. Otherwise use the currently focused app, but refuse to send
+  /// text back into Nota itself.
+  func retryDictationHistory(_ id: UUID) {
+    guard let entry = historyStore.entry(id: id), !entry.text.isEmpty else { return }
+    historyNotice = "Retrying insertion…"
+    state = .injecting
+
+    Task {
+      let target = await retryTarget(for: entry)
+      guard let target else {
+        let reason = "Open the app where you want the dictation inserted, then try again."
+        updateHistoryDelivery(id, status: .failed, detail: reason)
+        historyNotice = reason
+        state = .failed(message: reason)
+        return
+      }
+
+      historyStore.update(
+        id: id,
+        status: .pending,
+        statusDetail: "Retrying insertion",
+        targetBundleID: target.bundleID,
+        targetProcessID: target.processID.map { Int32($0) }
+      )
+      syncDictationHistory()
+      let result = await injector.inject(entry.text, target: target)
+      updateHistoryDelivery(id, result: result)
+
+      switch result {
+      case .refused(let reason), .failed(_, let reason):
+        historyNotice = reason
+        state = .failed(message: reason)
+      case .delivered, .attempted:
+        historyNotice = "Insertion attempted"
+        state = .idle
+      }
+    }
+  }
+
+  private func retryTarget(for entry: DictationHistoryEntry) async -> FocusedTarget? {
+    if let rawPID = entry.targetProcessID {
+      let pid = pid_t(rawPID)
+      if pid != ProcessInfo.processInfo.processIdentifier,
+         let app = NSRunningApplication(processIdentifier: pid),
+         entry.targetBundleID == nil || app.bundleIdentifier == entry.targetBundleID {
+        return FocusedTarget(
+          bundleID: app.bundleIdentifier ?? entry.targetBundleID,
+          isSecureInput: false,
+          accessibilityElement: nil,
+          processID: pid
+        )
+      }
+    }
+
+    let current = await FocusedTarget.capture()
+    guard current.processID != ProcessInfo.processInfo.processIdentifier else { return nil }
+    return current.processID == nil ? nil : current
   }
 
   deinit {

@@ -46,6 +46,15 @@ struct DictationMenuBarView: View {
           openDocumentWindow()
         }
 
+        Button {
+          openHistoryWindow()
+        } label: {
+          Label(
+            "Dictation History (\(controller.dictationHistory.count))",
+            systemImage: "clock.arrow.circlepath"
+          )
+        }
+
         Button("Settings…") {
           openSettingsWindow()
         }
@@ -136,6 +145,13 @@ struct DictationMenuBarView: View {
 
   private func openDocumentWindow() {
     openWindow(id: "document")
+    DispatchQueue.main.async {
+      NSApp.activate(ignoringOtherApps: true)
+    }
+  }
+
+  private func openHistoryWindow() {
+    openWindow(id: "dictation-history")
     DispatchQueue.main.async {
       NSApp.activate(ignoringOtherApps: true)
     }

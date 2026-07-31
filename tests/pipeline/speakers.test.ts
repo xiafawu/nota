@@ -150,6 +150,31 @@ describe("speaker store v4", () => {
     expect(loaded.speakers.Alice.voiceprints[0].embedding).toEqual([0.25, -0.5, 0.75]);
   });
 
+  it("preserves stored descriptions for contextual recommendations", async () => {
+    await writeFile(
+      file,
+      JSON.stringify({
+        version: 4,
+        speakers: {
+          Alice: {
+            voiceprints: [{ id: "t", embedding: [1, 0], enrolledAt: "t", source: "a" }],
+            description: {
+              text: "Product lead",
+              updatedAt: "2026-07-01T00:00:00.000Z",
+              sourceHistoryIds: ["history-1"],
+            },
+          },
+        },
+      }),
+    );
+    const loaded = await loadProfiles(file);
+    expect(loaded.speakers.Alice.description).toEqual({
+      text: "Product lead",
+      updatedAt: "2026-07-01T00:00:00.000Z",
+      sourceHistoryIds: ["history-1"],
+    });
+  });
+
   it("drops v3 Eagle profiles and warns that re-enrollment is required", async () => {
     const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
     await writeFile(

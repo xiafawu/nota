@@ -115,13 +115,34 @@ struct DictationSettingsView: View {
             Text(entry.label).tag(entry.id as String?)
           }
         }
+
+        Toggle("Use focused app context", isOn: $settings.screenContextEnabled)
+          .help("Use a bounded sample from the focused app only for LLM Polish.")
+
+        if settings.screenContextEnabled {
+          Toggle(
+            "Allow Screen Recording OCR fallback",
+            isOn: $settings.screenCaptureFallbackEnabled
+          )
+          .help("Capture the target app's window once at dictation completion when Accessibility text is insufficient.")
+        }
       }
     } header: {
       Text("Polish")
     } footer: {
       VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
         footerText("Applies a language model to improve the formatted text before it is inserted.")
-        footerText("Sent to the provider: the formatted text, your custom dictionary terms, and the name and window title of the app you were dictating into. Never audio or raw recognition data.")
+        footerText("By default, the provider receives only the formatted text and your custom dictionary terms — never audio or raw recognition data.")
+        if settings.screenContextEnabled {
+          footerText("Focused app context is read only during a user-initiated dictation and sent only to LLM Polish: the app name, window title, and a bounded text sample from the focused control. It is not used to change raw audio transcription, and it is not saved in history or logs.")
+          if settings.screenCaptureFallbackEnabled {
+            footerText("If Accessibility text is unavailable or too short, Nota may ask for Screen Recording permission at dictation completion. It captures only the target app window once, OCRs it in memory, sends bounded redacted text, then discards the image and text. If permission or capture is unavailable, dictation continues normally.")
+          } else {
+            footerText("Accessibility text is preferred. No screenshot or Screen Recording permission is used while this fallback is off.")
+          }
+        } else {
+          footerText("Focused app context is off. Nota does not send app, window, or screen text to the polish provider.")
+        }
         footerText("Local formatting always runs first and is the offline fallback if polish fails.")
       }
     }

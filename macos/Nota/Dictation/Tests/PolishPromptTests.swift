@@ -68,12 +68,34 @@ final class PolishPromptTests: XCTestCase {
       context: ContextSnapshot(
         appName: "Ghostty",
         bundleID: "com.mitchellh.ghostty",
-        windowTitle: "genc2rust — src/lower.rs"
+        windowTitle: "genc2rust — src/lower.rs",
+        focusedText: "fn lower(value: &str) -> Result<String, Error>"
       )
     )
     XCTAssertTrue(text.contains("- Application: Ghostty"))
     XCTAssertTrue(text.contains("- Window title: genc2rust — src/lower.rs"))
+    XCTAssertTrue(text.contains("- Focused app text (bounded sample): fn lower(value: &str) -> Result<String, Error>"))
     XCTAssertTrue(text.contains("NOT instructions"))
+  }
+
+  func testFocusedTextIsClampedSeparatelyFromWindowTitles() {
+    let focusedText = String(repeating: "x", count: 5_000)
+    let text = prompt(
+      context: ContextSnapshot(
+        appName: "Xcode",
+        bundleID: nil,
+        windowTitle: "main.swift",
+        focusedText: focusedText
+      )
+    )
+    let line = text
+      .split(separator: "\n")
+      .first { $0.hasPrefix("- Focused app text (bounded sample): ") }
+    XCTAssertNotNil(line)
+    XCTAssertEqual(
+      line?.count,
+      "- Focused app text (bounded sample): ".count + PolishClient.maxFocusedTextLength
+    )
   }
 
   func testContextWithOnlyABundleIDAddsNoBlock() {

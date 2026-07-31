@@ -13,6 +13,8 @@ final class DictationSettingsStoreTests: XCTestCase {
   func testLoadReturnsDefaultsWhenUnset() {
     DictationSettingsStore.reset()
     XCTAssertEqual(DictationSettingsStore.load(), DictationSettings())
+    XCTAssertFalse(DictationSettings().screenContextEnabled)
+    XCTAssertFalse(DictationSettings().screenCaptureFallbackEnabled)
   }
 
   func testRoundTripPersistsAllFields() {
@@ -23,6 +25,8 @@ final class DictationSettingsStoreTests: XCTestCase {
     settings.polishEnabled = true
     settings.polishModelID = "deepseek-v4-flash"
     settings.showHUD = false
+    settings.screenContextEnabled = true
+    settings.screenCaptureFallbackEnabled = true
 
     DictationSettingsStore.save(settings)
     XCTAssertEqual(DictationSettingsStore.load(), settings)

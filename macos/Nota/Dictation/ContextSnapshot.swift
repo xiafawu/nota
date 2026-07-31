@@ -16,12 +16,35 @@ import Foundation
 struct ContextSnapshot: Equatable, Sendable {
   var appName: String?
   var bundleID: String?
+  /// Kept in-process so the optional screenshot fallback can target the
+  /// session's window. Never included in a model prompt.
+  var processID: pid_t? = nil
   var windowTitle: String?
+  /// A bounded sample from the focused accessibility element, when the user
+  /// explicitly enabled focused-app context for polish. This is never used as
+  /// an audio-recognition hint.
+  var focusedText: String? = nil
 
-  static let empty = ContextSnapshot(appName: nil, bundleID: nil, windowTitle: nil)
+  static let empty = ContextSnapshot(
+    appName: nil,
+    bundleID: nil,
+    processID: nil,
+    windowTitle: nil,
+    focusedText: nil
+  )
 
   var isEmpty: Bool {
-    appName == nil && bundleID == nil && windowTitle == nil
+    appName == nil && bundleID == nil && windowTitle == nil && focusedText == nil
+  }
+
+  /// Context that may be sent to the cleanup model for this session.
+  ///
+  /// Keeping this policy pure makes the opt-in gate explicit and testable. An
+  /// unavailable or empty accessibility snapshot is a normal no-context case,
+  /// not an error that should interrupt dictation.
+  func cleanupContext(enabled: Bool) -> ContextSnapshot? {
+    guard enabled, !isEmpty else { return nil }
+    return self
   }
 
   /// Snapshot the frontmost app and its focused window title.
@@ -34,14 +57,16 @@ struct ContextSnapshot: Equatable, Sendable {
   ///
   /// AX failures (untrusted process, app without an AX-visible window) degrade
   /// to nil rather than throwing.
-  static func capture() async -> ContextSnapshot {
+  static func capture(includeFocusedText: Bool = false) async -> ContextSnapshot {
     guard let frontApp = await MainActor.run(body: { frontmostApp() }) else {
       return .empty
     }
     return ContextSnapshot(
       appName: frontApp.name,
       bundleID: frontApp.bundleID,
-      windowTitle: focusedWindowTitle(pid: frontApp.pid)
+      processID: frontApp.pid,
+      windowTitle: focusedWindowTitle(pid: frontApp.pid),
+      focusedText: includeFocusedText ? focusedText(pid: frontApp.pid) : nil
     )
   }
 
@@ -88,6 +113,125 @@ struct ContextSnapshot: Equatable, Sendable {
 
     let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
     return trimmed.isEmpty ? nil : trimmed
+  }
+
+  /// Read only the focused accessibility element, never the window hierarchy.
+  ///
+  /// The value is intentionally sampled once per user-initiated dictation and
+  /// bounded before it can leave the process. Secure/password controls and
+  /// controls with a sensitive accessibility label are refused. If an app does
+  /// not expose a value or times out, the caller gets nil and ordinary
+  /// dictation continues.
+  private static func focusedText(pid: pid_t) -> String? {
+    guard AXIsProcessTrusted() else { return nil }
+    let appElement = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(appElement, 0.25)
+
+    var focusedValue: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(
+      appElement,
+      kAXFocusedUIElementAttribute as CFString,
+      &focusedValue
+    ) == .success, let focusedValue,
+    CFGetTypeID(focusedValue) == AXUIElementGetTypeID()
+    else { return nil }
+
+    let element = focusedValue as! AXUIElement
+    guard !element.hasSecureRole, !hasSensitiveContextLabel(element) else { return nil }
+
+    // A selected range is the most relevant and least surprising context for
+    // a dictation cleanup request. If there is no selection, prefer the
+    // element's visible range before falling back to its bounded value.
+    if let selected = stringAttribute(element, kAXSelectedTextAttribute as CFString),
+       let selected = boundedFocusedText(selected)
+    {
+      return selected
+    }
+
+    if let visibleRange = rangeAttribute(element, kAXVisibleCharacterRangeAttribute as CFString),
+       let visible = stringForRange(element, visibleRange),
+       let visible = boundedFocusedText(visible)
+    {
+      return visible
+    }
+
+    return stringAttribute(element, kAXValueAttribute as CFString)
+      .flatMap(boundedFocusedText)
+  }
+
+  private static func stringAttribute(_ element: AXUIElement, _ attribute: CFString) -> String? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success else {
+      return nil
+    }
+    return value as? String
+  }
+
+  private static func rangeAttribute(_ element: AXUIElement, _ attribute: CFString) -> CFRange? {
+    var value: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(element, attribute, &value) == .success,
+          let value,
+          CFGetTypeID(value) == AXValueGetTypeID(),
+          AXValueGetType(value as! AXValue) == .cfRange
+    else { return nil }
+
+    var range = CFRange()
+    guard AXValueGetValue(value as! AXValue, .cfRange, &range) else { return nil }
+    return range.location >= 0 && range.length >= 0 ? range : nil
+  }
+
+  private static func stringForRange(_ element: AXUIElement, _ range: CFRange) -> String? {
+    var requestedRange = range
+    guard let parameter = AXValueCreate(.cfRange, &requestedRange) else { return nil }
+    var value: CFTypeRef?
+    guard AXUIElementCopyParameterizedAttributeValue(
+      element,
+      kAXStringForRangeParameterizedAttribute as CFString,
+      parameter,
+      &value
+    ) == .success else { return nil }
+    return value as? String
+  }
+
+  /// Internal for tests: this is the last bound before focused text can enter
+  /// a model prompt.
+  static func boundedFocusedText(_ value: String?) -> String? {
+    guard let value else { return nil }
+    let flattened = value.unicodeScalars.map { scalar -> Character in
+      if CharacterSet.whitespacesAndNewlines.contains(scalar)
+        || CharacterSet.controlCharacters.contains(scalar)
+      {
+        return " "
+      }
+      return Character(String(scalar))
+    }
+    let collapsed = String(flattened)
+      .split(separator: " ", omittingEmptySubsequences: true)
+      .joined(separator: " ")
+    guard !collapsed.isEmpty else { return nil }
+    guard collapsed.count > maxFocusedTextLength else { return collapsed }
+    return String(collapsed.prefix(maxFocusedTextLength - 1))
+      .trimmingCharacters(in: .whitespaces) + "…"
+  }
+
+  private static let maxFocusedTextLength = 2_000
+
+  private static func hasSensitiveContextLabel(_ element: AXUIElement) -> Bool {
+    let labels = [
+      stringAttribute(element, kAXTitleAttribute as CFString),
+      stringAttribute(element, kAXDescriptionAttribute as CFString),
+      stringAttribute(element, kAXRoleAttribute as CFString),
+      stringAttribute(element, kAXSubroleAttribute as CFString),
+    ]
+      .compactMap { $0?.lowercased() }
+
+    let sensitiveMarkers = [
+      "password", "passcode", "secret", "private key", "api key", "access token",
+      "auth token", "security code", "credit card", "cvv", "credential",
+    ]
+    return labels.contains { label in
+      sensitiveMarkers.contains { label.contains($0) }
+    }
   }
 
   /// Identifier-shaped tokens harvested from the window title.

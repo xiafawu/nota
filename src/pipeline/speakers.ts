@@ -4,6 +4,10 @@ import path from "node:path";
 import { createInterface } from "node:readline";
 import type { TranscriptSegment } from "./transcribe.js";
 import { cosine, MATCH_THRESHOLD, TENTATIVE_THRESHOLD } from "./embed.js";
+import type {
+  AcousticSpeakerCandidate,
+  SpeakerResolutionRecommendation,
+} from "./contextual-speakers.js";
 
 const SPEAKERS_DIR = path.join(homedir(), ".nota");
 const LEGACY_SPEAKERS_FILE = path.join(homedir(), ".meetingsum", "speakers.json");
@@ -87,7 +91,28 @@ export async function loadProfiles(
       },
     );
     if (vps.length === 0) continue;
-    speakers[name] = { voiceprints: vps };
+    const rawDescription = (profile as { description?: unknown })?.description;
+    const description =
+      rawDescription && typeof rawDescription === "object" &&
+      typeof (rawDescription as { text?: unknown }).text === "string"
+        ? {
+            text: (rawDescription as { text: string }).text,
+            updatedAt:
+              typeof (rawDescription as { updatedAt?: unknown }).updatedAt === "string"
+                ? (rawDescription as { updatedAt: string }).updatedAt
+                : "",
+            sourceHistoryIds: Array.isArray(
+              (rawDescription as { sourceHistoryIds?: unknown }).sourceHistoryIds,
+            )
+              ? (rawDescription as { sourceHistoryIds: unknown[] }).sourceHistoryIds.filter(
+                  (id): id is string => typeof id === "string",
+                )
+              : [],
+          }
+        : undefined;
+    speakers[name] = description
+      ? { voiceprints: vps, description }
+      : { voiceprints: vps };
   }
   if (dropped > 0) {
     process.stderr.write(
@@ -201,6 +226,31 @@ export function matchProfiles(
   return rankMatches(scoredByLabel, names);
 }
 
+/**
+ * Return the best acoustic score for each enrolled profile. Unlike
+ * `matchProfiles`, this preserves a ranked candidate set for the explicit
+ * ambiguity UI and contextual recommender.
+ */
+export function rankProfileCandidates(
+  labelEmbeddings: Record<string, number[]>,
+  store: SpeakerStore,
+  limit = 3,
+): Record<string, AcousticSpeakerCandidate[]> {
+  const out: Record<string, AcousticSpeakerCandidate[]> = {};
+  for (const [label, embedding] of Object.entries(labelEmbeddings)) {
+    const candidates: AcousticSpeakerCandidate[] = [];
+    for (const [name, profile] of Object.entries(store.speakers)) {
+      const confidence = profile.voiceprints.reduce(
+        (best, voiceprint) => Math.max(best, cosine(embedding, voiceprint.embedding)),
+        -Infinity,
+      );
+      if (Number.isFinite(confidence)) candidates.push({ name, confidence });
+    }
+    out[label] = candidates.sort((a, b) => b.confidence - a.confidence).slice(0, limit);
+  }
+  return out;
+}
+
 export interface TentativeMatch {
   name: string;
   confidence: number;
@@ -215,13 +265,146 @@ export interface PromptResult {
   // a new name (not a tentative confirmation). Caller uses this to decide
   // which labels to enroll into the profile store.
   enroll: Record<string, string>;
+  // Explicit user corrections selecting an enrolled candidate. The caller
+  // may learn these as an additional voiceprint after checking clip quality.
+  learn?: Record<string, string>;
+}
+
+export interface SpeakerPromptOptions {
+  ask?: (question: string) => Promise<string>;
+  write?: (message: string) => void;
+}
+
+function collectSpeakerSamples(
+  segments: TranscriptSegment[],
+  labels: string[],
+): Record<string, string[]> {
+  const samples: Record<string, string[]> = {};
+  for (const seg of segments) {
+    if (!seg.speaker || !labels.includes(seg.speaker)) continue;
+    if (!samples[seg.speaker]) samples[seg.speaker] = [];
+    if (samples[seg.speaker].length < 3) samples[seg.speaker].push(seg.text);
+  }
+  return samples;
+}
+
+function printSpeakerSamples(
+  write: (message: string) => void,
+  label: string,
+  samples: Record<string, string[]>,
+): void {
+  write(`${label} said:`);
+  for (const sample of samples[label] ?? []) write(`  "${sample}"`);
+}
+
+/**
+ * Explicit local resolution UI for the hybrid path. Every recommendation is
+ * advisory: selecting an enrolled candidate is a user correction, while a
+ * new name is only enrolled after the user explicitly accepts or enters it.
+ */
+export async function promptForSpeakerResolutions(
+  segments: TranscriptSegment[],
+  recommendations: SpeakerResolutionRecommendation[],
+  options: SpeakerPromptOptions = {},
+): Promise<PromptResult> {
+  const rl = options.ask
+    ? undefined
+    : createInterface({ input: process.stdin, output: process.stderr });
+  const write = options.write ?? ((message: string) => console.error(message));
+  const ask = options.ask ?? ((question: string) =>
+    new Promise<string>((resolve) => rl!.question(question, resolve)));
+  const samples = collectSpeakerSamples(
+    segments,
+    recommendations.map((recommendation) => recommendation.label),
+  );
+  const names: Record<string, string> = {};
+  const enroll: Record<string, string> = {};
+  const learn: Record<string, string> = {};
+
+  write("\n--- Speaker Resolution ---");
+  write("Recommendations are advisory; choose explicitly or keep a temporary identity.\n");
+
+  try {
+    for (const recommendation of recommendations) {
+      printSpeakerSamples(write, recommendation.label, samples);
+      if (recommendation.category === "ambiguous-existing") {
+        write("Ambiguous existing speaker:");
+        if (recommendation.candidates.length === 0) {
+          write("  No enrolled candidate cleared the acoustic floor.");
+        } else {
+          recommendation.candidates.forEach((candidate, index) => {
+            write(
+              `  ${index + 1}) ${candidate.name} (${Math.round(candidate.confidence * 100)}%) — ${candidate.evidence}`,
+            );
+          });
+        }
+        write("  r) reject all candidates (keep temporary identity)");
+        write("  n) enter a new confirmed name");
+        const reply = (await ask("Choose a candidate, r, or n: ")).trim();
+        const index = Number.parseInt(reply, 10) - 1;
+        if (index >= 0 && index < recommendation.candidates.length) {
+          const selected = recommendation.candidates[index];
+          names[recommendation.label] = selected.name;
+          // A selected existing candidate is an explicit correction. The
+          // orchestrator adds this run's clip only when enough speech exists.
+          learn[recommendation.label] = selected.name;
+        } else if (reply.toLowerCase() === "n") {
+          const name = (await ask("Enter the new speaker name (or press Enter to keep temporary): ")).trim();
+          if (name) {
+            names[recommendation.label] = name;
+            enroll[recommendation.label] = name;
+          }
+        }
+      } else {
+        write("New/unrecognized speaker: the transcript will keep a temporary identity unless you confirm a name.");
+        if (recommendation.proposedName) {
+          const confidence = recommendation.confidence === undefined
+            ? ""
+            : ` (${Math.round(recommendation.confidence * 100)}%)`;
+          write(`  Suggested from self-introduction: ${recommendation.proposedName}${confidence}`);
+          if (recommendation.evidence) write(`  Evidence: ${recommendation.evidence}`);
+          write("  y) accept suggestion and enroll");
+          write("  n) enter a different confirmed name");
+          write("  r) reject (keep temporary identity)");
+          const reply = (await ask("Choose y, n, or r: ")).trim().toLowerCase();
+          if (reply === "y") {
+            names[recommendation.label] = recommendation.proposedName;
+            enroll[recommendation.label] = recommendation.proposedName;
+          } else if (reply === "n") {
+            const name = (await ask("Enter the confirmed speaker name (or press Enter to keep temporary): ")).trim();
+            if (name) {
+              names[recommendation.label] = name;
+              enroll[recommendation.label] = name;
+            }
+          }
+        } else {
+          const name = (await ask("Enter a confirmed name (or press Enter to keep temporary): ")).trim();
+          if (name) {
+            names[recommendation.label] = name;
+            enroll[recommendation.label] = name;
+          }
+        }
+      }
+      write("");
+    }
+  } finally {
+    rl?.close();
+  }
+
+  write("--- Speaker resolution complete ---\n");
+  return { names, enroll, learn };
 }
 
 export async function promptForSpeakerNames(
   segments: TranscriptSegment[],
   unmatchedSpeakers: string[],
   tentative: Record<string, TentativeMatch> = {},
+  recommendations?: SpeakerResolutionRecommendation[],
+  options?: SpeakerPromptOptions,
 ): Promise<PromptResult> {
+  if (recommendations) {
+    return promptForSpeakerResolutions(segments, recommendations, options);
+  }
   // Gather sample utterances per speaker. Tentative-band labels are not in
   // unmatchedSpeakers (they have a candidate name), so include them too so
   // the user has context when confirming.
@@ -311,7 +494,7 @@ export async function promptForSpeakerNames(
   rl.close();
   console.error("--- Saved! Future meetings will auto-identify these speakers. ---\n");
 
-  return { names, enroll };
+  return { names, enroll, learn: {} };
 }
 
 export function applySpeakerNames(

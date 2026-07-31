@@ -104,7 +104,10 @@ enum PolishClient {
 
     guard (200..<300).contains(httpResponse.statusCode) else {
       let bodyStr = String(data: data, encoding: .utf8) ?? "<no body>"
-      logger.error("polish HTTP \(httpResponse.statusCode): \(bodyStr, privacy: .public)")
+      // The response may echo user text or provider-side request context. Keep
+      // it available to the caller's ordinary failure UI, but never write it
+      // to the app log.
+      logger.error("polish HTTP \(httpResponse.statusCode)")
       throw PolishError.httpError(httpResponse.statusCode, bodyStr)
     }
 
@@ -171,6 +174,12 @@ enum PolishClient {
       if let windowTitle = sanitizedContextValue(context.windowTitle) {
         lines.append("- Window title: \(windowTitle)")
       }
+      if let focusedText = sanitizedContextValue(
+        context.focusedText,
+        maxLength: maxFocusedTextLength
+      ) {
+        lines.append("- Focused app text (bounded sample): \(focusedText)")
+      }
       if !lines.isEmpty {
         sections.append(
           """
@@ -204,6 +213,9 @@ enum PolishClient {
   /// Longest context value kept in the prompt. A window title is a label, not a
   /// document; past this it is padding at best.
   static let maxContextValueLength = 200
+  /// Focused text is more useful than a title when it has a little room for
+  /// nearby identifiers, but it remains deliberately small and ephemeral.
+  static let maxFocusedTextLength = 2_000
 
   /// Flatten a context value to a single short line before it is interpolated.
   ///
@@ -212,7 +224,10 @@ enum PolishClient {
   /// title:" line entirely and write what looks like a new prompt section, and
   /// the app that owns that title is not the user. Returns nil when nothing
   /// printable survives, so no empty bullet is emitted.
-  static func sanitizedContextValue(_ value: String?) -> String? {
+  static func sanitizedContextValue(
+    _ value: String?,
+    maxLength: Int = maxContextValueLength
+  ) -> String? {
     guard let value else { return nil }
     var flattened = ""
     for scalar in value.unicodeScalars {
@@ -227,8 +242,8 @@ enum PolishClient {
       .split(separator: " ", omittingEmptySubsequences: true)
       .joined(separator: " ")
     guard !collapsed.isEmpty else { return nil }
-    guard collapsed.count > maxContextValueLength else { return collapsed }
-    return String(collapsed.prefix(maxContextValueLength - 1))
+    guard collapsed.count > maxLength else { return collapsed }
+    return String(collapsed.prefix(maxLength - 1))
       .trimmingCharacters(in: .whitespaces) + "…"
   }
 }
@@ -241,6 +256,23 @@ enum PolishError: LocalizedError {
   case network(String)
   case httpError(Int, String)
   case invalidResponse(String)
+
+  /// Safe diagnostic text for Nota's logs. HTTP bodies can contain an echoed
+  /// dictation or context sample, so they are intentionally excluded.
+  var safeLogDescription: String {
+    switch self {
+    case .invalidModel(let id):
+      return "invalid model \(id)"
+    case .missingKey(let provider):
+      return "missing key for \(provider)"
+    case .network(let detail):
+      return "network error: \(detail)"
+    case .httpError(let code, _):
+      return "HTTP \(code)"
+    case .invalidResponse(let detail):
+      return "invalid response: \(detail)"
+    }
+  }
 
   var errorDescription: String? {
     switch self {

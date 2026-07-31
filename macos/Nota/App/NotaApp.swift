@@ -59,6 +59,10 @@ struct NotaApp: App {
       #endif
     }
 
+    Window("Dictation History", id: "dictation-history") {
+      DictationHistoryView(controller: dictationController)
+    }
+
     Settings {
       SettingsView(
         identifySpeakers: $model.identifySpeakers,
