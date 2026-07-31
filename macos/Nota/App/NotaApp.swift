@@ -166,14 +166,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   /// Dock-icon click with no visible windows must bring the main window back:
   /// the MenuBarExtra scene keeps the app alive after the last window closes,
   /// and AppKit's default reopen does nothing for a retained SwiftUI window.
+  /// When the WindowGroup has released its last window entirely, the status
+  /// label asks SwiftUI's `openWindow` environment to create it again.
   func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-    guard !flag else { return true }
+    guard !flag else {
+      sender.activate(ignoringOtherApps: true)
+      return true
+    }
     let main = sender.windows.first { $0.identifier?.rawValue.hasPrefix("document") == true }
       ?? sender.windows.first { !($0 is NSPanel) && $0.canBecomeMain }
-    guard let window = main else { return true }
-    if window.isMiniaturized { window.deminiaturize(nil) }
-    window.makeKeyAndOrderFront(nil)
-    sender.activate(ignoringOtherApps: true)
+    if let window = main {
+      if window.isMiniaturized { window.deminiaturize(nil) }
+      window.makeKeyAndOrderFront(nil)
+      sender.activate(ignoringOtherApps: true)
+    } else {
+      NotificationCenter.default.post(name: .notaReopenMainWindow, object: nil)
+    }
     return false
   }
 
@@ -185,4 +193,5 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension Notification.Name {
   static let notaOpenURLs = Notification.Name("NotaOpenURLs")
+  static let notaReopenMainWindow = Notification.Name("NotaReopenMainWindow")
 }

@@ -3,6 +3,7 @@ import SwiftUI
 
 struct DictationStatusLabel: View {
   @ObservedObject var controller: DictationController
+  @Environment(\.openWindow) private var openWindow
 
   var body: some View {
     // Icon-only status item; the full state text lives in the accessibility
@@ -11,6 +12,12 @@ struct DictationStatusLabel: View {
       .accessibilityLabel("Nota Dictation: \(controller.state.statusTitle)")
       .onAppear {
         controller.start()
+      }
+      .onReceive(NotificationCenter.default.publisher(for: .notaReopenMainWindow)) { _ in
+        openWindow(id: "document")
+        DispatchQueue.main.async {
+          NSApp.activate(ignoringOtherApps: true)
+        }
       }
   }
 }
