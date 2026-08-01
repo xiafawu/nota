@@ -479,6 +479,14 @@ final class DictationController: ObservableObject {
       // SpeechAnalyzer session that fell back to SFSpeechRecognizer reports
       // finality once, at the end, so it has neither a live draft nor segments.
       self.isLiveDraftSession = plan.wantsLiveDraft && stream.supportsLiveDraft
+      Task {
+        await DebugFileLog.shared().write(
+          "session gate mode=\(plan.deliversMidSession ? "streaming" : "batch") "
+            + "wantsDraft=\(plan.wantsLiveDraft) "
+            + "supportsDraft=\(stream.supportsLiveDraft) "
+            + "liveDraft=\(self.isLiveDraftSession)"
+        )
+      }
       self.isStreamingSession = self.deliveryQueue != nil && stream.deliversSegments
       if plan.deliversMidSession, !self.isStreamingSession {
         self.logger.info("Streaming delivery unavailable this session — using batch delivery")
