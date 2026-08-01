@@ -270,7 +270,7 @@ enum HUDPrompterMetrics {
   ///
   /// Both ends matter. Below the floor the card would flicker between one and
   /// three lines as the first sentence lands; above the ceiling it would keep
-  /// growing downward until it ran off the screen.
+  /// growing until it ran off the top of the screen.
   static func clampedLineCount(_ lines: Int) -> Int {
     min(maxLines, max(minLines, lines))
   }
@@ -403,8 +403,8 @@ struct DictationHUDPrompterView: View {
     )
 
     VStack(alignment: .leading, spacing: HUDPrompterMetrics.headerSpacing) {
-      header
       bodyBlock(window: window, width: HUDPrompterMetrics.bodyWidth)
+      header
     }
     .padding(.horizontal, HUDPrompterMetrics.horizontalPadding)
     .padding(.vertical, HUDPrompterMetrics.verticalPadding)
@@ -515,12 +515,12 @@ extension HUDStyle {
   /// The tallest this style's card can become, or nil when its height is not
   /// the panel's to reserve.
   ///
-  /// `DictationHUDPanel.reposition` holds this much room below the panel so a
-  /// later growth never reaches the bottom of the screen. Without it, a card
-  /// anchored under a window that already sits on the screen's bottom edge
-  /// grows downward, is shoved back up by `DictationHUDPanel.clamped`, and its
-  /// top edge — the one thing "grow DOWN" pins — walks into the window it hangs
-  /// under.
+  /// `DictationHUDPanel.reposition` holds this much room above the panel so a
+  /// later growth never reaches the top of the screen. Without it, a card
+  /// anchored under a window that already sits near the screen's top grows
+  /// upward, is shoved back down by `DictationHUDPanel.clamped`, and its
+  /// bottom edge — the one thing upward growth pins — walks away from the
+  /// anchor.
   ///
   /// The bar cannot grow at all, and the pill's positioning is the regression
   /// baseline this change is not allowed to move: both return nil and go on
@@ -555,8 +555,8 @@ struct DictationHUDRootView: View {
       switch style {
       case .pill:
         // The growing pill: finalized lines, then the volatile tail on its
-        // own line. Same content feed as the prompter, same height behavior
-        // as the old single-line pill — it only ever grows downward.
+        // own line. Same content feed as the prompter; the panel grows it
+        // upward with the bottom edge pinned.
         DictationHUDContentView(state: state, roughDraft: draft.growingText)
       case .bar:
         DictationHUDBarView(state: state, draft: draft)

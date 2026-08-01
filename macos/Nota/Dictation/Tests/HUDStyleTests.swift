@@ -319,9 +319,9 @@ final class HUDBarSizingTests: XCTestCase {
 
 // MARK: - Prompter sizing
 
-/// The prompter grows downward and stops. The cap is what keeps a HUD that
-/// hangs *under* the focused window from walking up into it once the session
-/// runs long — the same rule the pill's two-line draft limit encodes.
+/// The prompter grows upward and stops. The cap is what keeps a HUD that
+/// hangs *under* the focused window from climbing into it once the session
+/// runs long — the same rule the pill's draft-line limit encodes.
 @MainActor
 final class HUDPrompterSizingTests: XCTestCase {
   func testLineCountIsClampedAtBothEnds() {

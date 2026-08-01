@@ -54,7 +54,7 @@ struct HUDDraft: Equatable, Sendable {
 
   /// The whole session as the growing pill renders it: every finalized line,
   /// then the in-flight tail on its own line. The pill widens once and then
-  /// only ever grows downward, so nothing the user has said ever leaves the
+  /// only ever grows taller, so nothing the user has said ever leaves the
   /// block while they keep talking.
   var growingText: String {
     guard !finalized.isEmpty else { return volatileTail }

@@ -89,10 +89,12 @@ final class DictationHUDPanel: NSPanel {
     // runs on every throttled RMS tick.
     guard abs(size.width - frame.width) > 0.5 || abs(size.height - frame.height) > 0.5
     else { return }
-    // Grow DOWN, not up: the HUD hangs 12pt below the focused window's bottom
-    // edge (see reposition()), so a bottom-anchored resize would push a
-    // two-line draft up into that window. Fixed maxY keeps the gap.
-    frame.origin.y -= size.height - frame.size.height
+    // Grow UP, not down: the pill's bottom edge is its anchor — it hangs 12pt
+    // below the focused window's bottom edge (see reposition()) — and the
+    // newest line is pinned to that bottom edge. Growing upward keeps the
+    // reading line exactly where it was placed while the card's top edge
+    // climbs. `pillOriginY` reserved the grown height at placement, so this
+    // never walks the card off the top of the screen.
     frame.origin.x -= (size.width - frame.size.width) / 2
     frame.size = size
     frame = Self.clamped(frame, to: screen ?? NSScreen.main)
@@ -127,8 +129,8 @@ final class DictationHUDPanel: NSPanel {
   }
 
   /// Shift (never resize) a window frame so the pill inside it stays 8pt
-  /// within the screen's visible area. Growing downward can otherwise walk the
-  /// pill off the bottom of the screen.
+  /// within the screen's visible area. Growing upward can otherwise walk the
+  /// pill off the top of the screen.
   ///
   /// Internal, not private, so the interaction with the growth room
   /// `HUDPanelLayout.pillOriginY` reserves can be asserted without a screen:
@@ -316,15 +318,15 @@ enum HUDPanelLayout {
   /// The pill's bottom-edge y for one anchor window, one screen, and a style
   /// that may still grow to `reservedHeight`.
   ///
-  /// `reservedHeight` is the whole point. `DictationHUDPanel.update` grows a
-  /// card **downward** with its top edge pinned, because the HUD hangs under
-  /// the focused window and a bottom-anchored resize would push it up into that
-  /// window. But `clamped` then shoves the frame back onto the screen, and when
-  /// the anchor window's own bottom edge is already at the screen's bottom
-  /// there is nowhere for the growth to go: every extra line moves the top edge
-  /// up into the window, one line at a time. Reserving the growth room at
-  /// placement time means the clamp never has anything to correct, so the top
-  /// edge really does hold still.
+  /// `reservedHeight` is the whole point. Growth is **upward**: the pill's
+  /// bottom edge is the anchor, so `DictationHUDPanel.update` grows a card up
+  /// with its bottom edge pinned. The clamp would then shove the frame back
+  /// onto the screen when the grown card's top exceeds the screen's top — and
+  /// since the frame's bottom is what placement decided, every extra line
+  /// would push the card down one line at a time. Reserving the growth room at
+  /// placement time means the clamp never has anything to correct: the ceiling
+  /// is computed for the fully grown card, so the bottom edge really does hold
+  /// still.
   ///
   /// Styles that cannot grow (or whose placement is the untouched baseline)
   /// pass their current height and get exactly the old arithmetic.
@@ -334,13 +336,13 @@ enum HUDPanelLayout {
     pillHeight: CGFloat,
     reservedHeight: CGFloat
   ) -> CGFloat {
-    let ceilingY = screenFrame.maxY - pillHeight - screenInset
-    let growth = max(0, reservedHeight - pillHeight)
-    // Never above the ceiling: on a screen too short to hold the fully grown
-    // card, staying on screen beats reserving room that does not exist.
-    let floorY = min(screenFrame.minY + screenInset + growth, ceilingY)
+    // Top of the fully grown card, capped at the screen's top inset. On a
+    // screen too short to hold the fully grown card, staying on screen beats
+    // reserving room that does not exist.
+    let ceilingY = screenFrame.maxY - screenInset - reservedHeight
     let desired = anchorMinY.map { $0 - anchorGap - pillHeight } ?? screenFrame.minY + 60
-    return max(floorY, min(desired, ceilingY))
+    // Never below the screen's bottom inset.
+    return max(screenFrame.minY + screenInset, min(desired, ceilingY))
   }
 }
 

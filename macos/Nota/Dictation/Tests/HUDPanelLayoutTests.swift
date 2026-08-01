@@ -33,6 +33,8 @@ final class HUDPanelLayoutTests: XCTestCase {
     XCTAssertEqual(HUDStyle.prompter.reservedCardHeight, Self.capHeight)
   }
 
+  /// Growth reserves room ABOVE: with the bottom edge pinned at the screen's
+  /// bottom inset, the fully grown card's top still fits on screen.
   func testAnAnchorAtTheScreenBottomStillLeavesRoomForTheFullyGrownCard() {
     let y = HUDPanelLayout.pillOriginY(
       anchorMinY: Self.screen.minY,
@@ -40,27 +42,30 @@ final class HUDPanelLayoutTests: XCTestCase {
       pillHeight: Self.floorHeight,
       reservedHeight: Self.capHeight
     )
+    XCTAssertLessThanOrEqual(
+      y + Self.capHeight, Self.screen.maxY - HUDPanelLayout.screenInset,
+      "the grown card's top would walk off the screen"
+    )
     XCTAssertGreaterThanOrEqual(
-      y - (Self.capHeight - Self.floorHeight), Self.screen.minY + 8,
-      "the card was placed with nowhere to grow"
+      y, Self.screen.minY + HUDPanelLayout.screenInset,
+      "the card was placed below the screen"
     )
   }
 
-  /// The rule the reserve exists to keep: `update` grows the card downward with
-  /// its top edge pinned, and after a reserved placement `clamped` has nothing
-  /// left to correct — so the top edge does not walk up into the window the
-  /// card hangs under.
+  /// Growth is upward with the bottom edge pinned: after a reserved placement,
+  /// the fully grown card's top stays on screen and `clamped` has nothing
+  /// left to correct.
   func testGrowingToTheCapAfterAReservedPlacementIsNotClamped() {
     let grown = Self.grownFrame(reservedHeight: Self.capHeight)
     XCTAssertEqual(DictationHUDPanel.clamped(grown, visibleFrame: Self.screen), grown)
   }
 
   /// The same growth without the reserve, which is the finding: the clamp
-  /// shoves the card back onto the screen and the top edge moves.
-  func testWithoutTheReserveTheClampMovesTheTopEdge() {
+  /// shoves the card back onto the screen and the bottom edge moves.
+  func testWithoutTheReserveTheClampMovesTheBottomEdge() {
     let grown = Self.grownFrame(reservedHeight: Self.floorHeight)
     let corrected = DictationHUDPanel.clamped(grown, visibleFrame: Self.screen)
-    XCTAssertGreaterThan(corrected.maxY, grown.maxY)
+    XCTAssertLessThan(corrected.maxY, grown.maxY)
   }
 
   /// Reserving room the screen does not have would push the card off the top;
@@ -81,7 +86,10 @@ final class HUDPanelLayoutTests: XCTestCase {
       pillHeight: Self.floorHeight,
       reservedHeight: Self.capHeight
     )
-    XCTAssertGreaterThanOrEqual(y - (Self.capHeight - Self.floorHeight), Self.screen.minY + 8)
+    XCTAssertLessThanOrEqual(
+      y + Self.capHeight, Self.screen.maxY - HUDPanelLayout.screenInset,
+      "the grown card's top would walk off the screen"
+    )
   }
 
   // MARK: Animation authority
@@ -123,8 +131,8 @@ final class HUDPanelLayoutTests: XCTestCase {
   }
 
   /// A window frame placed with `reservedHeight` and then grown to the cap the
-  /// way `DictationHUDPanel.update` grows it: origin down, height up, top edge
-  /// pinned.
+  /// way `DictationHUDPanel.update` grows it: origin fixed, height up, bottom
+  /// edge pinned.
   private static func grownFrame(reservedHeight: CGFloat) -> NSRect {
     let margin = DictationHUDContentView.shadowMargin
     let y = HUDPanelLayout.pillOriginY(
@@ -140,7 +148,6 @@ final class HUDPanelLayoutTests: XCTestCase {
       height: floorHeight + margin * 2
     )
     let growth = capHeight - floorHeight
-    frame.origin.y -= growth
     frame.size.height += growth
     return frame
   }
