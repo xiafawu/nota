@@ -26,6 +26,13 @@ struct SettingsView: View {
   @StateObject private var speakers = SpeakersModel()
   @State private var selectedTab: SettingsTab = .general
 
+  /// The git commit this build was stamped with by scripts/deploy-macos-app.sh
+  /// (CFBundleVersion). Lets a tester tell a freshly deployed binary from a
+  /// stale Spotlight copy at a glance.
+  private var buildStamp: String {
+    Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "dev"
+  }
+
   /// The dictation controller, used to reload settings after changes.
   let dictationController: DictationController?
 
@@ -90,6 +97,15 @@ struct SettingsView: View {
               .foregroundStyle(.secondary)
           }
         }
+      } footer: {
+        Text("Build \(buildStamp)")
+          .font(Tokens.settingsCaptionFont)
+          .foregroundStyle(.secondary)
+      }
+      Section {} footer: {
+        Text("Deployed from /Applications/Nota.app — ignore Spotlight duplicates of deleted build products.")
+          .font(Tokens.settingsCaptionFont)
+          .foregroundStyle(.secondary)
       }
     }
     .formStyle(.grouped)

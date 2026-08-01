@@ -72,6 +72,15 @@ fi
 
 mkdir -p "$DEPLOY_DIR"
 
+# Stamp the build with the git commit so testers can tell which binary is
+# running: Settings → General shows it, and a stale Spotlight copy of an old
+# build product lacks it. Re-signing below covers the mutated Info.plist.
+BUILD_HASH="$(git -C "$PROJECT_DIR" rev-parse --short HEAD 2>/dev/null || echo unknown)"
+/usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_HASH" \
+  "$BUILD_APP/Contents/Info.plist" 2>/dev/null \
+  || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string $BUILD_HASH" \
+    "$BUILD_APP/Contents/Info.plist"
+
 # Share-staging inbox. The share extension is sandboxed and its entitlement
 # grants ~/.nota/inbox only — NOT ~/.nota, which would expose the API-key file
 # (~/.nota/config) and speakers.json to a sandboxed process. That means the
