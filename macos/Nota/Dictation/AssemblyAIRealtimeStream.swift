@@ -250,21 +250,11 @@ final class AssemblyAIRealtimeStream: NSObject, SpeechStream {
       openContinuation = nil
     }
 
-    // Check for already-available result under lock
-    let earlyResult: Result<String, any Error>? = stateLock.withLock { _ in
-      if let error = streamError {
-        return .failure(error)
-      }
-      if let text = finalText {
-        return .success(text)
-      }
-      return nil
-    }
-    if let earlyResult {
-      let value = try earlyResult.get()
-      debug("finish() early return chars=\(value.count)")
-      return value
-    }
+    // Deliberately NO early return on accumulated text: a final turn can still
+    // be in flight when the owner releases, and returning now would eat the
+    // last utterance (observed: n-1 of n sentences delivered). The server
+    // flushes in-flight turns before Termination, so the only complete answer
+    // is the one Termination — or the watchdog — seals.
 
     // Send Terminate to signal end-of-stream
     sendTerminate()
@@ -391,9 +381,8 @@ final class AssemblyAIRealtimeStream: NSObject, SpeechStream {
           finalTurnCount += 1
           let text = self.finalText!
           debug("final turn \(self.finalTurnCount) accumulated chars=\(text.count)")
-          let fc = finishContinuation
-          finishContinuation = nil
-          fc?.resume(returning: text)
+          // Do NOT resolve finish() here: more in-flight turns can follow, and
+          // only Termination is the authoritative end of the session.
         }
       }
 

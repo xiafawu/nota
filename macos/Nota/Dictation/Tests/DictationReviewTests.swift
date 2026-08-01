@@ -588,16 +588,20 @@ final class DictationSessionPlanTests: XCTestCase {
   }
 
   func testAssemblyAIGetsALiveDraftButNoMidSessionDelivery() {
-    // Whole formatted turns, not deltas: the HUD rough draft can grow from
-    // Turn events, but nothing can be delivered sentence-by-sentence.
-    for mode in [DeliveryMode.streaming, .review] {
+    // AssemblyAI streams partial Turns in every delivery mode, so the HUD
+    // rough draft is always available; nothing can be delivered
+    // sentence-by-sentence (no deltas), so mid-session delivery stays off.
+    for mode in DeliveryMode.allCases {
       let plan = DictationSessionPlan.make(mode: mode, engine: .assemblyAIRealtime)
       XCTAssertTrue(plan.wantsLiveDraft, "\(mode)")
       XCTAssertFalse(plan.deliversMidSession, "\(mode)")
     }
-    let immediate = DictationSessionPlan.make(mode: .immediate, engine: .assemblyAIRealtime)
-    XCTAssertFalse(immediate.wantsLiveDraft)
-    XCTAssertFalse(immediate.deliversMidSession)
+    XCTAssertTrue(
+      DictationSessionPlan.make(mode: .review, engine: .assemblyAIRealtime).capturesTarget
+    )
+    XCTAssertFalse(
+      DictationSessionPlan.make(mode: .immediate, engine: .assemblyAIRealtime).capturesTarget
+    )
   }
 
   func testReviewStillCapturesTheTargetOnAnEngineWithNoLiveDraft() {

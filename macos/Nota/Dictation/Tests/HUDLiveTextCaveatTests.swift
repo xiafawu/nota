@@ -16,13 +16,17 @@ final class HUDLiveTextCaveatTests: XCTestCase {
     XCTAssertTrue(caveat.contains(DeliveryMode.immediate.label))
   }
 
-  /// AssemblyAI realtime reports whole formatted turns, but it streams Turn
-  /// events as speech is recognized — so streaming and review get a live HUD
-  /// draft, and only Insert on Release (batch) still sits blank.
-  func testAssemblyAIDraftOnlyInStreamingAndReview() {
-    XCTAssertNil(HUDStyle.liveTextCaveat(mode: .streaming, engine: .assemblyAIRealtime))
-    XCTAssertNil(HUDStyle.liveTextCaveat(mode: .review, engine: .assemblyAIRealtime))
-    XCTAssertNotNil(HUDStyle.liveTextCaveat(mode: .immediate, engine: .assemblyAIRealtime))
+  /// AssemblyAI realtime streams Turn events as speech is recognized in every
+  /// delivery mode, so the live draft is available everywhere on that engine.
+  /// Only Apple in Insert on Release mode sits blank.
+  func testAssemblyAIHasNoLiveTextCaveatInAnyMode() {
+    for mode in DeliveryMode.allCases {
+      XCTAssertNil(
+        HUDStyle.liveTextCaveat(mode: mode, engine: .assemblyAIRealtime),
+        "unexpected caveat for \(mode) on AssemblyAI"
+      )
+    }
+    XCTAssertNotNil(HUDStyle.liveTextCaveat(mode: .immediate, engine: .apple))
   }
 
   /// One source of truth: the pane explains exactly the configurations the

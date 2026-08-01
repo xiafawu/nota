@@ -23,14 +23,21 @@ struct DictationSessionPlan: Equatable {
   let capturesTarget: Bool
 
   static func make(mode: DeliveryMode, engine: EngineChoice) -> DictationSessionPlan {
-    // Apple's analyzer reports deltas; AssemblyAI realtime reports whole
-    // formatted turns as Turn events (partials included), which still make a
-    // live HUD draft. Mid-session delivery stays Apple-only — AssemblyAI has no
-    // sentence deltas, so its streaming sessions fall back to batch delivery.
-    let live = (engine == .apple || engine == .assemblyAIRealtime)
-      && (mode == .streaming || mode == .review)
+    // Apple's analyzer only streams when asked (streaming/review); AssemblyAI
+    // realtime streams partial Turns in every mode, so its live HUD draft is
+    // available even for batch delivery — the pill previews what is being said
+    // while the text still lands once, at release. Mid-session delivery stays
+    // Apple-only: AssemblyAI has no sentence deltas, so its streaming sessions
+    // fall back to batch delivery.
+    let wantsDraft: Bool
+    switch engine {
+    case .apple:
+      wantsDraft = mode == .streaming || mode == .review
+    case .assemblyAIRealtime:
+      wantsDraft = true
+    }
     return DictationSessionPlan(
-      wantsLiveDraft: live,
+      wantsLiveDraft: wantsDraft,
       // Streaming appends into whatever had focus when the hotkey went down and
       // keeps appending there for the whole session. Review appends nothing at
       // all until the owner says so.
