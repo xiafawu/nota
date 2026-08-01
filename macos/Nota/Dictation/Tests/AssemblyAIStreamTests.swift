@@ -200,5 +200,15 @@ final class DictationEngineFactoryTests: XCTestCase {
   func testAssemblyAIEngineCreatesAssemblyAIStream() {
     let stream = makeDictationStream(for: .assemblyAIRealtime)
     XCTAssertTrue(stream is AssemblyAIRealtimeStream)
+    // Turn events (partials included) feed the live HUD draft, but whole
+    // formatted turns are not sentence deltas — batch delivery only.
+    XCTAssertTrue(stream.supportsLiveDraft)
+    XCTAssertFalse(stream.deliversSegments)
+  }
+
+  func testAppleEngineWithoutStreamingHasNoLiveDraft() {
+    let stream = makeDictationStream(for: .apple)
+    XCTAssertFalse(stream.supportsLiveDraft)
+    XCTAssertFalse(stream.deliversSegments)
   }
 }

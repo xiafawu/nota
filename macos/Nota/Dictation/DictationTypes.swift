@@ -545,8 +545,8 @@ enum HUDStyle: String, Codable, CaseIterable, Sendable {
         """
     }
     return """
-      Live text needs the Apple On-Device engine — \(engine.label) reports whole \
-      turns at the end of a session, so the panel shows status only.
+      Live text needs an engine that reports as you speak — \(engine.label) \
+      delivers only at the end of a session, so the panel shows status only.
       """
   }
 }

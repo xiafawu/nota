@@ -23,21 +23,23 @@ struct DictationSessionPlan: Equatable {
   let capturesTarget: Bool
 
   static func make(mode: DeliveryMode, engine: EngineChoice) -> DictationSessionPlan {
-    // Only the Apple analyzer reports deltas. AssemblyAI realtime reports whole
-    // formatted turns, so asking it for a live draft yields neither a volatile
-    // tail worth showing nor segments worth accumulating.
-    let live = engine == .apple && (mode == .streaming || mode == .review)
+    // Apple's analyzer reports deltas; AssemblyAI realtime reports whole
+    // formatted turns as Turn events (partials included), which still make a
+    // live HUD draft. Mid-session delivery stays Apple-only — AssemblyAI has no
+    // sentence deltas, so its streaming sessions fall back to batch delivery.
+    let live = (engine == .apple || engine == .assemblyAIRealtime)
+      && (mode == .streaming || mode == .review)
     return DictationSessionPlan(
       wantsLiveDraft: live,
       // Streaming appends into whatever had focus when the hotkey went down and
       // keeps appending there for the whole session. Review appends nothing at
       // all until the owner says so.
-      deliversMidSession: mode == .streaming && live,
+      deliversMidSession: mode == .streaming && engine == .apple,
       // Review captures the same target for the opposite reason streaming does:
       // nothing is delivered during the session, and by the time the owner
       // applies, the session that recognized the audio is long over. Engine
       // independent — the pid is needed however the audio was recognized.
-      capturesTarget: mode == .review || (mode == .streaming && live)
+      capturesTarget: mode == .review || (mode == .streaming && engine == .apple)
     )
   }
 }
@@ -469,7 +471,7 @@ final class DictationController: ObservableObject {
       // Only now is it known what the engine that actually started can do — a
       // SpeechAnalyzer session that fell back to SFSpeechRecognizer reports
       // finality once, at the end, so it has neither a live draft nor segments.
-      self.isLiveDraftSession = stream.deliversSegments
+      self.isLiveDraftSession = plan.wantsLiveDraft && stream.supportsLiveDraft
       self.isStreamingSession = self.deliveryQueue != nil && stream.deliversSegments
       if plan.deliversMidSession, !self.isStreamingSession {
         self.logger.info("Streaming delivery unavailable this session — using batch delivery")

@@ -32,6 +32,15 @@ protocol SpeechStream: AnyObject {
   /// can still land on an engine that cannot provide it, and the caller has to
   /// know that before it decides how to deliver text.
   var deliversSegments: Bool { get }
+  /// True when this stream can render a live rough draft mid-session — it
+  /// yields hypotheses as speech is recognized, even if those hypotheses are
+  /// whole-formatted turns rather than deltas.
+  ///
+  /// Distinct from `deliversSegments`: an engine may preview what is being
+  /// said (HUD rough draft) without being able to deliver sentence deltas into
+  /// the target document. The draft gate uses this; delivery uses
+  /// `deliversSegments`.
+  var supportsLiveDraft: Bool { get }
   func start() async throws
   func feed(_ pcm: AVAudioPCMBuffer) throws
   func finish() async throws -> String
@@ -40,4 +49,6 @@ protocol SpeechStream: AnyObject {
 
 extension SpeechStream {
   var deliversSegments: Bool { false }
+  /// A stream that delivers segments necessarily previews as it goes.
+  var supportsLiveDraft: Bool { deliversSegments }
 }

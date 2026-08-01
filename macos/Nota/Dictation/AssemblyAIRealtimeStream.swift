@@ -39,7 +39,9 @@ enum AssemblyAIError: LocalizedError, Equatable {
 /// `streaming` asks for finalized sentence segments mid-session. Only the Apple
 /// on-device engine can supply them: AssemblyAI realtime reports whole formatted
 /// turns, not deltas, so it ignores the request and the caller falls back to
-/// batch delivery (`SpeechStream.deliversSegments` stays false).
+/// batch delivery (`SpeechStream.deliversSegments` stays false). AssemblyAI does
+/// still yield Turn hypotheses as speech is recognized, so it participates in
+/// the live HUD draft (`supportsLiveDraft`).
 func makeDictationStream(
   for engine: EngineChoice,
   contextualHints: [String] = [],
@@ -130,6 +132,12 @@ final class AssemblyAIRealtimeStream: NSObject, SpeechStream {
 
   private let (stream, hypothesisContinuation) = AsyncStream<Hypothesis>.makeStream()
   var hypotheses: AsyncStream<Hypothesis> { stream }
+
+  /// Turn events (including `end_of_turn: false` partials) stream in as speech
+  /// is recognized, so the HUD rough draft can grow live. The turns are whole
+  /// formatted utterances, not sentence deltas — `deliversSegments` stays false
+  /// and mid-session delivery stays batch.
+  var supportsLiveDraft: Bool { true }
 
   // WebSocket
   private var urlSession: URLSession?

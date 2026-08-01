@@ -587,14 +587,17 @@ final class DictationSessionPlanTests: XCTestCase {
     XCTAssertFalse(plan.capturesTarget, "batch delivery captures at injection time")
   }
 
-  func testAssemblyAIGetsNoLiveDraftInEitherMode() {
-    // Whole formatted turns, not deltas: there is no volatile tail to show and
-    // no segment to accumulate.
+  func testAssemblyAIGetsALiveDraftButNoMidSessionDelivery() {
+    // Whole formatted turns, not deltas: the HUD rough draft can grow from
+    // Turn events, but nothing can be delivered sentence-by-sentence.
     for mode in [DeliveryMode.streaming, .review] {
       let plan = DictationSessionPlan.make(mode: mode, engine: .assemblyAIRealtime)
-      XCTAssertFalse(plan.wantsLiveDraft, "\(mode)")
+      XCTAssertTrue(plan.wantsLiveDraft, "\(mode)")
       XCTAssertFalse(plan.deliversMidSession, "\(mode)")
     }
+    let immediate = DictationSessionPlan.make(mode: .immediate, engine: .assemblyAIRealtime)
+    XCTAssertFalse(immediate.wantsLiveDraft)
+    XCTAssertFalse(immediate.deliversMidSession)
   }
 
   func testReviewStillCapturesTheTargetOnAnEngineWithNoLiveDraft() {
