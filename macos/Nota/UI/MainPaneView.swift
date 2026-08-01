@@ -117,30 +117,41 @@ private struct RichDocumentPane: View {
   /// True once the rich-text body has scrolled beneath the header; drives the
   /// header collapse and the top fade on the body.
   @State private var isBodyScrolled = false
+  /// Bumped only when the summary drawer changes the transcript's viewport.
+  /// `RichTextViewer` uses it to restore the same document offset after the
+  /// enclosing VStack is relaid out.
+  @State private var transcriptLayoutRevision = 0
 
   var body: some View {
-    VStack(spacing: 0) {
-      if let meta = document.meta {
-        DocumentHeaderView(
-          meta: meta,
-          chips: $speakerChips,
-          compact: isBodyScrolled,
-          onRename: onRename,
-          tagEditing: tagEditing
-        )
-        Divider()
-      }
-      EnrichmentSlotView(controller: enrichment)
-      RichTextViewer(
-        attributedString: MainPaneView.applySpeakerColors(to: document.body, chips: speakerChips),
-        onScroll: { offset in
-          let scrolled = offset > Metrics.docHeaderCompactThreshold
-          if scrolled != isBodyScrolled {
-            withAnimation(Tokens.animFast) { isBodyScrolled = scrolled }
-          }
+    GeometryReader { proxy in
+      VStack(spacing: 0) {
+        if let meta = document.meta {
+          DocumentHeaderView(
+            meta: meta,
+            chips: $speakerChips,
+            compact: isBodyScrolled,
+            onRename: onRename,
+            tagEditing: tagEditing
+          )
+          Divider()
         }
-      )
-      .mask(bodyFadeMask)
+        EnrichmentSlotView(
+          controller: enrichment,
+          availableHeight: proxy.size.height,
+          onLayoutChange: { transcriptLayoutRevision += 1 }
+        )
+        RichTextViewer(
+          attributedString: MainPaneView.applySpeakerColors(to: document.body, chips: speakerChips),
+          layoutRevision: transcriptLayoutRevision,
+          onScroll: { offset in
+            let scrolled = offset > Metrics.docHeaderCompactThreshold
+            if scrolled != isBodyScrolled {
+              withAnimation(Tokens.animFast) { isBodyScrolled = scrolled }
+            }
+          }
+        )
+        .mask(bodyFadeMask)
+      }
     }
     .animation(Tokens.animFast, value: isBodyScrolled)
   }
@@ -179,10 +190,15 @@ private struct RichDocumentPane: View {
 
 private struct EnrichmentSlotView: View {
   @ObservedObject var controller: EnrichmentController
+  var availableHeight: CGFloat = .infinity
+  var onLayoutChange: () -> Void = {}
 
   @State private var isEditingSummary = false
   @State private var summaryDraft = ""
   @State private var confirmTarget: EnrichmentField?
+  @State private var isSummaryExpanded = false
+  @State private var summaryDrawerHeight = SummaryDrawerLayout.expandedDefaultHeight
+  @State private var summaryResizeStartHeight: CGFloat?
   /// Measured width of the decisions/action-items block, driving the
   /// two-columns-vs-stacked choice (see `structuredSummary`).
   @State private var structuredColumnsWidth: CGFloat = 0
@@ -214,6 +230,12 @@ private struct EnrichmentSlotView: View {
       }
     }
     .animation(Tokens.animFast, value: slotState)
+    .onChange(of: controller.record?.id) { _, _ in
+      isEditingSummary = false
+      isSummaryExpanded = false
+      summaryDrawerHeight = SummaryDrawerLayout.expandedDefaultHeight
+      summaryResizeStartHeight = nil
+    }
     .alert(
       confirmTarget == .tags ? "Regenerate tags?" : "Replace your edited summary?",
       isPresented: Binding(
@@ -260,6 +282,14 @@ private struct EnrichmentSlotView: View {
   private func beginSummaryEdit(narrative: String) {
     summaryDraft = narrative
     isEditingSummary = true
+    if !isSummaryExpanded {
+      isSummaryExpanded = true
+      summaryDrawerHeight = SummaryDrawerLayout.clampedExpandedHeight(
+        SummaryDrawerLayout.expandedDefaultHeight,
+        availableHeight: availableHeight
+      )
+      onLayoutChange()
+    }
   }
 
   private func saveSummaryEdit() {
@@ -331,6 +361,38 @@ private struct EnrichmentSlotView: View {
 
   private func summarySection(narrative: String, edited: Bool) -> some View {
     VStack(alignment: .leading, spacing: 8) {
+      summaryHeader(narrative: narrative, edited: edited)
+
+      if isSummaryExpanded {
+        ScrollView(.vertical) {
+          expandedSummaryContent(narrative: narrative)
+            .padding(.bottom, 8)
+        }
+        .frame(maxHeight: .infinity)
+        .layoutPriority(1)
+      } else {
+        compactSummaryPreview(narrative: narrative)
+          .frame(maxHeight: .infinity, alignment: .topLeading)
+      }
+
+      summaryResizeDivider
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .frame(height: isSummaryExpanded ? expandedSummaryHeight : SummaryDrawerLayout.compactHeight)
+    .padding(.leading, Metrics.gutterWidth)
+    .padding(.trailing, Metrics.richTextInsetX)
+    .padding(.vertical, 10)
+  }
+
+  private var expandedSummaryHeight: CGFloat {
+    SummaryDrawerLayout.clampedExpandedHeight(
+      summaryDrawerHeight,
+      availableHeight: availableHeight
+    )
+  }
+
+  private func summaryHeader(narrative: String, edited: Bool) -> some View {
+    HStack(spacing: 8) {
       HStack(spacing: 8) {
         Text("Summary")
           .font(.headline)
@@ -346,19 +408,55 @@ private struct EnrichmentSlotView: View {
           ProgressView()
             .controlSize(.mini)
         }
-        Spacer()
-        if !isEditingSummary {
-          Button("Edit") { beginSummaryEdit(narrative: narrative) }
-            .controlSize(.small)
-          Button {
-            requestSummaryGeneration()
-          } label: {
-            Label("Regenerate", systemImage: "arrow.clockwise")
-          }
-          .controlSize(.small)
-        }
       }
 
+      Spacer(minLength: 8)
+
+      if !isEditingSummary {
+        Button("Edit") { beginSummaryEdit(narrative: narrative) }
+          .controlSize(.small)
+        Button {
+          requestSummaryGeneration()
+        } label: {
+          Label("Regenerate", systemImage: "arrow.clockwise")
+        }
+        .controlSize(.small)
+      }
+
+      Button {
+        toggleSummaryExpansion()
+      } label: {
+        Label(
+          isSummaryExpanded ? "Show less" : "Show more",
+          systemImage: isSummaryExpanded ? "chevron.up" : "chevron.down"
+        )
+      }
+      .controlSize(.small)
+      .disabled(isEditingSummary)
+      .help(isSummaryExpanded ? "Collapse summary" : "Expand summary")
+      .accessibilityLabel(isSummaryExpanded ? "Collapse summary" : "Expand summary")
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private func compactSummaryPreview(narrative: String) -> some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text(SummaryDrawerLayout.preview(for: narrative))
+        .font(.body)
+        .lineLimit(3)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
+        .onTapGesture { beginSummaryEdit(narrative: narrative) }
+        .help("Click to edit. Expand summary to read the full text.")
+        .accessibilityHint("Click to edit. Use Show more to read the full summary.")
+      errorCaption
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  @ViewBuilder
+  private func expandedSummaryContent(narrative: String) -> some View {
+    VStack(alignment: .leading, spacing: 8) {
       if isEditingSummary {
         TextEditor(text: $summaryDraft)
           .font(.body)
@@ -394,9 +492,89 @@ private struct EnrichmentSlotView: View {
       structuredSummary
       errorCaption
     }
-    .padding(.leading, Metrics.gutterWidth)
-    .padding(.trailing, Metrics.richTextInsetX)
-    .padding(.vertical, 10)
+  }
+
+  @ViewBuilder
+  private var summaryResizeDivider: some View {
+    let divider = ZStack {
+      Rectangle()
+        .fill(Color(nsColor: .separatorColor))
+        .frame(height: 1)
+      Image(systemName: "ellipsis")
+        .font(.caption2)
+        .foregroundStyle(.tertiary)
+        .padding(.horizontal, 4)
+        .background(.background)
+    }
+    .frame(height: 12)
+    .frame(maxWidth: .infinity)
+    .contentShape(Rectangle())
+    .accessibilityElement()
+    .accessibilityLabel("Summary size")
+    .accessibilityValue(
+      isSummaryExpanded
+        ? "\(Int(expandedSummaryHeight.rounded())) points"
+        : "Compact"
+    )
+    .accessibilityHint(
+      isSummaryExpanded
+        ? "Drag up or down to resize the summary."
+        : "Expand the summary to resize it."
+    )
+    .accessibilityAdjustableAction { direction in
+      guard isSummaryExpanded else { return }
+      switch direction {
+      case .increment: adjustSummaryHeight(by: 24)
+      case .decrement: adjustSummaryHeight(by: -24)
+      @unknown default: break
+      }
+    }
+
+    if isSummaryExpanded {
+      divider
+        .gesture(
+          DragGesture(minimumDistance: 2)
+            .onChanged { value in
+              if summaryResizeStartHeight == nil {
+                summaryResizeStartHeight = expandedSummaryHeight
+              }
+              let start = summaryResizeStartHeight ?? expandedSummaryHeight
+              let next = SummaryDrawerLayout.clampedExpandedHeight(
+                start + value.translation.height,
+                availableHeight: availableHeight
+              )
+              guard next != summaryDrawerHeight else { return }
+              summaryDrawerHeight = next
+              onLayoutChange()
+            }
+            .onEnded { _ in summaryResizeStartHeight = nil }
+        )
+    } else {
+      divider
+    }
+  }
+
+  private func toggleSummaryExpansion() {
+    isSummaryExpanded.toggle()
+    if isSummaryExpanded {
+      summaryDrawerHeight = SummaryDrawerLayout.clampedExpandedHeight(
+        SummaryDrawerLayout.expandedDefaultHeight,
+        availableHeight: availableHeight
+      )
+    }
+    onLayoutChange()
+  }
+
+  private func adjustSummaryHeight(by delta: CGFloat) {
+    guard isSummaryExpanded else { return }
+    let current = expandedSummaryHeight
+    let next = SummaryDrawerLayout.clampedExpandedHeight(
+      current + delta,
+      availableHeight: availableHeight
+    )
+    guard next != current else { return }
+    summaryDrawerHeight = next
+    onLayoutChange()
   }
 
   // MARK: Structured summary (topics / decisions / action items, read-only)
