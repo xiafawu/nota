@@ -4,10 +4,15 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
   @ObservedObject var model: NotaModel
+  /// Observed separately from `model` (which holds it as a plain `let`): the
+  /// phase decision reads `liveSession.state`, so ContentView must re-render
+  /// when the session publishes its own changes.
+  @ObservedObject private var liveSession: LiveMeetingSession
   @StateObject private var usageProvider: UsageStatsProvider
 
   init(model: NotaModel) {
     self.model = model
+    _liveSession = ObservedObject(wrappedValue: model.liveSession)
     let projectDir = URL(
       fileURLWithPath: ProcessInfo.processInfo.environment["NOTA_PROJECT_DIR"]
         ?? "/Users/xiafawu/Developer/Nota"
@@ -16,13 +21,24 @@ struct ContentView: View {
   }
 
   private enum Phase {
-    case document, running, home
+    case document, running, home, liveMeeting
   }
 
   private var phase: Phase {
+    // A live session pins the pane until it settles (idle); failed keeps the
+    // error banner on screen instead of silently dropping back to home.
+    if liveSession.state != .idle { return .liveMeeting }
     if model.hasContent { return .document }
     if model.isRunning { return .running }
     return .home
+  }
+
+  private var navigationTitle: String {
+    switch phase {
+    case .running: return model.displayName
+    case .liveMeeting: return "Live Meeting"
+    case .document, .home: return "Nota"
+    }
   }
 
   /// Transient run status only: the pill never persists into the completed
@@ -49,13 +65,15 @@ struct ContentView: View {
         runningView.transition(Self.swapTransition)
       case .home:
         homeView.transition(Self.swapTransition)
+      case .liveMeeting:
+        liveMeetingView.transition(Self.swapTransition)
       }
     }
     .animation(Tokens.animFast, value: phase)
     // No `.toolbarBackground(.hidden)`: the bar stays borderless at rest but
     // regains its scroll-edge material once content scrolls beneath it.
     .toolbar { toolbarContent }
-    .navigationTitle(phase == .running ? model.displayName : "Nota")
+    .navigationTitle(navigationTitle)
     .onChange(of: model.isRunning) { _, running in
       if !running {
         usageProvider.invalidateCache()
@@ -82,6 +100,16 @@ struct ContentView: View {
       }
     }
 
+    // The live-session toggle lives on the toolbar in every non-running phase:
+    // it is the entry point into live dictation and the stop control while one
+    // is active. Hidden while the CLI pipeline runs — a live session would
+    // compete for the same window state.
+    if phase != .running {
+      ToolbarItem(placement: .primaryAction) {
+        liveMeetingButton
+      }
+    }
+
     ToolbarItem(placement: .primaryAction) {
       switch phase {
       case .document:
@@ -93,9 +121,42 @@ struct ContentView: View {
           Label("Settings", systemImage: "gearshape")
         }
         .help("Open settings")
-      case .running:
+      case .running, .liveMeeting:
         EmptyView()
       }
+    }
+  }
+
+  /// Record/stop toggle for live dictation. Idle or failed → start a session;
+  /// recording/stopping → finish it. Disabled only while the backend is
+  /// tearing the session down (the pane's Stop control is too).
+  private var liveMeetingButton: some View {
+    Button {
+      switch liveSession.state {
+      case .idle, .failed:
+        model.startLiveSession()
+      case .recording, .stopping:
+        model.stopLiveSession()
+      }
+    } label: {
+      switch liveSession.state {
+      case .idle, .failed:
+        Label("Live Meeting", systemImage: "mic")
+      case .recording:
+        Label("Stop Live Meeting", systemImage: "stop.fill")
+      case .stopping:
+        Label("Finalizing…", systemImage: "stop.fill")
+      }
+    }
+    .help(liveMeetingButtonHelp)
+    .disabled(liveSession.state == .stopping)
+    .liquidGlassButton()
+  }
+
+  private var liveMeetingButtonHelp: String {
+    switch liveSession.state {
+    case .idle, .failed: return "Record a live meeting"
+    case .recording, .stopping: return "Stop the live meeting"
     }
   }
 
@@ -125,6 +186,19 @@ struct ContentView: View {
         displayPath: model.displayPath,
         phase: model.phase
       )),
+      isDropTargeted: $model.isDropTargeted,
+      speakerChips: $model.speakerChips,
+      onDropURL: { url in model.accept(url) },
+      onRename: { label, newName in model.renameChip(label: label, newName: newName) },
+      onRefreshPreflight: { model.runPreflight(refresh: true) }
+    )
+  }
+
+  // MARK: - Live meeting (dictation)
+
+  private var liveMeetingView: some View {
+    MainPaneView(
+      content: .liveMeeting,
       isDropTargeted: $model.isDropTargeted,
       speakerChips: $model.speakerChips,
       onDropURL: { url in model.accept(url) },

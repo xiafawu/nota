@@ -317,6 +317,7 @@ extension TextInjector {
     "com.apple.Terminal":          PerAppOverride(forceStrategy: .keyEvents, pasteRestoreDelayMs: nil),
     "com.googlecode.iterm2":       PerAppOverride(forceStrategy: .keyEvents, pasteRestoreDelayMs: nil),
     "com.mitchellh.ghostty":       PerAppOverride(forceStrategy: .keyEvents, pasteRestoreDelayMs: nil),
+    "be.zenjoy.zentty":            PerAppOverride(forceStrategy: .keyEvents, pasteRestoreDelayMs: nil),
     "com.knollsoft.Hyper":         PerAppOverride(forceStrategy: .keyEvents, pasteRestoreDelayMs: nil),
     "net.kovidgoy.kitty":          PerAppOverride(forceStrategy: .keyEvents, pasteRestoreDelayMs: nil),
     "co.zeit.hyper":               PerAppOverride(forceStrategy: .keyEvents, pasteRestoreDelayMs: nil),

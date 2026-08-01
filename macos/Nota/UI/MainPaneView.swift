@@ -11,6 +11,9 @@ private enum PaneCoordinateSpace {
 }
 
 struct MainPaneView: View {
+  /// The live dictation session lives on the model (single owner); the pane
+  /// reads it from the environment and never owns session state itself.
+  @EnvironmentObject private var model: NotaModel
   let content: MainPaneContent
   @Binding var isDropTargeted: Bool
   @Binding var speakerChips: [SpeakerChip]
@@ -35,6 +38,12 @@ struct MainPaneView: View {
           speakerChips: $speakerChips,
           onRename: onRename,
           enrichment: EnrichmentController.shared
+        )
+      case .liveMeeting:
+        LiveMeetingView(
+          session: model.liveSession,
+          onStart: { model.startLiveSession() },
+          onStop: { model.stopLiveSession() }
         )
       }
 
@@ -802,6 +811,7 @@ private struct EnrichmentSlotView: View {
     onDropURL: { _ in },
     onRename: { _, _ in }
   )
+  .environmentObject(NotaModel())
   .frame(width: 720, height: 540)
 }
 
@@ -813,6 +823,7 @@ private struct EnrichmentSlotView: View {
     onDropURL: { _ in },
     onRename: { _, _ in }
   )
+  .environmentObject(NotaModel())
   .frame(width: 720, height: 540)
 }
 
@@ -824,6 +835,19 @@ private struct EnrichmentSlotView: View {
     onDropURL: { _ in },
     onRename: { _, _ in }
   )
+  .environmentObject(NotaModel())
+  .frame(width: 720, height: 540)
+}
+
+#Preview("live meeting idle") {
+  MainPaneView(
+    content: .liveMeeting,
+    isDropTargeted: .constant(false),
+    speakerChips: .constant([]),
+    onDropURL: { _ in },
+    onRename: { _, _ in }
+  )
+  .environmentObject(NotaModel())
   .frame(width: 720, height: 540)
 }
 #endif

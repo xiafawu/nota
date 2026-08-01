@@ -83,6 +83,14 @@ enum Metrics {
   static let docHeaderCompactThreshold: CGFloat = 4
   static let docHeaderCompactVerticalPadding: CGFloat = 8
 
+  // Live meeting pane (dictation in the main window).
+  static let liveMeetingOuterPadding: CGFloat = 24
+  static let liveMeetingHeaderSpacing: CGFloat = 12
+  static let liveMeetingControlSpacing: CGFloat = 16
+  static let liveMeetingRowSpacing: CGFloat = 8
+  static let liveMeetingBannerPadding: CGFloat = 12
+  static let liveMeetingBannerSpacing: CGFloat = 12
+
   // Staged run progress (validate → transcribe → summarize → write).
   static let stageRowSpacing: CGFloat = 16
   static let stageItemSpacing: CGFloat = 5

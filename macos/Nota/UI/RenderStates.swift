@@ -21,6 +21,10 @@ enum MainPaneContent {
   case empty(EmptyMainState)
   case preflight(PreflightHomeState)
   case rich(DocumentRender)
+  /// Live dictation session rendered against `NotaModel.liveSession`; the
+  /// content case carries no state — the pane reads the session from the
+  /// model's environment object.
+  case liveMeeting
 }
 
 /// Home state when no document is open: the preflight result (nil until the

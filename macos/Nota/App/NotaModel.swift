@@ -44,6 +44,12 @@ final class NotaModel: ObservableObject {
   /// All of its mutations go through the CLI contract verbs.
   let enrichment = EnrichmentController.shared
 
+  /// Live dictation/transcription session (mic → AssemblyAI realtime). Owned
+  /// here so the toolbar and main pane share one lifecycle. Not `@Published`:
+  /// the session publishes its own changes and ContentView observes it
+  /// directly (via `@ObservedObject`) to switch the pane on state changes.
+  let liveSession = LiveMeetingSession()
+
   private let projectDirectory = URL(fileURLWithPath: ProcessInfo.processInfo.environment["NOTA_PROJECT_DIR"] ?? "/Users/xiafawu/Developer/Nota")
   private let outputDirectory = notaOutputDirectory()
 
@@ -280,6 +286,80 @@ final class NotaModel: ObservableObject {
       }
       phase = ""
       isRunning = false
+    }
+  }
+
+  // MARK: - Live meeting
+
+  /// Begin a live dictation/transcription session. The pane switches to the
+  /// live view when the session enters `.recording` (ContentView reads
+  /// `liveSession.state`); start failures surface through the session's own
+  /// `.failed` state (rendered by the live pane's error banner) and are
+  /// mirrored here for the status pill.
+  func startLiveSession() {
+    guard liveSession.state != .recording, liveSession.state != .stopping else {
+      return
+    }
+    status = "Recording…"
+    Task {
+      do {
+        try await liveSession.start()
+      } catch {
+        status = "Live session failed: \(error.localizedDescription)"
+      }
+    }
+  }
+
+  /// Stop the live session and persist the result like a regular meeting
+  /// (audio + `.summary.md` in the output dir, record in `~/.nota/history`),
+  /// then refresh history and select the new row — mirroring `transcribe()`.
+  /// The transcript already exists from the realtime stream, so the CLI
+  /// transcription pipeline is deliberately not re-run. Summary enrichment is
+  /// a follow-up (see LiveSessionPersistence). An empty transcript skips
+  /// persistence entirely (status shows why); the session itself settles back
+  /// to `.idle` inside `liveSession.stop()`.
+  func stopLiveSession() {
+    guard liveSession.state == .recording || liveSession.state == .stopping else {
+      return
+    }
+    status = "Saving live session…"
+    Task {
+      let result: LiveMeetingSession.LiveMeetingResult
+      do {
+        result = try await liveSession.stop()
+      } catch {
+        status = "Live session failed: \(error.localizedDescription)"
+        return
+      }
+
+      do {
+        let saved = try LiveSessionPersistence.persist(
+          result: result,
+          outputDirectory: outputDirectory,
+          historyDirectory: notaHistoryDirectory()
+        )
+        markdown = saved.markdown
+        lastOutputURL = saved.outputURL
+        status = "Complete"
+        refreshHistory()
+        if let entry = history.first(where: {
+          $0.url.standardizedFileURL == saved.outputURL.standardizedFileURL
+        }) {
+          selectedHistoryID = entry.id
+          // Mirror openHistory: keep the header coherent with the new doc.
+          displayName = entry.title
+          displayPath = entry.url.path
+        }
+        // Resets the enrichment record/speaker chips for the new document;
+        // the async lookup finds the fresh record (no summary → placeholder).
+        loadChips(for: saved.outputURL)
+      } catch LiveSessionPersistenceError.emptyTranscript {
+        status = LiveSessionPersistenceError.emptyTranscript.errorDescription ?? "No speech was captured"
+      } catch LiveSessionPersistenceError.missingAudio {
+        status = LiveSessionPersistenceError.missingAudio.errorDescription ?? "Recording failed"
+      } catch {
+        status = "Could not save live session"
+      }
     }
   }
 
