@@ -1,6 +1,14 @@
 import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
+/// Named coordinate space anchored to the document pane (stable while the
+/// summary drawer resizes). The divider drag resolves its gesture values in
+/// this space: measuring in the divider's own local space would re-anchor the
+/// measurement to the divider's new position on every height change, which
+/// feeds the divider's own motion back into the next event and oscillates.
+private enum PaneCoordinateSpace {
+  static let name = "Nota.DocumentPane"
+}
 
 struct MainPaneView: View {
   let content: MainPaneContent
@@ -121,6 +129,13 @@ private struct RichDocumentPane: View {
   /// `RichTextViewer` uses it to restore the same document offset after the
   /// enclosing VStack is relaid out.
   @State private var transcriptLayoutRevision = 0
+  /// True while the summary divider is being dragged. Scroll-driven header
+  /// changes are deferred until the drag ends so the header (whose height
+  /// change would move the divider under the pointer) stays put mid-drag.
+  @State private var isResizingDrawer = false
+  /// Most recent transcript offset reported by `RichTextViewer`; used to
+  /// reconcile the header scroll state once a drawer resize ends.
+  @State private var lastBodyScrollOffset: CGFloat = 0
 
   var body: some View {
     GeometryReader { proxy in
@@ -138,22 +153,43 @@ private struct RichDocumentPane: View {
         EnrichmentSlotView(
           controller: enrichment,
           availableHeight: proxy.size.height,
-          onLayoutChange: { transcriptLayoutRevision += 1 }
+          onLayoutChange: { transcriptLayoutRevision += 1 },
+          onResizeStateChange: { active in
+            if active {
+              isResizingDrawer = true
+            } else {
+              isResizingDrawer = false
+              reconcileBodyScrolledState()
+            }
+          }
         )
         RichTextViewer(
           attributedString: MainPaneView.applySpeakerColors(to: document.body, chips: speakerChips),
           layoutRevision: transcriptLayoutRevision,
           onScroll: { offset in
+            lastBodyScrollOffset = offset
             let scrolled = offset > Metrics.docHeaderCompactThreshold
-            if scrolled != isBodyScrolled {
-              withAnimation(Tokens.animFast) { isBodyScrolled = scrolled }
-            }
+            guard scrolled != isBodyScrolled else { return }
+            // Mid-drag the header stays put: animating (or even snapping) the
+            // compact/expanded transition would shift the divider under the
+            // pointer. The end-of-drag reconciliation applies the true state.
+            guard !isResizingDrawer else { return }
+            withAnimation(Tokens.animFast) { isBodyScrolled = scrolled }
           }
         )
         .mask(bodyFadeMask)
       }
     }
+    .coordinateSpace(name: PaneCoordinateSpace.name)
     .animation(Tokens.animFast, value: isBodyScrolled)
+  }
+
+  /// Applies the header scroll state that accumulated while the summary
+  /// divider was being dragged, with the standard animation.
+  private func reconcileBodyScrolledState() {
+    let scrolled = lastBodyScrollOffset > Metrics.docHeaderCompactThreshold
+    guard scrolled != isBodyScrolled else { return }
+    withAnimation(Tokens.animFast) { isBodyScrolled = scrolled }
   }
 
   /// Scroll-edge fade: once content scrolls beneath the header, the top of the
@@ -192,6 +228,9 @@ private struct EnrichmentSlotView: View {
   @ObservedObject var controller: EnrichmentController
   var availableHeight: CGFloat = .infinity
   var onLayoutChange: () -> Void = {}
+  /// Reports whether the summary divider drag is active so the host can keep
+  /// the document header from animating (and shifting the divider) mid-drag.
+  var onResizeStateChange: (Bool) -> Void = { _ in }
 
   @State private var isEditingSummary = false
   @State private var summaryDraft = ""
@@ -199,6 +238,8 @@ private struct EnrichmentSlotView: View {
   @State private var isSummaryExpanded = false
   @State private var summaryDrawerHeight = SummaryDrawerLayout.expandedDefaultHeight
   @State private var summaryResizeStartHeight: CGFloat?
+  /// Pointer Y (in the pane coordinate space) where the drag began.
+  @State private var summaryResizeStartY: CGFloat?
   /// Measured width of the decisions/action-items block, driving the
   /// two-columns-vs-stacked choice (see `structuredSummary`).
   @State private var structuredColumnsWidth: CGFloat = 0
@@ -235,6 +276,7 @@ private struct EnrichmentSlotView: View {
       isSummaryExpanded = false
       summaryDrawerHeight = SummaryDrawerLayout.expandedDefaultHeight
       summaryResizeStartHeight = nil
+      summaryResizeStartY = nil
     }
     .alert(
       confirmTarget == .tags ? "Regenerate tags?" : "Replace your edited summary?",
@@ -533,22 +575,50 @@ private struct EnrichmentSlotView: View {
     if isSummaryExpanded {
       divider
         .gesture(
-          DragGesture(minimumDistance: 2)
+          // Gesture values resolve in the pane's named coordinate space
+          // (stable while the drawer resizes) rather than the divider's
+          // local space, whose origin moves with the divider and would feed
+          // the height change back into the next event's measurement.
+          DragGesture(minimumDistance: 2, coordinateSpace: .named(PaneCoordinateSpace.name))
             .onChanged { value in
               if summaryResizeStartHeight == nil {
                 summaryResizeStartHeight = expandedSummaryHeight
+                summaryResizeStartY = value.startLocation.y
+                onResizeStateChange(true)
               }
               let start = summaryResizeStartHeight ?? expandedSummaryHeight
-              let next = SummaryDrawerLayout.clampedExpandedHeight(
-                start + value.translation.height,
+              let startY = summaryResizeStartY ?? value.startLocation.y
+              // Recomputed from the gesture anchor on every event: a pure
+              // function of the pointer position, so the applied height can
+              // never feed back into the next measurement.
+              let next = SummaryDrawerLayout.dragTargetHeight(
+                startHeight: start,
+                startY: startY,
+                currentY: value.location.y,
                 availableHeight: availableHeight
               )
               guard next != summaryDrawerHeight else { return }
               summaryDrawerHeight = next
-              onLayoutChange()
+              // No onLayoutChange per tick: the transcript scroll restoration
+              // is coalesced to the end of the drag so it cannot chase a
+              // viewport that is still moving.
             }
-            .onEnded { _ in summaryResizeStartHeight = nil }
+            .onEnded { _ in
+              summaryResizeStartHeight = nil
+              summaryResizeStartY = nil
+              onLayoutChange()
+              onResizeStateChange(false)
+            }
         )
+        .onDisappear {
+          // A drag interrupted by this view leaving the hierarchy (drawer
+          // collapse, slot teardown, window close) never fires onEnded, so the
+          // next drag would reuse the stale anchor and the host would never
+          // learn the resize ended. Reset both anchors and report inactive.
+          summaryResizeStartHeight = nil
+          summaryResizeStartY = nil
+          onResizeStateChange(false)
+        }
     } else {
       divider
     }

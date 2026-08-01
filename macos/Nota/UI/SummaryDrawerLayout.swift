@@ -49,4 +49,22 @@ enum SummaryDrawerLayout {
     let minimum = min(expandedMinHeight, maximum)
     return min(max(height, minimum), maximum)
   }
+
+  /// The expanded height for a divider drag, computed from the height and
+  /// pointer position captured when the drag began. Recomputed from the
+  /// gesture anchor on every event (rather than accumulating deltas onto the
+  /// current height) it is a pure function of the pointer position: the
+  /// applied value never feeds back into the next measurement, so the drag
+  /// stays monotonic, reversible, and stable against its own clamping.
+  static func dragTargetHeight(
+    startHeight: CGFloat,
+    startY: CGFloat,
+    currentY: CGFloat,
+    availableHeight: CGFloat
+  ) -> CGFloat {
+    clampedExpandedHeight(
+      startHeight + (currentY - startY),
+      availableHeight: availableHeight
+    )
+  }
 }

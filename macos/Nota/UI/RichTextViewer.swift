@@ -1,6 +1,34 @@
 import AppKit
 import SwiftUI
 
+/// Pure scroll-restoration decisions for the transcript viewer, extracted so
+/// the resize/restore coalescing contract is unit-testable without a UI.
+enum RichTextScrollRestore {
+  /// Maps a preserved document offset to the offset that is valid after the
+  /// viewport changed, clamping to the document's scrollable range.
+  static func targetOffset(
+    preservedY: CGFloat,
+    documentHeight: CGFloat,
+    viewportHeight: CGFloat
+  ) -> CGFloat {
+    let maximumY = max(0, documentHeight - viewportHeight)
+    return min(max(0, preservedY), maximumY)
+  }
+
+  /// A queued restoration applies only while it is still the newest request.
+  /// Layout changes arrive faster than the async restore runs; dropping
+  /// superseded revisions keeps stale restores from fighting the latest one.
+  static func shouldApply(revision: Int, latestRevision: Int) -> Bool {
+    revision == latestRevision
+  }
+
+  /// Sub-half-point drift is not worth a scroll: scrolling would feed a
+  /// bounds-change notification back into layout.
+  static func needsRestore(currentY: CGFloat, targetY: CGFloat) -> Bool {
+    abs(currentY - targetY) > 0.5
+  }
+}
+
 struct RichTextViewer: NSViewRepresentable {
   let attributedString: NSAttributedString
   /// Changes when a sibling above the transcript changes its height. The
@@ -60,12 +88,16 @@ struct RichTextViewer: NSViewRepresentable {
     if context.coordinator.layoutRevision != layoutRevision {
       context.coordinator.layoutRevision = layoutRevision
       let preservedY = scrollView.contentView.bounds.origin.y
+      let revision = layoutRevision
       DispatchQueue.main.async { [weak scrollView, weak coordinator = context.coordinator] in
         guard let scrollView, let coordinator else { return }
-        coordinator.restoreScrollPosition(in: scrollView, preservingY: preservedY)
+        coordinator.restoreScrollPosition(
+          in: scrollView,
+          preservingY: preservedY,
+          revision: revision
+        )
       }
     }
-
     guard let textView = scrollView.documentView as? NSTextView else {
       return
     }
@@ -82,13 +114,23 @@ struct RichTextViewer: NSViewRepresentable {
     var observer: NSObjectProtocol?
     var layoutRevision = 0
 
-    func restoreScrollPosition(in scrollView: NSScrollView, preservingY y: CGFloat) {
+    func restoreScrollPosition(in scrollView: NSScrollView, preservingY y: CGFloat, revision: Int) {
+      guard RichTextScrollRestore.shouldApply(revision: revision, latestRevision: layoutRevision) else {
+        return
+      }
       let clipView = scrollView.contentView
       let documentHeight = scrollView.documentView?.frame.height ?? 0
-      let maximumY = max(0, documentHeight - clipView.bounds.height)
-      let targetY = min(max(0, y), maximumY)
-      guard abs(clipView.bounds.origin.y - targetY) > 0.5 else { return }
-
+      let targetY = RichTextScrollRestore.targetOffset(
+        preservedY: y,
+        documentHeight: documentHeight,
+        viewportHeight: clipView.bounds.height
+      )
+      guard RichTextScrollRestore.needsRestore(
+        currentY: clipView.bounds.origin.y,
+        targetY: targetY
+      ) else {
+        return
+      }
       var bounds = clipView.bounds
       bounds.origin.y = targetY
       clipView.scroll(to: bounds.origin)
