@@ -562,13 +562,12 @@ struct DictationSettings: Codable, Equatable, Sendable {
   /// Show floating HUD pill during dictation sessions.
   var showHUD: Bool = true
   /// Allow a bounded accessibility sample from the focused app to improve the
-  /// optional cleanup-model request. Disabled by default; never affects audio
-  /// recognition.
-  var screenContextEnabled: Bool = false
+  /// optional cleanup-model request. Never affects audio recognition.
+  var screenContextEnabled: Bool = true
   /// If focused accessibility text is unavailable or too short, allow one
   /// frontmost-window screenshot/OCR attempt at dictation completion.
-  /// Disabled by default and meaningful only when `screenContextEnabled` is on.
-  var screenCaptureFallbackEnabled: Bool = false
+  /// Meaningful only when `screenContextEnabled` is on.
+  var screenCaptureFallbackEnabled: Bool = true
   /// Which shape the HUD takes. `.pill` is the pre-existing behavior.
   var hudStyle: HUDStyle = .pill
   /// How the finished text reaches the target app.

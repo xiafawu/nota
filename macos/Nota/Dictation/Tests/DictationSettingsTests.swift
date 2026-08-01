@@ -13,8 +13,8 @@ final class DictationSettingsStoreTests: XCTestCase {
   func testLoadReturnsDefaultsWhenUnset() {
     DictationSettingsStore.reset()
     XCTAssertEqual(DictationSettingsStore.load(), DictationSettings())
-    XCTAssertFalse(DictationSettings().screenContextEnabled)
-    XCTAssertFalse(DictationSettings().screenCaptureFallbackEnabled)
+    XCTAssertTrue(DictationSettings().screenContextEnabled)
+    XCTAssertTrue(DictationSettings().screenCaptureFallbackEnabled)
   }
 
   func testRoundTripPersistsAllFields() {

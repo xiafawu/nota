@@ -350,10 +350,17 @@ final class AssemblyAIRealtimeStream: NSObject, SpeechStream {
 
       if endOfTurn {
         stateLock.withLock { _ in
-          finalText = transcript
+          // Turns arrive per utterance — accumulate, never overwrite. A
+          // multi-sentence hold used to return only the last turn.
+          if let existing = finalText, !existing.isEmpty {
+            finalText = existing + "\n" + transcript
+          } else {
+            finalText = transcript
+          }
+          let text = finalText!
           let fc = finishContinuation
           finishContinuation = nil
-          fc?.resume(returning: transcript)
+          fc?.resume(returning: text)
         }
       }
 
