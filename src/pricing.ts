@@ -26,11 +26,13 @@ export interface PricingSnapshot {
 
 /**
  * Point-in-time transcription pricing keyed by registry model id.
- * Rates verified 2026-07-14.
+ * Rates verified 2026-08-01 (Universal-3.5 Pro at $0.21/hr incl. speaker
+ * diarization; see https://www.assemblyai.com/docs/billing-and-pricing).
  */
 export const PRICING: PricingSnapshot = {
-  pricedAsOf: "2026-07-14",
+  pricedAsOf: "2026-08-01",
   models: {
+    "universal-3-5-pro":     { ratePerMin: 0.21 / 60 }, // $0.21/hr
     "universal":             { ratePerMin: 0.15 / 60 }, // $0.15/hr
     "whisper-1":             { ratePerMin: 0.006 },
     "gpt-4o-transcribe":     { ratePerMin: 0.006 },

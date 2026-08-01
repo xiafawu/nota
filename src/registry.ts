@@ -136,7 +136,7 @@ export function providerForBaseURL(
 }
 
 /** Built-in defaults used when neither a CLI flag nor settings.json applies. */
-export const DEFAULT_TRANSCRIPTION_MODEL = "universal";
+export const DEFAULT_TRANSCRIPTION_MODEL = "universal-3-5-pro";
 export const DEFAULT_SUMMARY_MODEL = "gpt-5-mini";
 
 function entry(
@@ -160,7 +160,13 @@ function entry(
 // ── Static transcription entries ─────────────────────────────────────────────
 
 export const MODELS: readonly ModelEntry[] = [
-  entry("universal", "transcription", "assemblyai", "Universal (AssemblyAI)"),
+  entry(
+    "universal-3-5-pro",
+    "transcription",
+    "assemblyai",
+    "Universal-3.5 Pro (AssemblyAI)",
+  ),
+  entry("universal", "transcription", "assemblyai", "Universal-2 (AssemblyAI)"),
   entry("whisper-1", "transcription", "openai", "Whisper (OpenAI)"),
   entry(
     "gpt-4o-transcribe",

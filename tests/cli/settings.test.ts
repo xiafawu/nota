@@ -42,7 +42,7 @@ describe("settingsList", () => {
   it("prints effective values with source, defaults when file is absent", () => {
     settingsList(file);
     const rows = stdout.join("");
-    expect(rows).toContain("transcription.model\tuniversal\tdefault");
+    expect(rows).toContain("transcription.model\tuniversal-3-5-pro\tdefault");
     expect(rows).toContain("summary.model\tgpt-5-mini\tdefault");
     // Header goes to stderr so stdout stays scriptable.
     expect(stderr.join("")).toContain("PATH\tMODEL\tSOURCE");
@@ -53,7 +53,7 @@ describe("settingsList", () => {
     settingsList(file);
     const rows = stdout.join("");
     expect(rows).toContain("summary.model\tgpt-5\tsettings.json");
-    expect(rows).toContain("transcription.model\tuniversal\tdefault");
+    expect(rows).toContain("transcription.model\tuniversal-3-5-pro\tdefault");
   });
 });
 

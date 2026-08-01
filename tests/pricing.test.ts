@@ -25,12 +25,13 @@ function entry(overrides: Partial<UsageEntry> = {}): UsageEntry {
 
 describe("PRICING — transcription-only", () => {
   it("has a pricedAsOf date", () => {
-    expect(PRICING.pricedAsOf).toBe("2026-07-14");
+    expect(PRICING.pricedAsOf).toBe("2026-08-01");
   });
 
   it("includes only transcription models", () => {
     const keys = Object.keys(PRICING.models);
     expect(keys).toEqual([
+      "universal-3-5-pro",
       "universal",
       "whisper-1",
       "gpt-4o-transcribe",
@@ -43,6 +44,13 @@ describe("PRICING — transcription-only", () => {
 });
 
 describe("costForUsage — transcription models", () => {
+  it("computes AssemblyAI universal-3-5-pro cost ($0.21/hr = $0.0035/min, 10 min)", () => {
+    const cost = costForUsage(
+      entry({ modelId: "universal-3-5-pro", task: "transcription", provider: "assemblyai", durationMin: 10 }),
+    );
+    expect(cost).toBeCloseTo(0.035, 6);
+  });
+
   it("computes AssemblyAI universal cost ($0.15/hr = $0.0025/min, 10 min)", () => {
     const cost = costForUsage(
       entry({ modelId: "universal", task: "transcription", provider: "assemblyai", durationMin: 10 }),

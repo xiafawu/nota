@@ -75,7 +75,7 @@ describe("loadConfig", () => {
       process.env.ASSEMBLYAI_API_KEY = "aa-key";
       process.env.GEMINI_API_KEY = "gm-key";
       const c = loadConfig({}, NO_SETTINGS);
-      expect(c.transcriptionModel).toBe("universal");
+      expect(c.transcriptionModel).toBe("universal-3-5-pro");
       expect(c.summaryModel).toBe("gemini-3.6-flash");
     });
 
@@ -174,9 +174,9 @@ describe("loadConfig", () => {
       process.env.OPENAI_API_KEY = "oa-key";
     });
 
-    it("defaults to universal transcription", () => {
+    it("defaults to universal-3-5-pro transcription", () => {
       const c = loadConfig({}, NO_SETTINGS);
-      expect(c.transcriptionModel).toBe("universal");
+      expect(c.transcriptionModel).toBe("universal-3-5-pro");
     });
 
     it("defaults diarize to true for assemblyai", () => {

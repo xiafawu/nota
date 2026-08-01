@@ -36,7 +36,7 @@ describe("model registry", () => {
   });
 
   it("exposes the curated defaults", () => {
-    expect(DEFAULT_TRANSCRIPTION_MODEL).toBe("universal");
+    expect(DEFAULT_TRANSCRIPTION_MODEL).toBe("universal-3-5-pro");
     expect(DEFAULT_SUMMARY_MODEL).toBe("gpt-5-mini");
     expect(getModel(DEFAULT_TRANSCRIPTION_MODEL)?.task).toBe("transcription");
     expect(getModel(DEFAULT_SUMMARY_MODEL)?.task).toBe("summary");
@@ -47,6 +47,7 @@ describe("model registry", () => {
     const s = modelsForTask("summary").map((m) => m.id);
     // Transcription: slam-1 and nano removed per X1 spec
     expect(t).toEqual([
+      "universal-3-5-pro",
       "universal",
       "whisper-1",
       "gpt-4o-transcribe",
