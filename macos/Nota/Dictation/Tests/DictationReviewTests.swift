@@ -754,6 +754,37 @@ final class DictationReviewBranchTests: XCTestCase {
     )
   }
 
+  /// The AssemblyAI live draft folds finalized turns into the session draft as
+  /// their own lines, so the growing pill keeps everything the user has said —
+  /// a tail-only feed would blank every earlier sentence on each new turn.
+  func testALiveDraftSessionFoldsFinalTurnsIntoGrowingLines() {
+    var settings = DictationSettings()
+    settings.deliveryMode = .immediate
+    settings.engine = .assemblyAIRealtime
+    DictationSettingsStore.save(settings)
+    let controller = DictationController(review: presenter)
+    controller.beginSessionForTests(target: target)
+
+    controller.handleHypothesis(Hypothesis(text: "Send this one", isFinal: false))
+    XCTAssertEqual(controller.roughDraft, "Send this one")
+    XCTAssertEqual(controller.recognizedSoFarForTests, "")
+
+    controller.handleHypothesis(Hypothesis(text: "Send this one.", isFinal: true))
+    XCTAssertEqual(controller.roughDraft, "", "the finalized tail is no longer volatile")
+    XCTAssertEqual(controller.recognizedSoFarForTests, "Send this one.")
+
+    controller.handleHypothesis(Hypothesis(text: "Send this 2.", isFinal: true))
+    XCTAssertEqual(
+      controller.recognizedSoFarForTests,
+      "Send this one.\nSend this 2.",
+      "each finalized turn becomes its own line"
+    )
+
+    controller.handleHypothesis(Hypothesis(text: "Send this 3.", isFinal: false))
+    XCTAssertEqual(controller.roughDraft, "Send this 3.")
+    XCTAssertEqual(controller.recognizedSoFarForTests, "Send this one.\nSend this 2.")
+  }
+
   /// The default mode never grew a live draft: its recognizer reports whole
   /// hypotheses, and the pill stays a meter.
   func testImmediateModeStillHasNoRoughDraft() {

@@ -684,7 +684,18 @@ final class DictationController: ObservableObject {
     }
 
     if isLiveDraftSession {
-      roughDraft = hypothesis.text
+      if hypothesis.isFinal {
+        // A turn finalizes: fold it into the session draft as its own line
+        // so the growing pill keeps everything the user has said, then clear
+        // the volatile tail it finalized.
+        let line = hypothesis.text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !line.isEmpty {
+          finalizedDraft = finalizedDraft.isEmpty ? line : finalizedDraft + "\n" + line
+        }
+        roughDraft = ""
+      } else {
+        roughDraft = hypothesis.text
+      }
       Task { await DebugFileLog.shared().write(
         "draft update final=\(hypothesis.isFinal) chars=\(hypothesis.text.count) text=\"\(hypothesis.text)\""
       ) }

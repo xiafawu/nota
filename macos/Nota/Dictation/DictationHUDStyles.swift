@@ -554,7 +554,10 @@ struct DictationHUDRootView: View {
     } else {
       switch style {
       case .pill:
-        DictationHUDContentView(state: state, roughDraft: draft.boundedTail)
+        // The growing pill: finalized lines, then the volatile tail on its
+        // own line. Same content feed as the prompter, same height behavior
+        // as the old single-line pill — it only ever grows downward.
+        DictationHUDContentView(state: state, roughDraft: draft.growingText)
       case .bar:
         DictationHUDBarView(state: state, draft: draft)
       case .prompter:

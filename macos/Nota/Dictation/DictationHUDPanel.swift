@@ -358,8 +358,11 @@ enum HUDPillMetrics {
   /// word for a pill that never moves sideways while the user is speaking.
   static let draftWidth: CGFloat = 420
 
-  /// Lines of rough draft shown before head-truncation kicks in.
-  static let draftLineLimit = 2
+  /// Lines of session text shown before head-truncation kicks in. Generous
+  /// because the growing pill keeps every finalized line — 8 wrapped lines of
+  /// a 420pt block is roughly three long sentences — and head-truncation only
+  /// ever takes the oldest lines once a session outgrows it.
+  static let draftLineLimit = 8
 
   static let frameDuration: TimeInterval = 0.26
 

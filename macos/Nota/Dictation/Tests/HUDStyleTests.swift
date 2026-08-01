@@ -106,6 +106,22 @@ final class HUDDraftTests: XCTestCase {
     XCTAssertFalse(draft.boundedTail?.contains("Earlier") ?? true)
   }
 
+  /// The growing pill composes every finalized line plus the volatile tail on
+  /// its own line — nothing the user said ever leaves the block mid-session.
+  func testGrowingTextComposesFinalizedLinesAndTail() {
+    XCTAssertEqual(HUDDraft(finalized: "", volatileTail: "").growingText, "")
+    XCTAssertEqual(HUDDraft(finalized: "", volatileTail: "hello").growingText, "hello")
+    XCTAssertEqual(HUDDraft(finalized: "A.", volatileTail: "").growingText, "A.")
+    XCTAssertEqual(
+      HUDDraft(finalized: "A.\nB.", volatileTail: "C").growingText,
+      "A.\nB.\nC"
+    )
+    XCTAssertEqual(
+      HUDDraft(finalized: "A.", volatileTail: "").growingText,
+      HUDDraft(finalized: "A.", volatileTail: "").fullText
+    )
+  }
+
   func testBoundedTailIsClampedButFinalizedAndVolatileAreNot() throws {
     let volatile = (1...200).map { "word\($0)" }.joined(separator: " ")
     let finalized = (1...400).map { "prior\($0)" }.joined(separator: " ")

@@ -42,19 +42,24 @@ struct HUDDraft: Equatable, Sendable {
 
   var isEmpty: Bool { finalized.isEmpty && volatileTail.isEmpty }
 
-  /// The one bounded line the pill and the bar show.
+  /// The one bounded line the bar shows.
   ///
-  /// Exactly what the pill was handed before the other styles existed:
-  /// `StreamingDelivery.roughDraftTail` over the volatile tail *alone*. Folding
-  /// the finalized text in would read better on both — the line stops blanking
-  /// each time a segment finalizes — but the pill is the default style and its
-  /// behavior is the baseline this change is not allowed to move. The bar takes
-  /// the same string for the same reason it takes the same feed: one line, one
-  /// definition of what that line is.
+  /// The bar is a single static line by design; the pill outgrew this when
+  /// the growing draft landed (finalized lines, then the volatile tail), so
+  /// the bounded tail is now the bar's feed alone.
   var boundedTail: String? { StreamingDelivery.roughDraftTail(volatileTail) }
 
   /// The whole session as the prompter renders it: finalized, then the tail.
   var fullText: String { StreamingDelivery.joined(finalized, volatileTail) }
+
+  /// The whole session as the growing pill renders it: every finalized line,
+  /// then the in-flight tail on its own line. The pill widens once and then
+  /// only ever grows downward, so nothing the user has said ever leaves the
+  /// block while they keep talking.
+  var growingText: String {
+    guard !finalized.isEmpty else { return volatileTail }
+    return volatileTail.isEmpty ? finalized : finalized + "\n" + volatileTail
+  }
 
   /// Live word count over everything recognized so far, for the prompter header.
   var wordCount: Int { fullText.split(whereSeparator: \.isWhitespace).count }
