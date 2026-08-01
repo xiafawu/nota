@@ -300,7 +300,13 @@ final class AssemblyAIRealtimeStream: NSObject, SpeechStream {
       openContinuation?.resume(throwing: CancellationError())
       openContinuation = nil
     }
-    hypothesisContinuation.finish()
+    // Deliberately NOT hypothesisContinuation.finish(): `start()` begins with
+    // `cancel()` as a defensive reset, and finishing the stream here would
+    // permanently end the controller's for-await loop before the new session
+    // yields anything — every Turn hypothesis then lands in a finished stream
+    // and the HUD draft never receives it (observed: pill empty with
+    // liveDraft=true). The loop's lifetime belongs to the controller's
+    // per-session hypothesisTask, which it cancels itself.
     receiveTask?.cancel()
     receiveTask = nil
     sendTerminate()
