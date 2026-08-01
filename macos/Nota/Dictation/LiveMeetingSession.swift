@@ -269,6 +269,9 @@ final class LiveMeetingSession: ObservableObject {
       begin?.resume(returning: ())
       logger.info("AssemblyAI live session began")
 
+    case .speechStarted(let timestamp, let confidence):
+      logger.info("SpeechStarted at \(timestamp)ms confidence=\(confidence)")
+
     case .turn(let transcript, let endOfTurn):
       if endOfTurn {
         segments.append(LiveSegment(id: UUID(), text: transcript, endTime: elapsed))

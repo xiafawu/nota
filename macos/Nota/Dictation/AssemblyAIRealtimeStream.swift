@@ -68,6 +68,7 @@ final class AssemblyAIRealtimeStream: NSObject, SpeechStream {
 
   enum ParsedMessage: Equatable {
     case begin(id: String)
+    case speechStarted(timestamp: Int, confidence: Double)
     case turn(transcript: String, endOfTurn: Bool)
     case termination(audioDurationSeconds: Double?)
 
@@ -83,6 +84,12 @@ final class AssemblyAIRealtimeStream: NSObject, SpeechStream {
       case "Begin":
         guard let id = json["id"] as? String else { return nil }
         return .begin(id: id)
+
+      case "SpeechStarted":
+        return .speechStarted(
+          timestamp: json["timestamp"] as? Int ?? 0,
+          confidence: json["confidence"] as? Double ?? 0
+        )
 
       case "Turn":
         let transcript = json["transcript"] as? String ?? ""
@@ -145,6 +152,7 @@ final class AssemblyAIRealtimeStream: NSObject, SpeechStream {
 
   // State
   private var finalText: String?
+  private var finalTurnCount = 0
   private var finishContinuation: CheckedContinuation<String, any Error>?
   private var openContinuation: CheckedContinuation<Void, any Error>?
   private var streamError: (any Error)?
@@ -244,7 +252,9 @@ final class AssemblyAIRealtimeStream: NSObject, SpeechStream {
       return nil
     }
     if let earlyResult {
-      return try earlyResult.get()
+      let value = try earlyResult.get()
+      logger.info("finish() returned early — accumulated \(value.count) chars")
+      return value
     }
 
     // Send Terminate to signal end-of-stream
@@ -352,8 +362,15 @@ final class AssemblyAIRealtimeStream: NSObject, SpeechStream {
     case .begin(let id):
       logger.info("AssemblyAI session started: \(id, privacy: .public)")
 
+    case .speechStarted(let timestamp, let confidence):
+      logger.info("SpeechStarted at \(timestamp)ms confidence=\(confidence)")
+
     case .turn(let transcript, let endOfTurn):
-      logger.debug("Turn isFinal=\(endOfTurn) text=\"\(transcript.prefix(60), privacy: .public)\"")
+      // Info, not debug: the arrival shape of turns is load-bearing for
+      // diagnosing session-level loss (partials vs finals per utterance).
+      logger.info(
+        "Turn isFinal=\(endOfTurn) chars=\(transcript.count) text=\"\(transcript.prefix(80), privacy: .public)\""
+      )
       hypothesisContinuation.yield(Hypothesis(text: transcript, isFinal: endOfTurn))
 
       if endOfTurn {
@@ -365,7 +382,9 @@ final class AssemblyAIRealtimeStream: NSObject, SpeechStream {
           } else {
             finalText = transcript
           }
-          let text = finalText!
+          finalTurnCount += 1
+          let text = self.finalText!
+          logger.info("Final turn \(self.finalTurnCount) accumulated — total chars=\(text.count)")
           let fc = finishContinuation
           finishContinuation = nil
           fc?.resume(returning: text)
@@ -381,7 +400,7 @@ final class AssemblyAIRealtimeStream: NSObject, SpeechStream {
         fc?.resume(returning: text)
         return text
       }
-      logger.info("AssemblyAI termination — returning \"\(text.prefix(60), privacy: .public)\"")
+      logger.info("AssemblyAI termination — returning \(text.count) chars")
     }
   }
 
