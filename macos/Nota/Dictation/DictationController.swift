@@ -670,6 +670,9 @@ final class DictationController: ObservableObject {
 
     if isLiveDraftSession {
       roughDraft = hypothesis.text
+      Task { await DebugFileLog.shared().write(
+        "draft update final=\(hypothesis.isFinal) chars=\(hypothesis.text.count) text=\"\(hypothesis.text)\""
+      ) }
       return
     }
 
