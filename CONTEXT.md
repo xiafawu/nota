@@ -60,3 +60,23 @@ _Avoid_: insertion mode
 **Volatile tail** — The most recent recognized text, still subject to revision
 by the recognizer; rendered dimmed. Finalized text is a delta that only appends.
 _Avoid_: partial transcript
+
+## Recording
+
+**Live meeting** — A session that records the microphone and streams a
+real-time transcript into the app window; stopping it persists the audio and
+transcript as a meeting record. Distinct from importing an audio file, which
+runs the offline pipeline.
+_Avoid_: live dictation, dictation session (dictation injects text into other
+apps)
+
+**Preflight verdict** — The overall readiness outcome that gates recording:
+`Ready`, `Blocked`, or `Unverified`. Ready and Unverified allow starting a
+Live meeting; Blocked makes the record entry inert until the failing check is
+fixed.
+_Avoid_: status, health
+
+**Record entry** — The single start point for a Live meeting: the "Ready to
+record" hero on the home screen. The main window deliberately has no other
+record button.
+_Avoid_: record button (there is only one, and it is the hero)

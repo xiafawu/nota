@@ -105,6 +105,7 @@ struct HomeDashboardView: View {
       result: model.preflight,
       isChecking: model.isCheckingPreflight,
       onRefresh: { model.runPreflight(refresh: true) },
+      onStartRecording: { model.startLiveSession() },
       embedded: true
     )
   }

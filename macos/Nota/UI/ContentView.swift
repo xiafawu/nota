@@ -100,16 +100,6 @@ struct ContentView: View {
       }
     }
 
-    // The live-session toggle lives on the toolbar in every non-running phase:
-    // it is the entry point into live dictation and the stop control while one
-    // is active. Hidden while the CLI pipeline runs — a live session would
-    // compete for the same window state.
-    if phase != .running {
-      ToolbarItem(placement: .primaryAction) {
-        liveMeetingButton
-      }
-    }
-
     ToolbarItem(placement: .primaryAction) {
       switch phase {
       case .document:
@@ -124,39 +114,6 @@ struct ContentView: View {
       case .running, .liveMeeting:
         EmptyView()
       }
-    }
-  }
-
-  /// Record/stop toggle for live dictation. Idle or failed → start a session;
-  /// recording/stopping → finish it. Disabled only while the backend is
-  /// tearing the session down (the pane's Stop control is too).
-  private var liveMeetingButton: some View {
-    Button {
-      switch liveSession.state {
-      case .idle, .failed:
-        model.startLiveSession()
-      case .recording, .stopping:
-        model.stopLiveSession()
-      }
-    } label: {
-      switch liveSession.state {
-      case .idle, .failed:
-        Label("Live Meeting", systemImage: "mic")
-      case .recording:
-        Label("Stop Live Meeting", systemImage: "stop.fill")
-      case .stopping:
-        Label("Finalizing…", systemImage: "stop.fill")
-      }
-    }
-    .help(liveMeetingButtonHelp)
-    .disabled(liveSession.state == .stopping)
-    .liquidGlassButton()
-  }
-
-  private var liveMeetingButtonHelp: String {
-    switch liveSession.state {
-    case .idle, .failed: return "Record a live meeting"
-    case .recording, .stopping: return "Stop the live meeting"
     }
   }
 

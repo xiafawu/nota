@@ -19,12 +19,17 @@ private enum HealthColor {
 }
 
 /// The Nota home when no document is open: a preflight health dashboard. One
-/// hero dot gives the verdict; checks that need attention are shown (expandable),
-/// and passing checks fold under a single line. Replaces the bare drop target.
+/// hero dot gives the verdict; the hero itself is the record entry — clicking
+/// it starts a live meeting whenever the verdict allows recording. Checks that
+/// need attention are shown (expandable), and passing checks fold under a
+/// single line. Replaces the bare drop target.
 struct PreflightHomeView: View {
   let result: PreflightResult?
   let isChecking: Bool
   let onRefresh: () -> Void
+  /// Starts a live meeting. The hero is the single record entry (ADR 0004);
+  /// it is inert unless the verdict is `.ready` or `.unverified`.
+  var onStartRecording: () -> Void = {}
   /// True when hosted inside another scroll container (the dashboard home).
   /// Nesting two vertical ScrollViews clips the inner content under the
   /// window toolbar, so embedded mode renders the bare section and leaves
@@ -66,15 +71,24 @@ struct PreflightHomeView: View {
 
   private var header: some View {
     HStack(spacing: 14) {
-      heroDot
-      VStack(alignment: .leading, spacing: 2) {
-        Text(verdictTitle)
-          .font(.title3.weight(.bold))
-        Text(verdictSubtitle)
-          .font(.callout)
-          .foregroundStyle(.secondary)
-          .fixedSize(horizontal: false, vertical: true)
+      Button(action: onStartRecording) {
+        HStack(spacing: 14) {
+          heroDot
+          VStack(alignment: .leading, spacing: 2) {
+            Text(verdictTitle)
+              .font(.title3.weight(.bold))
+            Text(verdictSubtitle)
+              .font(.callout)
+              .foregroundStyle(.secondary)
+              .fixedSize(horizontal: false, vertical: true)
+          }
+        }
+        .contentShape(Rectangle())
       }
+      .buttonStyle(.plain)
+      .disabled(!canStartRecording)
+      .help(recordHelp)
+
       Spacer(minLength: 8)
       Button(action: onRefresh) {
         if isChecking {
@@ -90,6 +104,28 @@ struct PreflightHomeView: View {
     }
     .padding(16)
     .liquidGlass(.regular, in: RoundedRectangle(cornerRadius: 12))
+  }
+
+  /// The hero starts a recording only when the preflight verdict allows one:
+  /// `.ready` and `.unverified` ("you can record, but a run may fail"); a
+  /// `.blocked` verdict renders the hero inert and points at the failing
+  /// check below instead (ADR 0004).
+  static func canStartRecording(_ overall: PreflightOverall?) -> Bool {
+    guard let overall else { return false }
+    return overall == .ready || overall == .unverified
+  }
+
+  private var canStartRecording: Bool {
+    Self.canStartRecording(result?.overall)
+  }
+
+  private var recordHelp: String {
+    switch result?.overall {
+    case .ready: return "Start a live recording"
+    case .unverified: return "Start a live recording — one check could not be verified"
+    case .blocked: return "Fix the failing check below before recording"
+    case .none: return ""
+    }
   }
 
   @ViewBuilder private var heroDot: some View {
