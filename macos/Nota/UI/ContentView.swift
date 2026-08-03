@@ -10,7 +10,9 @@ struct ContentView: View {
   @ObservedObject private var liveSession: LiveMeetingSession
   @StateObject private var usageProvider: UsageStatsProvider
   /// Shared by the toolbar pill and the home cards: a gated card click opens
-  /// the same health popover.
+  /// the same health popover. It is only ever raised through
+  /// `DeferredPresentation.open` — the popover is anchored in a toolbar item,
+  /// and setting this inline presents it inside the toolbar's layout pass.
   @State private var isHealthPopoverPresented = false
   /// The drawer's slide-over motion collapses to a plain fade under Reduce
   /// Motion (XIA-404 glass audit).
@@ -224,7 +226,7 @@ struct ContentView: View {
     HomeDashboardView(
       model: model,
       usageProvider: usageProvider,
-      onOpenHealthPopover: { isHealthPopoverPresented = true }
+      onOpenHealthPopover: { DeferredPresentation.open($isHealthPopoverPresented) }
     )
     .onDrop(of: [UTType.fileURL.identifier], isTargeted: $model.isDropTargeted) { providers in
       HomeDashboardView.handleDrop(providers: providers, model: model)

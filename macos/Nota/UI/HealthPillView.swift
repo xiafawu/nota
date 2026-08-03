@@ -17,7 +17,12 @@ struct HealthPillView: View {
 
   var body: some View {
     Button {
-      isPresented = true
+      // Never set inline: the pill lives in an `NSHostingView` owned by an
+      // `NSToolbarItemViewer`, and a presentation raised while that view is
+      // being laid out orders a child window mid-display-cycle — which
+      // crashes through `+[NSApplication _crashOnException:]`. See
+      // `DeferredPresentation`.
+      DeferredPresentation.open($isPresented)
     } label: {
       pillLabel
     }
