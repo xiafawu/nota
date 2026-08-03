@@ -19,19 +19,12 @@ struct MainPaneView: View {
   @Binding var speakerChips: [SpeakerChip]
   let onDropURL: (URL) -> Void
   let onRename: (_ label: String, _ newName: String) -> Void
-  var onRefreshPreflight: () -> Void = {}
 
   var body: some View {
     ZStack {
       switch content {
       case .empty(let state):
         EmptyMainView(state: state, isDropTargeted: isDropTargeted)
-      case .preflight(let state):
-        PreflightHomeView(
-          result: state.result,
-          isChecking: state.isChecking,
-          onRefresh: onRefreshPreflight
-        )
       case .rich(let document):
         RichDocumentPane(
           document: document,

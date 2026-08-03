@@ -12,6 +12,9 @@ struct ContentView: View {
   /// Shared by the toolbar pill and the home cards: a gated card click opens
   /// the same health popover.
   @State private var isHealthPopoverPresented = false
+  /// The drawer's slide-over motion collapses to a plain fade under Reduce
+  /// Motion (XIA-404 glass audit).
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   init(model: NotaModel) {
     self.model = model
@@ -75,7 +78,7 @@ struct ContentView: View {
     .overlay {
       if model.isHistoryDrawerPresented {
         historyDrawerLayer
-          .transition(.move(edge: .trailing).combined(with: .opacity))
+          .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
       }
     }
     .animation(Tokens.animFast, value: model.isHistoryDrawerPresented)
@@ -182,8 +185,7 @@ struct ContentView: View {
       isDropTargeted: $model.isDropTargeted,
       speakerChips: $model.speakerChips,
       onDropURL: { url in model.accept(url) },
-      onRename: { label, newName in model.renameChip(label: label, newName: newName) },
-      onRefreshPreflight: { model.runPreflight(refresh: true) }
+      onRename: { label, newName in model.renameChip(label: label, newName: newName) }
     )
   }
 
@@ -200,8 +202,7 @@ struct ContentView: View {
       isDropTargeted: $model.isDropTargeted,
       speakerChips: $model.speakerChips,
       onDropURL: { url in model.accept(url) },
-      onRename: { label, newName in model.renameChip(label: label, newName: newName) },
-      onRefreshPreflight: { model.runPreflight(refresh: true) }
+      onRename: { label, newName in model.renameChip(label: label, newName: newName) }
     )
   }
 
@@ -213,8 +214,7 @@ struct ContentView: View {
       isDropTargeted: $model.isDropTargeted,
       speakerChips: $model.speakerChips,
       onDropURL: { url in model.accept(url) },
-      onRename: { label, newName in model.renameChip(label: label, newName: newName) },
-      onRefreshPreflight: { model.runPreflight(refresh: true) }
+      onRename: { label, newName in model.renameChip(label: label, newName: newName) }
     )
   }
 
