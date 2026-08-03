@@ -177,6 +177,32 @@ final class NotaModel: ObservableObject {
     historyDetails[entry.url.standardizedFileURL.path]
   }
 
+  // MARK: - History drawer
+
+  /// Whether the slide-over history drawer (⌘L) is presented. Owned here so
+  /// the toolbar button, the ⌘L command, and the overlay host share one
+  /// source of truth across phases.
+  @Published var isHistoryDrawerPresented = false
+
+  func toggleHistoryDrawer() {
+    isHistoryDrawerPresented.toggle()
+  }
+
+  /// Persist the pinned flag on the entry's history record (a no-op for
+  /// imported markdown with no record) and refresh the details map so the
+  /// drawer's Pinned section reorders live.
+  func setPinned(_ pinned: Bool, for entry: HistoryEntry) {
+    let historyDir = notaHistoryDirectory()
+    let outputPath = entry.url.standardizedFileURL.path
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      await Task.detached(priority: .utility) {
+        HistoryRecordInfo.setPinned(pinned, outputPath: outputPath, historyDir: historyDir)
+      }.value
+      self.refreshHistoryStatuses()
+    }
+  }
+
   /// Run the preflight readiness check and publish the result for the home
   /// screen. `refresh` bypasses the CLI's short-lived cache. A failure to run
   /// the checker keeps any prior result (the home shows "Not checked yet" only
@@ -900,6 +926,28 @@ struct HistoryRecordInfo {
     return nil
   }
 
+  /// Persist the pinned flag on the record whose `outputPath` matches,
+  /// preserving every other key (app-managed field; the CLI ignores it).
+  /// No-op when no record matches (imported markdown).
+  static func setPinned(_ pinned: Bool, outputPath: String, historyDir: URL) {
+    guard let info = find(outputPath: outputPath, historyDir: historyDir),
+          let data = try? Data(contentsOf: info.recordURL),
+          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+      return
+    }
+    var updated = json
+    updated["pinned"] = pinned
+    updated["updatedAt"] = ISO8601DateFormatter().string(from: Date())
+    guard let out = try? JSONSerialization.data(
+      withJSONObject: updated,
+      options: [.prettyPrinted]
+    ) else {
+      return
+    }
+    try? out.write(to: info.recordURL, options: .atomic)
+  }
+
   /// outputPath (standardized) → `status` for every history record. Feeds the
   /// dashboard's "transcript" pill; records without an `outputPath` are
   /// skipped (they have no row to badge).
@@ -928,12 +976,13 @@ struct HistoryRecordInfo {
 
   /// One record's dashboard-relevant facts, resolved from the JSON record in
   /// a single scan (status, kind incl. legacy inference, duration, unique
-  /// speaker count from the segments).
+  /// speaker count from the segments, pinned flag).
   struct HistoryDetail: Equatable {
     var status: String?
     var kind: HistoryKind
     var durationMinutes: Int?
     var speakerCount: Int?
+    var pinned: Bool = false
   }
 
   /// outputPath (standardized) → `HistoryDetail` for every history record.
@@ -970,7 +1019,8 @@ struct HistoryRecordInfo {
         status: json["status"] as? String,
         kind: kind(from: json),
         durationMinutes: json["durationMinutes"] as? Int,
-        speakerCount: speakers.isEmpty ? nil : speakers.count
+        speakerCount: speakers.isEmpty ? nil : speakers.count,
+        pinned: json["pinned"] as? Bool ?? false
       )
     }
     return details

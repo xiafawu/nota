@@ -69,6 +69,13 @@ struct ContentView: View {
         liveMeetingView.transition(Self.swapTransition)
       }
     }
+    .overlay {
+      if model.isHistoryDrawerPresented {
+        historyDrawerLayer
+          .transition(.move(edge: .trailing).combined(with: .opacity))
+      }
+    }
+    .animation(Tokens.animFast, value: model.isHistoryDrawerPresented)
     .animation(Tokens.animFast, value: phase)
     // No `.toolbarBackground(.hidden)`: the bar stays borderless at rest but
     // regains its scroll-edge material once content scrolls beneath it.
@@ -78,6 +85,29 @@ struct ContentView: View {
       if !running {
         usageProvider.invalidateCache()
       }
+    }
+  }
+
+  /// S3 drawer host: an invisible full-window layer dismisses on click-outside
+  /// (the drawer floats above it); Escape dismisses via a hidden cancel
+  /// button. The drawer itself is a plain SwiftUI view — no NSPanel.
+  private var historyDrawerLayer: some View {
+    ZStack(alignment: .topTrailing) {
+      Color.black.opacity(0.0001)
+        .contentShape(Rectangle())
+        .onTapGesture { model.isHistoryDrawerPresented = false }
+        .ignoresSafeArea()
+
+      HistoryDrawerView(model: model) {
+        model.isHistoryDrawerPresented = false
+      }
+      .padding(CraftTokens.spacing16)
+      .zIndex(1)
+
+      // Escape (cancelAction) dismisses while the drawer is up.
+      Button("") { model.isHistoryDrawerPresented = false }
+        .keyboardShortcut(.cancelAction)
+        .hidden()
     }
   }
 
@@ -118,6 +148,19 @@ struct ContentView: View {
         .help("Open settings")
       case .running, .liveMeeting:
         EmptyView()
+      }
+    }
+
+    // S3: the drawer opens from the toolbar in the home AND document phases.
+    if phase == .home || phase == .document {
+      ToolbarItem(placement: .primaryAction) {
+        Button {
+          model.toggleHistoryDrawer()
+        } label: {
+          Label("History", systemImage: "clock")
+        }
+        .help("History (⌘L)")
+        .liquidGlassButton()
       }
     }
   }

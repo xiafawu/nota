@@ -57,6 +57,11 @@ struct NotaApp: App {
         }
         .keyboardShortcut("t")
         .disabled(model.selectedURL == nil || model.isRunning)
+
+        Button("History") {
+          model.toggleHistoryDrawer()
+        }
+        .keyboardShortcut("l")
       }
       #if DEBUG
       CommandGroup(after: .windowArrangement) {

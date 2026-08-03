@@ -126,11 +126,7 @@ struct HomeDashboardView: View {
   private var filteredHistory: [HistoryEntry] {
     let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !query.isEmpty else { return model.history }
-    return model.history.filter { entry in
-      entry.title.localizedCaseInsensitiveContains(query)
-        || entry.tags.contains { $0.localizedCaseInsensitiveContains(query) }
-        || (HistoryPresentation.fallbackTitle(for: entry.url)?.localizedCaseInsensitiveContains(query) ?? false)
-    }
+    return model.history.filter { HistoryPresentation.matches($0, query: query) }
   }
 
   var body: some View {
@@ -365,8 +361,6 @@ struct HomeDashboardView: View {
     return "\(minutes)m"
   }
 
-  // MARK: - Recent history
-
   private var recentSection: some View {
     VStack(alignment: .leading, spacing: CraftTokens.spacing12) {
       Text("Recent")
@@ -378,7 +372,7 @@ struct HomeDashboardView: View {
           ? (historyExpanded ? Array(filteredHistory.prefix(50)) : Array(filteredHistory.prefix(maxCollapsedHistory)))
           : Array(filteredHistory.prefix(50))
         let now = Date()
-        let groups = groupedByBand(displayItems, now: now)
+        let groups = HistoryPresentation.group(displayItems, now: now)
 
         ForEach(groups, id: \.band) { group in
           Text(group.band.title)
@@ -457,23 +451,6 @@ struct HomeDashboardView: View {
     .padding(.vertical, 6)
     .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
     .padding(.top, 4)
-  }
-
-  /// Group already-sorted (newest-first) entries into contiguous recency bands.
-  private func groupedByBand(
-    _ entries: [HistoryEntry],
-    now: Date
-  ) -> [(band: HistoryPresentation.Band, entries: [HistoryEntry])] {
-    var groups: [(band: HistoryPresentation.Band, entries: [HistoryEntry])] = []
-    for entry in entries {
-      let band = HistoryPresentation.band(for: entry.modifiedAt, now: now)
-      if groups.last?.band == band {
-        groups[groups.count - 1].entries.append(entry)
-      } else {
-        groups.append((band: band, entries: [entry]))
-      }
-    }
-    return groups
   }
 }
 

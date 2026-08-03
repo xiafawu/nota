@@ -3,37 +3,6 @@ import AppKit
 import Foundation
 
 enum PreviewMocks {
-  static let historyEmpty = HistoryPaneState(isRunning: false, rows: [])
-
-  static let historyRowsFew = HistoryPaneState(
-    isRunning: false,
-    rows: [
-      HistoryRowState(
-        id: URL(string: "file:///mock/team-sync.summary.md")!,
-        title: "Team sync",
-        relativeDate: "2h",
-        tags: ["planning", "roadmap", "hiring"]
-      ),
-      HistoryRowState(
-        id: URL(string: "file:///mock/coffee-chat.summary.md")!,
-        title: "Coffee chat",
-        relativeDate: "1d",
-        tags: ["1:1", "feedback"]
-      ),
-      HistoryRowState(
-        id: URL(string: "file:///mock/standup.summary.md")!,
-        title: "Standup",
-        relativeDate: "3d",
-        tags: []
-      )
-    ]
-  )
-
-  static let historyRowsRunning = HistoryPaneState(
-    isRunning: true,
-    rows: historyRowsFew.rows
-  )
-
   static let emptyMainIdle = EmptyMainState(
     isRunning: false,
     displayName: "Drop Audio",

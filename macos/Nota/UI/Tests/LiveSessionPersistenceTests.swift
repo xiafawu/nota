@@ -413,7 +413,9 @@ final class LiveSessionPersistenceTests: XCTestCase {
     outputPath: String
   ) -> [String: Any] {
     var json: [String: Any] = [
+      "id": "record-\(UUID().uuidString.prefix(8))",
       "createdAt": createdAt,
+      "sourcePath": "/tmp/source-\(URL(fileURLWithPath: outputPath).lastPathComponent)",
       "durationMinutes": durationMinutes,
       "outputPath": outputPath,
       "options": ["model": "universal-3.5-pro-streaming", "diarize": false, "identify": false]
@@ -474,5 +476,34 @@ final class LiveSessionPersistenceTests: XCTestCase {
 
     XCTAssertTrue(stats.isEmpty)
     XCTAssertEqual(stats.transcribedMinutes, 0)
+  }
+
+  // MARK: - Pinned flag
+
+  func testSetPinnedPersistsAndPreservesOtherKeys() throws {
+    try writeRecord(named: "a.json", recordJSON(
+      createdAt: "2026-08-02T10:00:00.000Z",
+      kind: "meeting",
+      durationMinutes: 5,
+      outputPath: "/tmp/a.summary.md"
+    ))
+
+    // Pin it, then re-scan: the flag round-trips through the details map.
+    HistoryRecordInfo.setPinned(true, outputPath: "/tmp/a.summary.md", historyDir: historyDirectory)
+    var details = HistoryRecordInfo.detailsByOutputPath(historyDir: historyDirectory)
+    XCTAssertEqual(details["/tmp/a.summary.md"]?.pinned, true)
+
+    // Unpin restores, and unrelated keys (kind/status) survive the write.
+    HistoryRecordInfo.setPinned(false, outputPath: "/tmp/a.summary.md", historyDir: historyDirectory)
+    details = HistoryRecordInfo.detailsByOutputPath(historyDir: historyDirectory)
+    XCTAssertEqual(details["/tmp/a.summary.md"]?.pinned, false)
+    XCTAssertEqual(details["/tmp/a.summary.md"]?.kind, .meeting)
+    XCTAssertEqual(details["/tmp/a.summary.md"]?.status, nil)
+  }
+
+  func testSetPinnedIsNoOpWithoutMatchingRecord() throws {
+    HistoryRecordInfo.setPinned(true, outputPath: "/tmp/nope.summary.md", historyDir: historyDirectory)
+    let details = HistoryRecordInfo.detailsByOutputPath(historyDir: historyDirectory)
+    XCTAssertTrue(details.isEmpty)
   }
 }

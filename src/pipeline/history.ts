@@ -93,6 +93,12 @@ export interface HistoryRecord {
    * tags are never silently dropped.
    */
   tagsEdited?: boolean;
+  /**
+   * True when the user pinned this record in the macOS app's history drawer
+   * (pinned rows render above chronology). Managed by the app, which edits
+   * the JSON in place; the CLI never writes it. Absent means unpinned.
+   */
+  pinned?: boolean;
   outputPath?: string;
   status: HistoryStatus;
 }

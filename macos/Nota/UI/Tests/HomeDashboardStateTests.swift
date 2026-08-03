@@ -216,4 +216,61 @@ final class HomeDashboardStateTests: XCTestCase {
     XCTAssertEqual(HomeDashboardView.minutesText(65), "1h 05m")
     XCTAssertEqual(HomeDashboardView.minutesText(125), "2h 05m")
   }
+
+  // MARK: - Shared history query helpers (home + drawer)
+
+  private func entry(title: String, tags: [String], urlName: String = "x") -> HistoryEntry {
+    HistoryEntry(
+      url: URL(fileURLWithPath: "/tmp/\(urlName).summary.md"),
+      modifiedAt: Date(),
+      title: title,
+      tags: tags,
+      kind: .file
+    )
+  }
+
+  func testMatches_isCaseInsensitiveOverTitleAndTags() {
+    let e = entry(title: "Team Sync", tags: ["Roadmap"])
+    XCTAssertTrue(HistoryPresentation.matches(e, query: "team"))
+    XCTAssertTrue(HistoryPresentation.matches(e, query: "SYNC"))
+    XCTAssertTrue(HistoryPresentation.matches(e, query: "roadmap"))
+    XCTAssertTrue(HistoryPresentation.matches(e, query: "ROAD"))
+    XCTAssertFalse(HistoryPresentation.matches(e, query: "hiring"))
+  }
+
+  func testMatches_emptyQueryMatchesEverything() {
+    let e = entry(title: "Anything", tags: [])
+    XCTAssertTrue(HistoryPresentation.matches(e, query: ""))
+    XCTAssertTrue(HistoryPresentation.matches(e, query: "   "))
+  }
+
+  func testMatches_fallsBackToFilename() {
+    // Generic "Transcript" title falls back to the filename-derived name.
+    let e = entry(title: "Transcript", tags: [], urlName: "team-sync-20260803-101530")
+    XCTAssertTrue(HistoryPresentation.matches(e, query: "team-sync"))
+  }
+
+  func testGroup_bandsContiguousEntries() {
+    let now = Date()
+    let today = HistoryEntry(
+      url: URL(fileURLWithPath: "/tmp/today.summary.md"),
+      modifiedAt: now,
+      title: "Today",
+      tags: [],
+      kind: .file
+    )
+    let yesterday = HistoryEntry(
+      url: URL(fileURLWithPath: "/tmp/y.summary.md"),
+      modifiedAt: now.addingTimeInterval(-86400),
+      title: "Yesterday",
+      tags: [],
+      kind: .memo
+    )
+    let groups = HistoryPresentation.group([today, yesterday], now: now)
+    XCTAssertEqual(groups.count, 2)
+    XCTAssertEqual(groups[0].band, .today)
+    XCTAssertEqual(groups[1].band, .thisWeek)
+    XCTAssertEqual(groups[0].entries.map(\.title), ["Today"])
+    XCTAssertEqual(groups[1].entries.map(\.title), ["Yesterday"])
+  }
 }
