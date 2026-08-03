@@ -39,7 +39,7 @@ struct ContentView: View {
   private var navigationTitle: String {
     switch phase {
     case .running: return model.displayName
-    case .liveMeeting: return "Live Meeting"
+    case .liveMeeting: return model.activeSessionKind == .memo ? "Memo" : "Live Meeting"
     case .document, .home: return "Nota"
     }
   }

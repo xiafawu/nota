@@ -37,12 +37,24 @@ enum LiveMeetingFormat {
 /// `onStop` so the model stays the single owner of the lifecycle.
 struct LiveMeetingView: View {
   @ObservedObject var session: LiveMeetingSession
+  /// Session kind drives the pane's own title: memo sessions say "Memo".
+  var kind: HistoryKind = .meeting
   let onStart: () -> Void
   let onStop: () -> Void
 
   /// Stable id for the volatile partial-text tail, so the scroll reader can
   /// chase it as it rewrites on every interim recognition update.
   private static let partialTailID = "live-meeting-partial-tail"
+
+  private var paneTitle: String {
+    kind == .memo ? "Memo" : "Live Meeting"
+  }
+
+  private var paneSubtitle: String {
+    kind == .memo
+      ? "Record a quick note and get a cleaned write-up."
+      : "Record from your microphone and transcribe in real time."
+  }
 
   var body: some View {
     VStack(spacing: 0) {
@@ -147,12 +159,12 @@ struct LiveMeetingView: View {
         .foregroundStyle(Tokens.emptyIconColor)
 
       VStack(spacing: Metrics.emptyTextSpacing) {
-        Text("Live Meeting")
+        Text(paneTitle)
           .font(Tokens.liveMeetingTitleFont)
           .fontWeight(.bold)
           .foregroundStyle(.primary)
 
-        Text("Record from your microphone and transcribe in real time.")
+        Text(paneSubtitle)
           .font(Tokens.liveMeetingCaptionFont)
           .foregroundStyle(.secondary)
           .multilineTextAlignment(.center)

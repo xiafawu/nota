@@ -1,6 +1,7 @@
 import AVFoundation
 import Foundation
 import os
+import Speech
 
 // MARK: - LiveMeetingSessionError
 
@@ -12,6 +13,27 @@ enum LiveMeetingSessionError: LocalizedError, Equatable {
     switch self {
     case .notRecording:
       return "Live meeting: no recording in progress"
+    }
+  }
+}
+
+/// Which transcription backend a live session uses. `assemblyAI` is the
+/// default; `.apple` (on-device SFSpeechRecognizer via AppleSpeechStream) is
+/// the memo fallback when no AssemblyAI key exists — the memo card stays
+/// alive with only the Apple engine (XIA-400 gating, XIA-403 wiring).
+enum LiveEngine: Equatable {
+  case assemblyAI
+  case apple
+}
+
+/// Backend-specific setup failures for `LiveMeetingSession.start`.
+enum LiveEngineError: LocalizedError, Equatable {
+  case speechPermissionDenied
+
+  var errorDescription: String? {
+    switch self {
+    case .speechPermissionDenied:
+      return "Speech recognition permission is required for on-device memos"
     }
   }
 }
@@ -71,8 +93,8 @@ final class LiveMeetingSession: ObservableObject {
 
   // MARK: - Lifecycle
 
-  /// Start a live meeting: mic permission, capture engine, and the AssemblyAI
-  /// realtime session. Returns once the server has sent `Begin`.
+  /// Start a live meeting: mic permission, capture engine, and the chosen
+  /// transcription backend. Returns once the backend is live.
   ///
   /// `diarize` requests AssemblyAI realtime speaker labels
   /// (`speaker_labels=true`); memo sessions turn it on only when the
@@ -81,16 +103,25 @@ final class LiveMeetingSession: ObservableObject {
   /// follow-up consumes the speaker events — so this is intent + record
   /// plumbing today.
   ///
+  /// `engine` selects the backend: `.assemblyAI` (realtime WS, needs a key)
+  /// or `.apple` (on-device recognition — the memo path without an
+  /// AssemblyAI key).
+  ///
   /// On any setup failure the session transitions to `.failed(message)` first
   /// (so the UI's error banner renders off the published state) and then
   /// throws `MicCaptureError`/`AssemblyAIError`.
-  func start(diarize: Bool = false) async throws {
+  func start(diarize: Bool = false, engine: LiveEngine = .assemblyAI) async throws {
     cancel()
 
-    // 1. API key — fail fast, before permission prompts or any engine work.
-    guard let apiKey = ApiKeyStore.value(for: "ASSEMBLYAI_API_KEY"), !apiKey.isEmpty else {
-      failStart(AssemblyAIError.missingAPIKey)
-      throw AssemblyAIError.missingAPIKey
+    // 1. API key — only the AssemblyAI engine needs one; fail fast, before
+    //    permission prompts or any engine work.
+    var apiKey = ""
+    if engine == .assemblyAI {
+      guard let key = ApiKeyStore.value(for: "ASSEMBLYAI_API_KEY"), !key.isEmpty else {
+        failStart(AssemblyAIError.missingAPIKey)
+        throw AssemblyAIError.missingAPIKey
+      }
+      apiKey = key
     }
 
     // 2. Microphone permission.
@@ -109,6 +140,11 @@ final class LiveMeetingSession: ObservableObject {
     @unknown default:
       failStart(MicCaptureError.permissionDenied)
       throw MicCaptureError.permissionDenied
+    }
+
+    if engine == .apple {
+      try await startAppleEngine()
+      return
     }
 
     // 3. WebSocket (v3 realtime; no speech_model → Universal-3.5 Pro Streaming).
@@ -184,6 +220,36 @@ final class LiveMeetingSession: ObservableObject {
       throw LiveMeetingSessionError.notRecording
     }
 
+    // Apple engine: no WS termination dance — stop capture, finalize the
+    // recognizer, and build the result from what streamed in.
+    if appleSpeech != nil {
+      state = .stopping
+      elapsedTask?.cancel()
+      elapsedTask = nil
+      capture.onPCMBuffer = nil
+      capture.stop()
+      if let speech = appleSpeech {
+        let finalText = try? await speech.finish()
+        // A session that never produced a final delta still delivers its text
+        // through finish(); surface it as the single segment.
+        if let finalText, !finalText.isEmpty, segments.isEmpty {
+          segments.append(LiveSegment(id: UUID(), text: finalText, endTime: elapsed))
+        }
+      }
+      appleSpeech = nil
+      appleHypothesesTask?.cancel()
+      appleHypothesesTask = nil
+      let result = LiveMeetingResult(
+        segments: segments,
+        transcriptText: transcriptText,
+        duration: elapsed,
+        audioURL: finalizeAudioFile()
+      )
+      lastResult = result
+      state = .idle
+      return result
+    }
+
     // If the connection already failed there is nothing left to receive —
     // finalize immediately with what we have.
     let skipFinalWait: Bool
@@ -246,6 +312,9 @@ final class LiveMeetingSession: ObservableObject {
     didSendTerminate = false
     webSocketTask?.cancel(with: .normalClosure, reason: nil)
     teardownWS()
+    appleSpeech = nil
+    appleHypothesesTask?.cancel()
+    appleHypothesesTask = nil
     deleteAudioFile()
 
     // Reset state.
@@ -371,8 +440,94 @@ final class LiveMeetingSession: ObservableObject {
   private var audioFile: AVAudioFile?
   private var audioURL: URL?
 
+  /// Apple-engine state (nil when the session runs on AssemblyAI).
+  private var appleSpeech: AppleSpeechStream?
+  private var appleHypothesesTask: Task<Void, Never>?
+
   private var transcriptText: String {
     segments.map(\.text).joined(separator: "\n")
+  }
+
+  // MARK: - Apple engine
+
+  /// On-device backend for memo sessions without an AssemblyAI key:
+  /// SFSpeechRecognizer permission, AppleSpeechStream in streaming mode
+  /// (finalized deltas arrive mid-session), MicCapture feeding it, and the
+  /// same audio-file + elapsed-ticker plumbing as the WS path.
+  private func startAppleEngine() async throws {
+    switch SFSpeechRecognizer.authorizationStatus() {
+    case .authorized:
+      break
+    case .notDetermined:
+      let granted: SFSpeechRecognizerAuthorizationStatus = await withCheckedContinuation { continuation in
+        SFSpeechRecognizer.requestAuthorization { status in
+          continuation.resume(returning: status)
+        }
+      }
+      guard granted == .authorized else {
+        failStart(LiveEngineError.speechPermissionDenied)
+        throw LiveEngineError.speechPermissionDenied
+      }
+    case .denied, .restricted:
+      failStart(LiveEngineError.speechPermissionDenied)
+      throw LiveEngineError.speechPermissionDenied
+    @unknown default:
+      failStart(LiveEngineError.speechPermissionDenied)
+      throw LiveEngineError.speechPermissionDenied
+    }
+
+    let speech = AppleSpeechStream(streaming: true)
+    appleSpeech = speech
+    appleHypothesesTask = Task { @MainActor [weak self] in
+      for await hypothesis in speech.hypotheses {
+        guard let self else { break }
+        self.handleAppleHypothesis(hypothesis)
+      }
+    }
+
+    do {
+      try await speech.start()
+    } catch {
+      appleSpeech = nil
+      appleHypothesesTask?.cancel()
+      appleHypothesesTask = nil
+      failStart(error)
+      throw error
+    }
+
+    // Session is live — same clock/audio/capture plumbing as the WS path.
+    startedAt = Date()
+    startElapsedTicker()
+    prepareAudioFile()
+    capture.onPCMBuffer = { [weak self] buffer in
+      Task { @MainActor in
+        try? self?.appleSpeech?.feed(buffer)
+      }
+    }
+    do {
+      try capture.start()
+    } catch {
+      logger.error("live meeting apple capture failed to start: \(error.localizedDescription, privacy: .public)")
+      appleHypothesesTask?.cancel()
+      appleHypothesesTask = nil
+      appleSpeech = nil
+      deleteAudioFile()
+      failStart(error)
+      throw error
+    }
+    state = .recording
+    logger.info("live meeting session started (apple engine)")
+  }
+
+  /// Route AppleSpeechStream hypotheses into the shared segment/partial state.
+  private func handleAppleHypothesis(_ hypothesis: Hypothesis) {
+    guard state == .recording else { return }
+    if hypothesis.isFinal {
+      segments.append(LiveSegment(id: UUID(), text: hypothesis.text, endTime: elapsed))
+      partialText = nil
+    } else {
+      partialText = hypothesis.text
+    }
   }
 
   // MARK: - WebSocket plumbing

@@ -332,15 +332,25 @@ final class NotaModel: ObservableObject {
   // MARK: - Live meeting
 
   /// Kind of the in-flight live session — written to the history record on
-  /// stop (meeting/memo). Memo sessions preset diarization and speaker
-  /// identity off unless the memo-diarization setting is enabled.
-  private var activeSessionKind: HistoryKind = .meeting
+  /// stop (meeting/memo); drives the pane title and the memo summarize step.
+  /// Memo sessions preset diarization and speaker identity off unless the
+  /// memo-diarization setting is enabled.
+  private(set) var activeSessionKind: HistoryKind = .meeting
 
   /// Effective diarize/identify flags for a live session: only memo sessions
   /// can turn them on, and only when the memo-diarization setting is enabled.
   /// Meeting live sessions stay diarization-free (today's behavior).
   private var activeSessionDiarize: Bool {
     activeSessionKind == .memo && NotaSettingsStore.memoDiarizationEnabled
+  }
+
+  /// Backend for a live session: memos fall back to the on-device Apple
+  /// engine when no AssemblyAI key exists (the memo card stays alive with
+  /// only the Apple engine); meetings always use AssemblyAI. Pure — testable
+  /// without the model.
+  nonisolated static func engine(for kind: HistoryKind, hasAssemblyAIKey: Bool) -> LiveEngine {
+    if kind == .memo && !hasAssemblyAIKey { return .apple }
+    return .assemblyAI
   }
 
   /// Begin a live dictation/transcription session. The pane switches to the
@@ -353,10 +363,14 @@ final class NotaModel: ObservableObject {
       return
     }
     activeSessionKind = kind
+    let engine = Self.engine(
+      for: kind,
+      hasAssemblyAIKey: ApiKeyStore.value(for: "ASSEMBLYAI_API_KEY") != nil
+    )
     status = "Recording…"
     Task {
       do {
-        try await liveSession.start(diarize: activeSessionDiarize)
+        try await liveSession.start(diarize: activeSessionDiarize, engine: engine)
       } catch {
         status = "Live session failed: \(error.localizedDescription)"
       }
@@ -394,15 +408,33 @@ final class NotaModel: ObservableObject {
           outputDirectory: outputDirectory,
           historyDirectory: notaHistoryDirectory()
         )
-        markdown = saved.markdown
         lastOutputURL = saved.outputURL
-        status = "Complete"
+
+        // Memo sessions summarize automatically with the memo template
+        // (cleaned note, model-generated title — XIA-391); meetings keep the
+        // transcript-only output.
+        var displayedMarkdown = saved.markdown
+        var summarySucceeded = true
+        if activeSessionKind == .memo {
+          summarySucceeded = await runMemoSummary(
+            historyID: saved.historyID,
+            outputURL: saved.outputURL
+          )
+          if summarySucceeded,
+             let content = try? String(contentsOf: saved.outputURL, encoding: .utf8) {
+            displayedMarkdown = content
+          }
+        }
+
+        markdown = displayedMarkdown
+        status = summarySucceeded ? "Complete" : "Saved — summary failed"
         refreshHistory()
         if let entry = history.first(where: {
           $0.url.standardizedFileURL == saved.outputURL.standardizedFileURL
         }) {
           selectedHistoryID = entry.id
-          // Mirror openHistory: keep the header coherent with the new doc.
+          // Mirror openHistory: keep the header coherent with the new doc
+          // (post-summary, the memo title is model-generated).
           displayName = entry.title
           displayPath = entry.url.path
         }
@@ -709,6 +741,76 @@ final class NotaModel: ObservableObject {
     case "writing": return "Writing…"
     default: return nil
     }
+  }
+
+  /// Run the kind-aware CLI summary over a fresh memo record:
+  /// `nota history summarize-history <id>` (threads the record's `kind`, so
+  /// the memo template + memo-length title apply). Environment mirrors
+  /// `scripts/nota-app-run.sh`: the user's shell exports + `~/.secrets`, so
+  /// provider keys resolve exactly as a CLI run would. Returns success; a
+  /// failure keeps the transcript-only memo (the recording is never lost).
+  private func runMemoSummary(historyID: String, outputURL: URL) async -> Bool {
+    let shell = Process()
+    shell.executableURL = URL(fileURLWithPath: "/bin/bash")
+    shell.currentDirectoryURL = projectDirectory
+
+    var environment = ProcessInfo.processInfo.environment
+    environment["PATH"] = [
+      "/opt/homebrew/bin",
+      "/usr/local/bin",
+      "/usr/bin",
+      "/bin",
+      "/usr/sbin",
+      "/sbin",
+      environment["PATH"] ?? "",
+    ].joined(separator: ":")
+    shell.environment = environment
+
+    shell.arguments = [
+      "-c",
+      #"""
+      cd "\#(projectDirectory.path)" || exit 1
+      if [ -x /bin/zsh ]; then
+        while IFS= read -r assignment; do
+          case "$assignment" in
+            *=*) export "$assignment" ;;
+          esac
+        done < <(/bin/zsh -lic 'for name in PATH OPENAI_API_KEY ASSEMBLYAI_API_KEY HUGGINGFACE_TOKEN; do value="${(P)name}"; if [[ -n "$value" ]]; then print -r -- "$name=$value"; fi; done' 2>/dev/null || true)
+      fi
+      if [ -f "$HOME/.secrets" ]; then
+        set +u; set -a
+        . "$HOME/.secrets" 2>/dev/null || true
+        set +a; set -u
+      fi
+      if [ ! -f "dist/index.js" ]; then
+        npm run build 2>/dev/null || exit 1
+      fi
+      exec node dist/index.js history summarize "\#(historyID)"
+      """#,
+    ]
+
+    let outputPipe = Pipe()
+    let errorPipe = Pipe()
+    shell.standardOutput = outputPipe
+    shell.standardError = errorPipe
+    // Never inherit stdin (pty slave trap — see UsageStatsProvider).
+    shell.standardInput = FileHandle.nullDevice
+
+    do {
+      try shell.run()
+    } catch {
+      NSLog("Nota memo summary could not start: \(error.localizedDescription)")
+      return false
+    }
+    outputPipe.fileHandleForReading.readDataToEndOfFile()
+    let stderr = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
+    shell.waitUntilExit()
+
+    guard shell.terminationStatus == 0 else {
+      NSLog("Nota memo summary failed: \(stderr.prefix(500))")
+      return false
+    }
+    return true
   }
 
   /// Map an incoming open request to a file URL. Plain file URLs pass through;

@@ -383,4 +383,17 @@ final class HomeDashboardStateTests: XCTestCase {
   func testHealthPill_notCheckedForNilResult() {
     XCTAssertEqual(HealthPillState.make(result: nil), .notChecked)
   }
+
+  // MARK: - Live-session engine selection (XIA-403)
+
+  func testEngine_meetingAlwaysUsesAssemblyAI() {
+    XCTAssertEqual(NotaModel.engine(for: .meeting, hasAssemblyAIKey: false), .assemblyAI)
+    XCTAssertEqual(NotaModel.engine(for: .meeting, hasAssemblyAIKey: true), .assemblyAI)
+    XCTAssertEqual(NotaModel.engine(for: .file, hasAssemblyAIKey: false), .assemblyAI)
+  }
+
+  func testEngine_memoFallsBackToAppleWithoutKey() {
+    XCTAssertEqual(NotaModel.engine(for: .memo, hasAssemblyAIKey: false), .apple)
+    XCTAssertEqual(NotaModel.engine(for: .memo, hasAssemblyAIKey: true), .assemblyAI)
+  }
 }

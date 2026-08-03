@@ -10,7 +10,7 @@ private enum SettingsTab: Hashable {
 
   var idealHeight: CGFloat {
     switch self {
-    case .general: 220
+    case .general: 260
     case .dictation: 600
     case .dictionary: 560
     case .models: 400
@@ -23,6 +23,7 @@ private enum SettingsTab: Hashable {
 struct SettingsView: View {
   @Binding var identifySpeakers: Bool
   @Binding var skipSummary: Bool
+  @State private var memoDiarization = NotaSettingsStore.memoDiarizationEnabled
   @StateObject private var speakers = SpeakersModel()
   @State private var selectedTab: SettingsTab = .general
 
@@ -96,6 +97,17 @@ struct SettingsView: View {
               .font(Tokens.settingsCaptionFont)
               .foregroundStyle(.secondary)
           }
+        }
+        Toggle(isOn: $memoDiarization) {
+          VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
+            Text("Diarize memo recordings")
+            Text("Identify speakers in quick memos (off by default — faster and cheaper).")
+              .font(Tokens.settingsCaptionFont)
+              .foregroundStyle(.secondary)
+          }
+        }
+        .onChange(of: memoDiarization) { _, newValue in
+          NotaSettingsStore.memoDiarizationEnabled = newValue
         }
       } footer: {
         Text("Build \(buildStamp)")
