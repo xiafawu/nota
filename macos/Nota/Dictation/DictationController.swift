@@ -247,6 +247,11 @@ final class DictationController: ObservableObject {
     self.permissions.onStatusChange = { [weak self] in
       self?.applyPermissionGate()
     }
+    // The card's Finish button. It ends the session through the same call the
+    // trigger key's release makes — see `finishSessionFromCard`.
+    self.review.onFinishRecording = { [weak self] in
+      self?.finishSessionFromCard()
+    }
     self.hotkeyMonitor.onTransition = { [weak self] transition in
       DispatchQueue.main.async { [weak self] in
         self?.handle(transition)
@@ -344,6 +349,27 @@ final class DictationController: ObservableObject {
     if state.isPermissionBlocked {
       state = .idle
     }
+  }
+
+  /// End the current dictation session from the review card's Finish button.
+  ///
+  /// The **same** call the trigger key's release makes, deliberately: stop,
+  /// polish, and `extendReview` are then byte-for-byte what a hotkey stop does,
+  /// and there is no second teardown to keep in step. Added 2026-08-03 on owner
+  /// feedback — the card showed two greyed-out buttons for the whole time the
+  /// microphone was open, and the globe key was the only way out of that state.
+  ///
+  /// The one thing it owes beyond the shared call is the hotkey's own
+  /// bookkeeping. In `.toggle` activation the monitor is holding "a session is
+  /// running"; a session ended without telling it would leave the owner's next
+  /// press sending `.ended` into a controller with nothing to end — one dead
+  /// press before dictation worked again. `resetToggle` is the monitor being
+  /// told what it could not observe.
+  ///
+  /// Internal so a test can press Finish without a microphone or an event tap.
+  func finishSessionFromCard() {
+    hotkeyMonitor.resetToggle()
+    endCaptureAndFinalize()
   }
 
   private func handle(_ transition: HotkeyTransition) {

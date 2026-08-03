@@ -686,8 +686,14 @@ final class StubReviewPresenter: DictationReviewPresenting {
   /// arrived and was cleared is a different bug from one that never arrived.
   private(set) var errorMessage: String?
   private(set) var errorUpdates: [String?] = []
+  /// What the card's Finish button is wired to. The controller installs it at
+  /// init, so a test can press Finish without a microphone or an event tap.
+  var onFinishRecording: (() -> Void)?
 
   var latest: DictationReviewRequest? { presented.last }
+
+  /// The owner pressing Finish (or ⌘↩ while the card records).
+  func pressFinish() { onFinishRecording?() }
 
   @discardableResult
   func present(_ request: DictationReviewRequest) -> Bool {
@@ -1313,6 +1319,41 @@ final class DictationReviewBranchTests: XCTestCase {
     XCTAssertEqual(controller.lastProcessedText, "Ship the patch. Then land it.")
   }
 
+  // MARK: - Finish
+
+  /// The card's Finish button reaches the controller, and what it reaches is the
+  /// *stop* path — not a decision. Nothing is inserted, nothing is discarded, and
+  /// the card is exactly where it was: the state it buys is the one in which a
+  /// decision becomes possible at all.
+  func testFinishEndsTheSessionAndDecidesNothing() {
+    let controller = makeController(.review)
+    controller.beginSessionForTests(target: target)
+    XCTAssertTrue(controller.isReviewRecording)
+    XCTAssertNotNil(presenter.onFinishRecording, "the controller wires the card's Finish button")
+
+    presenter.pressFinish()
+
+    XCTAssertTrue(controller.isReviewing, "Finish is not a decision — the card stays")
+    XCTAssertNil(controller.lastProcessedText, "and nothing reached the target app")
+    XCTAssertEqual(presenter.dismissCount, 0)
+  }
+
+  /// The buttons come back the moment the session's text lands, whichever route
+  /// ended the session. This is the same `deliver` a trigger-key stop runs — the
+  /// point of Finish calling `endCaptureAndFinalize` rather than a teardown of
+  /// its own.
+  func testAFinishedSessionLeavesTheCardDecidable() {
+    let controller = makeController(.review)
+    controller.beginSessionForTests(target: target)
+    presenter.pressFinish()
+
+    controller.deliver("Ship the patch.", offline: "Ship the patch.", latency: 1)
+
+    XCTAssertFalse(controller.isReviewRecording, "the card offers Discard and Apply again")
+    XCTAssertEqual(presenter.buffer, "Ship the patch.", "the batch is in the box, waiting")
+    XCTAssertEqual(presenter.presented.count, 1, "still one card, extended not replaced")
+  }
+
   /// A trigger press with no card open is an ordinary new session.
   func testNoOpenCardMeansNoContinuation() {
     let controller = makeController(.review)
@@ -1417,11 +1458,10 @@ final class DictationReviewBranchTests: XCTestCase {
 
 // MARK: - Appending a continuation to the card
 
-/// The separator rule, in isolation: what a continuation's text joins onto.
-/// The card's live-draft block is fed by a string that grows for as long as the
-/// owner talks, redrawn many times a second, on the main actor, inside a card
-/// they are typing into. These are the two things that stop it costing more as
-/// the continuation runs on.
+/// The bound on the live draft the editor renders as a suffix. It is fed by a
+/// string that grows for as long as the owner talks, redrawn many times a
+/// second, on the main actor, inside the box they type into. These are the
+/// things that stop it costing more as the session runs on.
 final class ReviewDraftMetricsTests: XCTestCase {
   func testAShortDraftIsDrawnWhole() {
     let window = ReviewDraftMetrics.windowed(
@@ -1446,8 +1486,8 @@ final class ReviewDraftMetricsTests: XCTestCase {
   }
 
   /// Quantized, not sliding: greedy wrapping starts wherever the window starts,
-  /// so a head that moved with every syllable would re-wrap all three visible
-  /// lines on every tick.
+  /// so a head that moved with every syllable would re-wrap every visible line
+  /// on every tick.
   func testTheHeadMovesInStepsNotPerCharacter() {
     let base = ReviewDraftMetrics.windowBudget + 1
     let first = ReviewDraftMetrics.windowed(
@@ -1460,15 +1500,6 @@ final class ReviewDraftMetricsTests: XCTestCase {
     )
     XCTAssertEqual(first.finalized.count, base, "under one step, nothing moved")
     XCTAssertEqual(later.finalized.count, base + 10, "still under one step")
-  }
-
-  /// The block is a fixed number of lines for the whole continuation, so the
-  /// card changes size exactly twice — when the block appears and when it goes.
-  func testTheBlockIsAFixedNumberOfLines() {
-    XCTAssertEqual(
-      ReviewDraftMetrics.blockHeight,
-      CGFloat(ReviewDraftMetrics.lines) * ReviewDraftMetrics.lineHeight
-    )
   }
 
   /// The runs the card draws must concatenate to the string it was given —
@@ -1704,6 +1735,41 @@ final class DictationReviewPresenterTests: XCTestCase {
     XCTAssertEqual(applies, 1)
   }
 
+  /// ⌘↩ is the primary action, and while a session records the primary action is
+  /// Finish, not Apply. Same call the prominent button makes, so the two cannot
+  /// drift — which is the whole reason the branch lives on the model.
+  func testTheShortcutFinishesWhileRecordingAndAppliesAfterwards() {
+    let presenter = DictationReviewPresenter()
+    var applies = 0
+    var finishes = 0
+    presenter.onFinishRecording = { finishes += 1 }
+    presenter.present(request(onApply: { _ in applies += 1 }, onDiscard: {}))
+
+    presenter.setListening(true)
+    presenter.model.primaryAction()
+    XCTAssertEqual(finishes, 1, "⌘↩ while recording ends the session")
+    XCTAssertEqual(applies, 0, "and applies nothing")
+    XCTAssertTrue(presenter.isPresenting, "the card stays — Finish is not a decision")
+
+    presenter.setListening(false)
+    presenter.model.primaryAction()
+    XCTAssertEqual(applies, 1, "with the session over, ⌘↩ is Apply again")
+    XCTAssertEqual(finishes, 1)
+  }
+
+  /// Finish is refused when there is nothing recording, for the same reason
+  /// Apply is refused when there is: the two states are exclusive and each
+  /// button means one of them.
+  func testFinishIsRefusedWhenNoSessionIsRecording() {
+    let presenter = DictationReviewPresenter()
+    var finishes = 0
+    presenter.onFinishRecording = { finishes += 1 }
+    presenter.present(request(onDiscard: {}))
+
+    presenter.model.finishRecording()
+    XCTAssertEqual(finishes, 0)
+  }
+
   /// A second present without a decision would strand the first session's text.
   func testPresentingAgainDiscardsWhatWasAlreadyUp() {
     let presenter = DictationReviewPresenter()
@@ -1805,6 +1871,80 @@ final class DictationReviewPanelTests: XCTestCase {
       spin(until: { model.text.hasSuffix("!") }),
       "typed text never reached the model: \(model.text)"
     )
+  }
+
+  /// **One text box, and the draft in it is display only.**
+  ///
+  /// The merge (owner, 2026-08-03) moved the live draft from a block of its own
+  /// into the editor. What must not have moved with it is the boundary: the
+  /// suffix is drawn, the buffer is not touched, and `model.text` — the string
+  /// Apply inserts and the diff Apply learns from — is exactly what it was
+  /// before the recognizer said anything.
+  func testTheLiveDraftIsDrawnInTheEditorAndNeverInTheBuffer() throws {
+    let (panel, model) = makePanel("Ship the patch.")
+    defer { panel.orderOut(nil) }
+    panel.present()
+    XCTAssertTrue(spin(until: { DictationReviewPanel.firstTextView(in: panel.contentView) != nil }))
+    let editor = try XCTUnwrap(DictationReviewPanel.firstTextView(in: panel.contentView))
+
+    model.isListening = true
+    model.draft = HUDDraft(finalized: "Then land it.", volatileTail: "and tell")
+
+    XCTAssertTrue(
+      spin(until: { editor.string.contains("and tell") }),
+      "the draft never reached the box: \(editor.string)"
+    )
+    XCTAssertTrue(
+      editor.string.hasPrefix("Ship the patch."),
+      "the owner's buffer is still the head of the box"
+    )
+    XCTAssertEqual(
+      model.text,
+      "Ship the patch.",
+      "and NOTHING the recognizer said is in the buffer"
+    )
+    XCTAssertFalse(editor.isEditable, "the box is read-only while a session records")
+
+    // Stop: the block's words go, and the finished text arrives the way it
+    // always has — through the buffer, once.
+    model.isListening = false
+    model.draft = .empty
+    model.text = DictationReview.appended(buffer: model.text, addition: "Then land it.")
+    XCTAssertTrue(
+      spin(until: { editor.string == "Ship the patch. Then land it." && editor.isEditable }),
+      "the box did not settle back to the buffer alone: \(editor.string)"
+    )
+  }
+
+  /// The suffix is bounded before it is laid out, and drawn in two colours —
+  /// the prompter's treatment, in the editor's own box.
+  func testTheDraftSuffixIsBoundedAndDimmedAtItsTail() {
+    let long = String(repeating: "a", count: ReviewDraftMetrics.windowBudget * 2)
+    let drawn = ReviewEditor.attributedDraft(
+      HUDDraft(finalized: long, volatileTail: "the newest words")
+    )
+    XCTAssertTrue(drawn.string.hasSuffix("the newest words"), "the tail is never cut")
+    XCTAssertLessThanOrEqual(
+      drawn.length,
+      ReviewDraftMetrics.windowBudget + ReviewDraftMetrics.windowStep + 32,
+      "an unbounded suffix is an unbounded main-actor layout on a 15Hz feed"
+    )
+
+    var range = NSRange()
+    let tailColor = drawn.attribute(
+      .foregroundColor,
+      at: drawn.length - 1,
+      effectiveRange: &range
+    ) as? NSColor
+    let headColor = drawn.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor
+    XCTAssertNotEqual(
+      tailColor,
+      headColor,
+      "the volatile tail is dimmed against the finalized text"
+    )
+
+    XCTAssertEqual(ReviewEditor.attributedDraft(nil).length, 0, "no session, no suffix")
+    XCTAssertEqual(ReviewEditor.attributedDraft(.empty).length, 0)
   }
 
   /// Word count and Apply/Discard read the same string the owner edits.

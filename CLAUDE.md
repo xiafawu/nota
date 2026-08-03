@@ -313,13 +313,14 @@ goes into a small floating card instead of the target app:
   - **Recording.** `beginCaptureAndSpeech` calls `beginOrOpenReviewCard()`
     *before* the microphone opens. With no card up that opens one, empty, with
     `isReviewRecording` set — header showing the mic dot and "Listening…", the
-    live-draft block under the editor, both buttons refused. With a card
-    already up it is the continuation path, unchanged (plan 14).
+    live draft rendered **inside** the editor, Discard refused and the prominent
+    button reading **Finish**. With a card already up it is the continuation
+    path, unchanged (plan 14).
   - **Deciding.** At stop the finished text lands through the *same*
-    `extendReview` a continuation uses: the editor fills, the block goes down,
-    the buttons come back. No second `present`, the same `PendingReview.id`,
-    the same decision callbacks — which is what makes "one component" true in
-    code and not only on screen.
+    `extendReview` a continuation uses: the editor fills, the draft suffix goes,
+    the buttons become Discard/Apply. No second `present`, the same
+    `PendingReview.id`, the same decision callbacks — which is what makes "one
+    component" true in code and not only on screen.
   - Back to **recording** on the next press, and so on, until ⌘↩ or Escape.
 
   The editor is visible in every state rather than appearing at stop. It costs
@@ -327,6 +328,14 @@ goes into a small floating card instead of the target app:
   the recording state and the deciding state differ by exactly one flag, so
   there is no second layout to keep in step and the text view is never rebuilt
   under the owner's caret.
+
+  **One text box, and one button that always does something** (owner, 2026-08-03,
+  two follow-ups to the same mandate). The live draft was briefly a separate
+  block below the editor; it is now drawn as a dimmed suffix in the editor
+  itself, because "review dictation and a preview" was two boxes for one batch.
+  And the prominent button is **Finish** while a session records rather than a
+  greyed-out Apply, so the trigger key is not the only way to stop. Both are
+  detailed below.
 
   What this replaced was two surfaces in sequence — the HUD carried the first
   session's live draft, then hid, then the card appeared. Everything below about
@@ -341,8 +350,13 @@ goes into a small floating card instead of the target app:
   once, at stop. The streaming path's in-order refinement queue is deliberately
   not involved — nothing is delivered mid-session, so there is no order to keep.
   A session with **no** live-draft feed (AssemblyAI realtime, or an Apple
-  analyzer that fell back to `SFSpeechRecognizer`) shows the header and an empty
-  block; nothing is faked into it.
+  analyzer that fell back to `SFSpeechRecognizer`) shows the header and a bare
+  editor; nothing is faked into it.
+- **Nothing is inserted until Apply — and Finish is not Apply.** ⌘↩ and the
+  prominent button mean **Finish** while a session records: they end the
+  dictation session, exactly as the trigger key's release does, and decide
+  nothing. Escape and Discard stay refused throughout — throwing the batch away
+  *is* a decision, and the decision is about a batch still being spoken.
 - **A card that was never filled goes away.** Opening at session start means a
   press-and-release, a recognizer that would not start, or a microphone that
   would not open can leave a card holding nothing — and nothing is not a
@@ -493,40 +507,75 @@ goes into a small floating card instead of the target app:
     The split stays total because `isReviewing` is exactly "a card exists":
     when `present` fails the controller clears `pendingReview`, and the failure
     comes back out on the pill. An error always has one home, never two.
-  - **The card shows the continuation's live draft** (2026-08-03, the immediate
-    consequence of the rule above: with the pill down for the whole time a card
-    is up, a continuation's words appeared *nowhere* and the card said only
-    "Listening…"). The same block is now what a **first** session's draft is
-    drawn in, since the card is on screen from the press. While
-    `isReviewRecording`, `handleHypothesis` mirrors the
-    same two strings the HUD gets (`finalizedDraft` + `roughDraft`, as an
-    `HUDDraft`) into `DictationReviewModel.draft`, and the card draws them under
-    the editor — finalized at full opacity, the volatile tail at 55%, the
-    prompter's treatment. Below the editor rather than under the header so the
-    card reads in the order the batch happens and the incoming words sit against
-    the end of the buffer they will be appended to. Four things it owes:
-    - **Display only.** Nothing is written into the editor. The finished,
-      polished text still lands once, at stop, via `DictationReview.appended` —
-      and the block is cleared by `endReviewContinuation`, so the same words are
+  - **The card shows the session's live draft, in the editor itself**
+    (2026-08-03, twice over. First the card had to show a draft at all — with the
+    pill down for the whole time a card is up, a continuation's words appeared
+    *nowhere* and the card said only "Listening…". Then the owner asked why
+    there were two boxes: "I'm not sure why we have review dictation and a
+    preview… maybe we could merge those 2 things together, into one text box".)
+    So there is one text box. While `isReviewRecording`, `handleHypothesis`
+    mirrors the same two strings the HUD gets (`finalizedDraft` + `roughDraft`,
+    as an `HUDDraft`) into `DictationReviewModel.draft`, and `ReviewEditor` draws
+    them **onto the end of the owner's buffer** — finalized at 92% white, the
+    volatile tail at 55%, the prompter's treatment — joined by the same
+    `StreamingDelivery` separator the text will really be appended with, so it
+    reads now the way it will read at stop. Five things it owes:
+    - **Display only, and the suffix is not content.** `model.text` is the
+      owner's buffer and the only string ever read back out — Apply inserts it,
+      Apply's diffs learn from it, the word count counts it. The draft occupies
+      the range *past* its end and is replaced wholesale each tick. The finished,
+      polished text still lands once, at stop, via `DictationReview.appended`,
+      and the suffix is cleared by `endReviewContinuation`, so the same words are
       never on screen twice.
-    - **Fixed height, bounded text.** `ReviewDraftMetrics` gives the block three
-      lines, clipped bottom-aligned (the prompter's construction at the card's
-      size), and head-trims to `windowBudget` on a quantized step before
-      anything is laid out — the feed ticks many times a second against a string
-      that grows for as long as the owner talks, and the card is one the owner
-      is typing into. The panel grows and shrinks by exactly
-      `DictationReviewView.draftBlockHeight`, **arithmetically and
-      synchronously** (`setDraftBlockShown`): re-reading `fittingSize` would
-      mean queueing the resize a run-loop turn later, and a resize that outlives
-      its card is a window-server call against a panel nobody holds any more.
+    - **Read-only while recording.** `isEditable` is the one flag that
+      distinguishes the two states of the box, and the coordinator refuses to
+      read text back while a suffix exists as the backstop: nothing the
+      recognizer drew may ever be mistaken for something the owner typed.
+    - **Bounded text, fixed box.** `ReviewDraftMetrics.windowed` head-trims to
+      `windowBudget` on a quantized step before anything is laid out — the feed
+      ticks many times a second against a string that grows for as long as the
+      owner talks. Only the suffix range is rewritten per tick, never the whole
+      storage, so the owner's buffer is not re-laid-out 15 times a second. The
+      card's height is **decided once, when it is presented, and never changes**:
+      the separate block used to grow the panel by
+      `DictationReviewView.draftBlockHeight`, and merging removed both the block
+      and the resize. A surface the owner types into does not move under them.
+    - **Everything macOS does *to* text is off** in that view — smart quotes,
+      dash and text substitution, autocorrect, inline prediction. The box holds
+      text a recognizer produced and the dictionary already corrected; a
+      substitution between the pipeline and Apply would have the owner endorsing
+      a spelling nobody chose. (The immediate path injects into someone else's
+      field and was never exposed to this. The review card is Nota's own text
+      view, so it is Nota's job.)
     - **A finished session stops talking, at the card too.** The hypothesis task
       stamps each result with the session epoch and
       `handleHypothesis(_:epoch:)` drops a stale one: `cancel()` does not unwind
       a value already handed to `MainActor.run`, so without it a dead session's
       words could be drawn on the card the next one is filling.
-    - Decidability is unchanged: ⌘↩ and Escape stay refused while a continuation
-      records. The block says what is being heard; it does not say anything
-      about what may be decided.
+    Decidability is unchanged: Escape and Discard stay refused while a session
+    records. The suffix says what is being heard; it says nothing about what may
+    be decided.
+  - **Finish: the prominent button always does something** (2026-08-03, owner —
+    "when it is dictating it still shows those 2 buttons grayed out… make it some
+    other button like End or Finish, so I don't have to press the globe key to
+    stop"). While `isListening` the Apply slot reads **Finish** and is enabled;
+    it and ⌘↩ both call `DictationReviewModel.primaryAction()`, which is Finish
+    while recording and Apply when not — one expression of what the primary
+    action means, for the same reason `apply()` has one. Three rules:
+    - **It is not a decision.** It does not go through
+      `DictationReviewPresenter.finish`, takes no pending request, and leaves the
+      card exactly where it is. What it buys is the state in which a decision
+      becomes possible at all. Escape/Discard stay refused throughout, and
+      `finishReview`'s `isReviewRecording` backstop is untouched.
+    - **It is the SAME stop path.** `DictationController.finishSessionFromCard`
+      calls `endCaptureAndFinalize()` — the call the trigger key's release makes
+      — so stop, polish, and `extendReview` are byte-for-byte a hotkey stop and
+      there is no second teardown to keep in step.
+    - **The hotkey monitor is told.** In `.toggle` activation the monitor latches
+      "a session is running" from presses it saw, and it cannot see this one; so
+      `finishSessionFromCard` calls `HotkeyMonitor.resetToggle()` first. Without
+      it the owner's next press would send `.ended` for a session already over
+      and the one after that would be the press that finally started one.
 - **⌘↩ and the Apply button are one code path, and the keyboard is why it did
   not look like one** (fixed 2026-07-28). Symptom: with the card open, ⌘↩ took
   the card down and inserted **nothing**, while clicking Apply inserted fine.
@@ -572,9 +621,9 @@ goes into a small floating card instead of the target app:
   mechanism, different value, deliberately. The HUD stores the pill rect's
   *bottom-center*: the bottom edge is what its upward growth pins, and the
   horizontal centre is the only x that survives a switch between a 200pt pill
-  and a 600pt prompter. This card is a constant-width surface that grows
-  *downward* (the draft block is added under the editor), so its meaningful
-  anchor is the **top-left**. One shared point would mean dragging either
+  and a 600pt prompter. This card is a constant-size surface — the draft is
+  drawn inside the editor, so nothing grows it — and its meaningful anchor is
+  simply the **top-left**. One shared point would mean dragging either
   surface moved the other, through an anchor that means nothing on the far side.
   Restoring validates rather than trusts (`ReviewPanelLayout.validatedTopLeft`):
   a point no current screen contains is dropped and the automatic placement
@@ -1035,6 +1084,36 @@ The cache feeds cost computation for usage tracking.
   is gone — `state`'s `didSet` mirrors it into the card's status line, and it
   falls back to the pill exactly when there is no card, since `isReviewing` is
   literally "a card exists".
+- **One surface means one text box, too** (owner, same day, on seeing it: "I'm
+  not sure why we have review dictation and a preview… maybe we could merge
+  those 2 things together, into one text box"). The live draft is drawn as a
+  dimmed suffix *inside* the review editor, not in a block beneath it, which is
+  why that editor is an `NSTextView` (`ReviewEditor`) rather than SwiftUI's
+  `TextEditor` — `TextEditor` binds a plain `String` and cannot draw part of its
+  content in another colour. Merging the two views did **not** merge the two
+  values: `model.text` is the owner's buffer and the only string ever read back
+  out, the draft occupies the range past its end, and only that range is
+  rewritten per recognizer tick. Two things fall out. The card's height is now
+  fixed for its whole life — the block's `setDraftBlockShown` growth is gone,
+  and a surface the owner types into no longer resizes under them. And because
+  the box is Nota's own text view rather than someone else's field, Nota owns
+  what macOS would do to the text in it: smart quotes, substitutions,
+  autocorrect and inline prediction are all off, or a silent rewrite between the
+  pipeline and Apply would have the owner endorsing a spelling nobody chose.
+- **A button the owner cannot press is not feedback** (owner, same day: "when it
+  is dictating it still shows those 2 buttons grayed out… make it some other
+  button like End or Finish, so I don't have to press the globe key to stop").
+  The card's prominent slot is **Finish** while a session records and **Apply**
+  when one is not; ⌘↩ and the button both go through
+  `DictationReviewModel.primaryAction()`, so "what the primary action means" is
+  written down once, the way `apply()` already was. Finish is deliberately not a
+  decision — it never reaches `DictationReviewPresenter.finish`, and Discard
+  stays refused, because a decision about a batch still being spoken is the one
+  thing the recording state exists to prevent. It ends the session through
+  `endCaptureAndFinalize()`, the *same* call the trigger key's release makes, and
+  tells `HotkeyMonitor.resetToggle()` first: in `.toggle` activation the monitor
+  latches "a session is running" from presses it saw, and a session that ended by
+  a route it cannot see would cost the owner one dead press.
 - **A toolbar item does not need its own glass.** On macOS 26 the toolbar draws
   the Liquid Glass capsule around its items itself, so a `.liquidGlass(…, in:
   .capsule)` *inside* a `ToolbarItem`/`ToolbarItemGroup` stacks two translucent

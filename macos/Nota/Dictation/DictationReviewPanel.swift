@@ -111,45 +111,28 @@ enum DictationReview {
 
 // MARK: - ReviewDraftMetrics
 
-/// The arithmetic behind the card's live-draft block: how tall it is, and how
-/// much of the session it is allowed to lay out.
+/// How much of a recording session's live draft the card is allowed to render.
 ///
-/// Both numbers exist for the same reason the prompter's do. The block is fed
-/// by the volatile recognizer feed, which arrives many times a second and
-/// carries a string that grows for as long as the owner keeps talking, and it
-/// is drawn on the main actor inside a card the owner is typing into. So:
+/// Since 2026-08-03 the draft is not a block of its own — it is drawn as a
+/// dimmed suffix inside the editor, one text box for the whole card (owner:
+/// "merge those 2 things together, into one text box"). What survived the merge
+/// is the bound, and it survived for exactly the reason it was written: the
+/// suffix is fed by the volatile recognizer feed, which arrives many times a
+/// second carrying a string that grows for as long as the owner keeps talking,
+/// and it is laid out on the main actor inside a text view.
 ///
-/// - **Fixed height.** `lines` lines, always, for the whole continuation. The
-///   card therefore changes size exactly twice per continuation — once when the
-///   block appears and once when it goes — instead of stepping taller under the
-///   owner's cursor every time a sentence wraps.
-/// - **Bounded text.** `windowed` head-trims past `windowBudget` before
-///   anything is laid out, so the cost per tick stops growing with the session.
-///   The cut lands in text that is already clipped above the block's top edge.
+/// `windowed` head-trims past `windowBudget` before anything is laid out, so the
+/// cost per tick stops growing with the session. The cut lands in text that has
+/// already scrolled off the top of the visible suffix.
 ///
 /// Kept as its own type rather than borrowing `HUDPrompterMetrics`: the card is
-/// narrower than the prompter and shows half as many lines, and the prompter's
+/// narrower than the prompter and shows fewer lines of draft, and the prompter's
 /// budget is derived from *its* geometry. The technique is borrowed; the
 /// numbers are not.
 enum ReviewDraftMetrics {
-  static let fontSize: CGFloat = 13
-  /// Lines of live draft the card shows. Deliberately small — the block is a
-  /// witness that the microphone is open, not a second editor.
-  static let lines = 3
-
-  /// One line's height, from the real font, so `lines` corresponds to lines the
-  /// owner can count.
-  static var lineHeight: CGFloat {
-    let font = NSFont.systemFont(ofSize: fontSize)
-    return ceil(font.ascender - font.descender + font.leading)
-  }
-
-  /// The block's height. Fixed for the whole continuation — see above.
-  static var blockHeight: CGFloat { CGFloat(lines) * lineHeight }
-
-  /// Characters of the continuation the block measures and draws.
+  /// Characters of the continuation the editor measures and draws as a suffix.
   ///
-  /// Comfortably past what `lines` lines can hold at the card's width even at
+  /// Comfortably past what the editor can show below the owner's buffer even at
   /// the font's narrowest glyphs, so nothing that could be visible is outside
   /// the window.
   static let windowBudget = 800
@@ -162,10 +145,10 @@ enum ReviewDraftMetrics {
   /// line on every tick.
   static let windowStep = 300
 
-  /// The `(finalized, volatileTail)` pair the block actually draws.
+  /// The `(finalized, volatileTail)` pair the editor actually draws.
   ///
-  /// Head-trimmed only. The newest words — the ones pinned to the bottom edge,
-  /// and the only reason the block exists — are never touched.
+  /// Head-trimmed only. The newest words — the ones the owner is watching for,
+  /// and the only reason the suffix exists — are never touched.
   static func windowed(
     finalized: String,
     volatileTail: String
@@ -240,18 +223,26 @@ protocol DictationReviewPresenting: AnyObject {
   /// While it is set the card refuses Apply and Discard — the decision is about
   /// a batch that is still being spoken.
   func setListening(_ listening: Bool)
-  /// The live draft of the continuation recording into this card.
+  /// The live draft of the session recording into this card.
   ///
-  /// **Display only.** Nothing here is ever written into the editor: the
-  /// continuation's text reaches the owner's buffer once, at stop, through
-  /// `DictationReview.appended`. The block exists because a card that says only
-  /// "Listening…" is the one place in the app where speech goes nowhere
-  /// visible — the pill stands down while a card is up.
+  /// **Display only.** Nothing here is ever written into the buffer: the
+  /// session's text reaches the owner's buffer once, at stop, through
+  /// `DictationReview.appended`. Since 2026-08-03 it is *rendered* inside the
+  /// editor as a dimmed suffix rather than in a block of its own — one text box
+  /// — but the invariant is unchanged and is what makes that safe.
   ///
   /// The same `HUDDraft` the HUD is fed, deliberately: it is literally the same
   /// two strings off the same recognizer, and a second type carrying them would
   /// be one more thing to keep in step.
   func setDraft(_ draft: HUDDraft)
+  /// Called when the owner ends the session from the card itself — the Finish
+  /// button, or ⌘↩ while it is recording.
+  ///
+  /// A presenter-level callback rather than one more field on
+  /// `DictationReviewRequest`: `present` runs once per *card*, and a card
+  /// survives any number of continuation sessions, each of which the owner must
+  /// be able to end from the same button.
+  var onFinishRecording: (() -> Void)? { get set }
   /// Show (or clear) a session failure in the card's status line.
   ///
   /// The card is the only surface a review session has — the HUD is suppressed
@@ -283,6 +274,10 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
   /// callback.
   private var pending: DictationReviewRequest?
 
+  /// What the card's Finish button does. Owned by the controller — the presenter
+  /// knows only that the owner asked for the session to stop.
+  var onFinishRecording: (() -> Void)?
+
   var isPresenting: Bool { pending != nil }
 
   var editorText: String? { pending == nil ? nil : model.text }
@@ -297,15 +292,15 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
   func setListening(_ listening: Bool) {
     guard pending != nil else { return }
     model.isListening = listening
-    // The block belongs to the continuation, so it goes when the continuation
-    // does — the controller clears it too, and this is the backstop for a card
-    // that stopped listening by some other route.
+    // The draft belongs to the session, so it goes when the session does — the
+    // controller clears it too, and this is the backstop for a card that
+    // stopped listening by some other route.
+    //
+    // Nothing here resizes the panel any more: the draft is drawn inside the
+    // editor, which is a box of fixed height whatever is in it. The card's
+    // height is decided once, when it is presented, which is what a surface the
+    // owner is typing into is owed.
     if !listening { model.draft = .empty }
-    // Synchronously, by arithmetic. Re-reading `fittingSize` would mean waiting
-    // a run-loop turn for SwiftUI to publish `isListening` — and a resize
-    // queued onto a later turn outlives the card it was queued for, which is a
-    // window-server call against a panel nobody is holding any more.
-    panel?.setDraftBlockShown(listening)
   }
 
   func setDraft(_ draft: HUDDraft) {
@@ -331,6 +326,10 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
     model.errorMessage = nil
     model.onApply = { [weak self] text in self?.finish(.apply(text)) }
     model.onDiscard = { [weak self] in self?.finish(.discard) }
+    // Not a decision, so it does not go through `finish`: Finish ends the
+    // dictation session and leaves the card exactly where it is, waiting for the
+    // decision it is now able to offer.
+    model.onFinishRecording = { [weak self] in self?.onFinishRecording?() }
 
     guard show() else {
       // Nothing is on screen and nothing ever will be for this request, so it
@@ -437,12 +436,12 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
   /// down with it — a monitor left installed would swallow Escape everywhere
   /// else in the app.
   ///
-  /// Both cases go through `model.apply()` / `model.discard()` — the *same*
-  /// call the card's two buttons make — rather than reaching into `finish`
-  /// directly. There is then exactly one expression of what Apply means (take
-  /// what is in the box, and refuse while a continuation is still recording),
-  /// so the shortcut and the button cannot drift apart. They did not differ in
-  /// code when ⌘↩ was dropping text (that was the physically-held ⌘ — see
+  /// Both cases go through `model.primaryAction()` / `model.discard()` — the
+  /// *same* call the card's two buttons make — rather than reaching into
+  /// `finish` directly. There is then exactly one expression of what ⌘↩ means
+  /// (Finish while a session is recording, Apply once one is not), so the
+  /// shortcut and the button cannot drift apart. They did not differ in code
+  /// when ⌘↩ was dropping text (that was the physically-held ⌘ — see
   /// `ModifierClearance`), and this is what keeps that true.
   private func installKeyMonitor(for panel: NSPanel) {
     removeKeyMonitor()
@@ -454,7 +453,7 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
         self.model.discard()
         return nil
       case 36 where flags.contains(.command): // Return
-        self.model.apply()
+        self.model.primaryAction()
         return nil
       default:
         return event
@@ -488,12 +487,14 @@ final class DictationReviewModel: ObservableObject {
   /// One decision per review, and it is about the whole batch — so while more
   /// of that batch is still being spoken there is nothing to decide about yet.
   @Published var isListening: Bool = false
-  /// The continuation's live draft, shown under the editor while it records.
+  /// The session's live draft, rendered as a dimmed suffix *inside* the editor
+  /// while it records.
   ///
   /// Separate from `text` on purpose and permanently: `text` is the owner's
   /// buffer and a mode whose whole point is to capture their corrections may
   /// not write into it behind them. The finished, polished text is appended
-  /// once, at stop, by the controller.
+  /// once, at stop, by the controller. Drawing the two in one text box is what
+  /// the owner asked for; keeping them two *values* is what makes it legal.
   @Published var draft: HUDDraft = .empty
   /// A session failure, shown in the card's status line.
   ///
@@ -505,6 +506,10 @@ final class DictationReviewModel: ObservableObject {
 
   var onApply: ((String) -> Void)?
   var onDiscard: (() -> Void)?
+  /// Ends the dictation session recording into this card. Installed by the
+  /// presenter, which forwards it to the controller — the model never learns
+  /// what stopping a session involves.
+  var onFinishRecording: (() -> Void)?
 
   /// Move the card with the pointer (title-row drag), and remember where it was
   /// dropped. Installed by the presenter; nil in a preview or a bare unit test.
@@ -526,6 +531,28 @@ final class DictationReviewModel: ObservableObject {
   func discard() {
     guard !isListening else { return NSSound.beep() }
     onDiscard?()
+  }
+
+  /// Stop the session recording into this card, from the card itself.
+  ///
+  /// Added 2026-08-03 on owner feedback: the card used to show two greyed-out
+  /// buttons for the whole time the microphone was open, and the only way to
+  /// stop was the trigger key. It is deliberately *not* a decision — nothing is
+  /// applied, nothing is discarded, and the card stays exactly where it is. What
+  /// it buys is the state in which a decision becomes possible at all.
+  func finishRecording() {
+    guard isListening else { return NSSound.beep() }
+    onFinishRecording?()
+  }
+
+  /// What the card's prominent button and ⌘↩ do, which is a function of the one
+  /// flag that distinguishes the card's two states.
+  ///
+  /// One expression of it, called by both routes, for the reason `apply()` is:
+  /// the ⌘↩ bug cost enough that "what the primary action means" is written down
+  /// exactly once. While recording it is Finish; otherwise it is Apply.
+  func primaryAction() {
+    isListening ? finishRecording() : apply()
   }
 }
 
@@ -614,10 +641,10 @@ final class DictationReviewPanel: NSPanel {
   ///
   /// Top-left rather than the window origin (which is the bottom-left, and
   /// includes the transparent shadow margin) for the reason the HUD stores a
-  /// bottom-center: it has to be the edge the card's growth pins. This card
-  /// grows *downward* — the live-draft block is added under the editor, and
-  /// `setDraftBlockShown` grows the height and re-places — so the top edge is
-  /// the one that must hold still while the block comes and goes.
+  /// bottom-center: it has to be the corner the card is read from. The card's
+  /// height is now fixed for its whole life — the live draft is drawn inside the
+  /// editor rather than in a block that grows the panel — so the top-left is
+  /// simply where the owner put it, and stays exact.
   private(set) var pinnedCardTopLeft: CGPoint?
 
   /// Pointer and window origin at the moment the drag began.
@@ -747,28 +774,6 @@ final class DictationReviewPanel: NSPanel {
     )
   }
 
-  /// Whether the live-draft block is currently making the card taller.
-  private var isShowingDraftBlock = false
-
-  /// Grow (or shrink) the card by exactly the draft block's height.
-  ///
-  /// Arithmetic rather than a re-fit: the block's height is fixed for the whole
-  /// continuation, so the delta is known without asking SwiftUI — which could
-  /// not answer in the same turn anyway, the model having only just published.
-  /// Idempotent, so a repeated `setListening(true)` cannot stack the growth.
-  func setDraftBlockShown(_ shown: Bool) {
-    guard shown != isShowingDraftBlock else { return }
-    isShowingDraftBlock = shown
-    let chrome = DictationReviewView.shadowMargin * 2
-    let height = min(
-      frame.height + (shown ? DictationReviewView.draftBlockHeight
-                            : -DictationReviewView.draftBlockHeight),
-      DictationReviewView.maxCardHeight + chrome
-    )
-    setContentSize(NSSize(width: frame.width, height: max(height, chrome)))
-    reposition()
-  }
-
   /// Put the card where the pill was: centered under the focused window of the
   /// app being dictated into.
   ///
@@ -833,10 +838,11 @@ final class DictationReviewPanel: NSPanel {
 /// pin different edges for different reasons. `HUDPositionStore` holds the pill
 /// rect's *bottom-center*: the bottom edge is what the HUD's upward growth pins,
 /// and the horizontal centre is the only x that survives a switch between a
-/// 200pt pill and a 600pt prompter. This card is a constant-width surface that
-/// grows *downward*, so its meaningful anchor is the *top-left*. Sharing one
+/// 200pt pill and a 600pt prompter. This card is a constant-size surface, so its
+/// meaningful anchor is simply its *top-left*. Sharing one
 /// point would mean dragging one surface moved the other, converted through an
-/// anchor that means nothing on the far side.
+/// anchor that means nothing on the far side. (The pill still grows; this card
+/// no longer does, which only makes its top-left the more exact anchor.)
 ///
 /// Backed by `DictationSettingsStore.defaults`, which is a private wiped suite
 /// under XCTest: a test that drags the card must not move the owner's real one.
@@ -912,18 +918,14 @@ struct DictationReviewView: View {
 
   /// Gap between the card's rows.
   static let rowSpacing: CGFloat = 12
-  /// Gap between the block's hairline and its text.
-  static let draftRuleSpacing: CGFloat = 8
-  static let draftRuleHeight: CGFloat = 0.5
-
-  /// How much taller the card is while the live-draft block is up.
+  /// The editor's height — fixed, and the reason the card's is.
   ///
-  /// The panel grows by exactly this and shrinks by exactly this — one number,
-  /// used by the view that draws the block and by the window that has to make
-  /// room for it, so the two cannot disagree.
-  static var draftBlockHeight: CGFloat {
-    rowSpacing + draftRuleHeight + draftRuleSpacing + ReviewDraftMetrics.blockHeight
-  }
+  /// It was a `minHeight` while the card had a separate draft block to grow for.
+  /// With the draft drawn *inside* the editor there is nothing left that can
+  /// change the card's size, which is what a surface the owner types into is
+  /// owed: the panel is sized once, when it is presented, and never resizes
+  /// under their caret.
+  static let editorHeight: CGFloat = 116
 
   private static let cornerRadius: CGFloat = 16
 
@@ -931,7 +933,6 @@ struct DictationReviewView: View {
     VStack(alignment: .leading, spacing: Self.rowSpacing) {
       titleRow
       editor
-      draftBlock
       footer
     }
     .padding(18)
@@ -999,70 +1000,35 @@ struct DictationReviewView: View {
     return count == 1 ? "1 word" : "\(count) words"
   }
 
+  /// **One text box for the whole card** (owner, 2026-08-03: "I'm not sure why
+  /// we have review dictation and a preview… maybe we could merge those 2
+  /// things together, into one text box").
+  ///
+  /// It holds the owner's buffer and, while a session is recording, the words
+  /// coming in — drawn onto the end of that buffer, finalized at full opacity
+  /// and the volatile tail dimmed to 55%, the prompter's treatment. That suffix
+  /// is **display only**: it is never in `model.text`, it is never editable, and
+  /// the finished polished text still reaches the buffer exactly once, at stop,
+  /// through `DictationReview.appended`. What the merge changed is where the
+  /// draft is drawn; not one thing about what it is.
+  ///
+  /// It is an `NSTextView` rather than SwiftUI's `TextEditor` because
+  /// `TextEditor` binds a plain `String` and cannot draw part of its content in
+  /// another colour. Keeping the *same* view through both states is the point of
+  /// having merged them: the recording state and the deciding state differ by one
+  /// flag (`isEditable`), so there is no second layout to keep in step and no
+  /// text view rebuilt under the owner's caret.
+  ///
   /// Borderless by construction: no bezel, no scroll background, no focus ring
   /// box. The card is the container; a second box inside it is what made the
   /// panel read as a bare text input.
   private var editor: some View {
-    TextEditor(text: $model.text)
-      .font(.body)
-      .scrollContentBackground(.hidden)
-      .background(Color.clear)
-      .frame(minHeight: 116)
-  }
-
-  /// What the continuation is hearing right now, under the buffer it will be
-  /// added to.
-  ///
-  /// Below the editor rather than under the header, for two reasons. The card
-  /// then reads in the order the batch happens — what you have, what you are
-  /// saying, what you may decide — and the incoming words sit against the end
-  /// of the buffer they are about to be appended to. Under the header it would
-  /// push the owner's own text down the card mid-edit and cut the title off
-  /// from what it names.
-  ///
-  /// Read-only, and not a second editor: nothing here is editable, nothing here
-  /// is in `model.text`, and at stop the finished polished text is appended to
-  /// the buffer exactly as it was before this block existed.
-  @ViewBuilder
-  private var draftBlock: some View {
-    if model.isListening {
-      let window = ReviewDraftMetrics.windowed(
-        finalized: model.draft.finalized,
-        volatileTail: model.draft.volatileTail
-      )
-      VStack(alignment: .leading, spacing: Self.draftRuleSpacing) {
-        Rectangle()
-          .fill(Color.white.opacity(0.12))
-          .frame(height: Self.draftRuleHeight)
-        draftText(window: window)
-          .font(.system(size: ReviewDraftMetrics.fontSize))
-          .multilineTextAlignment(.leading)
-          .frame(maxWidth: .infinity, alignment: .topLeading)
-          .fixedSize(horizontal: false, vertical: true)
-          // Bottom-aligned inside a fixed, shorter frame: everything past the
-          // cap overflows upward and is clipped, so the newest words are pinned
-          // to the bottom edge with no scroll position to keep in sync. The
-          // prompter's construction, at the card's size.
-          .frame(height: ReviewDraftMetrics.blockHeight, alignment: .bottomLeading)
-          .clipped()
-      }
-      .frame(maxWidth: .infinity, alignment: .leading)
-    }
-  }
-
-  /// Finalized text at full opacity, the volatile tail dimmed — the prompter's
-  /// treatment, so "what the recognizer has committed to" reads the same
-  /// wherever the owner sees it.
-  private func draftText(window: (finalized: String, volatileTail: String)) -> Text {
-    let runs = ReviewDraftMetrics.runs(
-      finalized: window.finalized,
-      volatileTail: window.volatileTail
+    ReviewEditor(
+      text: $model.text,
+      draft: model.isListening ? model.draft : nil,
+      isEditable: !model.isListening
     )
-    let finalized = Text(runs.finalized).foregroundStyle(.primary.opacity(0.92))
-    guard !runs.volatileTail.isEmpty else { return finalized }
-    let tail = Text(runs.volatileTail).foregroundStyle(Color.white.opacity(0.55))
-    guard !runs.finalized.isEmpty else { return tail }
-    return finalized + tail
+    .frame(height: Self.editorHeight)
   }
 
   private var footer: some View {
@@ -1077,14 +1043,26 @@ struct DictationReviewView: View {
       .keyboardShortcut(.cancelAction)
       .disabled(model.isListening)
 
-      Button { model.apply() } label: {
-        ReviewButtonLabel(title: "Apply", shortcut: "⌘↩")
+      // The prominent slot is Finish while a session is recording and Apply once
+      // one is not — one button, two jobs, because they are the same gesture at
+      // two points in the batch's life: "I am done saying this."
+      //
+      // A disabled Apply was what stood here for the whole time the microphone
+      // was open, which left the card with two greyed-out buttons and the trigger
+      // key as the only way to stop (owner, 2026-08-03). Discard stays disabled:
+      // throwing the batch away IS a decision, and the decision is about a batch
+      // that is still being spoken.
+      Button { model.primaryAction() } label: {
+        ReviewButtonLabel(
+          title: model.isListening ? "Finish" : "Apply",
+          shortcut: "⌘↩"
+        )
       }
       .buttonStyle(ReviewButtonStyle(prominent: true))
       .keyboardShortcut(.return, modifiers: .command)
       .disabled(
-        model.isListening
-          || model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        !model.isListening
+          && model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       )
     }
   }
@@ -1122,12 +1100,196 @@ struct DictationReviewView: View {
   ///
   /// The empty-and-listening wording is the FIRST session's: the card now opens
   /// the moment the hotkey goes down, before a word has been recognized, and
-  /// "this will be added" would be describing an addition to nothing.
+  /// "this will be added" would be describing an addition to nothing. Neither
+  /// says "when you stop" any more — Finish is on the card, so the caption names
+  /// the thing the owner can actually press.
   private var footerCaption: String {
     guard model.isListening else { return "Nothing is inserted until you apply." }
     return model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-      ? "Listening — your words appear here when you stop."
-      : "Keep talking — this will be added when you stop."
+      ? "Listening — press Finish when you're done."
+      : "Keep talking — this will be added when you finish."
+  }
+}
+
+// MARK: - ReviewEditor
+
+/// The card's one text box: the owner's buffer, plus the live draft drawn onto
+/// the end of it while a session records.
+///
+/// An `NSTextView` because the merge needs two colours in one box and
+/// `TextEditor` binds a plain `String`. Three rules it exists to keep:
+///
+/// 1. **The draft is a suffix, never content.** `text` is the owner's buffer and
+///    the only thing that is ever read back out; the draft occupies the range
+///    past its end and is replaced wholesale on every tick. Nothing the
+///    recognizer says can reach the binding — the finished, polished text is
+///    appended once, at stop, by the controller.
+/// 2. **Only the suffix is rewritten per tick.** The feed arrives many times a
+///    second. Replacing the whole storage would re-lay-out the owner's buffer on
+///    every one of them; replacing `bufferLength..<end` leaves it alone. The
+///    draft itself is bounded by `ReviewDraftMetrics.windowed` before it gets
+///    here.
+/// 3. **The caret survives.** The buffer is written only when it actually
+///    differs from what this view last put there, so a keystroke that flows
+///    binding → `updateNSView` does not reset the selection the owner is typing
+///    at.
+struct ReviewEditor: NSViewRepresentable {
+  @Binding var text: String
+  /// The live draft, or nil when no session is recording into this card.
+  let draft: HUDDraft?
+  let isEditable: Bool
+
+  func makeCoordinator() -> Coordinator { Coordinator(self) }
+
+  func makeNSView(context: Context) -> NSScrollView {
+    let scrollView = NSScrollView()
+    scrollView.drawsBackground = false
+    scrollView.borderType = .noBorder
+    scrollView.hasVerticalScroller = false
+    scrollView.autohidesScrollers = true
+
+    let textView = NSTextView()
+    textView.delegate = context.coordinator
+    textView.drawsBackground = false
+    textView.isRichText = false
+    textView.allowsUndo = true
+    textView.font = Self.font
+    textView.textColor = .white
+    textView.insertionPointColor = .white
+    textView.textContainerInset = NSSize(width: 0, height: 2)
+    // Everything macOS would otherwise do TO this text, off.
+    //
+    // Two independent reasons, and the first is the serious one. The box holds
+    // text a recognizer produced and a dictionary already corrected — smart
+    // quotes, dash substitution and autocorrect would silently rewrite it
+    // between the pipeline and Apply, and the owner would be endorsing a
+    // spelling nobody chose. (The immediate path injects into someone else's
+    // field and was never exposed to this; the review card is Nota's own text
+    // view, so it is Nota's job to turn them off.) The second is that inline
+    // prediction attaches a remote view service to the panel, which is noise on
+    // a nonactivating card and made the test host raise on order-on-screen.
+    textView.isAutomaticQuoteSubstitutionEnabled = false
+    textView.isAutomaticDashSubstitutionEnabled = false
+    textView.isAutomaticTextReplacementEnabled = false
+    textView.isAutomaticSpellingCorrectionEnabled = false
+    textView.isAutomaticTextCompletionEnabled = false
+    textView.isContinuousSpellCheckingEnabled = false
+    textView.isGrammarCheckingEnabled = false
+    textView.inlinePredictionType = .no
+    textView.isVerticallyResizable = true
+    textView.isHorizontallyResizable = false
+    textView.autoresizingMask = [.width]
+    textView.textContainer?.widthTracksTextView = true
+
+    scrollView.documentView = textView
+    context.coordinator.textView = textView
+    return scrollView
+  }
+
+  func updateNSView(_ scrollView: NSScrollView, context: Context) {
+    context.coordinator.parent = self
+    guard let textView = context.coordinator.textView,
+          let storage = textView.textStorage
+    else { return }
+
+    textView.isEditable = isEditable
+
+    // The owner's buffer, only when it really changed. `updateNSView` runs on
+    // every keystroke that flows back through the binding, and an unconditional
+    // write would drop the caret to the start of the line on each one.
+    let buffer = text
+    if buffer != context.coordinator.buffer {
+      let previous = context.coordinator.buffer as NSString
+      storage.replaceCharacters(
+        in: NSRange(location: 0, length: previous.length),
+        with: NSAttributedString(string: buffer, attributes: Self.bufferAttributes)
+      )
+      context.coordinator.buffer = buffer
+    }
+
+    let suffix = Self.attributedDraft(draft, after: context.coordinator.buffer)
+    if suffix != context.coordinator.suffix {
+      let bufferLength = (context.coordinator.buffer as NSString).length
+      storage.replaceCharacters(
+        in: NSRange(location: bufferLength, length: storage.length - bufferLength),
+        with: suffix
+      )
+      context.coordinator.suffix = suffix
+      // The newest words are the only reason the suffix is drawn, and the box is
+      // a fixed height — so it follows the tail rather than leaving the owner
+      // looking at the top of their own buffer.
+      if suffix.length > 0 { textView.scrollToEndOfDocument(nil) }
+    }
+  }
+
+  private static var font: NSFont { .systemFont(ofSize: NSFont.systemFontSize) }
+
+  private static var bufferAttributes: [NSAttributedString.Key: Any] {
+    [.font: font, .foregroundColor: NSColor.white]
+  }
+
+  /// Finalized text at (near) full opacity, the volatile tail dimmed — the
+  /// prompter's treatment, so "what the recognizer has committed to" reads the
+  /// same wherever the owner sees it.
+  ///
+  /// The separator rides on the finalized run, via `ReviewDraftMetrics.runs`,
+  /// and one more joins the suffix to the buffer: the buffer is what this draft
+  /// will be appended to at stop, and it must read now the way it will read then.
+  static func attributedDraft(_ draft: HUDDraft?, after buffer: String = "") -> NSAttributedString {
+    guard let draft, !draft.isEmpty else { return NSAttributedString() }
+    let window = ReviewDraftMetrics.windowed(
+      finalized: draft.finalized,
+      volatileTail: draft.volatileTail
+    )
+    let runs = ReviewDraftMetrics.runs(
+      finalized: window.finalized,
+      volatileTail: window.volatileTail
+    )
+    let result = NSMutableAttributedString()
+    let lead = StreamingDelivery.joiningSeparator(
+      buffer,
+      runs.finalized.isEmpty ? runs.volatileTail : runs.finalized
+    )
+    if !runs.finalized.isEmpty || !lead.isEmpty {
+      result.append(NSAttributedString(
+        string: lead + runs.finalized,
+        attributes: [.font: font, .foregroundColor: NSColor.white.withAlphaComponent(0.92)]
+      ))
+    }
+    if !runs.volatileTail.isEmpty {
+      result.append(NSAttributedString(
+        string: runs.volatileTail,
+        attributes: [.font: font, .foregroundColor: NSColor.white.withAlphaComponent(0.55)]
+      ))
+    }
+    return result
+  }
+
+  @MainActor
+  final class Coordinator: NSObject, NSTextViewDelegate {
+    var parent: ReviewEditor
+    weak var textView: NSTextView?
+    /// What this view last wrote as the owner's buffer, so an unchanged binding
+    /// is not written back over their caret.
+    var buffer: String = ""
+    /// What this view last wrote as the draft suffix.
+    var suffix = NSAttributedString()
+
+    init(_ parent: ReviewEditor) {
+      self.parent = parent
+    }
+
+    func textDidChange(_ notification: Notification) {
+      guard let textView = notification.object as? NSTextView else { return }
+      // The box is read-only for exactly as long as a draft suffix exists, so a
+      // change that reaches here can only be the owner editing their own buffer
+      // — and the whole string IS that buffer. Refusing outright when a suffix
+      // is up is the backstop: nothing the recognizer drew may ever be read back
+      // as if the owner had typed it.
+      guard suffix.length == 0 else { return }
+      buffer = textView.string
+      parent.text = textView.string
+    }
   }
 }
 

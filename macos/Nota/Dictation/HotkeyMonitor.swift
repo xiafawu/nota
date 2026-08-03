@@ -19,6 +19,18 @@ final class HotkeyMonitor {
     self.activationMode = activationMode
   }
 
+  /// Forget that a `.toggle` session is running.
+  ///
+  /// The monitor infers "on" from presses it saw, and a session can now end by a
+  /// route it cannot see — the review card's Finish button. Left uncorrected,
+  /// the next press would send `.ended` for a session that is already over and
+  /// the one after it would be the press that finally started one.
+  ///
+  /// A no-op in `.hold`, where nothing is latched.
+  func resetToggle() {
+    toggleActive = false
+  }
+
   @discardableResult
   func start() -> Bool {
     guard !isRunning else { return true }
