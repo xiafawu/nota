@@ -64,6 +64,35 @@ actor EnrollQueue {
     }
   }
 
+  /// Enqueue a `nota history rename-speaker` job: rewrites the record's
+  /// segments, stored clip, and the output markdown's transcript lines so
+  /// the document and a later summary regeneration carry the name. Shares
+  /// this serial queue with enroll on purpose — enroll must read the clip
+  /// under the OLD label before rename moves it, and the two must never race
+  /// on the record JSON. Calls `onDone(success, stderrTail)` on the main actor.
+  func enqueueTranscriptRename(
+    historyID: String,
+    label: String,
+    name: String,
+    onDone: @escaping @MainActor (Bool, String) -> Void
+  ) {
+    let projectDir = projectDirectory
+    pending.append {
+      let (ok, tail) = await Self.runRename(
+        historyID: historyID,
+        label: label,
+        name: name,
+        projectDirectory: projectDir
+      )
+      await MainActor.run {
+        onDone(ok, tail)
+      }
+    }
+    if !isRunning {
+      Task { await self.drain() }
+    }
+  }
+
   private func drain() async {
     isRunning = true
     while !pending.isEmpty {
@@ -74,6 +103,63 @@ actor EnrollQueue {
   }
 
   // MARK: - Shell runner
+
+  private static func runRename(
+    historyID: String,
+    label: String,
+    name: String,
+    projectDirectory: URL
+  ) async -> (Bool, String) {
+    await withCheckedContinuation { continuation in
+      let process = Process()
+      process.currentDirectoryURL = projectDirectory
+
+      let distEntry = projectDirectory
+        .appendingPathComponent("dist")
+        .appendingPathComponent("index.js")
+      let srcEntry = projectDirectory
+        .appendingPathComponent("src")
+        .appendingPathComponent("index.ts")
+
+      let verb = ["history", "rename-speaker", historyID, label, name]
+      if FileManager.default.fileExists(atPath: distEntry.path) {
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["node", distEntry.path] + verb
+      } else {
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+        process.arguments = ["npx", "tsx", srcEntry.path] + verb
+      }
+
+      let outPipe = Pipe()
+      let errPipe = Pipe()
+      process.standardOutput = outPipe
+      process.standardError = errPipe
+
+      let timeoutItem = DispatchWorkItem {
+        process.terminate()
+      }
+      DispatchQueue.global().asyncAfter(deadline: .now() + 30, execute: timeoutItem)
+
+      do {
+        try process.run()
+        process.waitUntilExit()
+        timeoutItem.cancel()
+      } catch {
+        timeoutItem.cancel()
+        continuation.resume(returning: (false, error.localizedDescription))
+        return
+      }
+
+      let stderr = (String(
+        data: errPipe.fileHandleForReading.readDataToEndOfFile(),
+        encoding: .utf8
+      ) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+
+      continuation.resume(
+        returning: (process.terminationStatus == 0, String(stderr.suffix(200)))
+      )
+    }
+  }
 
   private static func run(
     historyID: String,

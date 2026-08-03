@@ -7,6 +7,7 @@ import {
   formatHistoryList,
   listHistoryRecords,
   loadHistoryRecord,
+  renameRecordSpeaker,
 } from "./pipeline/history.js";
 import {
   deleteSpeaker,
@@ -207,6 +208,33 @@ history
         output: options.output,
         force: options.force,
       });
+    } catch (error) {
+      console.error(
+        `\nError: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      process.exit(1);
+    }
+  });
+
+history
+  .command("rename-speaker")
+  .description(
+    "Rename a diarized speaker label in a saved record: transcript segments, stored voice clip, and the output markdown's transcript lines. Regenerate the summary afterwards to update the narrative.",
+  )
+  .argument("<id>", "History record id or unique prefix")
+  .argument("<label>", 'Current label (e.g. "Speaker 2")')
+  .argument("<name>", "New speaker name")
+  .action(async (id: string, label: string, name: string) => {
+    try {
+      const result = await renameRecordSpeaker(id, label, name);
+      const notes = [
+        `${result.segmentsRenamed} segment(s)`,
+        result.clipRenamed ? "voice clip" : null,
+        result.outputRewritten ? "output markdown" : null,
+      ].filter(Boolean);
+      console.error(
+        `Renamed "${label}" to "${name}" in history "${result.record.id}" (${notes.join(", ")}).`,
+      );
     } catch (error) {
       console.error(
         `\nError: ${error instanceof Error ? error.message : String(error)}`,

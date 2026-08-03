@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -432,6 +432,119 @@ export async function loadHistoryRecord(
     throw new Error(`History id prefix is ambiguous: ${idOrPrefix}`);
   }
   throw new Error(`History record not found: ${idOrPrefix}`);
+}
+
+export interface RenameSpeakerResult {
+  record: HistoryRecord;
+  /** How many transcript segments carried the old label. */
+  segmentsRenamed: number;
+  /** True when the stored `.pcm` clip was moved to the new label's path. */
+  clipRenamed: boolean;
+  /** True when the output markdown existed and its transcript lines changed. */
+  outputRewritten: boolean;
+}
+
+/**
+ * Rename a diarized speaker label everywhere the record's text carries it:
+ * `segments[].speaker`, the stored clip (file + `speakerClips` map entry),
+ * and the `**<label>:**` transcript lines of the output markdown. The
+ * labelless `transcriptText` and any existing summary are untouched — a
+ * summary regenerated after this rename reads the renamed segments and picks
+ * the name up for free, which is the whole point.
+ *
+ * Merging into a name that already labels another speaker is allowed (two
+ * diarized labels can be the same person); in that case the target's clip is
+ * left alone and the source clip stays addressable under its old key.
+ */
+export async function renameRecordSpeaker(
+  idOrPrefix: string,
+  label: string,
+  newName: string,
+  historyDir = DEFAULT_HISTORY_DIR,
+): Promise<RenameSpeakerResult> {
+  const trimmed = newName.trim();
+  if (!trimmed) {
+    throw new Error("New speaker name is empty.");
+  }
+  if (trimmed === label) {
+    throw new Error(`New name is the same as the label: ${label}`);
+  }
+
+  const record = await loadHistoryRecord(idOrPrefix, historyDir);
+
+  const known = new Set(
+    record.segments.map((s) => s.speaker).filter((s): s is string => !!s),
+  );
+  for (const clipLabel of Object.keys(record.speakerClips ?? {})) {
+    known.add(clipLabel);
+  }
+  if (!known.has(label)) {
+    throw new Error(
+      `No speaker labeled "${label}" in history "${record.id}". ` +
+        `Known labels: ${[...known].join(", ") || "(none)"}`,
+    );
+  }
+
+  let segmentsRenamed = 0;
+  const segments = record.segments.map((seg) => {
+    if (seg.speaker !== label) return seg;
+    segmentsRenamed += 1;
+    return { ...seg, speaker: trimmed };
+  });
+
+  // Move the stored clip so a later enroll from this record finds it under
+  // the name the transcript now shows. On a merge (target clip already
+  // exists) both entries are kept — never overwrite or delete a voice clip.
+  let clipRenamed = false;
+  let speakerClips = record.speakerClips;
+  const clipRel = record.speakerClips?.[label];
+  if (clipRel) {
+    const from = speakerClipPath(record.id, label, historyDir);
+    const to = speakerClipPath(record.id, trimmed, historyDir);
+    const fromExists = await access(from).then(() => true, () => false);
+    const toExists = await access(to).then(() => true, () => false);
+    if (fromExists && !toExists) {
+      await rename(from, to);
+      speakerClips = { ...record.speakerClips };
+      delete speakerClips[label];
+      speakerClips[trimmed] = path.relative(historyDir, to);
+      clipRenamed = true;
+    }
+  }
+
+  // Rewrite the transcript's label grammar in the output markdown. Bold-colon
+  // anchored on purpose: `**Speaker 2:**` is how write.ts renders a transcript
+  // line, while a bare "Speaker 2" in the narrative belongs to the summary and
+  // is regenerated rather than string-patched.
+  let outputRewritten = false;
+  if (record.outputPath) {
+    try {
+      const md = await readFile(record.outputPath, "utf-8");
+      const rewritten = md.split(`**${label}:**`).join(`**${trimmed}:**`);
+      if (rewritten !== md) {
+        await writeFile(record.outputPath, rewritten, "utf-8");
+        outputRewritten = true;
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
+    }
+  }
+
+  const updated: HistoryRecord = {
+    ...record,
+    updatedAt: new Date().toISOString(),
+    segments,
+    speakerClips,
+  };
+  await writeFile(
+    historyPath(record.id, historyDir),
+    JSON.stringify(updated, null, 2),
+    "utf-8",
+  );
+
+  return { record: updated, segmentsRenamed, clipRenamed, outputRewritten };
 }
 
 /**

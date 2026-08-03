@@ -979,7 +979,46 @@ final class NotaModel: ObservableObject {
           self.speakerChips[idx].indicator = .failed(stderr: stderr)
         }
       }
+      // Propagate the name into the record and the document AFTER enroll:
+      // enroll reads the stored clip under the old label, and the serial
+      // queue guarantees this runs second. A failed or skipped enroll still
+      // renames — the user asked for the name either way, the voiceprint is
+      // only a bonus.
+      guard chipLabel != newName else { return }
+      await EnrollQueue.shared.enqueueTranscriptRename(
+        historyID: info.historyID,
+        label: chipLabel,
+        name: newName
+      ) { [weak self] ok, _ in
+        guard let self, ok else { return }
+        self.applyTranscriptRename(oldLabel: chipLabel, newName: newName)
+      }
     }
+  }
+
+  /// The record and output markdown now carry `newName` where `oldLabel` was:
+  /// move the sidecar mapping, reload the visible document from disk, and
+  /// re-derive the chips from the renamed body — keeping the enroll indicator
+  /// the queue already delivered for this chip.
+  private func applyTranscriptRename(oldLabel: String, newName: String) {
+    guard let documentURL = lastOutputURL else { return }
+
+    var sidecar = SpeakerSidecar.load(for: documentURL)
+    sidecar.speakers.removeValue(forKey: oldLabel)
+    sidecar.speakers[newName] = newName
+    try? SpeakerSidecar.save(sidecar, for: documentURL)
+
+    let keptIndicator = speakerChips.first(where: { $0.label == oldLabel })?.indicator
+
+    if let content = try? String(contentsOf: documentURL, encoding: .utf8) {
+      markdown = content
+    }
+    loadChips(for: documentURL)
+    if let indicator = keptIndicator,
+       let idx = speakerChips.firstIndex(where: { $0.label == newName }) {
+      speakerChips[idx].indicator = indicator
+    }
+    refreshHistory()
   }
 }
 
