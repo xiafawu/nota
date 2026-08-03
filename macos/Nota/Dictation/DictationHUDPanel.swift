@@ -75,6 +75,18 @@ final class DictationHUDPanel: NSPanel {
     // the level first — as this did — looked correct and shipped a pill that
     // vanished over fullscreen windows. .statusBar is CGWindowLayer 25.
     level = .statusBar
+    // The HUD is a single-theme surface: `DictationHUDContentView` fills a fixed
+    // dark body and forces `colorScheme` dark on top of it. That forcing is a
+    // SwiftUI *environment* value and does NOT change this window's
+    // `effectiveAppearance` — which is what every AppKit-drawn piece inside the
+    // hosting view follows: the `ProgressView` in the processing state, control
+    // accent resolution, and any system material. With Settings → General
+    // pinning `NSApp.appearance` to Light (`AppearanceSetting.apply`), or on a
+    // machine simply running Light, the panel inherited light-mode chrome and
+    // the pill rendered as a washed light capsule under dark-styled content.
+    // The review card has carried this line since it shipped; the pill was the
+    // one that was missed.
+    appearance = NSAppearance(named: .darkAqua)
 
     // The hosting view lives inside the drag view rather than being the content
     // view itself: SwiftUI decides its own hit testing, and the drag has to work

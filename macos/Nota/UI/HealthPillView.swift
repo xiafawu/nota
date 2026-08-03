@@ -52,7 +52,12 @@ struct HealthPillView: View {
     }
     .padding(.horizontal, Metrics.statusPillH)
     .padding(.vertical, Metrics.statusPillV)
-    .liquidGlass(.regular, in: .capsule)
+    // Deliberately NO `.liquidGlass` here. This view is the content of a
+    // `ToolbarItemGroup`, and on macOS 26 the toolbar draws the Liquid Glass
+    // capsule around its items itself. A second `glassEffect` inside that one
+    // stacked two translucent capsules and two rims — the "washed-out light
+    // capsule with a doubled outline" the owner reported. One surface, drawn by
+    // the party that owns the toolbar's geometry.
     .help(helpText)
   }
 

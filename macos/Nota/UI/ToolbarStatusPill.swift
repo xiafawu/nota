@@ -16,7 +16,11 @@ struct ToolbarStatusPill: View {
     }
     .padding(.horizontal, Metrics.statusPillH)
     .padding(.vertical, Metrics.statusPillV)
-    .liquidGlass(.regular.tint(Tokens.toolbarStatusTint), in: .capsule)
+    // No `.liquidGlass`, for the reason spelled out in `HealthPillView`: this is
+    // the other item in the same `ToolbarItemGroup`, and the group already draws
+    // one glass capsule around both. The tint this dropped was
+    // `.secondary.opacity(0.1)` — a neutral wash, never a semantic signal — so
+    // nothing the pill *says* travelled on it.
     .transition(.opacity.combined(with: .scale))
   }
 }
