@@ -109,6 +109,94 @@ enum DictationReview {
   }
 }
 
+// MARK: - ReviewDraftMetrics
+
+/// The arithmetic behind the card's live-draft block: how tall it is, and how
+/// much of the session it is allowed to lay out.
+///
+/// Both numbers exist for the same reason the prompter's do. The block is fed
+/// by the volatile recognizer feed, which arrives many times a second and
+/// carries a string that grows for as long as the owner keeps talking, and it
+/// is drawn on the main actor inside a card the owner is typing into. So:
+///
+/// - **Fixed height.** `lines` lines, always, for the whole continuation. The
+///   card therefore changes size exactly twice per continuation — once when the
+///   block appears and once when it goes — instead of stepping taller under the
+///   owner's cursor every time a sentence wraps.
+/// - **Bounded text.** `windowed` head-trims past `windowBudget` before
+///   anything is laid out, so the cost per tick stops growing with the session.
+///   The cut lands in text that is already clipped above the block's top edge.
+///
+/// Kept as its own type rather than borrowing `HUDPrompterMetrics`: the card is
+/// narrower than the prompter and shows half as many lines, and the prompter's
+/// budget is derived from *its* geometry. The technique is borrowed; the
+/// numbers are not.
+enum ReviewDraftMetrics {
+  static let fontSize: CGFloat = 13
+  /// Lines of live draft the card shows. Deliberately small — the block is a
+  /// witness that the microphone is open, not a second editor.
+  static let lines = 3
+
+  /// One line's height, from the real font, so `lines` corresponds to lines the
+  /// owner can count.
+  static var lineHeight: CGFloat {
+    let font = NSFont.systemFont(ofSize: fontSize)
+    return ceil(font.ascender - font.descender + font.leading)
+  }
+
+  /// The block's height. Fixed for the whole continuation — see above.
+  static var blockHeight: CGFloat { CGFloat(lines) * lineHeight }
+
+  /// Characters of the continuation the block measures and draws.
+  ///
+  /// Comfortably past what `lines` lines can hold at the card's width even at
+  /// the font's narrowest glyphs, so nothing that could be visible is outside
+  /// the window.
+  static let windowBudget = 800
+
+  /// How far the text may overrun `windowBudget` before the head moves.
+  ///
+  /// Quantized rather than sliding, for the reason `HUDPrompterMetrics` gives:
+  /// greedy wrapping starts at whatever character the window begins with, so a
+  /// head that advanced by a character per tick would re-wrap every visible
+  /// line on every tick.
+  static let windowStep = 300
+
+  /// The `(finalized, volatileTail)` pair the block actually draws.
+  ///
+  /// Head-trimmed only. The newest words — the ones pinned to the bottom edge,
+  /// and the only reason the block exists — are never touched.
+  static func windowed(
+    finalized: String,
+    volatileTail: String
+  ) -> (finalized: String, volatileTail: String) {
+    let overflow = finalized.count + volatileTail.count - windowBudget
+    guard overflow > 0 else { return (finalized, volatileTail) }
+    let cut = (overflow / windowStep) * windowStep
+    guard cut > 0 else { return (finalized, volatileTail) }
+    guard cut < finalized.count else {
+      return ("", String(volatileTail.dropFirst(cut - finalized.count)))
+    }
+    return (String(finalized.dropFirst(cut)), volatileTail)
+  }
+
+  /// The two runs drawn: finalized text, then the volatile tail.
+  ///
+  /// The separator rides on the finalized run for the same reason it does in
+  /// the prompter — `StreamingDelivery.joined` adds no second space when
+  /// Apple's volatile result already brought its own, and an unconditional
+  /// `Text(" ")` between the runs would draw one anyway.
+  static func runs(
+    finalized: String,
+    volatileTail: String
+  ) -> (finalized: String, volatileTail: String) {
+    (
+      finalized + StreamingDelivery.joiningSeparator(finalized, volatileTail),
+      volatileTail
+    )
+  }
+}
+
 // MARK: - Presenting
 
 /// One review's contract with whatever shows it.
@@ -152,6 +240,18 @@ protocol DictationReviewPresenting: AnyObject {
   /// While it is set the card refuses Apply and Discard — the decision is about
   /// a batch that is still being spoken.
   func setListening(_ listening: Bool)
+  /// The live draft of the continuation recording into this card.
+  ///
+  /// **Display only.** Nothing here is ever written into the editor: the
+  /// continuation's text reaches the owner's buffer once, at stop, through
+  /// `DictationReview.appended`. The block exists because a card that says only
+  /// "Listening…" is the one place in the app where speech goes nowhere
+  /// visible — the pill stands down while a card is up.
+  ///
+  /// The same `HUDDraft` the HUD is fed, deliberately: it is literally the same
+  /// two strings off the same recognizer, and a second type carrying them would
+  /// be one more thing to keep in step.
+  func setDraft(_ draft: HUDDraft)
   /// Take the panel down without applying. Idempotent, and safe to call from
   /// inside a decision callback.
   func dismiss()
@@ -189,6 +289,20 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
   func setListening(_ listening: Bool) {
     guard pending != nil else { return }
     model.isListening = listening
+    // The block belongs to the continuation, so it goes when the continuation
+    // does — the controller clears it too, and this is the backstop for a card
+    // that stopped listening by some other route.
+    if !listening { model.draft = .empty }
+    // Synchronously, by arithmetic. Re-reading `fittingSize` would mean waiting
+    // a run-loop turn for SwiftUI to publish `isListening` — and a resize
+    // queued onto a later turn outlives the card it was queued for, which is a
+    // window-server call against a panel nobody is holding any more.
+    panel?.setDraftBlockShown(listening)
+  }
+
+  func setDraft(_ draft: HUDDraft) {
+    guard pending != nil else { return }
+    model.draft = draft
   }
 
   @discardableResult
@@ -200,6 +314,7 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
     pending = request
     model.text = request.text
     model.isListening = false
+    model.draft = .empty
     model.onApply = { [weak self] text in self?.finish(.apply(text)) }
     model.onDiscard = { [weak self] in self?.finish(.discard) }
 
@@ -280,6 +395,7 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
     guard let request = pending else { return }
     pending = nil
     model.isListening = false
+    model.draft = .empty
     close()
     switch decision {
     case .apply(let text): request.onApply(text)
@@ -351,6 +467,13 @@ final class DictationReviewModel: ObservableObject {
   /// One decision per review, and it is about the whole batch — so while more
   /// of that batch is still being spoken there is nothing to decide about yet.
   @Published var isListening: Bool = false
+  /// The continuation's live draft, shown under the editor while it records.
+  ///
+  /// Separate from `text` on purpose and permanently: `text` is the owner's
+  /// buffer and a mode whose whole point is to capture their corrections may
+  /// not write into it behind them. The finished, polished text is appended
+  /// once, at stop, by the controller.
+  @Published var draft: HUDDraft = .empty
 
   var onApply: ((String) -> Void)?
   var onDiscard: (() -> Void)?
@@ -531,6 +654,28 @@ final class DictationReviewPanel: NSPanel {
     )
   }
 
+  /// Whether the live-draft block is currently making the card taller.
+  private var isShowingDraftBlock = false
+
+  /// Grow (or shrink) the card by exactly the draft block's height.
+  ///
+  /// Arithmetic rather than a re-fit: the block's height is fixed for the whole
+  /// continuation, so the delta is known without asking SwiftUI — which could
+  /// not answer in the same turn anyway, the model having only just published.
+  /// Idempotent, so a repeated `setListening(true)` cannot stack the growth.
+  func setDraftBlockShown(_ shown: Bool) {
+    guard shown != isShowingDraftBlock else { return }
+    isShowingDraftBlock = shown
+    let chrome = DictationReviewView.shadowMargin * 2
+    let height = min(
+      frame.height + (shown ? DictationReviewView.draftBlockHeight
+                            : -DictationReviewView.draftBlockHeight),
+      DictationReviewView.maxCardHeight + chrome
+    )
+    setContentSize(NSSize(width: frame.width, height: max(height, chrome)))
+    reposition()
+  }
+
   /// Put the card where the pill was: centered under the focused window of the
   /// app being dictated into.
   ///
@@ -580,12 +725,28 @@ struct DictationReviewView: View {
   static let minCardHeight: CGFloat = 200
   static let maxCardHeight: CGFloat = 520
 
+  /// Gap between the card's rows.
+  static let rowSpacing: CGFloat = 12
+  /// Gap between the block's hairline and its text.
+  static let draftRuleSpacing: CGFloat = 8
+  static let draftRuleHeight: CGFloat = 0.5
+
+  /// How much taller the card is while the live-draft block is up.
+  ///
+  /// The panel grows by exactly this and shrinks by exactly this — one number,
+  /// used by the view that draws the block and by the window that has to make
+  /// room for it, so the two cannot disagree.
+  static var draftBlockHeight: CGFloat {
+    rowSpacing + draftRuleHeight + draftRuleSpacing + ReviewDraftMetrics.blockHeight
+  }
+
   private static let cornerRadius: CGFloat = 16
 
   var body: some View {
-    VStack(alignment: .leading, spacing: 12) {
+    VStack(alignment: .leading, spacing: Self.rowSpacing) {
       titleRow
       editor
+      draftBlock
       footer
     }
     .padding(18)
@@ -652,6 +813,61 @@ struct DictationReviewView: View {
       .scrollContentBackground(.hidden)
       .background(Color.clear)
       .frame(minHeight: 116)
+  }
+
+  /// What the continuation is hearing right now, under the buffer it will be
+  /// added to.
+  ///
+  /// Below the editor rather than under the header, for two reasons. The card
+  /// then reads in the order the batch happens — what you have, what you are
+  /// saying, what you may decide — and the incoming words sit against the end
+  /// of the buffer they are about to be appended to. Under the header it would
+  /// push the owner's own text down the card mid-edit and cut the title off
+  /// from what it names.
+  ///
+  /// Read-only, and not a second editor: nothing here is editable, nothing here
+  /// is in `model.text`, and at stop the finished polished text is appended to
+  /// the buffer exactly as it was before this block existed.
+  @ViewBuilder
+  private var draftBlock: some View {
+    if model.isListening {
+      let window = ReviewDraftMetrics.windowed(
+        finalized: model.draft.finalized,
+        volatileTail: model.draft.volatileTail
+      )
+      VStack(alignment: .leading, spacing: Self.draftRuleSpacing) {
+        Rectangle()
+          .fill(Color.white.opacity(0.12))
+          .frame(height: Self.draftRuleHeight)
+        draftText(window: window)
+          .font(.system(size: ReviewDraftMetrics.fontSize))
+          .multilineTextAlignment(.leading)
+          .frame(maxWidth: .infinity, alignment: .topLeading)
+          .fixedSize(horizontal: false, vertical: true)
+          // Bottom-aligned inside a fixed, shorter frame: everything past the
+          // cap overflows upward and is clipped, so the newest words are pinned
+          // to the bottom edge with no scroll position to keep in sync. The
+          // prompter's construction, at the card's size.
+          .frame(height: ReviewDraftMetrics.blockHeight, alignment: .bottomLeading)
+          .clipped()
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+    }
+  }
+
+  /// Finalized text at full opacity, the volatile tail dimmed — the prompter's
+  /// treatment, so "what the recognizer has committed to" reads the same
+  /// wherever the owner sees it.
+  private func draftText(window: (finalized: String, volatileTail: String)) -> Text {
+    let runs = ReviewDraftMetrics.runs(
+      finalized: window.finalized,
+      volatileTail: window.volatileTail
+    )
+    let finalized = Text(runs.finalized).foregroundStyle(.primary.opacity(0.92))
+    guard !runs.volatileTail.isEmpty else { return finalized }
+    let tail = Text(runs.volatileTail).foregroundStyle(Color.white.opacity(0.55))
+    guard !runs.finalized.isEmpty else { return tail }
+    return finalized + tail
   }
 
   private var footer: some View {

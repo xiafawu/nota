@@ -443,6 +443,38 @@ goes into a small floating card instead of the target app:
     review card has nowhere to put an error. `isReviewRecording` still exists
     on the controller — card decidability and the header state depend on it —
     but `HUDState.compute` no longer consumes it.
+  - **The card shows the continuation's live draft** (2026-08-03, the immediate
+    consequence of the rule above: with the pill down for the whole time a card
+    is up, a continuation's words appeared *nowhere* and the card said only
+    "Listening…"). While `isReviewRecording`, `handleHypothesis` mirrors the
+    same two strings the HUD gets (`finalizedDraft` + `roughDraft`, as an
+    `HUDDraft`) into `DictationReviewModel.draft`, and the card draws them under
+    the editor — finalized at full opacity, the volatile tail at 55%, the
+    prompter's treatment. Below the editor rather than under the header so the
+    card reads in the order the batch happens and the incoming words sit against
+    the end of the buffer they will be appended to. Four things it owes:
+    - **Display only.** Nothing is written into the editor. The finished,
+      polished text still lands once, at stop, via `DictationReview.appended` —
+      and the block is cleared by `endReviewContinuation`, so the same words are
+      never on screen twice.
+    - **Fixed height, bounded text.** `ReviewDraftMetrics` gives the block three
+      lines, clipped bottom-aligned (the prompter's construction at the card's
+      size), and head-trims to `windowBudget` on a quantized step before
+      anything is laid out — the feed ticks many times a second against a string
+      that grows for as long as the owner talks, and the card is one the owner
+      is typing into. The panel grows and shrinks by exactly
+      `DictationReviewView.draftBlockHeight`, **arithmetically and
+      synchronously** (`setDraftBlockShown`): re-reading `fittingSize` would
+      mean queueing the resize a run-loop turn later, and a resize that outlives
+      its card is a window-server call against a panel nobody holds any more.
+    - **A finished session stops talking, at the card too.** The hypothesis task
+      stamps each result with the session epoch and
+      `handleHypothesis(_:epoch:)` drops a stale one: `cancel()` does not unwind
+      a value already handed to `MainActor.run`, so without it a dead session's
+      words could be drawn on the card the next one is filling.
+    - Decidability is unchanged: ⌘↩ and Escape stay refused while a continuation
+      records. The block says what is being heard; it does not say anything
+      about what may be decided.
 - **⌘↩ and the Apply button are one code path, and the keyboard is why it did
   not look like one** (fixed 2026-07-28). Symptom: with the card open, ⌘↩ took
   the card down and inserted **nothing**, while clicking Apply inserted fine.

@@ -453,11 +453,18 @@ final class DictationController: ObservableObject {
       }
 
       // Observe partial hypotheses for diagnostics
+      //
+      // Stamped with the epoch of the session that started the stream.
+      // `hypothesisTask.cancel()` does not unwind a value already handed to
+      // `MainActor.run`, so a hypothesis can land after teardown — and with a
+      // review card open, a finished session's words would then be drawn on the
+      // card belonging to the next one.
+      let epoch = self.sessionEpoch
       self.hypothesisTask = Task { [weak self] in
         guard let self else { return }
         for await hypothesis in stream.hypotheses {
           await MainActor.run {
-            self.handleHypothesis(hypothesis)
+            self.handleHypothesis(hypothesis, epoch: epoch)
           }
         }
       }
@@ -676,6 +683,7 @@ final class DictationController: ObservableObject {
       // rough draft of text that is already recognized. No further volatile
       // result is guaranteed to arrive and clear it.
       roughDraft = ""
+      publishReviewDraft()
       guard let deliveryQueue else { return }
       for segment in segmenter.append(hypothesis.text) {
         deliveryQueue.enqueue(segment)
@@ -696,6 +704,7 @@ final class DictationController: ObservableObject {
       } else {
         roughDraft = hypothesis.text
       }
+      publishReviewDraft()
       Task { await DebugFileLog.shared().write(
         "draft update final=\(hypothesis.isFinal) chars=\(hypothesis.text.count) text=\"\(hypothesis.text)\""
       ) }
@@ -704,6 +713,38 @@ final class DictationController: ObservableObject {
 
     lastHypothesis = hypothesis.text
     logger.debug("Hypothesis isFinal=\(hypothesis.isFinal) text=\"\(hypothesis.text, privacy: .public)\"")
+  }
+
+  /// A hypothesis on behalf of the session that was live at `epoch`.
+  ///
+  /// "A finished session stops talking", applied at the one boundary where the
+  /// recognizer's own feed crosses into controller state: a stale hypothesis is
+  /// dropped rather than repopulating a draft its session's teardown already
+  /// cleared — and, with a review card open, rather than drawing a dead
+  /// session's words on the card the next one is filling.
+  ///
+  /// Internal so a test can hand the controller a hypothesis stamped with an
+  /// epoch that has since been bumped, which no amount of driving the live path
+  /// makes reproducible.
+  func handleHypothesis(_ hypothesis: Hypothesis, epoch: UInt64) {
+    guard epoch == sessionEpoch else {
+      logger.debug("Dropped a hypothesis from a finished session (epoch \(epoch))")
+      return
+    }
+    handleHypothesis(hypothesis)
+  }
+
+  /// Mirror the live draft into an open review card.
+  ///
+  /// Only while a continuation is recording into one: `isReviewRecording` is
+  /// set by `beginReviewContinuationIfOpen` and cleared by
+  /// `endReviewContinuation`, so a first review session (no card yet) and every
+  /// non-review session publish nothing. Display only — the card's editor is
+  /// untouched, and the continuation's finished text still reaches the owner's
+  /// buffer once, at stop, through `DictationReview.appended`.
+  private func publishReviewDraft() {
+    guard isReviewRecording else { return }
+    review.setDraft(HUDDraft(finalized: finalizedDraft, volatileTail: roughDraft))
   }
 
   // MARK: - Streaming delivery
@@ -1016,6 +1057,9 @@ final class DictationController: ObservableObject {
     pendingReview?.generation += 1
     isReviewRecording = true
     review.setListening(true)
+    // The card grows for the block here, once, and it opens empty: the previous
+    // continuation's words belong to the buffer now, not to this one.
+    review.setDraft(.empty)
     logger.info("Review continuation started (generation \(self.pendingReview?.generation ?? 0))")
     return true
   }
@@ -1043,6 +1087,10 @@ final class DictationController: ObservableObject {
     guard isReviewRecording else { return }
     isReviewRecording = false
     review.setListening(false)
+    // The draft was a witness to an open microphone. The microphone is shut,
+    // and what it heard is about to be appended to the buffer — leaving the
+    // block up would show the same words twice.
+    review.setDraft(.empty)
   }
 
   /// Open the review panel on this session's text — or, when a card is already
@@ -1697,6 +1745,13 @@ extension DictationController {
 
   /// Everything the recognizer has finalized this session.
   var recognizedSoFarForTests: String { finalizedDraft }
+
+  /// The epoch a hypothesis from the current session would carry.
+  var sessionEpochForTests: UInt64 { sessionEpoch }
+
+  /// End the session the way teardown does — the epoch bump included, which is
+  /// what makes a hypothesis stamped with the old one stale.
+  func endSessionForTests() { resetStreamingSession() }
 
   /// Whether this session has anywhere to deliver text mid-session.
   var deliversMidSessionForTests: Bool { deliveryQueue != nil }

@@ -630,6 +630,11 @@ final class StubReviewPresenter: DictationReviewPresenting {
   /// Whether the card is showing that a continuation is recording into it.
   private(set) var isShowingListening = false
   private(set) var listeningChanges: [Bool] = []
+  /// The live draft the card is currently showing, and every value it was ever
+  /// handed — a draft that arrived and was cleared reads the same as one that
+  /// never arrived, and the two are different bugs.
+  private(set) var draft: HUDDraft = .empty
+  private(set) var draftUpdates: [HUDDraft] = []
 
   var latest: DictationReviewRequest? { presented.last }
 
@@ -639,6 +644,7 @@ final class StubReviewPresenter: DictationReviewPresenting {
     isPresenting = canPresent
     buffer = canPresent ? request.text : nil
     isShowingListening = false
+    draft = .empty
     return canPresent
   }
 
@@ -660,10 +666,17 @@ final class StubReviewPresenter: DictationReviewPresenting {
     listeningChanges.append(listening)
   }
 
+  func setDraft(_ draft: HUDDraft) {
+    guard isPresenting else { return }
+    self.draft = draft
+    draftUpdates.append(draft)
+  }
+
   func dismiss() {
     dismissCount += 1
     isPresenting = false
     isShowingListening = false
+    draft = .empty
     buffer = nil
   }
 
@@ -938,6 +951,84 @@ final class DictationReviewBranchTests: XCTestCase {
     XCTAssertEqual(presenter.dismissCount, 0)
   }
 
+  // MARK: - The card's live draft (XIA-406)
+
+  /// The bug this fixes: with the pill suppressed for the whole time a card is
+  /// up, a continuation's words appeared NOWHERE — the card said only
+  /// "Listening…" while the owner talked.
+  func testTheCardShowsTheContinuationsLiveDraft() {
+    let controller = makeController(.review)
+    controller.deliver("Ship the patch.", offline: "Ship the patch.", latency: 1)
+    controller.beginReviewContinuationIfOpen()
+    controller.beginSessionForTests(target: target)
+
+    controller.handleHypothesis(Hypothesis(text: "then land", isFinal: false))
+    XCTAssertEqual(presenter.draft.volatileTail, "then land", "the tail is live on the card")
+    XCTAssertEqual(presenter.draft.finalized, "")
+
+    controller.handleHypothesis(
+      Hypothesis(text: "Then land it.", isFinal: true, isSegment: true)
+    )
+    XCTAssertEqual(presenter.draft.finalized, "Then land it.")
+    XCTAssertEqual(presenter.draft.volatileTail, "", "the tail this finalized is gone")
+
+    // Display only: the owner's buffer is untouched until stop.
+    XCTAssertEqual(presenter.buffer, "Ship the patch.", "the draft never enters the editor")
+  }
+
+  /// The block belongs to the continuation. A first review session has no card
+  /// to draw on, and every non-review session has no card at all.
+  func testNoDraftReachesTheCardWhenNoContinuationIsRecording() {
+    let controller = makeController(.review)
+    controller.beginSessionForTests(target: target)
+    controller.handleHypothesis(Hypothesis(text: "ship the patch", isFinal: false))
+
+    XCTAssertTrue(controller.roughDraft.isEmpty == false, "the session did produce a draft")
+    XCTAssertTrue(presenter.draftUpdates.isEmpty, "nothing was published to a card")
+  }
+
+  /// The block goes when the microphone does — its words are about to be
+  /// appended to the buffer, and two copies of them is one too many.
+  func testTheDraftIsClearedWhenTheContinuationEnds() {
+    let controller = makeController(.review)
+    controller.deliver("Ship the patch.", offline: "Ship the patch.", latency: 1)
+    controller.beginReviewContinuationIfOpen()
+    controller.beginSessionForTests(target: target)
+    controller.handleHypothesis(Hypothesis(text: "then land it", isFinal: false))
+    XCTAssertFalse(presenter.draft.isEmpty)
+
+    controller.deliver("Then land it.", offline: "Then land it.", latency: 2)
+
+    XCTAssertTrue(presenter.draft.isEmpty, "the block is down")
+    XCTAssertEqual(presenter.buffer, "Ship the patch. Then land it.", "and the text landed once")
+  }
+
+  /// "A finished session stops talking", at the card. A hypothesis stamped with
+  /// a session that has been torn down is dropped rather than drawn on the card
+  /// the next session is filling.
+  func testAStaleSessionsHypothesisNeverReachesTheCard() {
+    let controller = makeController(.review)
+    controller.deliver("Ship the patch.", offline: "Ship the patch.", latency: 1)
+    controller.beginReviewContinuationIfOpen()
+    controller.beginSessionForTests(target: target)
+    let stale = controller.sessionEpochForTests
+    controller.handleHypothesis(Hypothesis(text: "then land it", isFinal: false), epoch: stale)
+    XCTAssertEqual(presenter.draft.volatileTail, "then land it")
+
+    controller.endSessionForTests()
+    controller.handleHypothesis(
+      Hypothesis(text: "words from a dead session", isFinal: false),
+      epoch: stale
+    )
+
+    XCTAssertNotEqual(
+      presenter.draft.volatileTail,
+      "words from a dead session",
+      "a torn-down session may not write to the card"
+    )
+    XCTAssertEqual(controller.roughDraft, "", "nor to the controller's own draft")
+  }
+
   /// The owner may have moved to another app between the first session and the
   /// continuation. The app they were dictating into when they last spoke is
   /// the one they mean.
@@ -1144,6 +1235,77 @@ final class DictationReviewBranchTests: XCTestCase {
 // MARK: - Appending a continuation to the card
 
 /// The separator rule, in isolation: what a continuation's text joins onto.
+/// The card's live-draft block is fed by a string that grows for as long as the
+/// owner talks, redrawn many times a second, on the main actor, inside a card
+/// they are typing into. These are the two things that stop it costing more as
+/// the continuation runs on.
+final class ReviewDraftMetricsTests: XCTestCase {
+  func testAShortDraftIsDrawnWhole() {
+    let window = ReviewDraftMetrics.windowed(
+      finalized: "Ship the patch.",
+      volatileTail: "then land"
+    )
+    XCTAssertEqual(window.finalized, "Ship the patch.")
+    XCTAssertEqual(window.volatileTail, "then land")
+  }
+
+  func testALongContinuationIsHeadTrimmedNotTailTrimmed() {
+    let finalized = String(repeating: "a", count: ReviewDraftMetrics.windowBudget * 2)
+    let window = ReviewDraftMetrics.windowed(finalized: finalized, volatileTail: "the newest words")
+
+    XCTAssertEqual(window.volatileTail, "the newest words", "the tail is never cut")
+    XCTAssertLessThanOrEqual(
+      window.finalized.count + window.volatileTail.count,
+      ReviewDraftMetrics.windowBudget + ReviewDraftMetrics.windowStep,
+      "what is laid out stays bounded however long the continuation runs"
+    )
+    XCTAssertTrue(finalized.hasSuffix(window.finalized), "the cut came off the head")
+  }
+
+  /// Quantized, not sliding: greedy wrapping starts wherever the window starts,
+  /// so a head that moved with every syllable would re-wrap all three visible
+  /// lines on every tick.
+  func testTheHeadMovesInStepsNotPerCharacter() {
+    let base = ReviewDraftMetrics.windowBudget + 1
+    let first = ReviewDraftMetrics.windowed(
+      finalized: String(repeating: "a", count: base),
+      volatileTail: ""
+    )
+    let later = ReviewDraftMetrics.windowed(
+      finalized: String(repeating: "a", count: base + 10),
+      volatileTail: ""
+    )
+    XCTAssertEqual(first.finalized.count, base, "under one step, nothing moved")
+    XCTAssertEqual(later.finalized.count, base + 10, "still under one step")
+  }
+
+  /// The block is a fixed number of lines for the whole continuation, so the
+  /// card changes size exactly twice — when the block appears and when it goes.
+  func testTheBlockIsAFixedNumberOfLines() {
+    XCTAssertEqual(
+      ReviewDraftMetrics.blockHeight,
+      CGFloat(ReviewDraftMetrics.lines) * ReviewDraftMetrics.lineHeight
+    )
+  }
+
+  /// The runs the card draws must concatenate to the string it was given —
+  /// `StreamingDelivery.joined` adds no second space when the volatile result
+  /// already brought its own.
+  func testTheDrawnRunsReproduceTheJoinedText() {
+    let runs = ReviewDraftMetrics.runs(finalized: "Ship it.", volatileTail: " then land")
+    XCTAssertEqual(
+      runs.finalized + runs.volatileTail,
+      StreamingDelivery.joined("Ship it.", " then land")
+    )
+
+    let spaced = ReviewDraftMetrics.runs(finalized: "Ship it.", volatileTail: "then land")
+    XCTAssertEqual(
+      spaced.finalized + spaced.volatileTail,
+      StreamingDelivery.joined("Ship it.", "then land")
+    )
+  }
+}
+
 final class ReviewContinuationAppendTests: XCTestCase {
   func testASentenceIsJoinedWithOneSpace() {
     XCTAssertEqual(
