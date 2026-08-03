@@ -434,16 +434,15 @@ goes into a small floating card instead of the target app:
     Escape for the rest of the run.
   - Auto-learn's budget stays **per session** — each continuation is a session
     for `AutoLearn` purposes, and its polish is its own.
-  - **The HUD comes back while a continuation records.** `isReviewing` alone
-    still suppresses the pill; `isReviewRecording` is what re-admits the *live*
-    states (`listening`, `finalizing`) — the microphone is open and the meter
-    and rough draft are the only thing on screen that says so. Success and
-    warning snippets stay suppressed either way: they speak for text still
-    sitting in the card. A `.failed` always shows, because a review card has
-    nowhere to put an error. If the style is `prompter`, it shows the
-    *continuation session's* transcript only, not the card's accumulated batch
-    — `resetStreamingSession` clears `finalizedDraft` at every session start,
-    and the card already shows the batch.
+  - **The HUD stays down while a continuation records** (changed 2026-08-03 on
+    owner feedback — the earlier rule re-admitted the live states via
+    `isReviewRecording`, and the owner saw two panels narrating one microphone).
+    `isReviewing` suppresses the HUD unconditionally: the card is the session's
+    one surface, and its header already shows the mic dot and "Listening…"
+    (`DictationReviewModel.isListening`). A `.failed` always shows, because a
+    review card has nowhere to put an error. `isReviewRecording` still exists
+    on the controller — card decidability and the header state depend on it —
+    but `HUDState.compute` no longer consumes it.
 - **⌘↩ and the Apply button are one code path, and the keyboard is why it did
   not look like one** (fixed 2026-07-28). Symptom: with the card open, ⌘↩ took
   the card down and inserted **nothing**, while clicking Apply inserted fine.
