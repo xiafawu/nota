@@ -3,9 +3,9 @@ import UniformTypeIdentifiers
 
 // MARK: - History presentation helpers
 
-/// Recency bands and date labels for the Recent list: relative dates flatten
-/// ordering past a few days ("1mo ago" × 22), so rows outside today get short
-/// absolute dates and the list gains band headers.
+/// Recency bands and date labels for history lists (the ⌘L drawer): relative
+/// dates flatten ordering past a few days ("1mo ago" × 22), so rows outside
+/// today get short absolute dates and the list gains band headers.
 enum HistoryPresentation {
   enum Band: Int, CaseIterable {
     case today, thisWeek, thisMonth, earlier
@@ -93,9 +93,10 @@ enum HomeGreeting {
 // MARK: - Home dashboard
 
 /// B4 "Craft Glass" home: wash ground, date eyebrow + serif greeting, three
-/// entry cards, stats strip, day-banded recents with kind chips + tail search.
-/// E3: with zero history only the greeting and cards render — the stats strip
-/// and recents container are absent, never zero-filled.
+/// entry cards, stats strip. History lives in the ⌘L drawer, not here — the
+/// Recent section was removed (owner call 2026-08-03) once the drawer covered
+/// it. E3: with zero history only the greeting and cards render — the stats
+/// strip is absent, never zero-filled.
 struct HomeDashboardView: View {
   @ObservedObject var model: NotaModel
   @ObservedObject var usageProvider: UsageStatsProvider
@@ -103,12 +104,8 @@ struct HomeDashboardView: View {
   /// starting (F1, XIA-394). ContentView owns the shared presentation state.
   var onOpenHealthPopover: () -> Void = {}
 
-  @State private var historyExpanded = false
-  @State private var searchText = ""
   @State private var fileCardTargeted = false
   @State private var isUsageSheetPresented = false
-
-  private let maxCollapsedHistory = 6
 
   /// "Needs setup — <what>" reason for a card, from the first FAILING check
   /// that gates it. `unverified` never gates (proceed-at-risk); identity is
@@ -134,13 +131,6 @@ struct HomeDashboardView: View {
     return firstName.isEmpty ? full : firstName
   }
 
-  /// Rows after the live search filter (title + tags, case-insensitive).
-  private var filteredHistory: [HistoryEntry] {
-    let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-    guard !query.isEmpty else { return model.history }
-    return model.history.filter { HistoryPresentation.matches($0, query: query) }
-  }
-
   var body: some View {
     ZStack {
       CraftWashBackground()
@@ -150,10 +140,9 @@ struct HomeDashboardView: View {
           greetingHeader
           cardsRow
 
-          // E3: strip and recents render only when content exists.
+          // E3: the strip renders only when content exists.
           if !model.history.isEmpty {
             statsStrip
-            recentSection
           }
         }
         .padding(CraftTokens.spacing32)
@@ -360,13 +349,12 @@ struct HomeDashboardView: View {
     return Button {
       isUsageSheetPresented = true
     } label: {
-      HStack(spacing: 0) {
+      // No dividers between cells (owner call 2026-08-03: the hairlines read
+      // as an artifact, not structure) — the equal-width columns are the grid.
+      HStack(spacing: CraftTokens.spacing16) {
         statCell(value: Self.minutesText(stats.transcribedMinutes), label: "transcribed this week")
-        stripDivider
         statCell(value: "\(stats.meetings)", label: stats.meetings == 1 ? "meeting" : "meetings")
-        stripDivider
         statCell(value: "\(stats.memos)", label: stats.memos == 1 ? "memo" : "memos")
-        stripDivider
         statCell(value: "\(stats.actionItems)", label: stats.actionItems == 1 ? "action item" : "action items")
       }
       .padding(.horizontal, CraftTokens.spacing24)
@@ -384,12 +372,6 @@ struct HomeDashboardView: View {
       }
     }
     .help("Open usage and cost (one click away)")
-  }
-
-  private var stripDivider: some View {
-    Rectangle()
-      .fill(CraftTokens.hairline)
-      .frame(width: 1, height: 36)
   }
 
   private func statCell(value: String, label: String) -> some View {
@@ -412,231 +394,6 @@ struct HomeDashboardView: View {
     return "\(minutes)m"
   }
 
-  private var recentSection: some View {
-    VStack(alignment: .leading, spacing: CraftTokens.spacing12) {
-      Text("Recent")
-        .font(.system(size: 15, weight: .semibold))
-        .foregroundStyle(.primary)
-
-      VStack(spacing: 4) {
-        let displayItems = searchText.isEmpty
-          ? (historyExpanded ? Array(filteredHistory.prefix(50)) : Array(filteredHistory.prefix(maxCollapsedHistory)))
-          : Array(filteredHistory.prefix(50))
-        let now = Date()
-        let groups = HistoryPresentation.group(displayItems, now: now)
-
-        ForEach(groups, id: \.band) { group in
-          Text(group.band.title)
-            .font(CraftTokens.metadataFont)
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.top, group.band == groups.first?.band ? 0 : 8)
-
-          ForEach(group.entries) { entry in
-            HomeRecentRow(
-              entry: entry,
-              detail: model.recordDetail(for: entry),
-              now: now,
-              onOpen: { model.openHistory(entry) },
-              onReveal: { NSWorkspace.shared.activateFileViewerSelecting([entry.url]) },
-              onDelete: { model.deleteHistory(entry) }
-            )
-            .disabled(model.isRunning)
-            .contextMenu {
-              Button("Open") { model.openHistory(entry) }
-              Button("Reveal in Finder") {
-                NSWorkspace.shared.activateFileViewerSelecting([entry.url])
-              }
-              Divider()
-              Button("Delete") { model.deleteHistory(entry) }
-            }
-          }
-        }
-
-        if displayItems.isEmpty {
-          Text("No matches")
-            .font(.system(size: 13))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .padding(.vertical, 12)
-        }
-
-        showMoreToggle
-
-        searchField
-      }
-      .padding(.vertical, 8)
-      .craftGlassPanel(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
-    }
-  }
-
-  @ViewBuilder
-  private var showMoreToggle: some View {
-    if searchText.isEmpty && model.history.count > maxCollapsedHistory {
-      Button {
-        withAnimation(Tokens.animFast) { historyExpanded.toggle() }
-      } label: {
-        HStack(spacing: 4) {
-          Text(historyExpanded ? "Show less" : "Show all (\(model.history.count))")
-            .font(.system(size: 13))
-          Image(systemName: historyExpanded ? "chevron.up" : "chevron.down")
-            .font(.caption2)
-        }
-      }
-      .buttonStyle(.plain)
-      .foregroundColor(.accentColor)
-      .padding(.vertical, 4)
-    }
-  }
-
-  private var searchField: some View {
-    HStack(spacing: 6) {
-      Image(systemName: "magnifyingglass")
-        .font(.system(size: 12))
-        .foregroundStyle(.secondary)
-      TextField("Search recents", text: $searchText)
-        .textFieldStyle(.plain)
-        .font(.system(size: 13))
-    }
-    .padding(.horizontal, 8)
-    .padding(.vertical, 6)
-    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
-    .padding(.top, 4)
-  }
-}
-
-// MARK: - Recent row
-
-/// One recents row inside the glass container: title, date · duration ·
-/// speakers subtitle, kind chip, transcript pill, tags, and hover actions.
-/// Content stays opaque (the container is the glass; rows never stack glass).
-private struct HomeRecentRow: View {
-  let entry: HistoryEntry
-  let detail: HistoryRecordInfo.HistoryDetail?
-  var now: Date = Date()
-  let onOpen: () -> Void
-  let onReveal: () -> Void
-  let onDelete: () -> Void
-
-  @State private var isHovered = false
-
-  private var displayTitle: String {
-    guard entry.title == "Transcript" else { return entry.title }
-    return HistoryPresentation.fallbackTitle(for: entry.url) ?? entry.title
-  }
-
-  private var dateText: String {
-    if HistoryPresentation.band(for: entry.modifiedAt, now: now) == .today {
-      return entry.relativeDate
-    }
-    return HistoryPresentation.shortDate(for: entry.modifiedAt, now: now)
-  }
-
-  private var subtitleParts: [String] {
-    var parts = [dateText]
-    if let minutes = detail?.durationMinutes {
-      parts.append(HomeDashboardView.minutesText(minutes))
-    }
-    if let speakers = detail?.speakerCount {
-      parts.append("\(speakers) speaker\(speakers == 1 ? "" : "s")")
-    }
-    return parts
-  }
-
-  private var kindChip: (text: String, tint: CraftChipTint)? {
-    switch entry.kind {
-    case .meeting: return ("Meeting", .red)
-    case .file: return ("File", .gold)
-    case .memo: return ("Memo", .green)
-    }
-  }
-
-  var body: some View {
-    HStack(spacing: CraftTokens.spacing8) {
-      Button(action: onOpen) {
-        HStack(spacing: CraftTokens.spacing8) {
-          VStack(alignment: .leading, spacing: 2) {
-            Text(displayTitle)
-              .font(.callout)
-              .fontWeight(.medium)
-              .foregroundStyle(.primary)
-              .lineLimit(1)
-              .truncationMode(.tail)
-
-            Text(subtitleParts.joined(separator: " · "))
-              .font(.caption2)
-              .foregroundStyle(.secondary)
-          }
-
-          Spacer(minLength: 8)
-
-          if let chip = kindChip {
-            SoftTintChip(text: chip.text, tint: chip.tint)
-          }
-
-          if detail?.status == "transcribed" {
-            Text("transcript")
-              .font(.caption2)
-              .foregroundStyle(.secondary)
-              .padding(.horizontal, 6)
-              .padding(.vertical, 2)
-              .overlay(
-                Capsule().strokeBorder(.secondary.opacity(0.35), lineWidth: 1)
-              )
-          }
-
-          if !entry.tags.isEmpty {
-            HStack(spacing: 4) {
-              ForEach(entry.tags.prefix(3), id: \.self) { tag in
-                Text(tag)
-                  .font(.caption2)
-                  .padding(.horizontal, 6)
-                  .padding(.vertical, 2)
-                  .background(.secondary.opacity(0.12), in: Capsule())
-              }
-              if entry.tags.count > 3 {
-                Text("+\(entry.tags.count - 3)")
-                  .font(.caption2)
-                  .foregroundStyle(.secondary)
-              }
-            }
-          }
-        }
-        .contentShape(Rectangle())
-      }
-      .buttonStyle(.plain)
-
-      // Hover actions sit OUTSIDE the open button so they never double-fire it.
-      HStack(spacing: 2) {
-        Button(action: onReveal) {
-          Image(systemName: "folder")
-            .font(.system(size: 12))
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-        .help("Reveal in Finder")
-
-        Button(action: onDelete) {
-          Image(systemName: "trash")
-            .font(.system(size: 12))
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-        .help("Delete")
-      }
-      .opacity(isHovered ? 1 : 0)
-      .animation(Tokens.animSnap, value: isHovered)
-    }
-    .padding(.vertical, 6)
-    .padding(.horizontal, 10)
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .background(
-      RoundedRectangle(cornerRadius: Metrics.rowCornerRadius, style: .continuous)
-        .fill(Color.primary.opacity(isHovered ? 0.06 : 0))
-    )
-    .onHover { isHovered = $0 }
-    .contentShape(Rectangle())
-  }
 }
 
 #if DEBUG
