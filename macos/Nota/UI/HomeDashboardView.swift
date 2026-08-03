@@ -106,6 +106,7 @@ struct HomeDashboardView: View {
   @State private var historyExpanded = false
   @State private var searchText = ""
   @State private var fileCardTargeted = false
+  @State private var isUsageSheetPresented = false
 
   private let maxCollapsedHistory = 6
 
@@ -171,6 +172,10 @@ struct HomeDashboardView: View {
       if !model.history.isEmpty {
         UserDefaults.standard.set(true, forKey: Self.firstRunWelcomeKey)
       }
+    }
+    .sheet(isPresented: $isUsageSheetPresented) {
+      // Money is one click away, never ambient (XIA-394).
+      UsageSheetView(usageProvider: usageProvider)
     }
   }
 
@@ -352,18 +357,33 @@ struct HomeDashboardView: View {
 
   private var statsStrip: some View {
     let stats = usageProvider.homeStats
-    return HStack(spacing: 0) {
-      statCell(value: Self.minutesText(stats.transcribedMinutes), label: "transcribed this week")
-      stripDivider
-      statCell(value: "\(stats.meetings)", label: stats.meetings == 1 ? "meeting" : "meetings")
-      stripDivider
-      statCell(value: "\(stats.memos)", label: stats.memos == 1 ? "memo" : "memos")
-      stripDivider
-      statCell(value: "\(stats.actionItems)", label: stats.actionItems == 1 ? "action item" : "action items")
+    return Button {
+      isUsageSheetPresented = true
+    } label: {
+      HStack(spacing: 0) {
+        statCell(value: Self.minutesText(stats.transcribedMinutes), label: "transcribed this week")
+        stripDivider
+        statCell(value: "\(stats.meetings)", label: stats.meetings == 1 ? "meeting" : "meetings")
+        stripDivider
+        statCell(value: "\(stats.memos)", label: stats.memos == 1 ? "memo" : "memos")
+        stripDivider
+        statCell(value: "\(stats.actionItems)", label: stats.actionItems == 1 ? "action item" : "action items")
+      }
+      .padding(.horizontal, CraftTokens.spacing24)
+      .padding(.vertical, CraftTokens.spacing16)
+      .contentShape(Rectangle())
     }
-    .padding(.horizontal, CraftTokens.spacing24)
-    .padding(.vertical, CraftTokens.spacing16)
+    .buttonStyle(.plain)
     .craftGlassPanel(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .onHover { hovering in
+      // Subtle affordance that the strip opens the Usage sheet.
+      if hovering {
+        NSCursor.pointingHand.set()
+      } else {
+        NSCursor.arrow.set()
+      }
+    }
+    .help("Open usage and cost (one click away)")
   }
 
   private var stripDivider: some View {

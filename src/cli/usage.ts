@@ -10,7 +10,7 @@ import { perModelSummary, perRunLog } from "../usage-stats.js";
 import { listHistoryRecords } from "../pipeline/history.js";
 import { effectiveCatalog } from "../catalog.js";
 
-const VALID_WINDOWS = ["all", "30d", "month"] as const;
+const VALID_WINDOWS = ["all", "30d", "7d", "month"] as const;
 
 /**
  * Validate a --window argument. Returns the validated value or throws with a

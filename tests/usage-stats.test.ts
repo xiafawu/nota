@@ -185,6 +185,26 @@ describe("perModelSummary", () => {
     expect(result).toEqual([]);
   });
 
+  it("applies the 7d window — includes records within 7 days, excludes older", () => {
+    const fresh = legacyRecord({
+      id: "fresh",
+      createdAt: new Date().toISOString(),
+    });
+    const fiveDaysAgo = legacyRecord({
+      id: "five-days",
+      createdAt: new Date(Date.now() - 5 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+    const tenDaysAgo = legacyRecord({
+      id: "ten-days",
+      createdAt: new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString(),
+    });
+
+    // In-window records produce rows; the 10-day-old record alone produces none.
+    const inWindow = perModelSummary([fresh, fiveDaysAgo], "7d");
+    expect(inWindow.length).toBeGreaterThan(0);
+    expect(perModelSummary([tenDaysAgo], "7d")).toEqual([]);
+  });
+
   it("handles mixed legacy and new records", () => {
     const records = [
       legacyRecord({ id: "l1", provider: ASSEMBLYAI, durationMinutes: 10 }),

@@ -91,7 +91,7 @@ describe("parseWindow", () => {
 
   it("throws on invalid window", () => {
     expect(() => parseWindow("forever")).toThrow(
-      'Invalid window: "forever". Valid values: all, 30d, month',
+      'Invalid window: "forever". Valid values: all, 30d, 7d, month',
     );
   });
 });

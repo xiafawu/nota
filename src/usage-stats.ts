@@ -11,7 +11,7 @@ import { costForUsage } from "./pricing.js";
 import { costNoteFor, effectiveCatalog } from "./catalog.js";
 
 /** Aggregation window. */
-export type AggregateWindow = "all" | "30d" | "month";
+export type AggregateWindow = "all" | "30d" | "7d" | "month";
 
 /** One row in the per-model summary. */
 export interface ModelSummaryRow {
@@ -44,8 +44,10 @@ export interface RunLogRow {
   totalCostUSD: number | null;
 }
 
-/** Number of days in "30d" window. */
+/** Number of days in the "30d" window. */
 const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+/** Number of days in the "7d" window. */
+const SEVEN_DAYS_MS = 7 * 24 * 60 * 60 * 1000;
 
 function withinWindow(
   record: HistoryRecord,
@@ -53,7 +55,8 @@ function withinWindow(
   now: number,
 ): boolean {
   if (!window || window === "all") return true;
-  const cutoff = now - THIRTY_DAYS_MS;
+  const days = window === "7d" ? SEVEN_DAYS_MS : THIRTY_DAYS_MS;
+  const cutoff = now - days;
   const createdAt = new Date(record.createdAt).getTime();
   // "month" — same as 30d for practical purposes (the build spec treats them
   // as equivalent; a calendar-month implementation can be substituted later).

@@ -343,4 +343,47 @@ final class UsageStatsProviderTests: XCTestCase {
     XCTAssertEqual(a, b)
     XCTAssertNotEqual(a, c)
   }
+
+  // MARK: - UsageSheetViewModel (mirrors `nota usage` totals)
+
+  func testUsageSheet_totalSumsCostWithEstimatePrefix() {
+    let rows = [
+      ModelUsageRow.fixture(modelId: "a", costUSD: 0.10, hasEstimated: true),
+      ModelUsageRow.fixture(modelId: "b", costUSD: 0.02),
+    ]
+    let vm = UsageSheetViewModel(rows: rows)
+    XCTAssertEqual(vm.headlineCost, "~$0.12")
+    XCTAssertNil(vm.notInTotalNote)
+    XCTAssertNil(vm.unknownCostNote)
+  }
+
+  func testUsageSheet_plusSuffixAndNoteForUnpricedRows() {
+    let rows = [
+      ModelUsageRow.fixture(modelId: "openrouter/x", runs: 3, costUSD: 0.0, costNote: "refer to OpenRouter"),
+    ]
+    let vm = UsageSheetViewModel(rows: rows)
+    XCTAssertEqual(vm.headlineCost, "$0.00+", "unpriced runs make the total a floor")
+    XCTAssertEqual(vm.notInTotalNote, "3 runs not in total (refer to OpenRouter)")
+    XCTAssertNil(vm.unknownCostNote, "a noted row is not an unknown-cost row")
+  }
+
+  func testUsageSheet_unknownCostFootnote() {
+    let rows = [
+      ModelUsageRow.fixture(modelId: "a", runs: 2, costUSD: 0.0, hasUnknown: true),
+      ModelUsageRow.fixture(modelId: "b", costUSD: 0.05),
+    ]
+    let vm = UsageSheetViewModel(rows: rows)
+    XCTAssertEqual(vm.headlineCost, "$0.05")
+    XCTAssertEqual(vm.unknownCostNote, "2 runs have unknown cost")
+    XCTAssertNil(vm.notInTotalNote)
+  }
+
+  func testUsageSheet_sortsRowsByCostDescending() {
+    let rows = [
+      ModelUsageRow.fixture(modelId: "cheap", costUSD: 0.01),
+      ModelUsageRow.fixture(modelId: "pricey", costUSD: 0.50),
+    ]
+    let vm = UsageSheetViewModel(rows: rows)
+    XCTAssertEqual(vm.rows.map(\.modelId), ["pricey", "cheap"])
+  }
 }
