@@ -25,6 +25,16 @@ final class MicCapture: ObservableObject {
 
   private let audioEngine = AVAudioEngine()
   private let stateLock = OSAllocatedUnfairLock(initialState: false)
+  /// Converted buffers waiting for the main thread to hand them on.
+  ///
+  /// The tap runs on the audio IO thread and delivery has to reach the
+  /// recognizer from the main actor, so every buffer crosses a queue hop. What
+  /// is in flight across that hop when `stop()` runs is the last audio of the
+  /// session — the words spoken just before the release — and it used to be
+  /// discarded by an `isCapturing` check that had already flipped. Holding the
+  /// buffers here lets `stop()` drain them synchronously, before the analyzer
+  /// is told the input ended.
+  private let pending = PendingPCMBuffers()
   private let logger = Logger(subsystem: "com.xiafawu.nota", category: "dictation.capture")
 
   var isCapturing: Bool {
@@ -57,6 +67,9 @@ final class MicCapture: ObservableObject {
     }
 
     let sessionID = UUID()
+    // Anything the previous session's tap appended after its final drain
+    // belongs to nobody: drop it here rather than feed it to this session.
+    _ = pending.take()
     stateLock.withLock { $0 = true }
     diagnostics = CaptureDiagnostics(
       sessionID: sessionID,
@@ -88,6 +101,13 @@ final class MicCapture: ObservableObject {
     guard isCapturing else { return }
     audioEngine.inputNode.removeTap(onBus: 0)
     audioEngine.stop()
+
+    // Drain BEFORE clearing the flag and before the caller finalizes the
+    // recognizer: these buffers are the tail of the session, already captured
+    // and converted, and the queue hop is the only reason they had not been
+    // handed on yet. `stop()` is called from the main actor, so this is the
+    // same thread the queued drain would have used.
+    drainPending()
 
     stateLock.withLock { $0 = false }
 
@@ -143,13 +163,29 @@ final class MicCapture: ObservableObject {
       }
       return
     }
+    pending.append(outputBuffer)
     DispatchQueue.main.async { [weak self] in
-      guard let self, self.isCapturing else { return }
-      guard var diagnostics = self.diagnostics else { return }
-      diagnostics.bufferCount += 1
-      diagnostics.sampleCount += Int(outputBuffer.frameLength)
-      diagnostics.lastBufferAt = Date()
-      self.diagnostics = diagnostics
+      self?.drainPending()
+    }
+  }
+
+  /// Hand every buffer captured so far to the recognizer, on the main thread.
+  ///
+  /// Deliberately not gated on `isCapturing`: this audio was recorded while the
+  /// session was live, and dropping it because the flag flipped in between is
+  /// exactly how the last words of a session went missing. `stop()` drains
+  /// before it clears the flag, and `start()` clears the queue, so nothing here
+  /// can leak into another session.
+  private func drainPending() {
+    let buffers = pending.take()
+    guard !buffers.isEmpty else { return }
+    // Diagnostics are bookkeeping: their absence must never cost audio.
+    var diagnostics = self.diagnostics
+
+    for outputBuffer in buffers {
+      diagnostics?.bufferCount += 1
+      diagnostics?.sampleCount += Int(outputBuffer.frameLength)
+      diagnostics?.lastBufferAt = Date()
 
       // Compute RMS level from the converted PCM buffer
       if let channelData = outputBuffer.floatChannelData {
@@ -163,10 +199,47 @@ final class MicCapture: ObservableObject {
         self.rmsLevel = Self.meterLevel(rms: rms, previous: self.rmsLevel)
       }
 
-      self.onPCMBuffer?(outputBuffer)
-      self.logger.debug(
-        "PCM buffer #\(diagnostics.bufferCount) frames=\(outputBuffer.frameLength) sampleRate=16000 channels=1"
+      onPCMBuffer?(outputBuffer)
+      logger.debug(
+        "PCM buffer #\(diagnostics?.bufferCount ?? 0) frames=\(outputBuffer.frameLength) sampleRate=16000 channels=1"
       )
     }
+    if let diagnostics { self.diagnostics = diagnostics }
+  }
+}
+
+// MARK: - PendingPCMBuffers
+
+/// A FIFO handoff from the audio IO thread to the main thread.
+///
+/// `AVAudioPCMBuffer` is not `Sendable`, and the ownership rule that makes this
+/// safe is the one the class enforces: a buffer is produced by the tap, handed
+/// over here, and then only ever read by the single consumer that takes it.
+/// `take()` empties the queue, so no two consumers can see the same buffer.
+final class PendingPCMBuffers: @unchecked Sendable {
+  private let lock = NSLock()
+  private var items: [AVAudioPCMBuffer] = []
+
+  init() {}
+
+  func append(_ buffer: AVAudioPCMBuffer) {
+    lock.lock()
+    items.append(buffer)
+    lock.unlock()
+  }
+
+  /// Every buffer appended since the last take, in capture order.
+  func take() -> [AVAudioPCMBuffer] {
+    lock.lock()
+    let taken = items
+    items = []
+    lock.unlock()
+    return taken
+  }
+
+  var count: Int {
+    lock.lock()
+    defer { lock.unlock() }
+    return items.count
   }
 }

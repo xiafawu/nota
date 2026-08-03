@@ -1024,6 +1024,27 @@ The cache feeds cost computation for usage tracking.
   (`DictationReviewPanel.verifyWindowDevice`, one recreate, then a false return
   the controller turns into a visible failure) — no window Nota shows may be
   assumed onto the screen.
+- A session's last words are lost at the two places the tail is still in
+  flight when the owner lets go, and both are now closed (2026-08-03; the
+  earlier `aff047d` / `2420834` fixes were the AssemblyAI half of the same
+  symptom). **The recognizer**: the batch Apple path — the default, `.immediate`
+  on `.apple` — infers finality from the teardown flag `didFinalize`, so the
+  first result to arrive after the release is labelled final whatever it
+  contains, and it used to seal `finish()`. That result is a preview of audio
+  the analyzer has not finished resolving, so releasing close behind the last
+  word ate it. A result now resolves nothing (`BatchTranscript`, the pure
+  decision core); only the end of the results stream — i.e.
+  `finalizeAndFinishThroughEndOfInput()` having flushed everything — or the
+  existing 5s watchdog does, and the watchdog returns the best text so far, not
+  nothing. The interpretation of a result is deliberately unchanged (the latest
+  non-empty one *is* the transcript); only the moment of resolution moved.
+  **The microphone**: `MicCapture` converts on the audio thread and delivers on
+  the main thread, and the buffers crossing that hop when `stop()` ran were
+  dropped by an `isCapturing` check that had already flipped — silently
+  discarding the last audio of every session, for as long as the main thread
+  had been busy. They are queued in `PendingPCMBuffers` and `stop()` drains
+  them synchronously, before the analyzer is told the input ended. Text delayed
+  beats text lost; text captured and then thrown away is neither.
 - ESM-only project (`"type": "module"` in package.json)
 
 ## External Requirements

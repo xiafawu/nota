@@ -46,6 +46,11 @@ final class AppleSpeechStream: SpeechStream {
   /// `stateLock` because the results reader writes it and `finish()` reads it.
   private var accumulatedFinal = ""
 
+  /// Batch mode only: what the session has heard so far, and the rule for when
+  /// that may be handed to `finish()`. Guarded by `stateLock` — the results
+  /// reader writes it and both `finish()` and its watchdog read it.
+  private var batch = BatchTranscript()
+
   /// Streaming mode only: the range the analyzer still considers volatile, as
   /// reported by `volatileRangeChangedHandler`. Diagnostic — finality itself
   /// comes from each result's own `isFinal`.
@@ -210,9 +215,13 @@ final class AppleSpeechStream: SpeechStream {
       let (fc, text) = self.stateLock.withLock { _ -> (CheckedContinuation<String, any Error>?, String) in
         let fc = self.finishContinuation
         self.finishContinuation = nil
-        // `accumulatedFinal` is empty outside streaming mode, so this is the
-        // same `finalText ?? ""` the non-streaming path has always returned.
-        return (fc, self.finalText ?? self.accumulatedFinal)
+        // Best text so far, never nothing: batch mode no longer resolves on a
+        // result, so a stall here is the one place its transcript can be read
+        // out mid-flight. `batch` is empty in streaming mode and
+        // `accumulatedFinal` is empty in batch mode, so exactly one of the two
+        // ever contributes.
+        let partial = self.batch.resolution(after: .watchdog) ?? ""
+        return (fc, self.finalText ?? (partial.isEmpty ? self.accumulatedFinal : partial))
       }
       if fc != nil {
         self.logger.error("finish() watchdog fired — analyzer finalize stalled; returning partial text")
@@ -260,7 +269,11 @@ final class AppleSpeechStream: SpeechStream {
     analyzerFormat = nil
     converter = nil
     streamingActive = false
-    stateLock.withLock { _ in accumulatedFinal = "" }
+    stateLock.withLock { _ in
+      accumulatedFinal = ""
+      batch = BatchTranscript()
+      didFinalize = false
+    }
     volatileRange.withLock { $0 = nil }
   }
 
@@ -314,24 +327,27 @@ final class AppleSpeechStream: SpeechStream {
       do {
         for try await result in t.results {
           let text = String(result.text.characters)
-          let isFinal = self.didFinalize
-          self.hypothesisContinuation.yield(Hypothesis(text: text, isFinal: isFinal))
-
-          if isFinal {
-            let fc = self.stateLock.withLock { _ in
-              self.finalText = text
-              let fc = self.finishContinuation
-              self.finishContinuation = nil
-              return fc
-            }
-            fc?.resume(returning: text)
+          // `didFinalize` is written under the lock by finish(); read it the
+          // same way, and fold the result in while we hold it.
+          let isFinal = self.stateLock.withLock { _ -> Bool in
+            self.batch.record(text)
+            return self.didFinalize
           }
+          self.hypothesisContinuation.yield(Hypothesis(text: text, isFinal: isFinal))
+          // Deliberately NOT resolving finish() here, however final this result
+          // claims to be. `didFinalize` flips the instant the owner releases,
+          // so the very next result — typically a preview of audio the analyzer
+          // is still resolving — used to seal the session and eat the words
+          // spoken just before the release. Only the end of the results stream
+          // (or the watchdog below) may resolve it. See `BatchTranscript`.
         }
-        // Results stream ended (analyzer finished). A short or silent session
-        // yields zero results — resume finish() with what we have (possibly
-        // "") or it waits forever.
+        // Results stream ended: finalization is complete and the last result is
+        // the whole session. A short or silent session yields zero results —
+        // resume finish() with "" or it waits forever.
         let (fc, text) = self.stateLock.withLock { _ -> (CheckedContinuation<String, any Error>?, String) in
-          if self.finalText == nil { self.finalText = "" }
+          if self.finalText == nil {
+            self.finalText = self.batch.resolution(after: .resultsEnded) ?? ""
+          }
           let fc = self.finishContinuation
           self.finishContinuation = nil
           return (fc, self.finalText ?? "")
