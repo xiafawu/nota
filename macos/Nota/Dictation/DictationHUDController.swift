@@ -284,8 +284,9 @@ final class DictationHUDController {
   // MARK: - Accessibility
 
   /// Post VoiceOver announcements on the meaningful transitions. The panel is
-  /// click-through and never key, so announcements are the only feedback a
-  /// VoiceOver user gets that dictation started, finished, or failed.
+  /// never key (its only mouse handling is the drag), so announcements are the
+  /// only feedback a VoiceOver user gets that dictation started, finished, or
+  /// failed.
   private func announceTransition(from old: HUDState, to new: HUDState) {
     let announcement: (message: String, priority: NSAccessibilityPriorityLevel)?
     switch (old, new) {

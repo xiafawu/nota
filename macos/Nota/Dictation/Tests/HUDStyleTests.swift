@@ -165,61 +165,94 @@ final class HUDDraftTests: XCTestCase {
 
 // MARK: - Pill baseline
 
-/// The pill is the default style and the thing this change is not allowed to
-/// move. Routing it through `DictationHUDRootView` must produce the same view
-/// `DictationHUDContentView` produced on its own, fed the same line the
-/// controller fed it before the split existed.
+/// The pill is the default style, and since the growing draft landed it is
+/// also the tallest one. These pin its geometry exactly, because everything
+/// else about upward growth is derived from it: `HUDPillMetrics.maxCardHeight`
+/// is what `reposition()` reserves ABOVE the pill, and a reserve that
+/// understates the real height is a pill whose bottom edge gets shoved back
+/// down by the clamp — the "grows downward again" regression.
 @MainActor
 final class HUDPillBaselineTests: XCTestCase {
-  func testRoutingThroughTheRootViewLaysOutIdenticallyToTheContentViewAlone() {
-    for volatileTail in Self.drafts {
-      let draft = HUDDraft(finalized: "a finalized sentence.", volatileTail: volatileTail)
-      let routed = Self.fittingSize(
-        NSHostingView(
-          rootView: DictationHUDRootView(
-            style: .pill, state: .listening(level: 0.4), draft: draft
-          )
-        )
+  private static let margin = DictationHUDContentView.shadowMargin
+
+  /// A meter-only pill is exactly its padding plus the meter row.
+  func testTheMeterOnlyPillIsTheDeclaredHeight() {
+    let size = Self.fittingSize(draft: .empty)
+    XCTAssertEqual(
+      size.height,
+      HUDPillMetrics.cardHeight(lineCount: 0) + Self.margin * 2,
+      accuracy: 0.5
+    )
+  }
+
+  /// The pill widens exactly once — when text starts — and then holds still,
+  /// whatever the draft says.
+  func testTheWidthIsTheFixedDraftBlockForEveryDraft() {
+    let expected = HUDPillMetrics.draftWidth
+      + HUDPillMetrics.horizontalPadding * 2
+      + Self.margin * 2
+    for draft in Self.drafts.dropFirst() {
+      XCTAssertEqual(
+        Self.fittingSize(draft: HUDDraft(finalized: "", volatileTail: draft)).width,
+        expected,
+        accuracy: 0.5,
+        "draft: \(draft.prefix(20))"
       )
-      // The exact call `DictationHUDController` made before the split:
-      // `roughDraftTail` over the volatile tail, and nothing else.
-      let direct = Self.fittingSize(
-        NSHostingView(
-          rootView: DictationHUDContentView(
-            state: .listening(level: 0.4),
-            roughDraft: StreamingDelivery.roughDraftTail(volatileTail)
-          )
-        )
-      )
-      XCTAssertEqual(routed.width, direct.width, accuracy: 0.5, "draft: \(volatileTail)")
-      XCTAssertEqual(routed.height, direct.height, accuracy: 0.5, "draft: \(volatileTail)")
     }
   }
 
-  /// The finalized half is invisible to the pill: it renders the volatile tail
-  /// and nothing else, exactly as before.
-  func testTheFinalizedHalfDoesNotReachThePill() {
+  /// Height is the meter row plus one line height per line of draft, and the
+  /// line height the arithmetic claims is the one the block actually draws.
+  /// `maxCardHeight` — the reserve — is built out of both.
+  func testHeightGrowsByExactlyOneLineHeightPerLine() {
+    let heights = (1...4).map { lines in
+      Self.fittingSize(draft: Self.draft(lines: lines)).height
+    }
+    let measuredLineHeight = heights[1] - heights[0]
+    XCTAssertEqual(
+      measuredLineHeight,
+      HUDPillMetrics.draftLineHeight,
+      accuracy: 1.0,
+      "the reserve is computed from draftLineHeight; it has to be the real one"
+    )
+    for (index, height) in heights.enumerated() {
+      XCTAssertEqual(
+        height,
+        HUDPillMetrics.cardHeight(lineCount: index + 1) + Self.margin * 2,
+        accuracy: 1.0,
+        "\(index + 1) line(s)"
+      )
+    }
+  }
+
+  /// The line limit is the cap, and `maxCardHeight` is the height at it: a
+  /// session that runs on forever never asks the panel for more room than
+  /// `reposition()` reserved.
+  func testNoDraftEverExceedsTheReservedHeight() {
+    for lines in [HUDPillMetrics.draftLineLimit, HUDPillMetrics.draftLineLimit + 12, 60] {
+      let height = Self.fittingSize(draft: Self.draft(lines: lines)).height - Self.margin * 2
+      XCTAssertLessThanOrEqual(
+        height,
+        HUDPillMetrics.maxCardHeight + 0.5,
+        "\(lines) lines outgrew the reserve"
+      )
+    }
+    XCTAssertEqual(HUDStyle.pill.reservedCardHeight, HUDPillMetrics.maxCardHeight)
+  }
+
+  /// The finalized half reaches the pill — that is what "growing" means. The
+  /// pill fed on the volatile tail alone until the growing draft landed, and
+  /// every earlier sentence went blank on each new turn.
+  func testTheFinalizedHalfReachesThePill() {
     let withHistory = HUDDraft(
-      finalized: (1...300).map { "prior\($0)" }.joined(separator: " "),
+      finalized: (1...6).map { "prior line \($0)" }.joined(separator: "\n"),
       volatileTail: "hello"
     )
     let withoutHistory = HUDDraft(finalized: "", volatileTail: "hello")
-    XCTAssertEqual(withHistory.boundedTail, withoutHistory.boundedTail)
-    XCTAssertEqual(
-      Self.fittingSize(
-        NSHostingView(
-          rootView: DictationHUDRootView(
-            style: .pill, state: .listening(level: 0.4), draft: withHistory
-          )
-        )
-      ),
-      Self.fittingSize(
-        NSHostingView(
-          rootView: DictationHUDRootView(
-            style: .pill, state: .listening(level: 0.4), draft: withoutHistory
-          )
-        )
-      )
+    XCTAssertGreaterThan(
+      Self.fittingSize(draft: withHistory).height,
+      Self.fittingSize(draft: withoutHistory).height,
+      "the pill is showing the volatile tail alone again"
     )
   }
 
@@ -250,6 +283,25 @@ final class HUDPillBaselineTests: XCTestCase {
     (1...20).map { "word\($0)" }.joined(separator: " "),
     (1...60).map { "word\($0)" }.joined(separator: " "),
   ]
+
+  /// `lines` short finalized lines — one drawn line each, so the height is
+  /// arithmetic rather than a wrapping guess.
+  private static func draft(lines: Int) -> HUDDraft {
+    HUDDraft(
+      finalized: (1...lines).map { "line \($0)" }.joined(separator: "\n"),
+      volatileTail: ""
+    )
+  }
+
+  private static func fittingSize(draft: HUDDraft) -> CGSize {
+    fittingSize(
+      NSHostingView(
+        rootView: DictationHUDRootView(
+          style: .pill, state: .listening(level: 0.4), draft: draft
+        )
+      )
+    )
+  }
 
   private static func fittingSize(_ view: NSHostingView<some View>) -> CGSize {
     view.layoutSubtreeIfNeeded()

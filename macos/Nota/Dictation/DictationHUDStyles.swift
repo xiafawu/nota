@@ -388,8 +388,9 @@ enum HUDPrompterMetrics {
 /// full text is laid out inside a clipped, bottom-aligned frame, so the newest
 /// line is pinned to the bottom edge and older lines slide out of the top. That
 /// is auto-following by construction rather than by a scroll animation racing
-/// the window's — and the panel ignores mouse events, so there was never a user
-/// scroll to preserve.
+/// the window's — and there is no `ScrollView` anywhere in the card, so a drag
+/// over the body moves the panel (see `HUDDragView`) and there is no scroll
+/// position for it to disturb.
 struct DictationHUDPrompterView: View {
   let state: HUDState
   var draft: HUDDraft = .empty
@@ -402,9 +403,13 @@ struct DictationHUDPrompterView: View {
       volatileTail: draft.volatileTail
     )
 
+    // Header on TOP, body below it. The card grows upward with its bottom edge
+    // pinned, so the newest line of the body is the one on the anchor and the
+    // header rides up with the card's top edge — the same order the pill uses,
+    // and the one the owner asked for.
     VStack(alignment: .leading, spacing: HUDPrompterMetrics.headerSpacing) {
-      bodyBlock(window: window, width: HUDPrompterMetrics.bodyWidth)
       header
+      bodyBlock(window: window, width: HUDPrompterMetrics.bodyWidth)
     }
     .padding(.horizontal, HUDPrompterMetrics.horizontalPadding)
     .padding(.vertical, HUDPrompterMetrics.verticalPadding)
@@ -522,13 +527,17 @@ extension HUDStyle {
   /// bottom edge — the one thing upward growth pins — walks away from the
   /// anchor.
   ///
-  /// The bar cannot grow at all, and the pill's positioning is the regression
-  /// baseline this change is not allowed to move: both return nil and go on
-  /// being placed by their current height.
+  /// The bar cannot grow at all and reserves nothing. The pill used to be in
+  /// that camp and no longer is: since the draft block became eight lines of
+  /// the whole session, the pill grows further than the prompter does, and a
+  /// style that reserves nothing has its bottom edge shoved downward by the
+  /// clamp on every line it gains — the "it grows downward again" report.
   var reservedCardHeight: CGFloat? {
     switch self {
-    case .pill, .bar:
+    case .bar:
       return nil
+    case .pill:
+      return HUDPillMetrics.maxCardHeight
     case .prompter:
       return HUDPrompterMetrics.cardHeight(lineCount: HUDPrompterMetrics.maxLines)
     }

@@ -289,9 +289,9 @@ mic → DictationTranscriber → volatile tail ───────────
   queue: a stale refinement is dropped rather than surfacing session A's polish
   failure on session B's HUD, and it can never deliver into a target that is
   no longer the one the user is looking at.
-- **HUD.** `ListeningView` shows a rough-draft block above a centered mic +
-  RMS meter, holding the last ~120 characters of the volatile tail across two
-  `.callout` lines. It is deliberately not part of `HUDState`: the auto-hide
+- **HUD.** `ListeningView` shows a centered mic + RMS meter with the draft
+  block below it, holding up to `HUDPillMetrics.draftLineLimit` `.callout`
+  lines of the session. It is deliberately not part of `HUDState`: the auto-hide
   bookkeeping compares states for equality, and a line that changes on every
   syllable would make every comparison miss. The block is a **fixed** width
   (`HUDPillMetrics.draftWidth`) whenever a draft exists, so the pill widens
@@ -489,13 +489,19 @@ tab's HUD section (`DictationSettings.hudStyle`, default `.pill`). A new key wit
 no migration: a payload written before it existed, or carrying a value this build
 does not know, decodes to `.pill` — which is what its owner was looking at.
 
-- **Pill (default).** Today's capsule, unchanged. It is also the regression
-  baseline: nothing on its path branches on the style, `DictationHUDContentView`
-  was not edited, and `HUDPillBaselineTests` asserts that routing it through the
-  new `DictationHUDRootView` lays out identically to hosting the content view
-  directly. The bar and the prompter therefore carry their own copies of the HUD
-  material (`HUDSurface`) and their own meter (`HUDCompactMeter`) rather than
-  refactoring the pill's into something shared.
+- **Pill (default).** The capsule, and since the growing draft landed the
+  *tallest* of the three: a header row (mic + meter) on top, and under it up to
+  `HUDPillMetrics.draftLineLimit` (8) lines of the whole session, head-truncated
+  so the oldest lines go first. It grows **upward with its bottom edge pinned**
+  (see below), which is why the header is on top: the bottom edge is the anchor,
+  so the newest line is the one that holds still and the header rides up.
+  It is still the style everything else is measured against, but "unchanged" is
+  no longer the claim — `HUDPillBaselineTests` pins its geometry outright
+  (meter-only height, the constant draft-block width, one `draftLineHeight` per
+  line, and that no draft can outgrow `HUDPillMetrics.maxCardHeight`, which is
+  what `reposition()` reserves). The bar and the prompter still carry their own
+  copies of the HUD material (`HUDSurface`) and their own meter
+  (`HUDCompactMeter`) rather than refactoring the pill's into something shared.
 - **Bar.** A fixed 520×40 strip: mic dot + meter left, one 13pt line right. Its
   one promise is that it **never** changes size — the content view is a hard
   `.frame(width:height:)`, so long text truncates into the lane instead of
@@ -505,14 +511,15 @@ does not know, decodes to `.pill` — which is what its owner was looking at.
   older words read as *leaving* rather than as being chopped off.
 - **Prompter.** A 600pt card: header (mic dot, meter, "Dictating", live word
   count) over the session's text, finalized at full opacity and the volatile
-  tail dimmed to 55% white. It grows **downward** from a 3-line floor to a
+  tail dimmed to 55% white. It grows **upward** from a 3-line floor to a
   6-line cap (`HUDPrompterMetrics`, arithmetic and testable), animated by the
   one authority — the window frame in `DictationHUDPanel.update`. Past the cap
   the body is not a `ScrollView`: the text is laid out inside a clipped,
   **bottom-aligned** frame, so the newest line is pinned to the bottom edge and
   older ones slide out of the top. Auto-following by construction, with no scroll
-  animation racing the window's and no scroll position to keep in sync — and the
-  panel ignores mouse events, so there was never a user scroll to preserve.
+  animation racing the window's and no scroll position to keep in sync — and
+  there is no `ScrollView` anywhere in the card, so a drag over its body moves
+  the panel and disturbs no scroll position.
   Three things the card owes that construction:
   - **It measures a bounded window, not the session.** `HUDPrompterMetrics.windowed`
     head-trims to `windowBudget` characters before anything is measured or laid
@@ -533,22 +540,24 @@ does not know, decodes to `.pill` — which is what its owner was looking at.
   - **It is placed with its growth room already reserved.** `reposition()` asks
     `HUDStyle.reservedCardHeight` for the tallest the card can get and, via
     `HUDPanelLayout.pillOriginY`, keeps the fully grown card 8pt inside the
-    screen. Growing downward pins the top edge, but `clamped` then shoves an
-    off-screen frame back up — so under a window whose own bottom edge is at the
-    screen's bottom, every new line used to move the top edge up into that
-    window. Reserved, the clamp has nothing left to correct. The pill and the
-    bar reserve nothing and keep the placement arithmetic they always had.
+    screen — the room reserved **above** it, since that is where it grows.
+    Without the reserve, `clamped` shoves the grown frame back down and the
+    bottom edge upward growth pins walks away one line at a time. That is
+    exactly what "the pill grows downward again" was: the direction was right,
+    but `.pill` still declared itself a style that cannot grow and reserved
+    nothing. Both growing styles reserve now; only the bar (a hard 520×40)
+    reserves nothing.
 
 **The draft feed is split at the source.** The controller publishes
 `finalizedDraft` (everything the recognizer has finalized) alongside `roughDraft`
-(the volatile tail); `HUDDraft` carries both at full length. The pill and the bar
-read `HUDDraft.boundedTail`, which is `StreamingDelivery.roughDraftTail` over the
-volatile tail *alone* — byte-identical to the single string the pill was handed
-before the styles existed. Folding the finalized text into that line would read
-better on both (it would stop blanking each time a segment finalizes) and is
-deliberately not done: the pill is the default and its behavior is the baseline.
-The prompter is the reason for the split — a 120-character merge cannot be
-un-merged. `HUDDraft` stays out of `HUDState` for the same reason the rough draft
+(the volatile tail); `HUDDraft` carries both at full length. The **bar** reads
+`HUDDraft.boundedTail` — `StreamingDelivery.roughDraftTail` over the volatile
+tail *alone* — because it is one line and always will be. The pill outgrew that
+feed when it started growing: it reads `HUDDraft.growingText` (every finalized
+line, then the in-flight tail), because a tail-only feed blanked every earlier
+sentence each time a turn finalized. The prompter reads both halves separately
+so it can dim the volatile one. That is the reason for the split: a
+120-character merge cannot be un-merged. `HUDDraft` stays out of `HUDState` for the same reason the rough draft
 always did: the auto-hide bookkeeping compares states for equality.
 
 **A style switch is not growth.** `DictationHUDPanel` remembers the style it is
@@ -942,22 +951,58 @@ The cache feeds cost computation for usage tracking.
   fixed-height frame — nothing that can change a size. Two ordering traps live
   in the same file: `isFloatingPanel = true` silently rewrites `level` to
   `.floating` (below fullscreen apps), so `.statusBar` must be assigned *after*
-  it; and the pill hangs below the focused window, so a taller pill has to grow
-  downward or it walks up into that window.
+  it; and growth is **upward with the bottom edge pinned** — `update` changes
+  `frame.size` and never `frame.origin.y` — so the reading line stays on the
+  anchor and the room for the growth is reserved *above* the panel at placement
+  time. (This bullet used to say the opposite, "a taller pill has to grow
+  downward or it walks up into the focused window"; the owner asked for the
+  reverse on 2026-08-01, which is what commits `29f36f0`/`9a5075a` implemented
+  and what `HUDPanelLayout.pillOriginY`'s reserve exists for.) A drag is the one
+  frame change that does not go through the animation authority — it calls
+  `setFrameOrigin` directly, so it can never be in flight against the growth
+  animation.
 - The HUD's three styles (`DictationSettings.hudStyle`) are three shapes for one
-  panel, not three HUDs. `.pill` is the default *and* the regression baseline:
-  `DictationHUDContentView` and its `ListeningView` are untouched, `.pill` gets
-  the same bounded tail it always got, and a test asserts that routing it through
-  `DictationHUDRootView` lays out identically to hosting it alone. That is why
+  panel, not three HUDs. `.pill` is the default and the shape whose geometry is
+  pinned tightest — `HUDPillBaselineTests` asserts its exact height per draft
+  line, its constant width, and that no draft outgrows the reserve. That is why
   the bar and prompter carry their own material and meter instead of a shared
   extraction of the pill's. The bar is the one style with no growth animation —
   it is a hard-framed 520×40, and `HUDStyle.animatesGrowth` is what tells the
-  panel not to animate a size that cannot change. The prompter's 6-line cap is
-  the pill's rule restated: a HUD hanging under the focused window may not grow
-  up into it, so past the cap the text is clipped bottom-aligned rather than laid
-  out taller — and the card is *placed* with all of that growth already reserved
-  below it (`HUDStyle.reservedCardHeight`), because the clamp that keeps a panel
-  on screen would otherwise undo the fixed top edge one line at a time.
+  panel not to animate a size that cannot change. Both other styles grow upward
+  and are therefore *placed* with all of that growth already reserved above them
+  (`HUDStyle.reservedCardHeight`), because the clamp that keeps a panel on screen
+  would otherwise undo the pinned bottom edge one line at a time. The prompter
+  keeps a 6-line cap on top of that (past it the text is clipped bottom-aligned
+  rather than laid out taller); the pill's cap is its 8-line
+  `draftLineLimit`.
+- The HUD is **draggable, and a dragged position wins**. `HUDDragView` claims
+  every point of the panel's surface (`hitTest` returns self — the HUD has no
+  controls) and moves the window against the mouse-down anchor rather than
+  summing per-event deltas, which drifts. The cost, taken deliberately, is that
+  the panel no longer sets `ignoresMouseEvents`: clicks on the HUD's own
+  rectangle stop passing through to the app underneath. Nothing else changes —
+  the panel is `.nonactivatingPanel` and never becomes key, so a click on it
+  still cannot raise Nota or move focus off the app being dictated into.
+  `HUDPositionStore` persists **one** point for all three styles, and it is the
+  pill rect's **bottom-center**: the bottom edge is the one upward growth pins
+  (so it survives the HUD getting taller) and the horizontal center is the only
+  x that survives a style switch between a 200pt pill and a 600pt prompter.
+  Restoring validates rather than trusts (`HUDPanelLayout.validatedPinnedPoint`):
+  a point no current screen contains is **dropped**, and the automatic placement
+  is the self-heal — clamping it onto whatever display is left would call an
+  arbitrary point the owner's choice. A point a screen still holds is clamped so
+  the HUD and its reserved growth room stay wholly on screen. While a pinned
+  point survives that check `reposition()` returns early: neither a new session
+  nor a screen change moves the HUD back under the focused window, and there is
+  no reset affordance — the way back to automatic placement is to drag it
+  somewhere the screen cannot hold, or to remove the defaults key.
+- The automatic placement does not rest on the screen's bottom edge.
+  `HUDPanelLayout.restingBottomMargin` (56pt above the 8pt hard floor) is where
+  it stops: nearly every window reaches close to the bottom of the visible
+  frame, so "hang 12pt under the focused window" collapsed onto the hard floor
+  for almost every anchor and the HUD sat in the last few points of the screen,
+  over the Dock, reading as half off it. The hard floor still wins on a screen
+  too short to honour the margin — on screen beats comfortable.
 - A HUD style that draws text may only measure and lay out what it can show.
   The prompter's body is head-trimmed to a bounded window before it is measured
   (`HUDPrompterMetrics.windowed`): the HUD re-renders on every 66 ms RMS tick and

@@ -1670,8 +1670,19 @@ extension DictationController {
   /// a regression that wired review to a queue — sentences typed into the live
   /// document mid-session, the one thing this mode promises never to do — would
   /// leave the test green.
-  func beginSessionForTests(engine: EngineChoice = .apple, target: FocusedTarget? = nil) {
-    let plan = DictationSessionPlan.make(mode: settings.deliveryMode, engine: engine)
+  ///
+  /// The engine defaults to **this controller's own setting**, the way `start()`
+  /// reads it, and not to `.apple`. A hard-coded default made the seam disagree
+  /// with the session it stands in for: a test that saved
+  /// `engine = .assemblyAIRealtime` and called this got a plan built for Apple,
+  /// so `wantsLiveDraft` was false, no hypothesis was ever folded into the
+  /// draft, and the failure read as a broken live-draft fold in production code
+  /// that was in fact correct.
+  func beginSessionForTests(engine: EngineChoice? = nil, target: FocusedTarget? = nil) {
+    let plan = DictationSessionPlan.make(
+      mode: settings.deliveryMode,
+      engine: engine ?? settings.engine
+    )
     isLiveDraftSession = plan.wantsLiveDraft
     roughDraft = ""
     finalizedDraft = ""

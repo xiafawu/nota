@@ -7,14 +7,27 @@ import os
 
 /// Non-activating floating panel that hosts the HUD pill.
 ///
-/// Constrained to never take key focus: uses `.nonactivatingPanel` style mask,
-/// `.statusBar` level, and `ignoresMouseEvents = true` so dictation injection
-/// always targets the app the user is typing into.
+/// Constrained to never take key focus: `.nonactivatingPanel` style mask and
+/// `.statusBar` level, so dictation injection always targets the app the user
+/// is typing into. It does **accept** mouse events — the surface is a drag
+/// handle (`HUDDragView`) and a dragged position is remembered — which costs
+/// click-through over the HUD's own rectangle and nothing else.
 @MainActor
 final class DictationHUDPanel: NSPanel {
   private static let logger = Logger(subsystem: "com.xiafawu.nota", category: "dictation.hud")
 
   private let hostingView: NSHostingView<DictationHUDRootView>
+  private let dragView = HUDDragView()
+
+  /// Where the owner dragged the HUD, as the pill rect's **bottom-center**
+  /// point in screen coordinates — nil until they drag one.
+  ///
+  /// Bottom-center rather than the window origin for two reasons. The bottom
+  /// edge is the one the growth rule pins, so it is the only edge whose meaning
+  /// survives the pill getting taller; and the horizontal center is the only
+  /// x that survives a *style* switch, where the same position has to serve a
+  /// 200pt pill and a 600pt prompter.
+  private(set) var pinnedPillBottomCenter: CGPoint?
 
   /// The style currently on screen. Read by `reposition()` (each shape reserves
   /// a different amount of growth room) and by `update` (a switch between two
@@ -43,7 +56,14 @@ final class DictationHUDPanel: NSPanel {
     // (see DictationHUDContentView.shadowMargin).
     hasShadow = false
     collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
-    ignoresMouseEvents = true
+    // The HUD is draggable, and a window that ignores mouse events cannot be
+    // grabbed. The cost is real and bounded: clicks landing on the HUD's own
+    // rectangle no longer pass through to the app underneath. Nothing else
+    // changes — the panel is `.nonactivatingPanel` and never becomes key, so a
+    // click on it does not raise Nota or move focus away from the app being
+    // dictated into, and no style has interactive content a stray click could
+    // trigger.
+    ignoresMouseEvents = false
     hidesOnDeactivate = false
     isFloatingPanel = true
     // The zombie self-heal throws this panel away and builds another; with the
@@ -56,7 +76,31 @@ final class DictationHUDPanel: NSPanel {
     // vanished over fullscreen windows. .statusBar is CGWindowLayer 25.
     level = .statusBar
 
-    contentView = hostingView
+    // The hosting view lives inside the drag view rather than being the content
+    // view itself: SwiftUI decides its own hit testing, and the drag has to work
+    // over every pixel of the surface. `HUDDragView.hitTest` claims them all.
+    hostingView.autoresizingMask = [.width, .height]
+    dragView.autoresizesSubviews = true
+    dragView.addSubview(hostingView)
+    contentView = dragView
+
+    pinnedPillBottomCenter = HUDPositionStore.load()
+    dragView.onDragEnded = { [weak self] in self?.recordDraggedPosition() }
+  }
+
+  /// Remember where the owner just dropped the HUD.
+  ///
+  /// Their position wins over every automatic placement from here on:
+  /// `reposition()` returns early while a pinned point survives validation, so
+  /// neither a new session nor a screen change moves the HUD back under the
+  /// focused window. Growth still works untouched — `update` pins `origin.y`,
+  /// and the pinned point is that same bottom edge.
+  private func recordDraggedPosition() {
+    let margin = DictationHUDContentView.shadowMargin
+    let pill = frame.insetBy(dx: margin, dy: margin)
+    let point = CGPoint(x: pill.midX, y: pill.minY)
+    pinnedPillBottomCenter = point
+    HUDPositionStore.save(point)
   }
 
   /// Update the HUD content and resize the panel to fit.
@@ -171,6 +215,26 @@ final class DictationHUDPanel: NSPanel {
       width: max(frame.width - margin * 2, 0),
       height: max(frame.height - margin * 2, 0)
     )
+    let reserved = style.reservedCardHeight ?? pillSize.height
+
+    // The owner's own position outranks the anchor window. Validated every
+    // time, never trusted: the screen it was recorded on may be gone, smaller,
+    // or arranged differently, and a HUD restored off-screen is a HUD that does
+    // not exist. A point no current screen can host is dropped — the automatic
+    // placement below is the self-heal.
+    if let pinned = pinnedPillBottomCenter {
+      if let point = HUDPanelLayout.validatedPinnedPoint(
+        pinned,
+        pillSize: pillSize,
+        reservedHeight: reserved,
+        visibleFrames: NSScreen.screens.map(\.visibleFrame)
+      ) {
+        setFrameOrigin(NSPoint(x: point.x - pillSize.width / 2 - margin, y: point.y - margin))
+        return
+      }
+      pinnedPillBottomCenter = nil
+      HUDPositionStore.clear()
+    }
 
     let anchorFrame = Self.frontmostAppFocusedWindowFrame()
     guard let screen = anchorFrame.flatMap({ anchor in
@@ -192,9 +256,9 @@ final class DictationHUDPanel: NSPanel {
       anchorMinY: anchorFrame?.minY,
       screenFrame: screenFrame,
       pillHeight: pillSize.height,
-      // The prompter is the one style that grows after it is placed, and it is
+      // The pill and the prompter both grow after they are placed, and both are
       // placed high enough for all of that growth. See `reservedCardHeight`.
-      reservedHeight: style.reservedCardHeight ?? pillSize.height
+      reservedHeight: reserved
     )
 
     setFrameOrigin(NSPoint(x: pillX - margin, y: pillY - margin))
@@ -306,6 +370,96 @@ final class DictationHUDPanel: NSPanel {
   }
 }
 
+// MARK: - Dragging
+
+/// The HUD's whole surface as one drag handle.
+///
+/// A plain `isMovableByWindowBackground` would move the window too, but it
+/// reports nothing: every move would look identical to the ones `reposition()`
+/// makes, and "the owner chose this position" is exactly the fact that has to
+/// be remembered. So the drag is done by hand, and `onDragEnded` fires only
+/// when the pointer actually travelled.
+///
+/// **The window frame is still animated in exactly one place.** A drag calls
+/// `setFrameOrigin` directly — no animation, no `animator()` — so it can never
+/// be in flight against the growth animation in `DictationHUDPanel.update`.
+final class HUDDragView: NSView {
+  var onDragEnded: (() -> Void)?
+
+  private var mouseDownLocation: NSPoint?
+  private var windowOriginAtMouseDown: NSPoint?
+  private var moved = false
+
+  /// Claim every point in the view. The HUD has no controls, and SwiftUI would
+  /// otherwise decide per-pixel whether a drag starts.
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    bounds.contains(convert(point, from: superview)) ? self : nil
+  }
+
+  /// AppKit's own background-drag must stay out of it: two movers, one frame.
+  override var mouseDownCanMoveWindow: Bool { false }
+
+  override func mouseDown(with event: NSEvent) {
+    mouseDownLocation = NSEvent.mouseLocation
+    windowOriginAtMouseDown = window?.frame.origin
+    moved = false
+  }
+
+  override func mouseDragged(with event: NSEvent) {
+    guard let window, let start = mouseDownLocation, let origin = windowOriginAtMouseDown
+    else { return }
+    let now = NSEvent.mouseLocation
+    // Against the mouse-down anchor, never accumulated per event: summing
+    // deltas drifts, and the pointer is the thing the owner is watching.
+    window.setFrameOrigin(
+      NSPoint(x: origin.x + now.x - start.x, y: origin.y + now.y - start.y)
+    )
+    moved = true
+  }
+
+  override func mouseUp(with event: NSEvent) {
+    defer {
+      mouseDownLocation = nil
+      windowOriginAtMouseDown = nil
+      moved = false
+    }
+    guard moved else { return }
+    onDragEnded?()
+  }
+}
+
+// MARK: - Position store
+
+/// Where the owner dragged the HUD, across launches.
+///
+/// Global rather than per style: the answer to "where do I want the HUD" is
+/// about the owner's screen and their eyes, not about which of three shapes is
+/// currently drawing. Storing the pill rect's bottom-center is what lets one
+/// answer serve all three — see `DictationHUDPanel.pinnedPillBottomCenter`.
+///
+/// Backed by `DictationSettingsStore.defaults`, which is a private wiped suite
+/// under XCTest: a test that drags the HUD must not move the owner's real one.
+enum HUDPositionStore {
+  private static let key = "com.xiafawu.nota.dictationHUDPosition"
+
+  static func load() -> CGPoint? {
+    guard let pair = DictationSettingsStore.defaults.array(forKey: key) as? [Double],
+          pair.count == 2,
+          pair.allSatisfy({ $0.isFinite })
+    else { return nil }
+    return CGPoint(x: pair[0], y: pair[1])
+  }
+
+  static func save(_ point: CGPoint) {
+    guard point.x.isFinite, point.y.isFinite else { return }
+    DictationSettingsStore.defaults.set([point.x, point.y], forKey: key)
+  }
+
+  static func clear() {
+    DictationSettingsStore.defaults.removeObject(forKey: key)
+  }
+}
+
 // MARK: - Panel layout
 
 /// Where the HUD hangs, as arithmetic — no NSScreen, no window server.
@@ -314,6 +468,17 @@ enum HUDPanelLayout {
   static let anchorGap: CGFloat = 12
   /// Smallest gap kept between the pill and the edges of the visible screen.
   static let screenInset: CGFloat = 8
+
+  /// How far above the screen's bottom inset the HUD is allowed to come to
+  /// rest by default.
+  ///
+  /// Most windows reach nearly to the bottom of the visible frame, so
+  /// "hang 12pt under the focused window" collapsed onto the hard floor for
+  /// almost every anchor — the HUD sat in the last few points of the screen,
+  /// half on top of the Dock, and read as falling off the bottom edge. The
+  /// hard floor is still the hard floor (a screen too short for the grown card
+  /// keeps it), this is only where the placement prefers to stop.
+  static let restingBottomMargin: CGFloat = 56
 
   /// The pill's bottom-edge y for one anchor window, one screen, and a style
   /// that may still grow to `reservedHeight`.
@@ -340,9 +505,46 @@ enum HUDPanelLayout {
     // screen too short to hold the fully grown card, staying on screen beats
     // reserving room that does not exist.
     let ceilingY = screenFrame.maxY - screenInset - reservedHeight
-    let desired = anchorMinY.map { $0 - anchorGap - pillHeight } ?? screenFrame.minY + 60
-    // Never below the screen's bottom inset.
-    return max(screenFrame.minY + screenInset, min(desired, ceilingY))
+    let desired = anchorMinY.map { $0 - anchorGap - pillHeight }
+      ?? screenFrame.minY + screenInset + restingBottomMargin
+    // Never below the screen's bottom inset, and by preference not below the
+    // resting margin either — but the resting margin yields to a screen that
+    // cannot hold the card above it, because on screen beats comfortable.
+    let hardFloor = screenFrame.minY + screenInset
+    let restingFloor = min(hardFloor + restingBottomMargin, max(hardFloor, ceilingY))
+    return max(restingFloor, min(desired, ceilingY))
+  }
+
+  /// The owner's dragged point, made safe to restore, or nil when no current
+  /// screen can host it.
+  ///
+  /// Returning nil is the self-heal: the caller drops the stored position and
+  /// falls back to the automatic placement. Clamping instead would drag a point
+  /// recorded on a disconnected 4K display onto the built-in screen and call it
+  /// the owner's choice.
+  ///
+  /// A point a screen *does* hold is still clamped, because a screen can shrink
+  /// (resolution change, menu bar, Dock) under a position that used to fit, and
+  /// because the card has to keep its growth room: `reservedHeight` above the
+  /// bottom edge, all of it on screen.
+  static func validatedPinnedPoint(
+    _ point: CGPoint,
+    pillSize: CGSize,
+    reservedHeight: CGFloat,
+    visibleFrames: [NSRect]
+  ) -> CGPoint? {
+    guard let visible = visibleFrames.first(where: { $0.contains(point) }) else { return nil }
+    guard pillSize.width + screenInset * 2 <= visible.width else { return nil }
+
+    let halfWidth = pillSize.width / 2
+    let x = min(
+      max(point.x, visible.minX + screenInset + halfWidth),
+      visible.maxX - screenInset - halfWidth
+    )
+    let hardFloor = visible.minY + screenInset
+    let ceilingY = visible.maxY - screenInset - reservedHeight
+    let y = max(hardFloor, min(point.y, max(hardFloor, ceilingY)))
+    return CGPoint(x: x, y: y)
   }
 }
 
@@ -365,6 +567,44 @@ enum HUDPillMetrics {
   /// a 420pt block is roughly three long sentences — and head-truncation only
   /// ever takes the oldest lines once a session outgrows it.
   static let draftLineLimit = 8
+
+  /// The pill's own padding, gap and meter height, hoisted out of the views so
+  /// the tallest the pill can become is arithmetic rather than a guess. The
+  /// numbers are the ones `DictationHUDContentView` and `ListeningView` were
+  /// already using; nothing about the rendering changes by naming them.
+  static let horizontalPadding: CGFloat = 18
+  static let verticalPadding: CGFloat = 12
+  /// Gap between the header row (mic + meter) and the draft block below it.
+  static let headerSpacing: CGFloat = 8
+  /// Fixed height of the meter row — the pill's header.
+  static let meterHeight: CGFloat = 26
+
+  /// Height of one line of the draft block, from the font the block draws in,
+  /// so the reserve corresponds to lines the owner can count.
+  static var draftLineHeight: CGFloat {
+    let font = NSFont.preferredFont(forTextStyle: .callout)
+    return ceil(font.ascender - font.descender + font.leading)
+  }
+
+  /// Height of the pill (excluding the transparent shadow margin) carrying
+  /// `lines` lines of draft, or the meter alone at `lines == 0`.
+  static func cardHeight(lineCount lines: Int) -> CGFloat {
+    let meterBlock = verticalPadding * 2 + meterHeight
+    guard lines > 0 else { return meterBlock }
+    return meterBlock + headerSpacing + CGFloat(lines) * draftLineHeight
+  }
+
+  /// The tallest the pill can become: `draftLineLimit` lines plus the header.
+  ///
+  /// This is what `reposition()` reserves ABOVE the pill. The pill grows upward
+  /// with its bottom edge pinned, so without the reserve a pill anchored under
+  /// a window near the top of the screen grows into `clamped`, which shoves the
+  /// whole frame back down — and the bottom edge the growth rule pins walks
+  /// downward one line at a time. That is exactly the "it grows downward again"
+  /// regression: the growth direction was right, the placement never reserved
+  /// room for it because the pill still declared itself a style that cannot
+  /// grow.
+  static var maxCardHeight: CGFloat { cardHeight(lineCount: draftLineLimit) }
 
   static let frameDuration: TimeInterval = 0.26
 
@@ -397,8 +637,8 @@ struct DictationHUDContentView: View {
       Color.clear.frame(width: 0, height: 0)
     } else {
       content
-        .padding(.horizontal, 18)
-        .padding(.vertical, 12)
+        .padding(.horizontal, HUDPillMetrics.horizontalPadding)
+        .padding(.vertical, HUDPillMetrics.verticalPadding)
         .background {
           ZStack {
             pillShape.fill(Color(white: 0.09).opacity(0.9))
@@ -519,20 +759,26 @@ private struct ListeningView: View {
 
   var body: some View {
     if let width = HUDPillMetrics.draftBlockWidth(for: roughDraft) {
-      // Rough draft above a CENTERED mic+meter: the draft is the thing worth
-      // reading, and the meter is the thing that must not drift sideways.
-      VStack(alignment: .center, spacing: 8) {
+      // Header (the centered mic + meter) on TOP, the draft below it. The panel
+      // grows UPWARD with its bottom edge pinned, so the newest line of the
+      // draft is the one that sits on the anchor and never moves, and the header
+      // rides up as the session gets longer. The earlier order — draft above the
+      // meter — put the *meter* on the fixed edge and made the reading line
+      // climb away from it.
+      VStack(alignment: .center, spacing: HUDPillMetrics.headerSpacing) {
+        meter
         Text(roughDraft ?? "")
           .font(.callout)
           .foregroundStyle(.primary.opacity(0.85))
           .lineLimit(HUDPillMetrics.draftLineLimit)
+          // Head truncation, not tail: once the session outgrows the block the
+          // OLDEST lines go, so the bottom line is always the newest words.
           .truncationMode(.head)
           .multilineTextAlignment(.leading)
           // Fixed width, so the pill's width is decided by the presence of a
           // draft and never by its length; only the height moves after that.
           .frame(width: width, alignment: .leading)
           .fixedSize(horizontal: false, vertical: true)
-        meter
       }
     } else {
       meter
@@ -556,7 +802,7 @@ private struct ListeningView: View {
               .frame(width: 3.5, height: barHeight(for: i, phase: phase))
           }
         }
-        .frame(height: 26)
+        .frame(height: HUDPillMetrics.meterHeight)
         // One spring for all bars, driven by the level: overshoot + settle is
         // what makes the meter feel alive instead of stepped.
         .animation(.spring(response: 0.28, dampingFraction: 0.55), value: level)
