@@ -273,4 +273,114 @@ final class HomeDashboardStateTests: XCTestCase {
     XCTAssertEqual(groups[0].entries.map(\.title), ["Today"])
     XCTAssertEqual(groups[1].entries.map(\.title), ["Yesterday"])
   }
+
+  // MARK: - F1 card gating (XIA-400)
+
+  private func check(
+    _ id: String,
+    status: PreflightStatus,
+    blocking: Bool = true
+  ) -> PreflightCheck {
+    PreflightCheck(
+      id: id,
+      label: id,
+      status: status,
+      detail: "",
+      blocking: blocking,
+      httpStatus: nil
+    )
+  }
+
+  func testGating_missingTranscriptionKeyGatesMeetingAndFileButNotMemo() {
+    let result = PreflightResult(
+      overall: .blocked,
+      checks: [check("transcription", status: .fail)],
+      checkedAt: ""
+    )
+    XCTAssertEqual(HomeGating.reason(result: result, card: .meeting), "Transcription")
+    XCTAssertEqual(HomeGating.reason(result: result, card: .file), "Transcription")
+    XCTAssertNil(HomeGating.reason(result: result, card: .memo), "memo runs on the Apple engine")
+  }
+
+  func testGating_missingSummaryKeyGatesFileAndMemo() {
+    let result = PreflightResult(
+      overall: .blocked,
+      checks: [check("summary", status: .fail)],
+      checkedAt: ""
+    )
+    XCTAssertEqual(HomeGating.reason(result: result, card: .file), "Summary")
+    XCTAssertEqual(HomeGating.reason(result: result, card: .memo), "Summary")
+    XCTAssertNil(HomeGating.reason(result: result, card: .meeting), "live meetings do not summarize yet")
+  }
+
+  func testGating_missingFfmpegGatesFileOnly() {
+    let result = PreflightResult(
+      overall: .blocked,
+      checks: [check("audio-tools", status: .fail)],
+      checkedAt: ""
+    )
+    XCTAssertEqual(HomeGating.reason(result: result, card: .file), "Audio tools")
+    XCTAssertNil(HomeGating.reason(result: result, card: .meeting))
+    XCTAssertNil(HomeGating.reason(result: result, card: .memo))
+  }
+
+  func testGating_unverifiedAndOptionalNeverGate() {
+    let result = PreflightResult(
+      overall: .unverified,
+      checks: [
+        check("transcription", status: .unverified),
+        check("identity", status: .optional, blocking: false),
+      ],
+      checkedAt: ""
+    )
+    XCTAssertNil(HomeGating.reason(result: result, card: .meeting))
+    XCTAssertNil(HomeGating.reason(result: result, card: .file))
+    XCTAssertNil(HomeGating.reason(result: result, card: .memo))
+  }
+
+  func testGating_nilResultNeverGates() {
+    XCTAssertNil(HomeGating.reason(result: nil, card: .meeting))
+    XCTAssertNil(HomeGating.reason(result: nil, card: .file))
+    XCTAssertNil(HomeGating.reason(result: nil, card: .memo))
+  }
+
+  // MARK: - Health pill state
+
+  func testHealthPill_readyWhenNoAttention() {
+    let result = PreflightResult(
+      overall: .ready,
+      checks: [
+        check("audio-tools", status: .ok),
+        check("transcription", status: .ok),
+        check("identity", status: .optional, blocking: false),
+      ],
+      checkedAt: ""
+    )
+    XCTAssertEqual(HealthPillState.make(result: result), .ready)
+  }
+
+  func testHealthPill_issuesWithFailCountsAttention() {
+    let result = PreflightResult(
+      overall: .blocked,
+      checks: [
+        check("audio-tools", status: .fail),
+        check("summary", status: .unverified),
+      ],
+      checkedAt: ""
+    )
+    XCTAssertEqual(HealthPillState.make(result: result), .issues(count: 2, hasFail: true))
+  }
+
+  func testHealthPill_unverifiedOnlyIsYellow() {
+    let result = PreflightResult(
+      overall: .unverified,
+      checks: [check("transcription", status: .unverified)],
+      checkedAt: ""
+    )
+    XCTAssertEqual(HealthPillState.make(result: result), .issues(count: 1, hasFail: false))
+  }
+
+  func testHealthPill_notCheckedForNilResult() {
+    XCTAssertEqual(HealthPillState.make(result: nil), .notChecked)
+  }
 }

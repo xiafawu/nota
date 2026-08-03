@@ -53,6 +53,78 @@ struct PreflightResult: Codable {
   }
 }
 
+/// The entry cards a failing preflight check can gate (F1, XIA-394).
+enum EntryCard: CaseIterable, Hashable {
+  case meeting
+  case file
+  case memo
+}
+
+extension PreflightCheck {
+  /// Short display name for the "Needs setup — <what>" tag.
+  var shortLabel: String {
+    switch id {
+    case "audio-tools": return "Audio tools"
+    case "transcription": return "Transcription"
+    case "summary": return "Summary"
+    case "identity": return "Speaker identity"
+    case "diarization": return "Diarization"
+    default: return label
+    }
+  }
+
+  /// The entry card(s) this check gates when it FAILS (F1 mapping):
+  /// - `audio-tools` (ffmpeg): file runs only — live sessions never invoke
+  ///   ffmpeg.
+  /// - `transcription`: meeting + file. Memo is exempt — the memo card runs
+  ///   on the Apple engine without an AssemblyAI key.
+  /// - `summary`: file + memo (both summarize). Meeting live sessions do not
+  ///   summarize yet, so the summary check never gates them.
+  /// - `identity` / `diarization`: never gate (optional / off the app path).
+  /// `unverified` checks never gate either — they are proceed-at-risk, not
+  /// deterministic failures.
+  var gatedCards: Set<EntryCard> {
+    switch id {
+    case "audio-tools": return [.file]
+    case "transcription": return [.meeting, .file]
+    case "summary": return [.file, .memo]
+    default: return []
+    }
+  }
+}
+
+/// The health pill's derived state (pure — tested without a view).
+enum HealthPillState: Equatable {
+  case notChecked
+  case ready
+  /// Attention = failing + unverified checks. `hasFail` picks the pill color:
+  /// red when any deterministic failure exists, yellow otherwise.
+  case issues(count: Int, hasFail: Bool)
+
+  static func make(result: PreflightResult?) -> HealthPillState {
+    guard let result else { return .notChecked }
+    let attention = result.attention
+    guard !attention.isEmpty else { return .ready }
+    return .issues(
+      count: attention.count,
+      hasFail: attention.contains { $0.status == .fail }
+    )
+  }
+}
+
+/// F1 card gating (XIA-394): the first FAILING check that affects a card
+/// yields its "Needs setup — <what>" reason. `unverified` never gates
+/// (proceed-at-risk); identity is optional and never blocks.
+enum HomeGating {
+  static func reason(result: PreflightResult?, card: EntryCard) -> String? {
+    guard let result else { return nil }
+    return result.checks
+      .filter { $0.status == .fail && $0.gatedCards.contains(card) }
+      .first?
+      .shortLabel
+  }
+}
+
 enum PreflightError: LocalizedError {
   case decodeFailed(String)
   case runnerFailed(Int32, stderr: String)

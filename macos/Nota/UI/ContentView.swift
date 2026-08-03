@@ -9,6 +9,9 @@ struct ContentView: View {
   /// when the session publishes its own changes.
   @ObservedObject private var liveSession: LiveMeetingSession
   @StateObject private var usageProvider: UsageStatsProvider
+  /// Shared by the toolbar pill and the home cards: a gated card click opens
+  /// the same health popover.
+  @State private var isHealthPopoverPresented = false
 
   init(model: NotaModel) {
     self.model = model
@@ -129,9 +132,12 @@ struct ContentView: View {
         ToolbarStatusPill(state: pillState)
       }
       if phase == .home {
-        // Stub for XIA-400: the quiet health pill. Green "Ready" when healthy;
-        // the real preflight-fed pill replaces this in impl 4.
-        HomeReadyPill()
+        HealthPillView(
+          result: model.preflight,
+          isChecking: model.isCheckingPreflight,
+          onRefresh: { model.runPreflight(refresh: true) },
+          isPresented: $isHealthPopoverPresented
+        )
       }
     }
 
@@ -217,30 +223,12 @@ struct ContentView: View {
   private var homeView: some View {
     HomeDashboardView(
       model: model,
-      usageProvider: usageProvider
+      usageProvider: usageProvider,
+      onOpenHealthPopover: { isHealthPopoverPresented = true }
     )
     .onDrop(of: [UTType.fileURL.identifier], isTargeted: $model.isDropTargeted) { providers in
       HomeDashboardView.handleDrop(providers: providers, model: model)
     }
-  }
-}
-
-/// The quiet health-pill slot on the home toolbar: green dot + "Ready".
-/// Placeholder for XIA-400, which feeds it from the preflight model and adds
-/// the glass popover.
-private struct HomeReadyPill: View {
-  var body: some View {
-    HStack(spacing: Metrics.statusHStackSpacing) {
-      Circle()
-        .fill(.green)
-        .frame(width: 7, height: 7)
-      Text("Ready")
-        .font(Tokens.statusFont)
-    }
-    .padding(.horizontal, Metrics.statusPillH)
-    .padding(.vertical, Metrics.statusPillV)
-    .liquidGlass(.regular, in: .capsule)
-    .help("All systems ready")
   }
 }
 

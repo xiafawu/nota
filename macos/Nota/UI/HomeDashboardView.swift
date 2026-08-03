@@ -99,12 +99,23 @@ enum HomeGreeting {
 struct HomeDashboardView: View {
   @ObservedObject var model: NotaModel
   @ObservedObject var usageProvider: UsageStatsProvider
+  /// A gated entry card click opens the toolbar health popover instead of
+  /// starting (F1, XIA-394). ContentView owns the shared presentation state.
+  var onOpenHealthPopover: () -> Void = {}
 
   @State private var historyExpanded = false
   @State private var searchText = ""
   @State private var fileCardTargeted = false
 
   private let maxCollapsedHistory = 6
+
+  /// "Needs setup — <what>" reason for a card, from the first FAILING check
+  /// that gates it. `unverified` never gates (proceed-at-risk); identity is
+  /// optional and never blocks. Memo is exempt from the transcription check
+  /// (Apple-engine path).
+  private func gateReason(for card: EntryCard) -> String? {
+    HomeGating.reason(result: model.preflight, card: card)
+  }
 
   /// Marks the first-run welcome as seen once any content exists; the welcome
   /// itself renders only while nothing has ever been recorded.
@@ -191,37 +202,48 @@ struct HomeDashboardView: View {
   }
 
   private var meetingCard: some View {
-    Button {
-      model.startLiveSession()
+    let gate = gateReason(for: .meeting)
+    return Button {
+      if gate == nil {
+        model.startLiveSession()
+      } else {
+        onOpenHealthPopover()
+      }
     } label: {
       cardContent(
         icon: "mic.fill",
         title: "Start Meeting",
-        subtitle: "Record and transcribe in real time",
+        subtitle: gate.map { "Needs setup — \($0)" } ?? "Record and transcribe in real time",
         shortcut: "⌘N",
-        foreground: .white,
-        secondary: .white.opacity(0.85)
+        foreground: gate == nil ? .white : .white.opacity(0.55),
+        secondary: .white.opacity(gate == nil ? 0.85 : 0.45)
       )
       .frame(maxWidth: .infinity, minHeight: 132, alignment: .leading)
       .padding(20)
       .craftPrimaryCard(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+      .opacity(gate == nil ? 1 : 0.75)
     }
     .buttonStyle(.plain)
     .disabled(model.isRunning)
-    .help("Start a live meeting (⌘N)")
+    .help(gate.map { "Needs setup — \($0)" } ?? "Start a live meeting (⌘N)")
   }
 
   private var fileCard: some View {
-    Button {
-      model.chooseFile()
+    let gate = gateReason(for: .file)
+    return Button {
+      if gate == nil {
+        model.chooseFile()
+      } else {
+        onOpenHealthPopover()
+      }
     } label: {
       cardContent(
         icon: "arrow.down.doc",
         title: "Transcribe File",
-        subtitle: "Drop audio anywhere in the window",
+        subtitle: gate.map { "Needs setup — \($0)" } ?? "Drop audio anywhere in the window",
         shortcut: "⌘O",
-        foreground: .primary,
-        secondary: .secondary
+        foreground: gate == nil ? .primary : .primary.opacity(0.5),
+        secondary: .secondary.opacity(gate == nil ? 1 : 0.5)
       )
       .frame(maxWidth: .infinity, minHeight: 132, alignment: .leading)
       .padding(20)
@@ -231,34 +253,43 @@ struct HomeDashboardView: View {
           .strokeBorder(CraftTokens.dropStrokeColor, lineWidth: 2)
           .opacity(fileCardTargeted ? 1 : 0)
       )
+      .opacity(gate == nil ? 1 : 0.75)
     }
     .buttonStyle(.plain)
     .disabled(model.isRunning)
-    .help("Transcribe an audio file (⌘O)")
+    .help(gate.map { "Needs setup — \($0)" } ?? "Transcribe an audio file (⌘O)")
     .onDrop(of: [UTType.fileURL.identifier], isTargeted: $fileCardTargeted) { providers in
+      // Drops stay live even when the transcription key is missing: the
+      // accept path surfaces its own error; the card click explains setup.
       Self.handleDrop(providers: providers, model: model)
     }
   }
 
   private var memoCard: some View {
-    Button {
-      model.startLiveSession(kind: .memo)
+    let gate = gateReason(for: .memo)
+    return Button {
+      if gate == nil {
+        model.startLiveSession(kind: .memo)
+      } else {
+        onOpenHealthPopover()
+      }
     } label: {
       cardContent(
         icon: "note.text",
         title: "Quick Memo",
-        subtitle: "Speak a note; get a cleaned write-up",
+        subtitle: gate.map { "Needs setup — \($0)" } ?? "Speak a note; get a cleaned write-up",
         shortcut: "⌘M",
-        foreground: .primary,
-        secondary: .secondary
+        foreground: gate == nil ? .primary : .primary.opacity(0.5),
+        secondary: .secondary.opacity(gate == nil ? 1 : 0.5)
       )
       .frame(maxWidth: .infinity, minHeight: 132, alignment: .leading)
       .padding(20)
       .craftGlassPanel(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+      .opacity(gate == nil ? 1 : 0.75)
     }
     .buttonStyle(.plain)
     .disabled(model.isRunning)
-    .help("Start a quick memo (⌘M)")
+    .help(gate.map { "Needs setup — \($0)" } ?? "Start a quick memo (⌘M)")
   }
 
   private func cardContent(
