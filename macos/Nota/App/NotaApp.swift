@@ -110,6 +110,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     hideFromDockUnderTests()
     ensureShareInboxExists()
     enforceSingleInstance()
+    AppearanceSetting.current.apply()
   }
 
   /// Create `~/.nota/inbox` so the share extension can stage into it.

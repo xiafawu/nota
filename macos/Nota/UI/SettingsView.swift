@@ -24,6 +24,8 @@ struct SettingsView: View {
   @Binding var identifySpeakers: Bool
   @Binding var skipSummary: Bool
   @State private var memoDiarization = NotaSettingsStore.memoDiarizationEnabled
+  @AppStorage(AppearanceSetting.defaultsKey) private var appearanceRaw =
+    AppearanceSetting.system.rawValue
   @StateObject private var speakers = SpeakersModel()
   @State private var selectedTab: SettingsTab = .general
 
@@ -108,6 +110,22 @@ struct SettingsView: View {
         }
         .onChange(of: memoDiarization) { _, newValue in
           NotaSettingsStore.memoDiarizationEnabled = newValue
+        }
+        Picker(selection: $appearanceRaw) {
+          ForEach(AppearanceSetting.allCases) { setting in
+            Text(setting.label).tag(setting.rawValue)
+          }
+        } label: {
+          VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
+            Text("Appearance")
+            Text("System follows macOS; Light and Dark pin every Nota window.")
+              .font(Tokens.settingsCaptionFont)
+              .foregroundStyle(.secondary)
+          }
+        }
+        .pickerStyle(.segmented)
+        .onChange(of: appearanceRaw) { _, newValue in
+          (AppearanceSetting(rawValue: newValue) ?? .system).apply()
         }
       } footer: {
         Text("Build \(buildStamp)")
