@@ -427,7 +427,11 @@ final class LiveSessionPersistenceTests: XCTestCase {
 
   func testHomeStatsAggregatesWeekWindowKindsAndActionItems() throws {
     // Monday 2026-08-03 09:00Z = "now" in the test.
-    let now = ISO8601DateFormatter().date(from: "2026-08-03T09:00:00.000Z")!
+    // The default ISO8601DateFormatter rejects fractional seconds — with them
+    // this force-unwrap crashed the whole test host, and the crash was
+    // invisible in the "Executed N tests" summaries (a dead runner records no
+    // failure; only the trailing TEST FAILED shows it).
+    let now = ISO8601DateFormatter().date(from: "2026-08-03T09:00:00Z")!
     try writeRecord(named: "a.json", recordJSON(
       createdAt: "2026-08-02T10:00:00.000Z", // this week
       kind: "meeting",
@@ -464,7 +468,11 @@ final class LiveSessionPersistenceTests: XCTestCase {
   }
 
   func testHomeStatsEmptyWhenNoRecordsInWindow() throws {
-    let now = ISO8601DateFormatter().date(from: "2026-08-03T09:00:00.000Z")!
+    // The default ISO8601DateFormatter rejects fractional seconds — with them
+    // this force-unwrap crashed the whole test host, and the crash was
+    // invisible in the "Executed N tests" summaries (a dead runner records no
+    // failure; only the trailing TEST FAILED shows it).
+    let now = ISO8601DateFormatter().date(from: "2026-08-03T09:00:00Z")!
     try writeRecord(named: "a.json", recordJSON(
       createdAt: "2026-07-20T10:00:00.000Z",
       kind: "meeting",
