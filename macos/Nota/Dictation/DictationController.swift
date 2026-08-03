@@ -53,7 +53,9 @@ struct DictationSessionPlan: Equatable {
 
 @MainActor
 final class DictationController: ObservableObject {
-  @Published private(set) var state: DictationState = .disabled(reason: "Checking permissions…")
+  @Published private(set) var state: DictationState = .disabled(reason: "Checking permissions…") {
+    didSet { publishReviewError() }
+  }
   @Published private(set) var lastCaptureDiagnostics: CaptureDiagnostics?
   @Published private(set) var lastLatency: TimeInterval?
   @Published private(set) var lastHypothesis: String?
@@ -369,10 +371,10 @@ final class DictationController: ObservableObject {
       return
     }
 
-    // A trigger press with a card already open EXTENDS that review rather than
-    // throwing it away (plan 14). The card stays on screen showing that it is
-    // listening, and this session's text is appended to its buffer on stop.
-    beginReviewContinuationIfOpen()
+    // In `.review` the card is the session's ONE surface for its whole life, so
+    // it goes up here — before a word has been recognized — rather than at stop.
+    // A press with a card already open extends that card instead (plan 14).
+    beginOrOpenReviewCard()
 
     isSessionPending = true
 
@@ -476,7 +478,7 @@ final class DictationController: ObservableObject {
         self.isSessionPending = false
         self.speechStream = nil
         self.resetStreamingSession()
-        self.endReviewContinuation()
+        self.endReviewRecording()
         self.state = .failed(message: error.localizedDescription)
         self.logger.error("SpeechStream.start failed: \(error.localizedDescription, privacy: .public)")
         return
@@ -505,7 +507,7 @@ final class DictationController: ObservableObject {
         stream.cancel()
         self.speechStream = nil
         self.resetStreamingSession()
-        self.endReviewContinuation()
+        self.endReviewRecording()
         return
       }
       do {
@@ -519,7 +521,7 @@ final class DictationController: ObservableObject {
         self.isSessionPending = false
         self.speechStream = nil
         self.resetStreamingSession()
-        self.endReviewContinuation()
+        self.endReviewRecording()
         self.state = .failed(message: error.localizedDescription)
         self.logger.error("microphone capture failed: \(error.localizedDescription, privacy: .public)")
       }
@@ -533,7 +535,7 @@ final class DictationController: ObservableObject {
       speechStream?.cancel()
       speechStream = nil
       resetStreamingSession()
-      endReviewContinuation()
+      endReviewRecording()
       state = .idle
       logger.info("Dictation session cancelled before speech started")
       return
@@ -560,7 +562,7 @@ final class DictationController: ObservableObject {
       } catch is CancellationError {
         await MainActor.run {
           self.isSessionPending = false
-          self.endReviewContinuation()
+          self.endReviewRecording()
           self.state = .idle
           self.speechStream = nil
         }
@@ -568,7 +570,7 @@ final class DictationController: ObservableObject {
       } catch {
         await MainActor.run {
           self.isSessionPending = false
-          self.endReviewContinuation()
+          self.endReviewRecording()
           self.state = .failed(message: error.localizedDescription)
           self.speechStream = nil
           self.logger.error("SpeechStream.finish failed: \(error.localizedDescription, privacy: .public)")
@@ -745,6 +747,26 @@ final class DictationController: ObservableObject {
   private func publishReviewDraft() {
     guard isReviewRecording else { return }
     review.setDraft(HUDDraft(finalized: finalizedDraft, volatileTail: roughDraft))
+  }
+
+  /// Mirror a session failure onto whichever surface exists.
+  ///
+  /// In `.review` the card is the session's ONE surface from the hotkey press to
+  /// the decision, and `HUDState.compute` hides the pill outright while
+  /// `isReviewing` — so a `.failed` that only reached the pill would be a
+  /// session failing in silence. Driven from `state`'s `didSet` rather than from
+  /// the half-dozen sites that assign `.failed`: one place to be right, and no
+  /// way for a new failure path to forget.
+  ///
+  /// A no-op when no card is up, which is the whole split — `isReviewing` is
+  /// exactly "a card exists", so the two rules can never both fire or both miss.
+  private func publishReviewError() {
+    guard pendingReview != nil else { return }
+    if case .failed(let message) = state {
+      review.setError(message)
+    } else {
+      review.setError(nil)
+    }
   }
 
   // MARK: - Streaming delivery
@@ -1009,7 +1031,7 @@ final class DictationController: ObservableObject {
       // wedge that card for the rest of the run: `finishReview` refuses every
       // decision while it is true, so neither ⌘↩ nor Escape would ever land.
       // Idempotent, and a no-op for every session that was not a continuation.
-      endReviewContinuation()
+      endReviewRecording()
       doInject(text, latency: latency)
       sessionContext = .empty
       sessionUsesScreenContext = false
@@ -1047,6 +1069,50 @@ final class DictationController: ObservableObject {
   /// `beginCaptureAndSpeech` needs a microphone, an analyzer and three
   /// permission grants, and the claim under test — a press extends rather than
   /// discards — needs none of them.
+  /// What a trigger press does to the review card, whichever state it is in.
+  ///
+  /// One entry point for the two cases, because from the owner's side they are
+  /// the same gesture: a card open → this session extends it; no card → this
+  /// session opens one, empty and recording. Before 2026-08-03 the second case
+  /// did not exist and the first session's live feedback went to the HUD
+  /// instead, which is the two-surface lifecycle the owner asked to collapse
+  /// ("one pill only").
+  ///
+  /// Returns whether a card is now recording.
+  @discardableResult
+  func beginOrOpenReviewCard() -> Bool {
+    if pendingReview != nil { return beginReviewContinuationIfOpen() }
+    guard settings.deliveryMode == .review else { return false }
+    return openRecordingReviewCard()
+  }
+
+  /// Put an empty card on screen for a session that has just started.
+  ///
+  /// It goes up through exactly the same `openReview` every other card does, so
+  /// there is one presenter call, one `pendingReview`, one set of decision
+  /// callbacks and one failure path. What makes it the *recording* state is the
+  /// same flag a continuation sets: the card is one component with two states,
+  /// not two components.
+  ///
+  /// Nothing is recorded to history yet — an empty entry is not a dictation.
+  /// `extendReview` creates it the moment the batch first has text.
+  @discardableResult
+  private func openRecordingReviewCard() -> Bool {
+    openReview(
+      PendingReview(polished: "", offline: "", target: nil, latency: 0),
+      text: ""
+    )
+    // `openReview` clears `pendingReview` when the card could not be shown, and
+    // has already reported it. Nothing is left listening to a card that is not
+    // there; the session runs on and `presentReview` will try again at stop.
+    guard pendingReview != nil else { return false }
+    isReviewRecording = true
+    review.setListening(true)
+    review.setDraft(.empty)
+    logger.info("Review card opened for a new session")
+    return true
+  }
+
   @discardableResult
   func beginReviewContinuationIfOpen() -> Bool {
     guard pendingReview != nil else { return false }
@@ -1093,6 +1159,27 @@ final class DictationController: ObservableObject {
     review.setDraft(.empty)
   }
 
+  /// Stop recording AND take an empty card down.
+  ///
+  /// The abort paths' version. Since the card now opens at session *start*, a
+  /// session that never produced anything — a press-and-release, a recognizer
+  /// that failed to start, a microphone that would not open — can leave a card
+  /// on screen holding nothing. It is not a decision anyone can make: Apply is
+  /// disabled on empty text, and the only thing Escape would throw away is
+  /// nothing.
+  ///
+  /// A card holding a real batch is never touched. The test is the pipeline's
+  /// own accumulation AND the editor, because the owner may have typed into a
+  /// card whose session heard nothing, and that text is theirs.
+  private func endReviewRecording() {
+    endReviewContinuation()
+    guard let open = pendingReview else { return }
+    guard open.polished.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          (review.editorText ?? "").trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    else { return }
+    cancelOpenReview(reason: "the session that opened the card produced nothing")
+  }
+
   /// Open the review panel on this session's text — or, when a card is already
   /// open, add this session's text to it.
   private func presentReview(polished: String, offline: String, latency: TimeInterval) {
@@ -1106,9 +1193,11 @@ final class DictationController: ObservableObject {
     endReviewContinuation()
 
     guard !polished.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
-      // Nothing was recognized. An empty panel is worse than no panel — and a
-      // continuation that heard nothing leaves the card exactly as it was
-      // rather than closing it.
+      // Nothing was recognized. An empty panel is worse than no panel — so a
+      // card this session opened and never filled goes away, while a
+      // continuation that heard nothing leaves the card exactly as it was.
+      // `endReviewRecording` is the whole distinction, in one place.
+      endReviewRecording()
       state = .idle
       return
     }
@@ -1209,6 +1298,12 @@ final class DictationController: ObservableObject {
     if let historyID = extended.historyID {
       historyStore.update(id: historyID, text: combined, status: .pending, statusDetail: "Awaiting review")
       syncDictationHistory()
+    } else {
+      // The card was opened empty, at session start, so `openReview` recorded
+      // nothing — a history entry with no text is not a dictation. This is the
+      // moment the batch first has some, which is where the entry the whole
+      // batch will be tracked under belongs.
+      extended.historyID = recordHistory(text: combined, target: extended.target)
     }
     pendingReview = extended
     logger.info(
@@ -1221,7 +1316,12 @@ final class DictationController: ObservableObject {
   private func openReview(_ pending: PendingReview, text: String) {
     var pending = pending
     if pending.historyID == nil {
-      pending.historyID = recordHistory(text: text, target: pending.target)
+      // Only once there is something to record. A card opened at session start
+      // carries no text yet; `extendReview` creates the entry when the batch
+      // first has some, so history never holds an empty dictation.
+      if !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        pending.historyID = recordHistory(text: text, target: pending.target)
+      }
     } else if let historyID = pending.historyID {
       historyStore.update(
         id: historyID,
@@ -1601,7 +1701,7 @@ final class DictationController: ObservableObject {
     // The card itself is left alone: a permission that dropped mid-session is
     // no reason to throw away text the owner has already reviewed. It just
     // stops claiming to be listening, and its buttons come back.
-    endReviewContinuation()
+    endReviewRecording()
   }
 
   // MARK: - History actions
@@ -1731,6 +1831,11 @@ extension DictationController {
       mode: settings.deliveryMode,
       engine: engine ?? settings.engine
     )
+    // Exactly where `beginCaptureAndSpeech` does it, and for the same reason
+    // the plan is run here rather than faked: in `.review` the card IS the
+    // session's surface from the press onwards, so a seam that skipped this
+    // would let a regression back into two-surface behaviour unnoticed.
+    beginOrOpenReviewCard()
     isLiveDraftSession = plan.wantsLiveDraft
     roughDraft = ""
     finalizedDraft = ""
@@ -1745,6 +1850,11 @@ extension DictationController {
 
   /// Everything the recognizer has finalized this session.
   var recognizedSoFarForTests: String { finalizedDraft }
+
+  /// Raise a session failure the way the live paths do — through `state`, which
+  /// is the one place the card's error line is fed from. Setting the card's
+  /// message directly would test the assignment and not the routing.
+  func failForTests(_ message: String) { state = .failed(message: message) }
 
   /// The epoch a hypothesis from the current session would carry.
   var sessionEpochForTests: UInt64 { sessionEpoch }

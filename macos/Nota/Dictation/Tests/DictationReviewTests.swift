@@ -400,9 +400,24 @@ final class ReviewHUDTests: XCTestCase {
     )
   }
 
-  /// A review card has nowhere to put an error, so a failure is the one thing
-  /// the pill still says while one is open.
-  func testAFailureIsStillShownWhileAReviewIsOpen() {
+  /// The last exception is gone (owner call 2026-08-03, "one pill only"). A
+  /// failure used to come out on the pill because "a review card has nowhere to
+  /// put an error"; the card has a status line now, and the controller mirrors
+  /// `state` into it. The pill is down for the WHOLE lifecycle of a card.
+  func testEvenAFailureStaysOffThePillWhileACardIsOpen() {
+    XCTAssertEqual(
+      HUDState.compute(
+        controllerState: .failed(message: "Microphone unavailable"),
+        isPolishInProgress: false,
+        lastPolishWarning: nil,
+        lastSecureFieldNotice: nil,
+        lastProcessedText: nil,
+        rmsLevel: 0,
+        isReviewing: false
+      ),
+      .error(message: "Microphone unavailable"),
+      "with no card, the pill is still where a failure goes"
+    )
     XCTAssertEqual(
       HUDState.compute(
         controllerState: .failed(message: "Microphone unavailable"),
@@ -413,8 +428,39 @@ final class ReviewHUDTests: XCTestCase {
         rmsLevel: 0,
         isReviewing: true
       ),
-      .error(message: "Microphone unavailable")
+      .hidden,
+      "with a card, the card says it — two surfaces for one session is the bug"
     )
+  }
+
+  /// `isReviewing` is exactly "a card exists", which is what makes the split
+  /// above total rather than a hole: every controller state a review session
+  /// can be in is suppressed, and the only way for one to reach the pill is for
+  /// there to be no card to put it on.
+  func testNoControllerStateSurvivesAnOpenCard() {
+    let states: [DictationState] = [
+      .idle,
+      .listening,
+      .finalizing,
+      .injecting,
+      .failed(message: "boom"),
+      .disabled(reason: "no microphone"),
+    ]
+    for state in states {
+      XCTAssertEqual(
+        HUDState.compute(
+          controllerState: state,
+          isPolishInProgress: true,
+          lastPolishWarning: "Polish failed: offline.",
+          lastSecureFieldNotice: "Secure field",
+          lastProcessedText: "Ship it.",
+          rmsLevel: 0.9,
+          isReviewing: true
+        ),
+        .hidden,
+        "\(state) reached the pill while a card was up"
+      )
+    }
   }
 }
 
@@ -635,6 +681,11 @@ final class StubReviewPresenter: DictationReviewPresenting {
   /// never arrived, and the two are different bugs.
   private(set) var draft: HUDDraft = .empty
   private(set) var draftUpdates: [HUDDraft] = []
+  /// The failure the card is showing in its status line, and every value it was
+  /// ever handed — the card is a review session's only surface, so an error that
+  /// arrived and was cleared is a different bug from one that never arrived.
+  private(set) var errorMessage: String?
+  private(set) var errorUpdates: [String?] = []
 
   var latest: DictationReviewRequest? { presented.last }
 
@@ -645,6 +696,7 @@ final class StubReviewPresenter: DictationReviewPresenting {
     buffer = canPresent ? request.text : nil
     isShowingListening = false
     draft = .empty
+    errorMessage = nil
     return canPresent
   }
 
@@ -672,11 +724,18 @@ final class StubReviewPresenter: DictationReviewPresenting {
     draftUpdates.append(draft)
   }
 
+  func setError(_ message: String?) {
+    guard isPresenting else { return }
+    errorMessage = message
+    errorUpdates.append(message)
+  }
+
   func dismiss() {
     dismissCount += 1
     isPresenting = false
     isShowingListening = false
     draft = .empty
+    errorMessage = nil
     buffer = nil
   }
 
@@ -732,6 +791,11 @@ final class DictationReviewBranchTests: XCTestCase {
 
     controller.handleHypothesis(Hypothesis(text: "ship the gency to", isFinal: false))
     XCTAssertEqual(controller.roughDraft, "ship the gency to")
+    XCTAssertEqual(
+      presenter.draft.volatileTail,
+      "ship the gency to",
+      "the FIRST session's draft is on the card, not on a pill"
+    )
     XCTAssertNil(controller.lastProcessedText, "a rough draft is not an insertion")
 
     controller.handleHypothesis(
@@ -749,7 +813,92 @@ final class DictationReviewBranchTests: XCTestCase {
       "segments accumulate in spoken order"
     )
     XCTAssertNil(controller.lastProcessedText, "nothing was inserted mid-session")
-    XCTAssertFalse(controller.isReviewing, "the panel opens on stop, not per segment")
+    XCTAssertTrue(
+      controller.isReviewing,
+      "the card is up from the press onwards — one surface for the whole session"
+    )
+    XCTAssertEqual(presenter.presented.count, 1, "and it is ONE card, opened once")
+    XCTAssertEqual(presenter.buffer, "", "which nothing has been written into yet")
+  }
+
+  /// The mandate, stated as the thing that used to be false: in `.review` the
+  /// card goes up when the hotkey goes down, so there is no stretch of a review
+  /// session during which a *different* surface carries the live feedback.
+  func testTheCardIsOnScreenBeforeAWordIsRecognized() {
+    let controller = makeController(.review)
+    XCTAssertFalse(controller.isReviewing, "nothing before the press")
+
+    XCTAssertTrue(controller.beginOrOpenReviewCard())
+
+    XCTAssertEqual(presenter.presented.count, 1)
+    XCTAssertTrue(controller.isReviewing, "which is what keeps the pill down")
+    XCTAssertTrue(presenter.isShowingListening, "and it opens in the recording state")
+    XCTAssertTrue(controller.isReviewRecording)
+    XCTAssertEqual(presenter.latest?.text, "", "empty: nothing has been said yet")
+  }
+
+  /// And nothing of it leaks into the modes that keep the HUD.
+  func testNonReviewModesOpenNoCardAtSessionStart() {
+    for mode in [DeliveryMode.immediate, .streaming] {
+      let controller = makeController(mode)
+      XCTAssertFalse(controller.beginOrOpenReviewCard(), "\(mode)")
+      XCTAssertTrue(presenter.presented.isEmpty, "\(mode)")
+      XCTAssertFalse(controller.isReviewing, "\(mode)")
+      presenter = StubReviewPresenter()
+    }
+  }
+
+  /// One card, two states, no swap: the same presented request carries the
+  /// session from recording through to the decision. A second `present` would
+  /// mean the recording surface and the deciding surface were different
+  /// components after all.
+  func testTheSameCardCarriesTheSessionFromRecordingToDeciding() {
+    let controller = makeController(.review)
+    controller.beginSessionForTests(target: target)
+    let opened = controller.pendingReviewIDForTests
+    XCTAssertTrue(presenter.isShowingListening)
+
+    controller.deliver("Ship the genc2rust patch.", offline: "Ship the patch.", latency: 1)
+
+    XCTAssertEqual(presenter.presented.count, 1, "no second card was ever presented")
+    XCTAssertEqual(controller.pendingReviewIDForTests, opened, "same review, same callbacks")
+    XCTAssertFalse(presenter.isShowingListening, "it is the deciding state now")
+    XCTAssertEqual(presenter.buffer, "Ship the genc2rust patch.")
+    XCTAssertTrue(presenter.draft.isEmpty, "and the live block is down")
+
+    presenter.latest?.onApply("Ship the genc2rust patch.")
+    XCTAssertEqual(controller.lastProcessedText, "Ship the genc2rust patch.")
+    XCTAssertFalse(controller.isReviewing)
+  }
+
+  /// A session that opened a card and then heard nothing must not leave one
+  /// sitting there: Apply is disabled on empty text, so the only decision left
+  /// would be to throw away nothing.
+  func testACardOpenedByASilentSessionGoesAway() {
+    let controller = makeController(.review)
+    controller.beginSessionForTests(target: target)
+    XCTAssertTrue(controller.isReviewing)
+
+    controller.deliver("   \n ", offline: "", latency: 1)
+
+    XCTAssertFalse(controller.isReviewing, "the empty card is gone")
+    XCTAssertEqual(presenter.dismissCount, 1)
+    XCTAssertEqual(controller.state, .idle)
+    XCTAssertNil(controller.lastProcessedText)
+  }
+
+  /// …unless the owner typed into it. A silent session is no reason to destroy
+  /// text that is theirs.
+  func testASilentSessionKeepsACardTheOwnerHasWrittenIn() {
+    let controller = makeController(.review)
+    controller.beginSessionForTests(target: target)
+    presenter.edit("Something I typed myself.")
+
+    controller.deliver("   \n ", offline: "", latency: 1)
+
+    XCTAssertTrue(controller.isReviewing, "the owner's text is still in the box")
+    XCTAssertEqual(presenter.dismissCount, 0)
+    XCTAssertEqual(presenter.buffer, "Something I typed myself.")
   }
 
   /// The counterweight: the same session wiring, one mode over, DOES build a
@@ -976,15 +1125,49 @@ final class DictationReviewBranchTests: XCTestCase {
     XCTAssertEqual(presenter.buffer, "Ship the patch.", "the draft never enters the editor")
   }
 
-  /// The block belongs to the continuation. A first review session has no card
-  /// to draw on, and every non-review session has no card at all.
-  func testNoDraftReachesTheCardWhenNoContinuationIsRecording() {
-    let controller = makeController(.review)
+  /// The block belongs to a card, and only `.review` has one. This used to also
+  /// exclude a review session's FIRST session, which is exactly the gap the
+  /// unified card closed — see
+  /// `testAReviewSessionShowsADraftAndAccumulatesWithoutInsertingAnything`.
+  func testNoDraftReachesACardInANonReviewMode() {
+    var settings = DictationSettings()
+    settings.deliveryMode = .immediate
+    settings.engine = .assemblyAIRealtime  // a mode+engine that DOES produce a draft
+    DictationSettingsStore.save(settings)
+    let controller = DictationController(review: presenter)
     controller.beginSessionForTests(target: target)
     controller.handleHypothesis(Hypothesis(text: "ship the patch", isFinal: false))
 
-    XCTAssertTrue(controller.roughDraft.isEmpty == false, "the session did produce a draft")
-    XCTAssertTrue(presenter.draftUpdates.isEmpty, "nothing was published to a card")
+    XCTAssertFalse(controller.roughDraft.isEmpty, "the session did produce a draft")
+    XCTAssertTrue(presenter.presented.isEmpty, "and there is no card in this mode")
+    XCTAssertTrue(presenter.draftUpdates.isEmpty, "so nothing was published to one")
+  }
+
+  // MARK: - Where a failure goes (the pill's last exception)
+
+  /// The pill is down for the whole life of a card, so the card has to be able
+  /// to say that something went wrong — otherwise a review session fails in
+  /// total silence. Driven off `state`, so no failure path has to remember.
+  func testTheCardShowsAndThenClearsAFailure() {
+    let controller = makeController(.review)
+    controller.beginSessionForTests(target: target)
+    XCTAssertNil(presenter.errorMessage)
+
+    controller.failForTests("Microphone unavailable")
+    XCTAssertEqual(presenter.errorMessage, "Microphone unavailable")
+
+    controller.deliver("Ship the patch.", offline: "Ship the patch.", latency: 1)
+    XCTAssertNil(presenter.errorMessage, "the card stops claiming a failure it recovered from")
+  }
+
+  /// With no card there is nothing to write to, and the pill is where the
+  /// failure comes back out — `HUDState.compute` is the other half of this.
+  func testAFailureWithNoCardTouchesNoCard() {
+    let controller = makeController(.review)
+    controller.failForTests("Microphone unavailable")
+
+    XCTAssertTrue(presenter.errorUpdates.isEmpty)
+    XCTAssertFalse(controller.isReviewing, "so the pill is free to say it")
   }
 
   /// The block goes when the microphone does — its words are about to be
@@ -1340,6 +1523,100 @@ final class ReviewContinuationAppendTests: XCTestCase {
 
   func testAnEmptyBufferTakesTheAdditionAlone() {
     XCTAssertEqual(DictationReview.appended(buffer: "", addition: "Ship it."), "Ship it.")
+  }
+}
+
+// MARK: - Where the card sits
+
+/// A card the owner dragged stays where they put it, across sessions and
+/// launches — and is validated rather than trusted on the way back, because a
+/// card restored off-screen is a session's whole output invisible.
+///
+/// Its own store key, not the HUD's: `HUDPositionStore` holds the pill rect's
+/// bottom-center (the edge the HUD's *upward* growth pins, and the only x that
+/// survives a style switch), and this card is a constant-width surface that
+/// grows *downward* from a pinned top edge. Sharing one point would mean
+/// dragging one surface moved the other, through an anchor meaning nothing on
+/// the far side.
+final class ReviewPanelLayoutTests: XCTestCase {
+  private let screen = NSRect(x: 0, y: 0, width: 1440, height: 900)
+  private let card = CGSize(width: 520, height: 260)
+
+  func testAPointWellInsideTheScreenIsKeptExactly() {
+    XCTAssertEqual(
+      ReviewPanelLayout.validatedTopLeft(
+        CGPoint(x: 300, y: 700),
+        cardSize: card,
+        visibleFrames: [screen]
+      ),
+      CGPoint(x: 300, y: 700)
+    )
+  }
+
+  /// The self-heal. Clamping a point recorded on a display that is no longer
+  /// attached onto whatever is left would call an arbitrary place the owner's
+  /// choice; dropping it puts the card back under the focused window.
+  func testAPointNoScreenHoldsIsDroppedRatherThanClamped() {
+    XCTAssertNil(
+      ReviewPanelLayout.validatedTopLeft(
+        CGPoint(x: 3000, y: 700),
+        cardSize: card,
+        visibleFrames: [screen]
+      ),
+      "recorded on a display that is gone"
+    )
+  }
+
+  /// A screen that still holds the point can have shrunk under it — resolution
+  /// change, Dock, menu bar — so the whole card, not just its corner, is put
+  /// back on.
+  func testTheWholeCardIsClampedOntoTheScreenNotJustItsCorner() throws {
+    let origin = try XCTUnwrap(
+      ReviewPanelLayout.validatedTopLeft(
+        CGPoint(x: 1430, y: 20),
+        cardSize: card,
+        visibleFrames: [screen]
+      )
+    )
+    XCTAssertEqual(origin.x, screen.maxX - ReviewPanelLayout.screenInset - card.width)
+    XCTAssertEqual(origin.y, screen.minY + ReviewPanelLayout.screenInset + card.height)
+  }
+
+  func testACardTallerThanTheScreenIsDropped() {
+    XCTAssertNil(
+      ReviewPanelLayout.validatedTopLeft(
+        CGPoint(x: 300, y: 700),
+        cardSize: CGSize(width: 520, height: 2000),
+        visibleFrames: [screen]
+      )
+    )
+  }
+
+  /// The store rejects garbage rather than restoring a card to a NaN origin.
+  func testTheStoreRoundTripsAPointAndRefusesNonsense() {
+    defer { ReviewPositionStore.clear() }
+    ReviewPositionStore.save(CGPoint(x: 120, y: 640))
+    XCTAssertEqual(ReviewPositionStore.load(), CGPoint(x: 120, y: 640))
+
+    ReviewPositionStore.save(CGPoint(x: CGFloat.nan, y: 640))
+    XCTAssertEqual(ReviewPositionStore.load(), CGPoint(x: 120, y: 640), "the bad write was refused")
+
+    ReviewPositionStore.clear()
+    XCTAssertNil(ReviewPositionStore.load())
+  }
+
+  /// Two surfaces, two answers. The pill's stored point must not move the card
+  /// or vice versa.
+  func testTheCardAndTheHUDDoNotShareAStoredPosition() {
+    defer {
+      ReviewPositionStore.clear()
+      HUDPositionStore.clear()
+    }
+    HUDPositionStore.save(CGPoint(x: 700, y: 60))
+    ReviewPositionStore.save(CGPoint(x: 120, y: 640))
+
+    XCTAssertEqual(HUDPositionStore.load(), CGPoint(x: 700, y: 60))
+    XCTAssertEqual(ReviewPositionStore.load(), CGPoint(x: 120, y: 640))
   }
 }
 

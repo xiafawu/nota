@@ -89,18 +89,20 @@ extension HUDState {
   /// marks the shown state consumed when its auto-hide fires so a later
   /// unrelated update cannot resurrect a stale notice.
   ///
-  /// `isReviewing` outranks everything: while the review panel is open it is
-  /// the session's feedback, and a pill hanging under it would be a second
-  /// opinion about a session whose text has not been inserted at all.
+  /// `isReviewing` outranks everything, and now without exception: while the
+  /// review card is on screen it is the session's ONE surface, from the moment
+  /// the hotkey goes down to the moment the owner applies or discards
+  /// (owner call 2026-08-03 — "one pill only"). The card opens in a recording
+  /// state at session start, so there is no longer a stretch of a review
+  /// session during which the pill is the only thing showing the draft.
   ///
-  /// That includes a continuation recording into the card (changed 2026-08-03
-  /// on owner feedback — the earlier rule re-admitted the live states, and the
-  /// owner saw it as two HUDs narrating one session). The card's header
-  /// already carries the mic dot and "Listening…" while a continuation
-  /// records (`DictationReviewModel.isListening`), so the open microphone is
-  /// still announced — by the one surface the session owns. A `.failed`
-  /// always shows: a review card has nowhere to put an error, and swallowing
-  /// one is how a session goes missing.
+  /// `.failed` used to be the one exception, on the grounds that "a review card
+  /// has nowhere to put an error". It has one now — `DictationReviewModel.errorMessage`,
+  /// drawn in the card's status line — and the controller mirrors `state` into
+  /// it. The two rules stay consistent because `isReviewing` is exactly "a card
+  /// exists": when presenting a card fails, the controller clears
+  /// `pendingReview`, `isReviewing` goes false, and the failure comes back out
+  /// on the pill. The error always has somewhere to go, and never two.
   static func compute(
     controllerState: DictationState,
     isPolishInProgress: Bool,
@@ -110,14 +112,7 @@ extension HUDState {
     rmsLevel: Float,
     isReviewing: Bool = false
   ) -> HUDState {
-    if isReviewing {
-      switch controllerState {
-      case .failed(let message):
-        return .error(message: message)
-      default:
-        return .hidden
-      }
-    }
+    if isReviewing { return .hidden }
 
     switch controllerState {
     case .disabled:

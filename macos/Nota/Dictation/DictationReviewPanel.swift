@@ -252,6 +252,14 @@ protocol DictationReviewPresenting: AnyObject {
   /// two strings off the same recognizer, and a second type carrying them would
   /// be one more thing to keep in step.
   func setDraft(_ draft: HUDDraft)
+  /// Show (or clear) a session failure in the card's status line.
+  ///
+  /// The card is the only surface a review session has — the HUD is suppressed
+  /// for the whole time one is open — so it has to be able to say that
+  /// something went wrong. Nil clears it. When no card is up this is a no-op
+  /// and the failure comes back out on the pill, which is the right split:
+  /// `isReviewing` is exactly "a card exists".
+  func setError(_ message: String?)
   /// Take the panel down without applying. Idempotent, and safe to call from
   /// inside a decision callback.
   func dismiss()
@@ -305,6 +313,11 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
     model.draft = draft
   }
 
+  func setError(_ message: String?) {
+    guard pending != nil else { return }
+    model.errorMessage = message
+  }
+
   @discardableResult
   func present(_ request: DictationReviewRequest) -> Bool {
     // A second present without a decision would strand the first session's
@@ -315,6 +328,7 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
     model.text = request.text
     model.isListening = false
     model.draft = .empty
+    model.errorMessage = nil
     model.onApply = { [weak self] text in self?.finish(.apply(text)) }
     model.onDiscard = { [weak self] in self?.finish(.discard) }
 
@@ -377,6 +391,12 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
   private func configureAndShow(_ panel: DictationReviewPanel) -> Bool {
     self.panel = panel
     panel.delegate = self
+    // The card is dragged by its title row, and a dropped position is
+    // remembered. Wired here rather than in the model's init because it is the
+    // *panel* that gets moved, and a recreated panel has to take the callbacks
+    // over from the one it replaced.
+    model.onDragChanged = { [weak panel] in panel?.dragChanged() }
+    model.onDragEnded = { [weak panel] in panel?.dragEnded() }
     panel.sizeToFitContent()
     panel.reposition()
     installKeyMonitor(for: panel)
@@ -396,6 +416,7 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
     pending = nil
     model.isListening = false
     model.draft = .empty
+    model.errorMessage = nil
     close()
     switch decision {
     case .apply(let text): request.onApply(text)
@@ -474,9 +495,21 @@ final class DictationReviewModel: ObservableObject {
   /// not write into it behind them. The finished, polished text is appended
   /// once, at stop, by the controller.
   @Published var draft: HUDDraft = .empty
+  /// A session failure, shown in the card's status line.
+  ///
+  /// Occupies the slot the footer caption already had rather than adding a row:
+  /// the card's height is decided once, when it is presented, and a status that
+  /// can appear at any moment must not be able to resize a card the owner is
+  /// typing into. An error IS a status, so it takes the status line.
+  @Published var errorMessage: String?
 
   var onApply: ((String) -> Void)?
   var onDiscard: (() -> Void)?
+
+  /// Move the card with the pointer (title-row drag), and remember where it was
+  /// dropped. Installed by the presenter; nil in a preview or a bare unit test.
+  var onDragChanged: (() -> Void)?
+  var onDragEnded: (() -> Void)?
 
   /// Apply and Discard, refused while a continuation is recording.
   ///
@@ -498,7 +531,15 @@ final class DictationReviewModel: ObservableObject {
 
 // MARK: - DictationReviewPanel
 
-/// Floating card holding the finished text until the owner decides.
+/// The one surface a `.review` session has, for the whole of its life.
+///
+/// It goes up when the hotkey goes down — empty, in the recording state — and
+/// comes down on ⌘↩ or Escape. In between it is *the same NSPanel* through
+/// every state change: recording (header mic dot + "Listening…", the live-draft
+/// block, decisions refused), deciding (the polished text in the editor,
+/// Discard/Apply), and recording again for a continuation. No swap, no second
+/// window, and no HUD pill anywhere in the mode — which is the whole point of
+/// merging the two (owner, 2026-08-03).
 ///
 /// Two constraints pull against each other here. The owner types in it, so it
 /// MUST become key — which a borderless window refuses by default. But Nota
@@ -541,7 +582,14 @@ final class DictationReviewPanel: NSPanel {
     hasShadow = false
     hidesOnDeactivate = false
     isReleasedWhenClosed = false
-    isMovableByWindowBackground = true
+    // The title row is the drag handle (see `DictationReviewView.titleRow`), and
+    // it is the ONLY mover: AppKit's background drag reports nothing, and "the
+    // owner chose this position" is precisely the fact that has to be
+    // remembered. Two movers on one frame is also how the HUD's drag was got
+    // wrong the first time. Leaving it off has a second benefit here that the
+    // HUD does not have — this card contains a text view, and a drag inside it
+    // must select text.
+    isMovableByWindowBackground = false
     collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     isFloatingPanel = true
     // AFTER isFloatingPanel, which silently rewrites `level` when set (the same
@@ -556,6 +604,51 @@ final class DictationReviewPanel: NSPanel {
     appearance = NSAppearance(named: .darkAqua)
 
     contentView = hostingView
+    pinnedCardTopLeft = ReviewPositionStore.load()
+  }
+
+  // MARK: - Dragging
+
+  /// Where the owner dragged the card, as the CARD rect's **top-left** point in
+  /// screen coordinates — nil until they drag one.
+  ///
+  /// Top-left rather than the window origin (which is the bottom-left, and
+  /// includes the transparent shadow margin) for the reason the HUD stores a
+  /// bottom-center: it has to be the edge the card's growth pins. This card
+  /// grows *downward* — the live-draft block is added under the editor, and
+  /// `setDraftBlockShown` grows the height and re-places — so the top edge is
+  /// the one that must hold still while the block comes and goes.
+  private(set) var pinnedCardTopLeft: CGPoint?
+
+  /// Pointer and window origin at the moment the drag began.
+  private var dragAnchor: (mouse: NSPoint, origin: NSPoint)?
+
+  /// Follow the pointer. Measured against `NSEvent.mouseLocation` — absolute
+  /// screen coordinates — and never against the gesture's own translation: the
+  /// gesture's coordinate space is anchored to a window this very call is
+  /// moving, so a translation-driven drag reports ~zero and the card sticks.
+  func dragChanged() {
+    if dragAnchor == nil {
+      dragAnchor = (mouse: NSEvent.mouseLocation, origin: frame.origin)
+    }
+    guard let anchor = dragAnchor else { return }
+    let now = NSEvent.mouseLocation
+    setFrameOrigin(
+      NSPoint(
+        x: anchor.origin.x + now.x - anchor.mouse.x,
+        y: anchor.origin.y + now.y - anchor.mouse.y
+      )
+    )
+  }
+
+  func dragEnded() {
+    defer { dragAnchor = nil }
+    guard dragAnchor != nil else { return }
+    let margin = DictationReviewView.shadowMargin
+    let card = frame.insetBy(dx: margin, dy: margin)
+    let point = CGPoint(x: card.minX, y: card.maxY)
+    pinnedCardTopLeft = point
+    ReviewPositionStore.save(point)
   }
 
   /// Order the card onscreen and give it the keyboard, without activating Nota.
@@ -690,6 +783,25 @@ final class DictationReviewPanel: NSPanel {
       height: max(frame.height - margin * 2, 0)
     )
 
+    // The owner's own position outranks the anchor window, and is validated
+    // rather than trusted every single time: the display it was recorded on may
+    // be gone or smaller, and a card restored off-screen is a session's whole
+    // output invisible. A point no current screen can host is DROPPED and the
+    // automatic placement below is the self-heal — clamping it onto whatever
+    // display is left would call an arbitrary point the owner's choice.
+    if let pinned = pinnedCardTopLeft {
+      if let topLeft = ReviewPanelLayout.validatedTopLeft(
+        pinned,
+        cardSize: card,
+        visibleFrames: NSScreen.screens.map(\.visibleFrame)
+      ) {
+        setFrameOrigin(NSPoint(x: topLeft.x - margin, y: topLeft.y - card.height - margin))
+        return
+      }
+      pinnedCardTopLeft = nil
+      ReviewPositionStore.clear()
+    }
+
     let anchor = DictationHUDPanel.frontmostAppFocusedWindowFrame()
     guard let screen = anchor.flatMap({ rect in
       NSScreen.screens.first { $0.frame.intersects(rect) }
@@ -708,6 +820,79 @@ final class DictationReviewPanel: NSPanel {
     let x = max(visible.minX + 8, min(centerX - card.width / 2, visible.maxX - card.width - 8))
     let y = max(visible.minY + 8, min(preferredY, visible.maxY - card.height - 8))
     setFrameOrigin(NSPoint(x: x - margin, y: y - margin))
+  }
+}
+
+// MARK: - Review position
+
+/// Where the owner dragged the review card, across launches.
+///
+/// **Its own key, deliberately not `HUDPositionStore`'s.** The mechanism is
+/// shared — validate-or-drop on restore, the owner's point outranks the
+/// automatic placement — and the stored value is not, because the two surfaces
+/// pin different edges for different reasons. `HUDPositionStore` holds the pill
+/// rect's *bottom-center*: the bottom edge is what the HUD's upward growth pins,
+/// and the horizontal centre is the only x that survives a switch between a
+/// 200pt pill and a 600pt prompter. This card is a constant-width surface that
+/// grows *downward*, so its meaningful anchor is the *top-left*. Sharing one
+/// point would mean dragging one surface moved the other, converted through an
+/// anchor that means nothing on the far side.
+///
+/// Backed by `DictationSettingsStore.defaults`, which is a private wiped suite
+/// under XCTest: a test that drags the card must not move the owner's real one.
+enum ReviewPositionStore {
+  private static let key = "com.xiafawu.nota.dictationReviewPosition"
+
+  static func load() -> CGPoint? {
+    guard let pair = DictationSettingsStore.defaults.array(forKey: key) as? [Double],
+          pair.count == 2,
+          pair.allSatisfy({ $0.isFinite })
+    else { return nil }
+    return CGPoint(x: pair[0], y: pair[1])
+  }
+
+  static func save(_ point: CGPoint) {
+    guard point.x.isFinite, point.y.isFinite else { return }
+    DictationSettingsStore.defaults.set([point.x, point.y], forKey: key)
+  }
+
+  static func clear() {
+    DictationSettingsStore.defaults.removeObject(forKey: key)
+  }
+}
+
+/// Where the review card sits, as arithmetic — no NSScreen, no window server.
+enum ReviewPanelLayout {
+  /// Smallest gap kept between the card and the edges of the visible screen.
+  static let screenInset: CGFloat = 8
+
+  /// The owner's dragged top-left, made safe to restore, or nil when no current
+  /// screen can host it.
+  ///
+  /// Returning nil is the self-heal: the caller drops the stored position and
+  /// falls back to the automatic placement under the focused window. A point a
+  /// screen *does* hold is still clamped, because a screen can shrink
+  /// (resolution change, menu bar, Dock) under a position that used to fit —
+  /// and because the whole card, not just its corner, has to stay on it.
+  static func validatedTopLeft(
+    _ point: CGPoint,
+    cardSize: CGSize,
+    visibleFrames: [NSRect]
+  ) -> CGPoint? {
+    guard let visible = visibleFrames.first(where: { $0.contains(point) }) else { return nil }
+    guard cardSize.width + screenInset * 2 <= visible.width,
+          cardSize.height + screenInset * 2 <= visible.height
+    else { return nil }
+
+    let x = min(
+      max(point.x, visible.minX + screenInset),
+      visible.maxX - screenInset - cardSize.width
+    )
+    let y = min(
+      max(point.y, visible.minY + screenInset + cardSize.height),
+      visible.maxY - screenInset
+    )
+    return CGPoint(x: x, y: y)
   }
 }
 
@@ -797,6 +982,16 @@ struct DictationReviewView: View {
         .monospacedDigit()
         .foregroundStyle(.secondary)
     }
+    // The header is the card's drag handle — the one part of it that is neither
+    // an editor nor a button, so a drag here can never be a text selection or a
+    // mis-click on Apply. `contentShape` is what makes the `Spacer` grabbable
+    // too; without it the handle would be the two labels alone.
+    .contentShape(Rectangle())
+    .gesture(
+      DragGesture(minimumDistance: 2)
+        .onChanged { _ in model.onDragChanged?() }
+        .onEnded { _ in model.onDragEnded?() }
+    )
   }
 
   private var wordCountLabel: String {
@@ -872,9 +1067,7 @@ struct DictationReviewView: View {
 
   private var footer: some View {
     HStack(spacing: 10) {
-      Text(footerCaption)
-        .font(.caption)
-        .foregroundStyle(.secondary)
+      statusLine
       Spacer(minLength: 12)
 
       Button { model.discard() } label: {
@@ -896,12 +1089,45 @@ struct DictationReviewView: View {
     }
   }
 
-  /// While a continuation records, the card says what it is waiting for. Both
+  /// One line, three things it can say — and a failure outranks the other two.
+  ///
+  /// The card is a review session's only surface, so an error has to land here
+  /// or nowhere. It takes the slot the caption already occupied rather than a
+  /// row of its own: the card's height is fixed when it is presented, and a
+  /// message that can arrive at any moment must not resize a card the owner is
+  /// mid-edit in. Held to one line for the same reason, with the full text on
+  /// the tooltip.
+  @ViewBuilder
+  private var statusLine: some View {
+    if let error = model.errorMessage, !error.isEmpty {
+      HStack(spacing: 5) {
+        Image(systemName: "exclamationmark.triangle.fill")
+          .font(.caption)
+        Text(error)
+          .font(.caption)
+          .lineLimit(1)
+          .truncationMode(.tail)
+      }
+      .foregroundStyle(Color.red.opacity(0.9))
+      .help(error)
+    } else {
+      Text(footerCaption)
+        .font(.caption)
+        .foregroundStyle(.secondary)
+    }
+  }
+
+  /// While the microphone is open the card says what it is waiting for. Both
   /// decisions are about the whole batch, and the batch is not finished.
+  ///
+  /// The empty-and-listening wording is the FIRST session's: the card now opens
+  /// the moment the hotkey goes down, before a word has been recognized, and
+  /// "this will be added" would be describing an addition to nothing.
   private var footerCaption: String {
-    model.isListening
-      ? "Keep talking — this will be added when you stop."
-      : "Nothing is inserted until you apply."
+    guard model.isListening else { return "Nothing is inserted until you apply." }
+    return model.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      ? "Listening — your words appear here when you stop."
+      : "Keep talking — this will be added when you stop."
   }
 }
 

@@ -305,14 +305,54 @@ recognizer, a network call, or an Accessibility target.
 **Review (opt-in).** Polish runs exactly as `.immediate` and the finished text
 goes into a small floating card instead of the target app:
 
+- **ONE surface for the whole lifecycle** (owner call 2026-08-03 — "merge review
+  dictation as part of the pill so we have only one component"). In `.review`
+  the card is the *only* thing Nota puts on screen from the moment the hotkey
+  goes down to the moment the owner applies or discards. The HUD pill/bar/
+  prompter never appears at all. Three states, one NSPanel, no swap:
+  - **Recording.** `beginCaptureAndSpeech` calls `beginOrOpenReviewCard()`
+    *before* the microphone opens. With no card up that opens one, empty, with
+    `isReviewRecording` set — header showing the mic dot and "Listening…", the
+    live-draft block under the editor, both buttons refused. With a card
+    already up it is the continuation path, unchanged (plan 14).
+  - **Deciding.** At stop the finished text lands through the *same*
+    `extendReview` a continuation uses: the editor fills, the block goes down,
+    the buttons come back. No second `present`, the same `PendingReview.id`,
+    the same decision callbacks — which is what makes "one component" true in
+    code and not only on screen.
+  - Back to **recording** on the next press, and so on, until ⌘↩ or Escape.
+
+  The editor is visible in every state rather than appearing at stop. It costs
+  an empty box for the first session and buys the thing the mandate is about:
+  the recording state and the deciding state differ by exactly one flag, so
+  there is no second layout to keep in step and the text view is never rebuilt
+  under the owner's caret.
+
+  What this replaced was two surfaces in sequence — the HUD carried the first
+  session's live draft, then hid, then the card appeared. Everything below about
+  what a card *is* (a batch, nonactivating, one decision, target pid, epoch
+  rules) is unchanged; only where the first session's live feedback renders moved.
 - **Live while speaking, silent until stop.** Review runs on the **streaming**
-  recognizer (`DictationSessionPlan.wantsLiveDraft`), so the pill shows the same
-  rough draft `.streaming` does — on the batch recognizer there is no volatile
-  feed and the pill sat empty for the whole session. It builds no delivery
-  queue: finalized segments only accumulate (`handleHypothesis` returns at
-  `guard let deliveryQueue`), and the whole text goes L2 → polish → panel once,
-  at stop. The streaming path's in-order refinement queue is deliberately not
-  involved — nothing is delivered mid-session, so there is no order to keep.
+  recognizer (`DictationSessionPlan.wantsLiveDraft`), so the card shows the same
+  rough draft `.streaming` delivers — on the batch recognizer there is no
+  volatile feed and the surface sat empty for the whole session. It builds no
+  delivery queue: finalized segments only accumulate (`handleHypothesis` returns
+  at `guard let deliveryQueue`), and the whole text goes L2 → polish → editor
+  once, at stop. The streaming path's in-order refinement queue is deliberately
+  not involved — nothing is delivered mid-session, so there is no order to keep.
+  A session with **no** live-draft feed (AssemblyAI realtime, or an Apple
+  analyzer that fell back to `SFSpeechRecognizer`) shows the header and an empty
+  block; nothing is faked into it.
+- **A card that was never filled goes away.** Opening at session start means a
+  press-and-release, a recognizer that would not start, or a microphone that
+  would not open can leave a card holding nothing — and nothing is not a
+  decision anyone can make (Apply is disabled on empty text). Every abort path
+  and the empty-result branch of `presentReview` call `endReviewRecording`,
+  which takes the card down **only** when the pipeline's accumulation *and* the
+  editor are both empty: a silent session is no reason to destroy text the
+  owner typed themselves. History follows the same rule — `openReview` records
+  nothing for an empty card, and `extendReview` creates the entry the moment
+  the batch first has text, so history never holds an empty dictation.
 - **Nothing is inserted until Apply.** ⌘↩ applies, Escape discards, and a
   discard injects nothing at all — not an empty write. The panel is the only
   place in the pipeline where a session's text can be thrown away after it was
@@ -439,14 +479,26 @@ goes into a small floating card instead of the target app:
     `isReviewRecording`, and the owner saw two panels narrating one microphone).
     `isReviewing` suppresses the HUD unconditionally: the card is the session's
     one surface, and its header already shows the mic dot and "Listening…"
-    (`DictationReviewModel.isListening`). A `.failed` always shows, because a
-    review card has nowhere to put an error. `isReviewRecording` still exists
+    (`DictationReviewModel.isListening`). `isReviewRecording` still exists
     on the controller — card decidability and the header state depend on it —
     but `HUDState.compute` no longer consumes it.
+    **The `.failed` exception is gone too** (same day, with the one-component
+    merge): the reason for it was "a review card has nowhere to put an error",
+    and the card has somewhere now — `DictationReviewModel.errorMessage`, drawn
+    in the status line the footer caption already occupied. It takes that slot
+    rather than a row of its own because the card's height is decided when it is
+    presented, and a message that can arrive at any moment must not resize a
+    card the owner is mid-edit in. The controller feeds it from `state`'s
+    `didSet` (`publishReviewError`) so no failure path has to remember to.
+    The split stays total because `isReviewing` is exactly "a card exists":
+    when `present` fails the controller clears `pendingReview`, and the failure
+    comes back out on the pill. An error always has one home, never two.
   - **The card shows the continuation's live draft** (2026-08-03, the immediate
     consequence of the rule above: with the pill down for the whole time a card
     is up, a continuation's words appeared *nowhere* and the card said only
-    "Listening…"). While `isReviewRecording`, `handleHypothesis` mirrors the
+    "Listening…"). The same block is now what a **first** session's draft is
+    drawn in, since the card is on screen from the press. While
+    `isReviewRecording`, `handleHypothesis` mirrors the
     same two strings the HUD gets (`finalizedDraft` + `roughDraft`, as an
     `HUDDraft`) into `DictationReviewModel.draft`, and the card draws them under
     the editor — finalized at full opacity, the volatile tail at 55%, the
@@ -506,6 +558,28 @@ goes into a small floating card instead of the target app:
   delay a session's text, never swallow it. The key monitor now calls
   `model.apply()` / `model.discard()`, the same call the buttons make, so
   "what Apply means" is written down once.
+
+- **The card is draggable, and it keeps its own position.** The **title row** is
+  the handle (`DragGesture` → `DictationReviewPanel.dragChanged/dragEnded`), not
+  the window background: this card contains a text view and a drag inside it has
+  to select text, and AppKit's background drag reports nothing — "the owner
+  chose this position" is precisely the fact that has to be remembered. The drag
+  is measured against `NSEvent.mouseLocation`, never the gesture's translation,
+  because the gesture's coordinate space is anchored to the window the drag is
+  moving. `reposition()` honours a validated pin and returns early, exactly as
+  the HUD's does.
+  It stores through **`ReviewPositionStore`, not `HUDPositionStore`** — same
+  mechanism, different value, deliberately. The HUD stores the pill rect's
+  *bottom-center*: the bottom edge is what its upward growth pins, and the
+  horizontal centre is the only x that survives a switch between a 200pt pill
+  and a 600pt prompter. This card is a constant-width surface that grows
+  *downward* (the draft block is added under the editor), so its meaningful
+  anchor is the **top-left**. One shared point would mean dragging either
+  surface moved the other, through an anchor that means nothing on the far side.
+  Restoring validates rather than trusts (`ReviewPanelLayout.validatedTopLeft`):
+  a point no current screen contains is dropped and the automatic placement
+  under the focused window is the self-heal; a point a screen still holds is
+  clamped so the **whole** card stays on it.
 
 `macos/Nota/Dictation/DictationReviewPanel.swift` holds `DictationReview` (the
 pure apply/discard core), the panel, and the presenter behind
@@ -601,8 +675,17 @@ The controller asks the panel which style is on screen rather than keeping a
 second copy of the bookkeeping; a recreated panel starts on `.pill` whatever the
 setting has been saying.
 
-Non-goals, still true: the prompter does not morph into the review card (stop
-hands off to the existing card). A style that is *about* text
+**No style appears in `.review` at all** (2026-08-03). The old non-goal read
+"the prompter does not morph into the review card (stop hands off to the
+existing card)"; it was written when the HUD carried a review session's first
+draft, and the owner has since asked for one component. It is now *stronger*
+rather than reversed: there is nothing to morph, because the card is on screen
+from the press and `HUDState.compute` returns `.hidden` for every controller
+state while `isReviewing`. The three styles are `.immediate` and `.streaming`
+only. Everything else in this section — the pill baseline, the bar's fixed
+frame, the prompter's cap and reserve — is untouched by that.
+
+The rest of the non-goals, still true: a style that is *about* text
 (`HUDStyle.isAboutLiveText`) shows none when the session runs the batch
 recognizer, which happens two ways — `.immediate`, and any mode on AssemblyAI
 realtime. The Dictation pane names whichever one applies via
@@ -939,6 +1022,40 @@ The cache feeds cost computation for usage tracking.
   It costs no *focus*: the panel is nonactivating, so the app being dictated into
   stays frontmost throughout. Its diffs are learned only on Apply — text the
   owner discarded teaches nothing. See Dictation Delivery.
+- **Review mode has exactly one surface** (owner call 2026-08-03). The card is
+  opened when the hotkey goes down, not when the session stops, and the HUD
+  never appears in that mode — one NSPanel, a recording state and a deciding
+  state, with the transition between them being the flag a continuation already
+  set. The decision half is byte-for-byte what it was: same `PendingReview.id`,
+  same callbacks, same target-pid and epoch rules, same `finishReview` guards.
+  Two consequences fall out and both are load-bearing. A card can now exist with
+  nothing in it, so every abort path runs `endReviewRecording`, which takes an
+  empty card down and leaves one the owner has typed in alone. And an error has
+  to be able to land on the card, because the pill's last exception (`.failed`)
+  is gone — `state`'s `didSet` mirrors it into the card's status line, and it
+  falls back to the pill exactly when there is no card, since `isReviewing` is
+  literally "a card exists".
+- **A toolbar item does not need its own glass.** On macOS 26 the toolbar draws
+  the Liquid Glass capsule around its items itself, so a `.liquidGlass(…, in:
+  .capsule)` *inside* a `ToolbarItem`/`ToolbarItemGroup` stacks two translucent
+  capsules and two rims. That is what the "washed-out light capsule with a
+  doubled outline" was on the `Checking…` health pill — a main-window control,
+  not the dictation HUD, and light because the window it lives in is allowed to
+  be. `HealthPillView` and `ToolbarStatusPill` therefore draw their content and
+  let the group carry the surface. Outside a toolbar, `.liquidGlass` is still
+  the right call.
+- A **floating panel is a single-theme surface, and SwiftUI cannot make it one.**
+  `.colorScheme`/`.preferredColorScheme` set a SwiftUI *environment* value; they
+  do not change an `NSWindow`'s `effectiveAppearance`, which is what every
+  AppKit-drawn piece inside a hosting view follows — `ProgressView`, control
+  accent resolution, `NSVisualEffectView` materials, a text view's insertion
+  point. A panel with no explicit appearance inherits `NSApp.appearance`, which
+  Settings → General now pins (`AppearanceSetting.apply`). So the HUD and the
+  review card both assign `appearance = NSAppearance(named: .darkAqua)` on the
+  NSPanel itself. The review card has carried that line since it shipped; the
+  HUD pill did not, and under a Light-pinned app it rendered as a washed light
+  capsule with dark-styled content on top of it. Any new floating panel that
+  commits to one look owes the same line.
 - A review card is a **batch**, not a session (changed 2026-07-28 on user
   feedback). Pressing the trigger with one open continues it: the card stays,
   the new session's text is appended to whatever the owner has in the box, and
