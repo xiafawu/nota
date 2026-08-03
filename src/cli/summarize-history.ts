@@ -85,6 +85,7 @@ export async function summarizeHistory(
     segments,
     entry.baseURL,
     cli,
+    record.kind,
   );
   const summaryUsage = makeSummaryUsage(entry.id, record.provider, tokenUsage);
 
@@ -105,6 +106,7 @@ export async function summarizeHistory(
       transcribedDate,
       duration: record.durationMinutes,
       source: record.sourceName,
+      kind: record.kind,
     },
     outputPath,
   );

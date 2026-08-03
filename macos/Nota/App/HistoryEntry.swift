@@ -1,10 +1,29 @@
 import Foundation
 
+/// What a history entry represents. Mirrors the CLI record's `kind` field
+/// (src/pipeline/history.ts): `meeting` = live session, `file` = transcribed
+/// audio file, `memo` = quick-memo session. Records written before the kind
+/// field shipped have none; those decode as legacy and are inferred by source
+/// (see `HistoryRecordInfo.kindsAndStatusesByOutputPath`).
+enum HistoryKind: String, Codable {
+  case meeting
+  case file
+  case memo
+
+  /// Unknown future kinds degrade to `.file` rather than crashing the decode
+  /// (same tolerant convention as PreflightStatus).
+  init(from decoder: Decoder) throws {
+    let raw = try decoder.singleValueContainer().decode(String.self)
+    self = HistoryKind(rawValue: raw) ?? .file
+  }
+}
+
 struct HistoryEntry: Identifiable, Hashable {
   let url: URL
   let modifiedAt: Date
   let title: String
   let tags: [String]
+  let kind: HistoryKind
 
   var id: URL { url }
 
@@ -19,10 +38,11 @@ extension HistoryEntry {
   /// Build an entry, deriving the title/tags from the file's content when present
   /// (LLM-generated `# Title` heading + `**Tags:**` line), and falling back to the
   /// timestamped filename for legacy outputs that predate the title feature.
-  static func make(url: URL, modifiedAt: Date) -> HistoryEntry {
+  /// `kind` defaults to `.file`; callers resolve it from the history record.
+  static func make(url: URL, modifiedAt: Date, kind: HistoryKind = .file) -> HistoryEntry {
     let meta = parseSummaryMetadata(at: url)
     let title = meta.title ?? fallbackTitle(for: url)
-    return HistoryEntry(url: url, modifiedAt: modifiedAt, title: title, tags: meta.tags)
+    return HistoryEntry(url: url, modifiedAt: modifiedAt, title: title, tags: meta.tags, kind: kind)
   }
 }
 

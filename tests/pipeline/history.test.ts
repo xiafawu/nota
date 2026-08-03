@@ -71,6 +71,49 @@ describe("history", () => {
     expect(completed.summary?.narrative).toBe("A short meeting.");
   });
 
+  it("writes the kind field and loads it back", async () => {
+    const record = await createHistoryRecord(
+      {
+        sourcePath: "/tmp/memo.m4a",
+        provider: "assemblyai",
+        options: { diarize: false, identify: false, model: "universal-3.5-pro-streaming" },
+        kind: "memo",
+        durationMinutes: 3,
+        transcriptText: "Quick thought",
+        segments: [],
+        outputPath: "/tmp/memo.summary.md",
+      },
+      historyDir,
+    );
+
+    expect(record.kind).toBe("memo");
+
+    const onDisk = JSON.parse(await readFile(path.join(historyDir, `${record.id}.json`), "utf-8"));
+    expect(onDisk.kind).toBe("memo");
+
+    const reloaded = await loadHistoryRecord(record.id, historyDir);
+    expect(reloaded.kind).toBe("memo");
+  });
+
+  it("legacy records without a kind field still load (kind stays absent)", async () => {
+    const record = await createHistoryRecord(
+      {
+        sourcePath: "/tmp/legacy.m4a",
+        provider: "assemblyai",
+        options: { diarize: false, identify: false, model: "universal-3.5-pro-streaming" },
+        durationMinutes: 3,
+        transcriptText: "Legacy",
+        segments: [],
+      },
+      historyDir,
+    );
+
+    expect(record.kind).toBeUndefined();
+    const reloaded = await loadHistoryRecord(record.id, historyDir);
+    expect(reloaded.kind).toBeUndefined();
+    expect(reloaded.status).toBe("transcribed");
+  });
+
   it("lists records newest first and loads by unique prefix", async () => {
     const first = await createHistoryRecord(
       {

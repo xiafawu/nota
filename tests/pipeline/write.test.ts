@@ -109,6 +109,86 @@ describe("buildMarkdown", () => {
     expect(md).toContain("## Full Transcript");
     expect(md).toContain("Hello world");
   });
+
+  it("renders a memo-kind summary as a cleaned note without meeting scaffolding", () => {
+    const summary: MeetingSummary = {
+      title: "Grocery run",
+      tags: [],
+      narrative: "Picked up groceries. Need to water the plants.",
+      keyTopics: [],
+      decisions: [],
+      actionItems: ["[ ] Water the plants"],
+    };
+    const md = buildMarkdown({
+      summary,
+      segments: [],
+      capturedDate: "2026-08-03",
+      transcribedDate: "2026-08-03",
+      duration: 2,
+      source: "memo.m4a",
+      kind: "memo",
+    });
+
+    expect(md).toContain("# Grocery run");
+    expect(md).toContain("## Note");
+    expect(md).toContain("Picked up groceries.");
+    expect(md).toContain("## Action Items");
+    expect(md).not.toContain("## Summary");
+    expect(md).not.toContain("## Key Topics");
+    expect(md).not.toContain("## Decisions Made");
+    expect(md).not.toContain("**Tags:");
+  });
+
+  it("renders no Action Items section when a memo has none", () => {
+    const summary: MeetingSummary = {
+      title: "Quick thought",
+      tags: [],
+      narrative: "Just a thought.",
+      keyTopics: [],
+      decisions: [],
+      actionItems: [],
+    };
+    const md = buildMarkdown({
+      summary,
+      segments: [],
+      capturedDate: null,
+      transcribedDate: "2026-08-03",
+      duration: 1,
+      source: "thought.m4a",
+      kind: "memo",
+    });
+
+    expect(md).toContain("## Note");
+    expect(md).not.toContain("## Action Items");
+    expect(md).not.toContain("## Key Topics");
+  });
+
+  it("meeting/file kinds render the classic sections byte-identically", () => {
+    const summary: MeetingSummary = {
+      title: "Sync",
+      tags: ["sync"],
+      narrative: "We synced.",
+      keyTopics: ["**Roadmap** — Q3"],
+      decisions: ["Ship in August"],
+      actionItems: ["[ ] Write the spec"],
+    };
+    for (const kind of [undefined, "meeting", "file"] as const) {
+      const md = buildMarkdown({
+        summary,
+        segments: [],
+        capturedDate: null,
+        transcribedDate: "2026-08-03",
+        duration: 5,
+        source: "a.m4a",
+        kind,
+      });
+      expect(md).toContain("## Summary");
+      expect(md).toContain("## Key Topics");
+      expect(md).toContain("## Decisions Made");
+      expect(md).toContain("## Action Items");
+      expect(md).not.toContain("## Note");
+    }
+  });
 });
 
 describe("writeOutputFromRecord", () => {

@@ -194,4 +194,38 @@ describe("summarizeHistory", () => {
     ).rejects.toThrow(/OPENAI_API_KEY environment variable is required/);
     expect(summarizeTranscript).not.toHaveBeenCalled();
   });
+
+  it("threads the record's kind into the summarize call (memo template)", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    const record = await createHistoryRecord(
+      transcribedInput({ kind: "memo" }),
+      historyDir,
+    );
+
+    const result = await summarizeHistory(record.id, {
+      historyDir,
+      output: outputPath,
+      model: "gpt-5-mini",
+    });
+
+    expect(result).toBe(outputPath);
+    expect(summarizeTranscript).toHaveBeenCalledTimes(1);
+    // 7th argument = kind; memo records must land on the memo template.
+    const call = vi.mocked(summarizeTranscript).mock.calls[0];
+    expect(call[6]).toBe("memo");
+  });
+
+  it("passes no kind for legacy records (meeting template)", async () => {
+    process.env.OPENAI_API_KEY = "test-key";
+    const record = await createHistoryRecord(transcribedInput(), historyDir);
+
+    await summarizeHistory(record.id, {
+      historyDir,
+      output: outputPath,
+      model: "gpt-5-mini",
+    });
+
+    const call = vi.mocked(summarizeTranscript).mock.calls[0];
+    expect(call[6]).toBeUndefined();
+  });
 });

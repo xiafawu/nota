@@ -10,14 +10,17 @@ vi.mock("openai", () => ({
 }));
 
 import {
+  buildMemoPrompt,
   buildSummaryPrompt,
   buildSpeakerLabeledTranscript,
   buildTagsPrompt,
   generateTags,
+  parseMemoResponse,
   parseSummaryResponse,
   parseTags,
   sampleTranscriptForTags,
   summarizeOnly,
+  summarizeTranscript,
 } from "../../src/pipeline/summarize.js";
 import type { TranscriptSegment } from "../../src/pipeline/transcribe.js";
 
@@ -238,5 +241,147 @@ describe("buildSpeakerLabeledTranscript", () => {
     expect(result).toContain("Speaker 2: Hi there");
     expect(result).toContain("Let's start");
     expect(result).not.toContain("undefined");
+  });
+});
+
+describe("buildMemoPrompt", () => {
+  it("asks for a cleaned note, not meeting scaffolding", () => {
+    const prompt = buildMemoPrompt("So, um, we should ship the thing, you know.");
+    expect(prompt).toContain("So, um, we should ship the thing, you know.");
+    expect(prompt).toContain("### Note");
+    expect(prompt).toContain("remove filler");
+    // Memo template has no Key Topics / Decisions / Tags scaffolding.
+    expect(prompt).not.toContain("### Key Topics");
+    expect(prompt).not.toContain("Decisions Made");
+    expect(prompt).not.toContain("### Tags");
+    // Memo-length title instruction (shorter than the meeting's 6-word cap).
+    expect(prompt).toContain("at most 4 words");
+  });
+
+  it("keeps action items optional", () => {
+    const prompt = buildMemoPrompt("Some dictation.");
+    expect(prompt).toContain("### Action Items");
+    expect(prompt).toContain("Only include this section when");
+  });
+});
+
+describe("parseMemoResponse", () => {
+  it("extracts title and note; topics/decisions stay empty", () => {
+    const response = `### Title
+Grocery run
+
+### Note
+Picked up groceries. Need to water the plants.
+
+### Action Items
+- [ ] Water the plants — me
+`;
+    const summary = parseMemoResponse(response);
+    expect(summary.title).toBe("Grocery run");
+    expect(summary.narrative).toContain("Picked up groceries");
+    expect(summary.actionItems).toEqual(["[ ] Water the plants — me"]);
+    expect(summary.keyTopics).toEqual([]);
+    expect(summary.decisions).toEqual([]);
+    expect(summary.tags).toEqual([]);
+  });
+
+  it("collapses the no-action-items marker to an empty list", () => {
+    const response = `### Title
+Quick thought
+
+### Note
+Just a thought, nothing to do.
+
+### Action Items
+No action items.
+`;
+    const summary = parseMemoResponse(response);
+    expect(summary.actionItems).toEqual([]);
+  });
+
+  it("leaves a memo without an Action Items section with an empty list", () => {
+    const response = `### Title
+Quick thought
+
+### Note
+Just a thought, nothing to do.
+`;
+    const summary = parseMemoResponse(response);
+    expect(summary.actionItems).toEqual([]);
+    expect(summary.title).toBe("Quick thought");
+  });
+});
+
+describe("summarizeTranscript memo kind", () => {
+  it("parses a memo-model response with the memo parser (cleaned note)", async () => {
+    createMock.mockResolvedValueOnce(
+      gptResponse(`### Title
+Daily standup note
+
+### Note
+Everyone is blocked on the same API outage.
+
+### Action Items
+- [ ] Ping the provider — Sam
+`),
+    );
+    const { summary } = await summarizeTranscript(
+      "raw dictation text",
+      "test-key",
+      "gpt-5-mini",
+      undefined,
+      undefined,
+      undefined,
+      "memo",
+    );
+    expect(summary.title).toBe("Daily standup note");
+    expect(summary.keyTopics).toEqual([]);
+    expect(summary.decisions).toEqual([]);
+    expect(summary.actionItems).toEqual(["[ ] Ping the provider — Sam"]);
+    // The memo prompt (not the meeting prompt) was sent.
+    const prompt = createMock.mock.calls.at(-1)![0].messages[0].content as string;
+    expect(prompt).toContain("### Note");
+    expect(prompt).not.toContain("### Key Topics");
+  });
+
+  it("defaults to the meeting template for meeting/file kinds (byte-identical)", async () => {
+    createMock.mockResolvedValueOnce(
+      gptResponse(`### Title
+Sync
+
+### Summary
+We synced.
+
+### Key Topics
+- **Roadmap** — Q3
+
+### Decisions Made
+No explicit decisions were recorded.
+
+### Action Items
+No action items were identified.
+
+### Tags
+sync, roadmap
+`),
+    );
+    const { summary } = await summarizeTranscript(
+      "transcript",
+      "test-key",
+      "gpt-5-mini",
+      undefined,
+      undefined,
+      undefined,
+      "file",
+    );
+    expect(summary.keyTopics).toEqual(["**Roadmap** — Q3"]);
+    // "No explicit decisions were recorded." is not a bullet line, so the
+    // parser leaves the section empty (existing parseSummaryResponse
+    // convention).
+    expect(summary.decisions).toEqual([]);
+    expect(summary.actionItems).toEqual([]);
+    const prompt = createMock.mock.calls.at(-1)![0].messages[0].content as string;
+    expect(prompt).toContain("### Key Topics");
+    expect(prompt).not.toContain("### Note");
   });
 });

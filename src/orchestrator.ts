@@ -343,6 +343,7 @@ async function runAssemblyAIPipelineInner(
       sourcePath: inputPath,
       provider: config.provider,
       options: historyOptions(config),
+      kind: config.kind,
       durationMinutes,
       transcriptText: result.text,
       segments,
@@ -369,6 +370,7 @@ async function runAssemblyAIPipelineInner(
       segments,
       config.summaryBaseURL,
       config.summaryCliEngine,
+      config.kind,
     );
     summary = summarized.summary;
     summaryUsage = makeSummaryUsage(config.summaryModel, config.provider, summarized.tokenUsage);
@@ -392,6 +394,7 @@ async function runAssemblyAIPipelineInner(
       transcribedDate,
       duration: durationMinutes,
       source,
+      kind: config.kind,
     },
     outputPath,
   );
@@ -776,6 +779,7 @@ async function runWhisperPipeline(
       sourcePath: inputPath,
       provider: config.provider,
       options: historyOptions(config),
+      kind: config.kind,
       durationMinutes,
       transcriptText: merged.text,
       segments: merged.segments,
@@ -800,6 +804,7 @@ async function runWhisperPipeline(
       diarization ? merged.segments : undefined,
       config.summaryBaseURL,
       config.summaryCliEngine,
+      config.kind,
     );
     summary = summarized.summary;
     summaryUsageW = makeSummaryUsage(config.summaryModel, config.provider, summarized.tokenUsage);
@@ -822,6 +827,7 @@ async function runWhisperPipeline(
       transcribedDate,
       duration: durationMinutes,
       source,
+      kind: config.kind,
     },
     outputPath,
   );

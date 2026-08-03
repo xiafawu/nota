@@ -34,6 +34,8 @@ export interface CLIOptions {
   skipPreflight?: boolean;
   summary?: boolean;
   verifySpeakers?: boolean;
+  /** Record kind for this run ("meeting" | "file" | "memo"). Default: file. */
+  kind?: "meeting" | "file" | "memo";
 }
 
 export interface AppConfig {
@@ -72,6 +74,12 @@ export interface AppConfig {
   force: boolean;
   skipPreflight: boolean;
   verifySpeakers: boolean;
+  /**
+   * What this run's history record represents. Defaults to "file" — the CLI
+   * always processes audio files; "meeting" and "memo" records are written by
+   * the macOS app's live-session persistence.
+   */
+  kind: "meeting" | "file" | "memo";
 }
 
 function parseProviderAlias(provider?: string): Provider {
@@ -251,5 +259,6 @@ export function loadConfig(
     force: options.force ?? false,
     history: options.history ?? true,
     skipPreflight: options.skipPreflight ?? false,
+    kind: options.kind ?? "file",
   };
 }

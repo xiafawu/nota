@@ -8,6 +8,15 @@ import type { TranscriptSegment } from "./transcribe.js";
 
 export type HistoryStatus = "transcribed" | "completed";
 
+/**
+ * What a history record represents. `"meeting"` = live session, `"file"` =
+ * transcribed audio file, `"memo"` = quick-memo live session. Optional on the
+ * record because records written before the redesign shipped predate the
+ * field; consumers treat absent as legacy and infer by source (see the macOS
+ * `HistoryRecordInfo.kindsAndStatusesByOutputPath`).
+ */
+export type HistoryKind = "meeting" | "file" | "memo";
+
 export interface HistoryOptions {
   language?: string;
   diarize: boolean;
@@ -51,6 +60,12 @@ export interface HistoryRecord {
   contentHash?: string;
   provider: Provider;
   options: HistoryOptions;
+  /**
+   * Record kind ("meeting" | "file" | "memo"). Optional: records written
+   * before the home-redesign kind field shipped lack it; legacy records are
+   * treated by source at read time.
+   */
+  kind?: HistoryKind;
   durationMinutes: number;
   transcriptText: string;
   segments: TranscriptSegment[];
@@ -86,6 +101,8 @@ export interface CreateHistoryInput {
   sourcePath: string;
   provider: Provider;
   options: HistoryOptions;
+  /** Record kind; omitted records stay kind-less (legacy shape). */
+  kind?: HistoryKind;
   durationMinutes: number;
   transcriptText: string;
   segments: TranscriptSegment[];
@@ -171,6 +188,7 @@ export async function createHistoryRecord(
     contentHash: input.contentHash,
     provider: input.provider,
     options: input.options,
+    kind: input.kind,
     durationMinutes: input.durationMinutes,
     transcriptText: input.transcriptText,
     segments: input.segments,

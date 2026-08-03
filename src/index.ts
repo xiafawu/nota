@@ -110,6 +110,11 @@ program
     "--force",
     "Reprocess even if an identical audio file is already in history",
   )
+  .option(
+    "--kind <kind>",
+    "Record kind for this run: meeting, file, or memo (default: file; memo uses the cleaned-note template)",
+    "file",
+  )
   .action(async (audioFile: string, options) => {
     try {
       const config = loadConfig({
@@ -126,6 +131,7 @@ program
         history: options.history,
         force: options.force,
         skipPreflight: options.skipPreflight,
+        kind: options.kind,
       });
       const outputPath = await runPipeline({
         inputPath: audioFile,

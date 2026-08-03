@@ -40,6 +40,11 @@ final class NotaModel: ObservableObject {
   /// dashboard's "transcript" pill on transcript-only Recent rows.
   @Published private(set) var historyStatuses: [String: String] = [:]
 
+  /// History-record kind per output path (standardized), driving the recents
+  /// kind chips (meeting/file/memo). Resolved from the record's `kind` field,
+  /// with legacy inference for records written before the field shipped.
+  @Published private(set) var historyKinds: [String: HistoryKind] = [:]
+
   /// Enrichment state for the open document (summary slot, tag editing).
   /// All of its mutations go through the CLI contract verbs.
   let enrichment = EnrichmentController.shared
@@ -161,6 +166,13 @@ final class NotaModel: ObservableObject {
   /// nil when no record matches (e.g. imported markdown).
   func recordStatus(for entry: HistoryEntry) -> String? {
     historyStatuses[entry.url.standardizedFileURL.path]
+  }
+
+  /// History-record kind for a dashboard entry, `.file` when no record
+  /// matches (imported markdown) or the record predates the kind field and
+  /// carries no inferable source.
+  func recordKind(for entry: HistoryEntry) -> HistoryKind {
+    historyKinds[entry.url.standardizedFileURL.path] ?? .file
   }
 
   /// Run the preflight readiness check and publish the result for the home
@@ -291,19 +303,32 @@ final class NotaModel: ObservableObject {
 
   // MARK: - Live meeting
 
+  /// Kind of the in-flight live session — written to the history record on
+  /// stop (meeting/memo). Memo sessions preset diarization and speaker
+  /// identity off unless the memo-diarization setting is enabled.
+  private var activeSessionKind: HistoryKind = .meeting
+
+  /// Effective diarize/identify flags for a live session: only memo sessions
+  /// can turn them on, and only when the memo-diarization setting is enabled.
+  /// Meeting live sessions stay diarization-free (today's behavior).
+  private var activeSessionDiarize: Bool {
+    activeSessionKind == .memo && NotaSettingsStore.memoDiarizationEnabled
+  }
+
   /// Begin a live dictation/transcription session. The pane switches to the
   /// live view when the session enters `.recording` (ContentView reads
   /// `liveSession.state`); start failures surface through the session's own
   /// `.failed` state (rendered by the live pane's error banner) and are
   /// mirrored here for the status pill.
-  func startLiveSession() {
+  func startLiveSession(kind: HistoryKind = .meeting) {
     guard liveSession.state != .recording, liveSession.state != .stopping else {
       return
     }
+    activeSessionKind = kind
     status = "Recording…"
     Task {
       do {
-        try await liveSession.start()
+        try await liveSession.start(diarize: activeSessionDiarize)
       } catch {
         status = "Live session failed: \(error.localizedDescription)"
       }
@@ -335,6 +360,9 @@ final class NotaModel: ObservableObject {
       do {
         let saved = try LiveSessionPersistence.persist(
           result: result,
+          kind: activeSessionKind,
+          diarize: activeSessionDiarize,
+          identify: activeSessionDiarize,
           outputDirectory: outputDirectory,
           historyDirectory: notaHistoryDirectory()
         )
@@ -382,21 +410,24 @@ final class NotaModel: ObservableObject {
       }
       let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
       let date = values?.contentModificationDate ?? Date.distantPast
-      return HistoryEntry.make(url: url, modifiedAt: date)
+      let kind = historyKinds[url.standardizedFileURL.path] ?? .file
+      return HistoryEntry.make(url: url, modifiedAt: date, kind: kind)
     }
     history = entries.sorted { $0.modifiedAt > $1.modifiedAt }
     refreshHistoryStatuses()
   }
 
-  /// Rebuild the outputPath → record-status map off the main thread (history
-  /// records carry full transcripts, so parsing them inline would jank).
+  /// Rebuild the outputPath → record-status/kind maps off the main thread
+  /// (history records carry full transcripts, so parsing them inline would
+  /// jank). One scan feeds both maps.
   private func refreshHistoryStatuses() {
     let historyDir = notaHistoryDirectory()
     Task { @MainActor [weak self] in
-      let statuses = await Task.detached(priority: .utility) {
-        HistoryRecordInfo.statusesByOutputPath(historyDir: historyDir)
+      let result = await Task.detached(priority: .utility) {
+        HistoryRecordInfo.kindsAndStatusesByOutputPath(historyDir: historyDir)
       }.value
-      self?.historyStatuses = statuses
+      self?.historyStatuses = result.statuses
+      self?.historyKinds = result.kinds
     }
   }
 
@@ -872,28 +903,61 @@ struct HistoryRecordInfo {
   /// dashboard's "transcript" pill; records without an `outputPath` are
   /// skipped (they have no row to badge).
   static func statusesByOutputPath(historyDir: URL) -> [String: String] {
+    kindsAndStatusesByOutputPath(historyDir: historyDir).statuses
+  }
+
+  /// outputPath (standardized) → `{status, kind}` for every history record,
+  /// from a single directory scan. Records without an `outputPath` are
+  /// skipped. `kind` resolves from the record's `kind` field when present,
+  /// else infers a legacy record by source: live sessions written before the
+  /// kind field shipped always carry the streaming model with diarize and
+  /// identify off (the CLI never writes that combination for file runs), so
+  /// those read as `.meeting`; everything else legacy reads as `.file`.
+  static func kindsAndStatusesByOutputPath(
+    historyDir: URL
+  ) -> (statuses: [String: String], kinds: [String: HistoryKind]) {
     let fileManager = FileManager.default
     guard let entries = try? fileManager.contentsOfDirectory(
       at: historyDir,
       includingPropertiesForKeys: nil,
       options: []
     ) else {
-      return [:]
+      return ([:], [:])
     }
 
     var statuses: [String: String] = [:]
+    var kinds: [String: HistoryKind] = [:]
     for entry in entries where entry.pathExtension == "json" {
       guard
         let data = try? Data(contentsOf: entry),
         let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-        let outputPath = json["outputPath"] as? String,
-        let status = json["status"] as? String
+        let outputPath = json["outputPath"] as? String
       else {
         continue
       }
-      statuses[URL(fileURLWithPath: outputPath).standardizedFileURL.path] = status
+      let key = URL(fileURLWithPath: outputPath).standardizedFileURL.path
+      if let status = json["status"] as? String {
+        statuses[key] = status
+      }
+      kinds[key] = kind(from: json)
     }
-    return statuses
+    return (statuses, kinds)
+  }
+
+  /// Record kind: the explicit `kind` field when present, else the legacy
+  /// inference (live-session records predate the field).
+  private static func kind(from json: [String: Any]) -> HistoryKind {
+    if let raw = json["kind"] as? String, let kind = HistoryKind(rawValue: raw) {
+      return kind
+    }
+    let options = json["options"] as? [String: Any]
+    let model = options?["model"] as? String
+    let diarize = options?["diarize"] as? Bool ?? false
+    let identify = options?["identify"] as? Bool ?? false
+    if model == "universal-3.5-pro-streaming" && !diarize && !identify {
+      return .meeting
+    }
+    return .file
   }
 }
 

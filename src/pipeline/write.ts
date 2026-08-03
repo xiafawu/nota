@@ -2,7 +2,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import type { TranscriptSegment } from "./transcribe.js";
 import type { MeetingSummary } from "./summarize.js";
-import type { HistoryRecord } from "./history.js";
+import type { HistoryKind, HistoryRecord } from "./history.js";
 import { formatTimestamp } from "./transcribe.js";
 
 export interface WriteInput {
@@ -12,23 +12,34 @@ export interface WriteInput {
   transcribedDate: string;
   duration: number;
   source: string;
+  /**
+   * Markdown shape: `"memo"` renders the summary as a cleaned note
+   * (`## Note` + optional `## Action Items`, no Key Topics/Decisions);
+   * `"meeting"` (default) and `"file"` render the classic sections —
+   * byte-identical to pre-kind output.
+   */
+  kind?: HistoryKind;
 }
 
 export function buildMarkdown(input: WriteInput): string {
-  const { summary, segments, capturedDate, transcribedDate, duration, source } = input;
+  const { summary, segments, capturedDate, transcribedDate, duration, source, kind } = input;
 
   const title = summary?.title?.trim() || "Transcript";
   const tagsLine =
     summary?.tags && summary.tags.length > 0
       ? `\n**Tags:** ${summary.tags.join(", ")}`
       : "";
-  const topicLines = summary?.keyTopics?.map((t) => `- ${t}`).join("\n") ?? "";
-  const decisionLines = summary?.decisions?.map((d) => `- ${d}`).join("\n") ?? "";
-  const actionLines = summary?.actionItems?.map((a) => `- ${a}`).join("\n") ?? "";
   const hasSummaryContent = summary?.narrative && summary.narrative.length > 0;
 
+  const isMemo = kind === "memo";
+  const actionLines = summary?.actionItems?.map((a) => `- ${a}`).join("\n") ?? "";
+  const memoActionSection =
+    actionLines.length > 0 ? `\n## Action Items\n\n${actionLines}\n` : "";
+  const meetingSections = `\n## Key Topics\n\n${summary?.keyTopics?.map((t) => `- ${t}`).join("\n") ?? ""}\n\n## Decisions Made\n\n${summary?.decisions?.map((d) => `- ${d}`).join("\n") ?? ""}\n\n## Action Items\n\n${actionLines}\n`;
   const summarySection = hasSummaryContent
-    ? `\n## Summary\n\n${summary!.narrative}\n\n## Key Topics\n\n${topicLines}\n\n## Decisions Made\n\n${decisionLines}\n\n## Action Items\n\n${actionLines}\n`
+    ? isMemo
+      ? `\n## Note\n\n${summary!.narrative}${memoActionSection}`
+      : `\n## Summary\n\n${summary!.narrative}${meetingSections}`
     : "";
 
   const transcriptLines = segments
@@ -86,6 +97,7 @@ export async function writeOutputFromRecord(record: HistoryRecord): Promise<stri
       transcribedDate: record.createdAt.split("T")[0],
       duration: record.durationMinutes,
       source: record.sourceName,
+      kind: record.kind,
     },
     outputPath,
   );

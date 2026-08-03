@@ -5,6 +5,7 @@ import {
   splitTranscriptIntoSections,
 } from "../utils/tokens.js";
 import type { TranscriptSegment } from "./transcribe.js";
+import type { HistoryKind } from "./history.js";
 import { runCliPrompt, type CliEngineSpec } from "./cli-engine.js";
 
 // The gemini base URL and provider check are owned by the model registry (the
@@ -96,6 +97,71 @@ ${text}
 
 Reply with ONLY one line: 3 to 6 short, lowercase topical tags,
 comma-separated (for example: planning, roadmap, hiring). No other text.`;
+}
+
+/**
+ * The quick-memo template (XIA-391): a cleaned note, not a meeting summary.
+ * Polished prose of what was said with filler removed, action items only when
+ * they are clearly present, and no Key Topics / Decisions / Tags scaffolding.
+ * The title instruction is deliberately memo-length (shorter than the meeting
+ * title, which is capped at 6 words).
+ */
+export function buildMemoPrompt(
+  transcript: string,
+  hasSpeakers: boolean = false,
+): string {
+  return `You are polishing a spoken note. The text below is a raw dictation of what someone said. Produce a cleaned note.
+
+## Raw dictation
+
+${transcript}
+${hasSpeakers ? "\nNote: The transcript includes speaker labels (Speaker 1, Speaker 2, etc.). Keep attributions inline when a statement clearly belongs to a named speaker.\n" : ""}
+## Instructions
+
+Produce the following sections in your response. Use exactly these headers:
+
+### Title
+A concise title for this note in at most 4 words. Plain text only — no quotes, no trailing punctuation.
+
+### Note
+Rewrite the dictation as polished prose: remove filler ("um", "you know", false starts, repetition), fix grammar, keep the speaker's own wording where it is clear and specific, and keep the full content — nothing substantive is dropped. Use short paragraphs. Do not add a narrative summary of the note; the note is the content itself.
+
+### Action Items
+List any concrete next steps as a checkbox:
+- [ ] Action item — owner (if identifiable from the text)
+
+Only include this section when at least one action item is clearly present. If none are present, write "No action items."`;
+}
+
+/**
+ * Roll-up prompt for a memo that needed section-by-section processing: the
+ * per-section outputs are already cleaned notes; merge them into one note
+ * without adding meeting scaffolding.
+ */
+function buildMemoRollupPrompt(sectionNotes: string[]): string {
+  const combined = sectionNotes
+    .map((s, i) => `## Section ${i + 1}\n\n${s}`)
+    .join("\n\n---\n\n");
+
+  return `You are polishing a spoken note. The following are cleaned sections of a long dictation. Combine them into a single cleaned note.
+
+${combined}
+
+## Instructions
+
+Produce the following sections in your response. Use exactly these headers:
+
+### Title
+A concise title for this note in at most 4 words. Plain text only — no quotes, no trailing punctuation.
+
+### Note
+Merge the sections into one polished, continuous note. Remove repetition across section boundaries; keep every distinct point. Use short paragraphs.
+
+### Action Items
+List any concrete next steps as a checkbox:
+- [ ] Action item — owner (if identifiable from the text)
+
+Only include this section when at least one action item is clearly present. If none are present, write "No action items."`;
 }
 
 function buildRollupPrompt(sectionSummaries: string[], includeTags: boolean): string {
@@ -301,6 +367,45 @@ export async function canarySummaryModel(
 }
 
 /**
+ * Parse a memo-template response into the shared `MeetingSummary` shape:
+ * title → `title`, `### Note` → `narrative`, `### Action Items` →
+ * `actionItems`. Key topics/decisions stay empty — a memo deliberately has no
+ * meeting scaffolding. "No action items." collapses to an empty list.
+ */
+export function parseMemoResponse(response: string): MeetingSummary {
+  const sections = {
+    title: "",
+    tags: [] as string[],
+    narrative: "",
+    keyTopics: [] as string[],
+    decisions: [] as string[],
+    actionItems: [] as string[],
+  };
+
+  const titleMatch = response.match(/### Title\s*\n([\s\S]*?)(?=\n### |$)/);
+  if (titleMatch) sections.title = cleanTitle(titleMatch[1]);
+
+  const noteMatch = response.match(/### Note\s*\n([\s\S]*?)(?=\n### |$)/);
+  if (noteMatch) sections.narrative = noteMatch[1].trim();
+
+  const actionsMatch = response.match(
+    /### Action Items\s*\n([\s\S]*?)(?=\n### |$)/
+  );
+  if (actionsMatch) {
+    const lines = actionsMatch[1]
+      .trim()
+      .split("\n")
+      .filter((l) => l.startsWith("- "))
+      .map((l) => l.slice(2));
+    if (!(lines.length === 0 && /^No action items\.?$/i.test(actionsMatch[1].trim()))) {
+      sections.actionItems = lines;
+    }
+  }
+
+  return sections;
+}
+
+/**
  * True when an OpenAI error signals the response was cut off by the token cap
  * (as opposed to the request being rejected). Distinguished from the real
  * "unsupported parameter" shape error, which must still fail the canary.
@@ -375,18 +480,22 @@ async function runSummarization(
   baseURL: string | undefined,
   includeTags: boolean,
   cli?: CliEngineSpec,
+  kind: HistoryKind = "meeting",
 ): Promise<{ summary: MeetingSummary; tokenUsage: { calls: number; tokensIn: number; tokensOut: number } }> {
   const call = makeSummaryCall(apiKey, model, baseURL, cli);
+  const isMemo = kind === "memo";
 
   const textToSummarize = segments
     ? buildSpeakerLabeledTranscript(segments)
     : transcript;
 
   if (!shouldChunkTranscript(textToSummarize)) {
-    const prompt = buildSummaryPrompt(textToSummarize, !!segments, { includeTags });
+    const prompt = isMemo
+      ? buildMemoPrompt(textToSummarize, !!segments)
+      : buildSummaryPrompt(textToSummarize, !!segments, { includeTags });
     const { content, usage } = await call(prompt, SUMMARY_TOKEN_CAP);
     return {
-      summary: parseSummaryResponse(content),
+      summary: isMemo ? parseMemoResponse(content) : parseSummaryResponse(content),
       tokenUsage: { calls: 1, tokensIn: usage.promptTokens, tokensOut: usage.completionTokens },
     };
   }
@@ -398,14 +507,18 @@ async function runSummarization(
   let totalTokensOut = 0;
 
   for (const section of sections) {
-    const prompt = buildSummaryPrompt(section, !!segments, { includeTags });
+    const prompt = isMemo
+      ? buildMemoPrompt(section, !!segments)
+      : buildSummaryPrompt(section, !!segments, { includeTags });
     const { content, usage } = await call(prompt, SUMMARY_TOKEN_CAP);
     totalTokensIn += usage.promptTokens;
     totalTokensOut += usage.completionTokens;
     sectionSummaries.push(content);
   }
 
-  const rollupPrompt = buildRollupPrompt(sectionSummaries, includeTags);
+  const rollupPrompt = isMemo
+    ? buildMemoRollupPrompt(sectionSummaries)
+    : buildRollupPrompt(sectionSummaries, includeTags);
   const { content: rollupContent, usage: rollupUsage } = await call(
     rollupPrompt,
     SUMMARY_TOKEN_CAP,
@@ -415,7 +528,7 @@ async function runSummarization(
   const calls = sections.length + 1;
 
   return {
-    summary: parseSummaryResponse(rollupContent),
+    summary: isMemo ? parseMemoResponse(rollupContent) : parseSummaryResponse(rollupContent),
     tokenUsage: { calls, tokensIn: totalTokensIn, tokensOut: totalTokensOut },
   };
 }
@@ -427,6 +540,10 @@ async function runSummarization(
  * is, `apiKey` and `baseURL` are unused and the work runs as a local
  * subprocess. Callers get it from `cliEngineFor(entry)` rather than deciding
  * from the id.
+ *
+ * `kind` selects the prompt template: `"memo"` produces a cleaned note
+ * (no Key Topics/Decisions); `"meeting"` (the default) and `"file"` are
+ * byte-identical to the pre-kind behavior.
  */
 export async function summarizeTranscript(
   transcript: string,
@@ -435,8 +552,9 @@ export async function summarizeTranscript(
   segments?: TranscriptSegment[],
   baseURL?: string,
   cli?: CliEngineSpec,
+  kind: HistoryKind = "meeting",
 ): Promise<{ summary: MeetingSummary; tokenUsage: { calls: number; tokensIn: number; tokensOut: number } }> {
-  return runSummarization(transcript, apiKey, model, segments, baseURL, true, cli);
+  return runSummarization(transcript, apiKey, model, segments, baseURL, true, cli, kind);
 }
 
 /**
@@ -452,8 +570,9 @@ export async function summarizeOnly(
   segments?: TranscriptSegment[],
   baseURL?: string,
   cli?: CliEngineSpec,
+  kind: HistoryKind = "meeting",
 ): Promise<{ summary: MeetingSummary; tokenUsage: { calls: number; tokensIn: number; tokensOut: number } }> {
-  const result = await runSummarization(transcript, apiKey, model, segments, baseURL, false, cli);
+  const result = await runSummarization(transcript, apiKey, model, segments, baseURL, false, cli, kind);
   if (!result.summary.narrative.trim()) {
     throw new Error("Summary model returned an empty summary");
   }

@@ -79,6 +79,9 @@ enum LiveSessionPersistence {
     displayName: String = "Live Meeting",
     title: String = "Live Meeting",
     capturedAt: Date = Date(),
+    kind: HistoryKind = .meeting,
+    diarize: Bool = false,
+    identify: Bool = false,
     outputDirectory: URL,
     historyDirectory: URL
   ) throws -> SavedSession {
@@ -134,9 +137,10 @@ enum LiveSessionPersistence {
         "sourcePath": audioURL.path,
         "sourceName": sourceName,
         "provider": "assemblyai",
+        "kind": kind.rawValue,
         "options": [
-          "diarize": false,
-          "identify": false,
+          "diarize": diarize,
+          "identify": identify,
           // Omitting speech_model selects AssemblyAI's default = Universal-3.5
           // Pro Streaming; recorded here for the usage/dashboard surfaces.
           "model": "universal-3.5-pro-streaming"

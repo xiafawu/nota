@@ -74,10 +74,17 @@ final class LiveMeetingSession: ObservableObject {
   /// Start a live meeting: mic permission, capture engine, and the AssemblyAI
   /// realtime session. Returns once the server has sent `Begin`.
   ///
+  /// `diarize` requests AssemblyAI realtime speaker labels
+  /// (`speaker_labels=true`); memo sessions turn it on only when the
+  /// memo-diarization setting is enabled. Note: the stream parser currently
+  /// reads turn transcripts only — labeled turns render unlabeled until a
+  /// follow-up consumes the speaker events — so this is intent + record
+  /// plumbing today.
+  ///
   /// On any setup failure the session transitions to `.failed(message)` first
   /// (so the UI's error banner renders off the published state) and then
   /// throws `MicCaptureError`/`AssemblyAIError`.
-  func start() async throws {
+  func start(diarize: Bool = false) async throws {
     cancel()
 
     // 1. API key — fail fast, before permission prompts or any engine work.
@@ -105,7 +112,9 @@ final class LiveMeetingSession: ObservableObject {
     }
 
     // 3. WebSocket (v3 realtime; no speech_model → Universal-3.5 Pro Streaming).
-    guard let url = URL(string: "wss://streaming.assemblyai.com/v3/ws?sample_rate=16000") else {
+    let baseURL = "wss://streaming.assemblyai.com/v3/ws?sample_rate=16000"
+    let urlString = diarize ? "\(baseURL)&speaker_labels=true" : baseURL
+    guard let url = URL(string: urlString) else {
       failStart(AssemblyAIError.webSocketError("invalid URL"))
       throw AssemblyAIError.webSocketError("invalid URL")
     }

@@ -68,6 +68,28 @@ enum NotaSettingsStore {
     try writeRoot(root)
   }
 
+  // MARK: - Memo presets
+
+  /// Whether memo sessions diarize + identify speakers (XIA-391: off by
+  /// default; a setting enables it for memos recorded with other people
+  /// around). Persisted under `memo.diarize` in the same settings.json the
+  /// CLI uses. Per-field tolerant decode: a missing/foreign section reads as
+  /// the default (`false`) and unknown keys are preserved on write.
+  static var memoDiarizationEnabled: Bool {
+    get {
+      let root = readRoot()
+      let section = root["memo"] as? [String: Any]
+      return section?["diarize"] as? Bool ?? false
+    }
+    set {
+      var root = readRoot()
+      var section = (root["memo"] as? [String: Any]) ?? [:]
+      section["diarize"] = newValue
+      root["memo"] = section
+      try? writeRoot(root)
+    }
+  }
+
   // MARK: - Private
 
   private static func storedModel(for task: ModelTask) -> String? {

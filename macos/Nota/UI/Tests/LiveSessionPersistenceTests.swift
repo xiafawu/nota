@@ -317,4 +317,84 @@ final class LiveSessionPersistenceTests: XCTestCase {
     XCTAssertEqual(dicts.map { $0["end"] as? Int }, [3, 7, 9])
     XCTAssertEqual(dicts.map { $0["text"] as? String }, ["a", "b", "c"])
   }
+
+  // MARK: - Kind field
+
+  func testPersistDefaultsKindToMeeting() throws {
+    let result = try makeResult(
+      segments: [LiveMeetingSession.LiveSegment(id: UUID(), text: "Hello", endTime: 2)],
+      transcript: "Hello",
+      duration: 2
+    )
+    let saved = try LiveSessionPersistence.persist(
+      result: result,
+      outputDirectory: outputDirectory,
+      historyDirectory: historyDirectory
+    )
+
+    let data = try Data(contentsOf: saved.recordURL)
+    let json = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    )
+    XCTAssertEqual(json["kind"] as? String, "meeting")
+    let options = try XCTUnwrap(json["options"] as? [String: Any])
+    XCTAssertEqual(options["diarize"] as? Bool, false)
+    XCTAssertEqual(options["identify"] as? Bool, false)
+  }
+
+  func testPersistWritesMemoKindAndPresetFlags() throws {
+    let result = try makeResult(
+      segments: [LiveMeetingSession.LiveSegment(id: UUID(), text: "Quick note", endTime: 3)],
+      transcript: "Quick note",
+      duration: 3
+    )
+    let saved = try LiveSessionPersistence.persist(
+      result: result,
+      kind: .memo,
+      diarize: true,
+      identify: true,
+      outputDirectory: outputDirectory,
+      historyDirectory: historyDirectory
+    )
+
+    let data = try Data(contentsOf: saved.recordURL)
+    let json = try XCTUnwrap(
+      try JSONSerialization.jsonObject(with: data) as? [String: Any]
+    )
+    XCTAssertEqual(json["kind"] as? String, "memo")
+    let options = try XCTUnwrap(json["options"] as? [String: Any])
+    XCTAssertEqual(options["diarize"] as? Bool, true)
+    XCTAssertEqual(options["identify"] as? Bool, true)
+  }
+
+  // MARK: - Legacy kind inference (HistoryRecordInfo)
+
+  func testKindInferencePrefersExplicitKindField() throws {
+    let explicit: [String: Any] = [
+      "outputPath": "/tmp/explicit.summary.md",
+      "status": "transcribed",
+      "kind": "memo",
+      "options": ["model": "universal-3.5-pro-streaming", "diarize": false, "identify": false]
+    ]
+    let legacyLive: [String: Any] = [
+      "outputPath": "/tmp/legacy-live.summary.md",
+      "status": "transcribed",
+      "options": ["model": "universal-3.5-pro-streaming", "diarize": false, "identify": false]
+    ]
+    let legacyFile: [String: Any] = [
+      "outputPath": "/tmp/legacy-file.summary.md",
+      "status": "completed",
+      "options": ["model": "universal-3-5-pro", "diarize": true, "identify": true]
+    ]
+    for (name, record) in ["a.json": explicit, "b.json": legacyLive, "c.json": legacyFile] {
+      let url = historyDirectory.appendingPathComponent(name)
+      try JSONSerialization.data(withJSONObject: record).write(to: url)
+    }
+
+    let result = HistoryRecordInfo.kindsAndStatusesByOutputPath(historyDir: historyDirectory)
+    XCTAssertEqual(result.statuses["/tmp/explicit.summary.md"], "transcribed")
+    XCTAssertEqual(result.kinds["/tmp/explicit.summary.md"], .memo, "explicit kind wins")
+    XCTAssertEqual(result.kinds["/tmp/legacy-live.summary.md"], .meeting, "legacy streaming-model record infers meeting")
+    XCTAssertEqual(result.kinds["/tmp/legacy-file.summary.md"], .file, "legacy CLI record infers file")
+  }
 }
