@@ -35,13 +35,19 @@ struct NotaApp: App {
     }
     .commands {
       CommandGroup(replacing: .newItem) {
-        Button("New Transcription") {
-          model.newTranscription()
+        Button("Start Meeting") {
+          model.startLiveSession()
         }
         .keyboardShortcut("n")
         .disabled(model.isRunning)
 
-        Button("Open Audio...") {
+        Button("Quick Memo") {
+          model.startLiveSession(kind: .memo)
+        }
+        .keyboardShortcut("m")
+        .disabled(model.isRunning)
+
+        Button("Transcribe File…") {
           model.chooseFile()
         }
         .keyboardShortcut("o")

@@ -47,6 +47,82 @@ enum UsageStatsProviderError: LocalizedError {
   }
 }
 
+// MARK: - Home strip stats
+
+/// The B4 stats-strip figures ("cheap aliveness", XIA-390 takeaway 6): one
+/// scan of the history records produces the four numbers. Window is the
+/// trailing 7 days (inclusive of `now`); counts use the record kind (legacy
+/// records inferred by source — see `HistoryRecordInfo`); action items come
+/// from completed records' summaries, which are the only ones carrying any.
+struct HomeStats: Equatable {
+  var transcribedMinutes: Int = 0
+  var meetings: Int = 0
+  var memos: Int = 0
+  var actionItems: Int = 0
+
+  /// All-zero — the E3 strip simply doesn't render rather than showing zeros.
+  var isEmpty: Bool {
+    transcribedMinutes == 0 && meetings == 0 && memos == 0 && actionItems == 0
+  }
+}
+
+extension HistoryRecordInfo {
+  /// Aggregate the home strip's figures from `~/.nota/history` records.
+  /// Records without a parseable `createdAt` or `outputPath` are skipped
+  /// (they have no row to count).
+  static func homeStats(historyDir: URL, now: Date = Date()) -> HomeStats {
+    let fileManager = FileManager.default
+    guard let entries = try? fileManager.contentsOfDirectory(
+      at: historyDir,
+      includingPropertiesForKeys: nil,
+      options: []
+    ) else {
+      return HomeStats()
+    }
+
+    var stats = HomeStats()
+    guard let weekAgo = Calendar.current.date(byAdding: .day, value: -7, to: now) else {
+      return stats
+    }
+
+    for entry in entries where entry.pathExtension == "json" {
+      guard
+        let data = try? Data(contentsOf: entry),
+        let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+        let createdAtString = json["createdAt"] as? String,
+        let createdAt = iso8601Date(createdAtString)
+      else {
+        continue
+      }
+      guard createdAt >= weekAgo else { continue }
+
+      stats.transcribedMinutes += (json["durationMinutes"] as? Int) ?? 0
+      switch kind(from: json) {
+      case .meeting: stats.meetings += 1
+      case .memo: stats.memos += 1
+      case .file: break
+      }
+      if let summary = json["summary"] as? [String: Any],
+         let items = summary["actionItems"] as? [String] {
+        stats.actionItems += items.count
+      }
+    }
+    return stats
+  }
+
+  /// ISO-8601 (`2026-08-03T09:00:00.000Z`) → Date; nil when unparseable.
+  /// One shared formatter instance — this scan runs per home appear.
+  private static let iso8601: ISO8601DateFormatter = {
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter
+  }()
+
+  private static func iso8601Date(_ string: String) -> Date? {
+    iso8601.date(from: string)
+  }
+}
+
 // MARK: - Provider
 
 /// Spawns `nota usage --json`, decodes the response, and caches per window.
@@ -56,11 +132,27 @@ final class UsageStatsProvider: ObservableObject {
   @Published var isLoading = false
   @Published var error: Error?
 
+  /// Home stats-strip figures, refreshed independently of the CLI cost fetch.
+  @Published var homeStats = HomeStats()
+
   private let projectDirectory: URL
   private var cache: [String: UsageSummaryResponse] = [:]
 
   init(projectDirectory: URL) {
     self.projectDirectory = projectDirectory
+  }
+
+  /// Recompute the home strip figures off the main thread. Called when the
+  /// dashboard appears and whenever history changes; the scan is a
+  /// directory read, so it never blocks the UI.
+  func refreshHomeStats() {
+    let historyDir = notaHistoryDirectory()
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      self.homeStats = await Task.detached(priority: .utility) {
+        HistoryRecordInfo.homeStats(historyDir: historyDir)
+      }.value
+    }
   }
 
   /// Clear the cache so the next refresh re-fetches regardless of window.

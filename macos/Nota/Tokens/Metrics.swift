@@ -71,9 +71,6 @@ enum Metrics {
   static let cardCornerRadius: CGFloat = 12
   static let rowCornerRadius: CGFloat = 8
   static let cardPadding: CGFloat = 16
-  /// Fixed height the cost card keeps while loading/errored, so the section
-  /// doesn't jump when the loaded card replaces the skeleton.
-  static let costSkeletonHeight: CGFloat = 96
 
   static let speakerDotSize: CGFloat = 6
   static let speakerPopoverFieldWidth: CGFloat = 180

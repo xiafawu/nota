@@ -98,6 +98,11 @@ struct ContentView: View {
       if let pillState = toolbarStatusPillState {
         ToolbarStatusPill(state: pillState)
       }
+      if phase == .home {
+        // Stub for XIA-400: the quiet health pill. Green "Ready" when healthy;
+        // the real preflight-fed pill replaces this in impl 4.
+        HomeReadyPill()
+      }
     }
 
     ToolbarItem(placement: .primaryAction) {
@@ -172,22 +177,27 @@ struct ContentView: View {
       usageProvider: usageProvider
     )
     .onDrop(of: [UTType.fileURL.identifier], isTargeted: $model.isDropTargeted) { providers in
-      guard let provider = providers.first else { return false }
-      provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
-        let url: URL?
-        if let data = item as? Data {
-          url = URL(dataRepresentation: data, relativeTo: nil)
-        } else if let nsURL = item as? NSURL {
-          url = nsURL as URL
-        } else {
-          url = nil
-        }
-        if let url {
-          Task { @MainActor in model.accept(url) }
-        }
-      }
-      return true
+      HomeDashboardView.handleDrop(providers: providers, model: model)
     }
+  }
+}
+
+/// The quiet health-pill slot on the home toolbar: green dot + "Ready".
+/// Placeholder for XIA-400, which feeds it from the preflight model and adds
+/// the glass popover.
+private struct HomeReadyPill: View {
+  var body: some View {
+    HStack(spacing: Metrics.statusHStackSpacing) {
+      Circle()
+        .fill(.green)
+        .frame(width: 7, height: 7)
+      Text("Ready")
+        .font(Tokens.statusFont)
+    }
+    .padding(.horizontal, Metrics.statusPillH)
+    .padding(.vertical, Metrics.statusPillV)
+    .liquidGlass(.regular, in: .capsule)
+    .help("All systems ready")
   }
 }
 

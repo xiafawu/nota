@@ -36,14 +36,11 @@ final class NotaModel: ObservableObject {
   @Published var preflight: PreflightResult?
   @Published var isCheckingPreflight = false
 
-  /// History-record status per output path (standardized), driving the
-  /// dashboard's "transcript" pill on transcript-only Recent rows.
-  @Published private(set) var historyStatuses: [String: String] = [:]
-
-  /// History-record kind per output path (standardized), driving the recents
-  /// kind chips (meeting/file/memo). Resolved from the record's `kind` field,
-  /// with legacy inference for records written before the field shipped.
-  @Published private(set) var historyKinds: [String: HistoryKind] = [:]
+  /// History-record facts per output path (standardized): status, kind
+  /// (meeting/file/memo with legacy inference), duration, speaker count —
+  /// from one background scan. Feeds the dashboard's transcript pill, kind
+  /// chips, and row subtitles.
+  @Published private(set) var historyDetails: [String: HistoryRecordInfo.HistoryDetail] = [:]
 
   /// Enrichment state for the open document (summary slot, tag editing).
   /// All of its mutations go through the CLI contract verbs.
@@ -165,14 +162,19 @@ final class NotaModel: ObservableObject {
   /// History-record status ("transcribed"/"completed") for a dashboard entry,
   /// nil when no record matches (e.g. imported markdown).
   func recordStatus(for entry: HistoryEntry) -> String? {
-    historyStatuses[entry.url.standardizedFileURL.path]
+    historyDetails[entry.url.standardizedFileURL.path]?.status
   }
 
   /// History-record kind for a dashboard entry, `.file` when no record
   /// matches (imported markdown) or the record predates the kind field and
   /// carries no inferable source.
   func recordKind(for entry: HistoryEntry) -> HistoryKind {
-    historyKinds[entry.url.standardizedFileURL.path] ?? .file
+    historyDetails[entry.url.standardizedFileURL.path]?.kind ?? .file
+  }
+
+  /// Full record facts for a dashboard entry (nil when no record matches).
+  func recordDetail(for entry: HistoryEntry) -> HistoryRecordInfo.HistoryDetail? {
+    historyDetails[entry.url.standardizedFileURL.path]
   }
 
   /// Run the preflight readiness check and publish the result for the home
@@ -410,24 +412,23 @@ final class NotaModel: ObservableObject {
       }
       let values = try? url.resourceValues(forKeys: [.contentModificationDateKey])
       let date = values?.contentModificationDate ?? Date.distantPast
-      let kind = historyKinds[url.standardizedFileURL.path] ?? .file
+      let kind = historyDetails[url.standardizedFileURL.path]?.kind ?? .file
       return HistoryEntry.make(url: url, modifiedAt: date, kind: kind)
     }
     history = entries.sorted { $0.modifiedAt > $1.modifiedAt }
     refreshHistoryStatuses()
   }
 
-  /// Rebuild the outputPath → record-status/kind maps off the main thread
+  /// Rebuild the outputPath → record-details map off the main thread
   /// (history records carry full transcripts, so parsing them inline would
-  /// jank). One scan feeds both maps.
+  /// jank).
   private func refreshHistoryStatuses() {
     let historyDir = notaHistoryDirectory()
     Task { @MainActor [weak self] in
-      let result = await Task.detached(priority: .utility) {
-        HistoryRecordInfo.kindsAndStatusesByOutputPath(historyDir: historyDir)
+      let details = await Task.detached(priority: .utility) {
+        HistoryRecordInfo.detailsByOutputPath(historyDir: historyDir)
       }.value
-      self?.historyStatuses = result.statuses
-      self?.historyKinds = result.kinds
+      self?.historyDetails = details
     }
   }
 
@@ -916,17 +917,39 @@ struct HistoryRecordInfo {
   static func kindsAndStatusesByOutputPath(
     historyDir: URL
   ) -> (statuses: [String: String], kinds: [String: HistoryKind]) {
+    var statuses: [String: String] = [:]
+    var kinds: [String: HistoryKind] = [:]
+    for (key, detail) in detailsByOutputPath(historyDir: historyDir) {
+      if let status = detail.status { statuses[key] = status }
+      kinds[key] = detail.kind
+    }
+    return (statuses, kinds)
+  }
+
+  /// One record's dashboard-relevant facts, resolved from the JSON record in
+  /// a single scan (status, kind incl. legacy inference, duration, unique
+  /// speaker count from the segments).
+  struct HistoryDetail: Equatable {
+    var status: String?
+    var kind: HistoryKind
+    var durationMinutes: Int?
+    var speakerCount: Int?
+  }
+
+  /// outputPath (standardized) → `HistoryDetail` for every history record.
+  static func detailsByOutputPath(
+    historyDir: URL
+  ) -> [String: HistoryDetail] {
     let fileManager = FileManager.default
     guard let entries = try? fileManager.contentsOfDirectory(
       at: historyDir,
       includingPropertiesForKeys: nil,
       options: []
     ) else {
-      return ([:], [:])
+      return [:]
     }
 
-    var statuses: [String: String] = [:]
-    var kinds: [String: HistoryKind] = [:]
+    var details: [String: HistoryDetail] = [:]
     for entry in entries where entry.pathExtension == "json" {
       guard
         let data = try? Data(contentsOf: entry),
@@ -936,17 +959,27 @@ struct HistoryRecordInfo {
         continue
       }
       let key = URL(fileURLWithPath: outputPath).standardizedFileURL.path
-      if let status = json["status"] as? String {
-        statuses[key] = status
+      let segments = json["segments"] as? [[String: Any]] ?? []
+      var speakers = Set<String>()
+      for segment in segments {
+        if let speaker = segment["speaker"] as? String, !speaker.isEmpty {
+          speakers.insert(speaker)
+        }
       }
-      kinds[key] = kind(from: json)
+      details[key] = HistoryDetail(
+        status: json["status"] as? String,
+        kind: kind(from: json),
+        durationMinutes: json["durationMinutes"] as? Int,
+        speakerCount: speakers.isEmpty ? nil : speakers.count
+      )
     }
-    return (statuses, kinds)
+    return details
   }
 
   /// Record kind: the explicit `kind` field when present, else the legacy
-  /// inference (live-session records predate the field).
-  private static func kind(from json: [String: Any]) -> HistoryKind {
+  /// inference (live-session records predate the field). Internal so the
+  /// home-stats aggregation (UsageStatsProvider) shares one inference rule.
+  static func kind(from json: [String: Any]) -> HistoryKind {
     if let raw = json["kind"] as? String, let kind = HistoryKind(rawValue: raw) {
       return kind
     }

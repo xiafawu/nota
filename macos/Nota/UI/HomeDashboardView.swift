@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 // MARK: - History presentation helpers
 
@@ -60,198 +61,402 @@ enum HistoryPresentation {
   }
 }
 
+// MARK: - Greeting (B4: date eyebrow + the single serif line)
+
+/// Pure greeting rules for the home header. E3: first run says
+/// "Welcome, <name>." with a "First run" eyebrow; every later state (even a
+/// used-then-emptied history) reverts to the time-of-day greeting.
+enum HomeGreeting {
+  /// "First run" for the true first run; otherwise the full date.
+  static func eyebrow(isFirstRun: Bool, date: Date = Date()) -> String {
+    if isFirstRun { return "First run" }
+    return date.formatted(.dateTime.weekday(.wide).month(.wide).day())
+  }
+
+  /// "Good morning/afternoon/evening/night" by local hour.
+  static func timeOfDayPrefix(date: Date = Date(), calendar: Calendar = .current) -> String {
+    switch calendar.component(.hour, from: date) {
+    case 5..<12: return "Good morning"
+    case 12..<17: return "Good afternoon"
+    case 17..<22: return "Good evening"
+    default: return "Good night"
+    }
+  }
+
+  /// The non-name half of the greeting line; the name renders italic in the
+  /// serif typeface.
+  static func prefix(isFirstRun: Bool, date: Date = Date()) -> String {
+    isFirstRun ? "Welcome" : timeOfDayPrefix(date: date)
+  }
+}
+
 // MARK: - Home dashboard
 
-/// Single-pane home shown when no document is open: preflight health, cost
-/// card, and recent transcription history.
+/// B4 "Craft Glass" home: wash ground, date eyebrow + serif greeting, three
+/// entry cards, stats strip, day-banded recents with kind chips + tail search.
+/// E3: with zero history only the greeting and cards render — the stats strip
+/// and recents container are absent, never zero-filled.
 struct HomeDashboardView: View {
   @ObservedObject var model: NotaModel
   @ObservedObject var usageProvider: UsageStatsProvider
-  @AppStorage("usageWindow") private var usageWindow: String = "30d"
 
   @State private var historyExpanded = false
-  @State private var costCardExpanded = false
+  @State private var searchText = ""
+  @State private var fileCardTargeted = false
 
   private let maxCollapsedHistory = 6
 
+  /// Marks the first-run welcome as seen once any content exists; the welcome
+  /// itself renders only while nothing has ever been recorded.
+  private static let firstRunWelcomeKey = "notaFirstRunWelcomeShown"
+
+  private var isFirstRun: Bool {
+    let defaults = UserDefaults.standard
+    if defaults.bool(forKey: Self.firstRunWelcomeKey) { return false }
+    return model.history.isEmpty
+  }
+
+  private var userName: String {
+    let full = NSFullUserName()
+    let firstName = full.split(separator: " ").first.map(String.init) ?? ""
+    return firstName.isEmpty ? full : firstName
+  }
+
+  /// Rows after the live search filter (title + tags, case-insensitive).
+  private var filteredHistory: [HistoryEntry] {
+    let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !query.isEmpty else { return model.history }
+    return model.history.filter { entry in
+      entry.title.localizedCaseInsensitiveContains(query)
+        || entry.tags.contains { $0.localizedCaseInsensitiveContains(query) }
+        || (HistoryPresentation.fallbackTitle(for: entry.url)?.localizedCaseInsensitiveContains(query) ?? false)
+    }
+  }
+
   var body: some View {
-    ScrollView {
-      VStack(alignment: .leading, spacing: 28) {
-        healthSection
-        costSection
-        recentSection
+    ZStack {
+      CraftWashBackground()
+
+      ScrollView {
+        VStack(alignment: .leading, spacing: CraftTokens.spacing32) {
+          greetingHeader
+          cardsRow
+
+          // E3: strip and recents render only when content exists.
+          if !model.history.isEmpty {
+            statsStrip
+            recentSection
+          }
+        }
+        .padding(CraftTokens.spacing32)
+        .frame(maxWidth: .infinity, alignment: .leading)
       }
-      .padding(24)
-      .frame(maxWidth: .infinity, alignment: .leading)
     }
     .onAppear {
-      // On-demand generation appends usage to the record while the dashboard
-      // is hidden; drop the cache so the new spend shows in the cost card.
-      if model.consumeUsageStatsStale() {
-        usageProvider.invalidateCache()
+      if !model.history.isEmpty {
+        UserDefaults.standard.set(true, forKey: Self.firstRunWelcomeKey)
       }
-      Task { await usageProvider.refresh(window: usageWindow) }
+      usageProvider.refreshHomeStats()
     }
-    .onChange(of: usageWindow) { _, newValue in
-      Task { await usageProvider.refresh(window: newValue) }
+    .onChange(of: model.history) { _, _ in
+      // A run completed (or a row was deleted): refresh the strip figures.
+      usageProvider.refreshHomeStats()
+      if !model.history.isEmpty {
+        UserDefaults.standard.set(true, forKey: Self.firstRunWelcomeKey)
+      }
     }
   }
 
-  // MARK: - Health
+  // MARK: - Greeting header
 
-  @ViewBuilder
-  private var healthSection: some View {
-    PreflightHomeView(
-      result: model.preflight,
-      isChecking: model.isCheckingPreflight,
-      onRefresh: { model.runPreflight(refresh: true) },
-      onStartRecording: { model.startLiveSession() },
-      embedded: true
-    )
+  private var greetingHeader: some View {
+    VStack(alignment: .leading, spacing: CraftTokens.spacing8) {
+      Text(HomeGreeting.eyebrow(isFirstRun: isFirstRun))
+        .font(CraftTokens.metadataFont)
+        .foregroundStyle(.secondary)
+
+      (Text(HomeGreeting.prefix(isFirstRun: isFirstRun) + ", ")
+        + Text(userName).italic())
+        .font(CraftTokens.greetingFont)
+        .foregroundStyle(.primary)
+    }
+    .padding(.top, CraftTokens.spacing8)
   }
 
-  // MARK: - Cost card
+  // MARK: - Entry cards (B4: three equal verbs)
 
-  @ViewBuilder
-  private var costSection: some View {
-    VStack(alignment: .leading, spacing: 12) {
-      HStack(alignment: .center) {
-        Label("Cost", systemImage: "dollarsign.circle")
-          .font(.headline)
-          .foregroundColor(.primary)
+  private var cardsRow: some View {
+    HStack(spacing: CraftTokens.spacing16) {
+      meetingCard
+      fileCard
+      memoCard
+    }
+    .frame(maxHeight: 148)
+  }
 
-        Spacer()
+  private var meetingCard: some View {
+    Button {
+      model.startLiveSession()
+    } label: {
+      cardContent(
+        icon: "mic.fill",
+        title: "Start Meeting",
+        subtitle: "Record and transcribe in real time",
+        shortcut: "⌘N",
+        foreground: .white,
+        secondary: .white.opacity(0.85)
+      )
+      .frame(maxWidth: .infinity, minHeight: 132, alignment: .leading)
+      .padding(20)
+      .craftPrimaryCard(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .disabled(model.isRunning)
+    .help("Start a live meeting (⌘N)")
+  }
 
-        Picker("Window", selection: $usageWindow) {
-          Text("30d").tag("30d")
-          Text("All").tag("all")
-        }
-        .pickerStyle(.segmented)
-        .labelsHidden()
-        .frame(width: 120)
+  private var fileCard: some View {
+    Button {
+      model.chooseFile()
+    } label: {
+      cardContent(
+        icon: "arrow.down.doc",
+        title: "Transcribe File",
+        subtitle: "Drop audio anywhere in the window",
+        shortcut: "⌘O",
+        foreground: .primary,
+        secondary: .secondary
+      )
+      .frame(maxWidth: .infinity, minHeight: 132, alignment: .leading)
+      .padding(20)
+      .craftDashedDropCard(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+      .overlay(
+        RoundedRectangle(cornerRadius: 16, style: .continuous)
+          .strokeBorder(CraftTokens.dropStrokeColor, lineWidth: 2)
+          .opacity(fileCardTargeted ? 1 : 0)
+      )
+    }
+    .buttonStyle(.plain)
+    .disabled(model.isRunning)
+    .help("Transcribe an audio file (⌘O)")
+    .onDrop(of: [UTType.fileURL.identifier], isTargeted: $fileCardTargeted) { providers in
+      Self.handleDrop(providers: providers, model: model)
+    }
+  }
+
+  private var memoCard: some View {
+    Button {
+      model.startLiveSession(kind: .memo)
+    } label: {
+      cardContent(
+        icon: "note.text",
+        title: "Quick Memo",
+        subtitle: "Speak a note; get a cleaned write-up",
+        shortcut: "⌘M",
+        foreground: .primary,
+        secondary: .secondary
+      )
+      .frame(maxWidth: .infinity, minHeight: 132, alignment: .leading)
+      .padding(20)
+      .craftGlassPanel(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+    }
+    .buttonStyle(.plain)
+    .disabled(model.isRunning)
+    .help("Start a quick memo (⌘M)")
+  }
+
+  private func cardContent(
+    icon: String,
+    title: String,
+    subtitle: String,
+    shortcut: String,
+    foreground: Color,
+    secondary: Color
+  ) -> some View {
+    VStack(alignment: .leading, spacing: CraftTokens.spacing12) {
+      Image(systemName: icon)
+        .font(.system(size: 22, weight: .semibold))
+        .foregroundStyle(foreground)
+
+      Spacer(minLength: 0)
+
+      VStack(alignment: .leading, spacing: 4) {
+        Text(title)
+          .font(.system(size: 17, weight: .semibold))
+          .foregroundStyle(foreground)
+
+        Text(subtitle)
+          .font(.system(size: 12))
+          .foregroundStyle(secondary)
+          .lineLimit(2)
+          .multilineTextAlignment(.leading)
       }
 
-      // Loading and error states keep the same card shell (and a fixed height)
-      // as the loaded card, so the section never jumps on refresh.
-      if usageProvider.isLoading {
-        costCardShell {
-          ProgressView()
-            .controlSize(.small)
-            .frame(maxWidth: .infinity, alignment: .center)
-        }
-      } else if let error = usageProvider.error {
-        costCardShell {
-          VStack(spacing: 4) {
-            Text("Could not load usage stats")
-              .font(.subheadline)
-              .foregroundColor(.secondary)
-            Text(error.localizedDescription)
-              .font(.caption)
-              .foregroundColor(.secondary)
-              .lineLimit(2)
-          }
-          .frame(maxWidth: .infinity, alignment: .center)
-        }
+      Text(shortcut)
+        .font(CraftTokens.shortcutFont)
+        .foregroundStyle(secondary)
+    }
+  }
+
+  /// Shared drop handler for the file card and the whole window (drop starts
+  /// transcription with no dialog — MacWhisper convention, XIA-390 #3).
+  static func handleDrop(
+    providers: [NSItemProvider],
+    model: NotaModel
+  ) -> Bool {
+    guard let provider = providers.first else { return false }
+    provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+      let url: URL?
+      if let data = item as? Data {
+        url = URL(dataRepresentation: data, relativeTo: nil)
+      } else if let nsURL = item as? NSURL {
+        url = nsURL as URL
       } else {
-        CostCardView(
-          rows: usageProvider.summary?.rows ?? [],
-          window: usageWindow,
-          expanded: $costCardExpanded
-        )
+        url = nil
+      }
+      if let url {
+        Task { @MainActor in model.accept(url) }
       }
     }
+    return true
   }
 
-  /// Fixed-height skeleton shell matching the loaded cost card's surface.
-  private func costCardShell<Content: View>(@ViewBuilder content: () -> Content) -> some View {
-    content()
-      .frame(maxWidth: .infinity, minHeight: Metrics.costSkeletonHeight)
-      .padding(Metrics.cardPadding)
-      .liquidGlass(.regular, in: RoundedRectangle(cornerRadius: Metrics.cardCornerRadius))
+  // MARK: - Stats strip
+
+  private var statsStrip: some View {
+    let stats = usageProvider.homeStats
+    return HStack(spacing: 0) {
+      statCell(value: Self.minutesText(stats.transcribedMinutes), label: "transcribed this week")
+      stripDivider
+      statCell(value: "\(stats.meetings)", label: stats.meetings == 1 ? "meeting" : "meetings")
+      stripDivider
+      statCell(value: "\(stats.memos)", label: stats.memos == 1 ? "memo" : "memos")
+      stripDivider
+      statCell(value: "\(stats.actionItems)", label: stats.actionItems == 1 ? "action item" : "action items")
+    }
+    .padding(.horizontal, CraftTokens.spacing24)
+    .padding(.vertical, CraftTokens.spacing16)
+    .craftGlassPanel(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+  }
+
+  private var stripDivider: some View {
+    Rectangle()
+      .fill(CraftTokens.hairline)
+      .frame(width: 1, height: 36)
+  }
+
+  private func statCell(value: String, label: String) -> some View {
+    VStack(alignment: .leading, spacing: 2) {
+      Text(value)
+        .font(.system(size: 24, weight: .semibold).monospacedDigit())
+        .foregroundStyle(.primary)
+      Text(label)
+        .font(CraftTokens.metadataFont)
+        .foregroundStyle(.secondary)
+    }
+    .frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  /// "45m" under an hour, "1h 05m" beyond.
+  static func minutesText(_ minutes: Int) -> String {
+    if minutes >= 60 {
+      return String(format: "%dh %02dm", minutes / 60, minutes % 60)
+    }
+    return "\(minutes)m"
   }
 
   // MARK: - Recent history
 
-  @ViewBuilder
   private var recentSection: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      Label("Recent", systemImage: "clock")
-        .font(.headline)
-        .foregroundColor(.primary)
+    VStack(alignment: .leading, spacing: CraftTokens.spacing12) {
+      Text("Recent")
+        .font(.system(size: 15, weight: .semibold))
+        .foregroundStyle(.primary)
 
-      if model.history.isEmpty {
-        Text("No transcripts yet")
-          .font(.subheadline)
-          .foregroundColor(.secondary)
-          .padding(.vertical, 8)
-      } else {
-        let displayItems = historyExpanded
-          ? Array(model.history.prefix(50))
-          : Array(model.history.prefix(maxCollapsedHistory))
+      VStack(spacing: 4) {
+        let displayItems = searchText.isEmpty
+          ? (historyExpanded ? Array(filteredHistory.prefix(50)) : Array(filteredHistory.prefix(maxCollapsedHistory)))
+          : Array(filteredHistory.prefix(50))
         let now = Date()
         let groups = groupedByBand(displayItems, now: now)
 
         ForEach(groups, id: \.band) { group in
           Text(group.band.title)
-            .font(Tokens.historySectionFont)
-            .foregroundColor(.secondary)
+            .font(CraftTokens.metadataFont)
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding(.top, group.band == groups.first?.band ? 0 : 8)
 
           ForEach(group.entries) { entry in
-            Button {
-              model.openHistory(entry)
-            } label: {
-              HistoryDashboardRow(
-                entry: entry,
-                now: now,
-                showsTranscriptPill: showsTranscriptPill(recordStatus: model.recordStatus(for: entry))
-              )
-            }
-            .buttonStyle(HistoryRowButtonStyle())
+            HomeRecentRow(
+              entry: entry,
+              detail: model.recordDetail(for: entry),
+              now: now,
+              onOpen: { model.openHistory(entry) },
+              onReveal: { NSWorkspace.shared.activateFileViewerSelecting([entry.url]) },
+              onDelete: { model.deleteHistory(entry) }
+            )
             .disabled(model.isRunning)
             .contextMenu {
+              Button("Open") { model.openHistory(entry) }
               Button("Reveal in Finder") {
                 NSWorkspace.shared.activateFileViewerSelecting([entry.url])
               }
               Divider()
-              Button("Delete") {
-                model.deleteHistory(entry)
-              }
+              Button("Delete") { model.deleteHistory(entry) }
             }
           }
         }
 
-        if model.history.count > maxCollapsedHistory && !historyExpanded {
-          Button {
-            withAnimation(.easeInOut(duration: 0.2)) { historyExpanded = true }
-          } label: {
-            HStack(spacing: 4) {
-              Text("Show all (\(model.history.count))")
-                .font(.subheadline)
-              Image(systemName: "chevron.down")
-                .font(.caption)
-            }
-          }
-          .buttonStyle(.plain)
-          .foregroundColor(.accentColor)
+        if displayItems.isEmpty {
+          Text("No matches")
+            .font(.system(size: 13))
+            .foregroundStyle(.secondary)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.vertical, 12)
         }
 
-        if historyExpanded && model.history.count > maxCollapsedHistory {
-          Button {
-            withAnimation(.easeInOut(duration: 0.2)) { historyExpanded = false }
-          } label: {
-            HStack(spacing: 4) {
-              Text("Show less")
-                .font(.subheadline)
-              Image(systemName: "chevron.up")
-                .font(.caption)
-            }
-          }
-          .buttonStyle(.plain)
-          .foregroundColor(.accentColor)
+        showMoreToggle
+
+        searchField
+      }
+      .padding(.vertical, 8)
+      .craftGlassPanel(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    }
+  }
+
+  @ViewBuilder
+  private var showMoreToggle: some View {
+    if searchText.isEmpty && model.history.count > maxCollapsedHistory {
+      Button {
+        withAnimation(Tokens.animFast) { historyExpanded.toggle() }
+      } label: {
+        HStack(spacing: 4) {
+          Text(historyExpanded ? "Show less" : "Show all (\(model.history.count))")
+            .font(.system(size: 13))
+          Image(systemName: historyExpanded ? "chevron.up" : "chevron.down")
+            .font(.caption2)
         }
       }
+      .buttonStyle(.plain)
+      .foregroundColor(.accentColor)
+      .padding(.vertical, 4)
     }
+  }
+
+  private var searchField: some View {
+    HStack(spacing: 6) {
+      Image(systemName: "magnifyingglass")
+        .font(.system(size: 12))
+        .foregroundStyle(.secondary)
+      TextField("Search recents", text: $searchText)
+        .textFieldStyle(.plain)
+        .font(.system(size: 13))
+    }
+    .padding(.horizontal, 8)
+    .padding(.vertical, 6)
+    .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 8, style: .continuous))
+    .padding(.top, 4)
   }
 
   /// Group already-sorted (newest-first) entries into contiguous recency bands.
@@ -272,167 +477,21 @@ struct HomeDashboardView: View {
   }
 }
 
-// MARK: - Cost card
+// MARK: - Recent row
 
-private struct CostCardView: View {
-  let rows: [ModelUsageRow]
-  let window: String
-  @Binding var expanded: Bool
-
-  private var viewModel: CostCardViewModel {
-    CostCardViewModel(rows: rows, window: window)
-  }
-
-  var body: some View {
-    VStack(alignment: .leading, spacing: 8) {
-      // Headline
-      HStack(alignment: .firstTextBaseline, spacing: 4) {
-        Text(viewModel.headlineCost)
-          .font(.system(size: 28, weight: .bold))
-          .foregroundColor(.primary)
-
-        if viewModel.hasEstimated {
-          Text("estimated")
-            .font(.caption)
-            .foregroundColor(.secondary)
-        }
-      }
-
-      // Unknown footnote
-      if let note = viewModel.unknownNote {
-        Text("\(note)")
-          .font(.caption)
-          .foregroundColor(.secondary)
-      }
-
-      // Top models (divider only when rows follow — an empty card otherwise
-      // draws an orphan hairline under the headline)
-      if !viewModel.topModels.isEmpty {
-        Divider()
-          .padding(.vertical, 4)
-
-        ForEach(viewModel.topModels, id: \.modelId) { row in
-          HStack {
-            VStack(alignment: .leading, spacing: 2) {
-              Text(row.modelId)
-                .font(.subheadline)
-                .fontWeight(.medium)
-                .lineLimit(1)
-              Text("\(row.runs) run\(row.runs == 1 ? "" : "s")")
-                .font(.caption)
-                .foregroundColor(.secondary)
-            }
-
-            Spacer()
-
-            // `costDisplay`, not a raw format call: a model Nota stores no
-            // pricing for must never render as a dollar figure.
-            Text(row.costDisplay)
-              .font(.callout)
-              .fontWeight(.medium)
-          }
-        }
-      }
-
-      // Full table (expanded)
-      if expanded && viewModel.totalModelCount > 5 {
-        Divider()
-          .padding(.vertical, 4)
-
-        expandedTable
-      }
-
-      // See all / Less toggle
-      if viewModel.totalModelCount > 5 {
-        Button {
-          withAnimation(.easeInOut(duration: 0.2)) { expanded.toggle() }
-        } label: {
-          HStack(spacing: 4) {
-            Text(expanded ? "Less" : "See all (\(viewModel.totalModelCount))")
-              .font(.subheadline)
-            Image(systemName: expanded ? "chevron.up" : "chevron.down")
-              .font(.caption)
-          }
-        }
-        .buttonStyle(.plain)
-        .foregroundColor(.accentColor)
-      }
-
-      // Empty state
-      if rows.isEmpty && window == "30d" {
-        Text("No usage in the last 30 days — costs appear after your first transcription")
-          .font(.caption)
-          .foregroundColor(.secondary)
-          .padding(.vertical, 4)
-      } else if rows.isEmpty {
-        Text("No usage yet — costs appear after your first transcription")
-          .font(.caption)
-          .foregroundColor(.secondary)
-          .padding(.vertical, 4)
-      }
-    }
-    .padding(Metrics.cardPadding)
-    .liquidGlass(.regular, in: RoundedRectangle(cornerRadius: Metrics.cardCornerRadius))
-  }
-
-  @ViewBuilder
-  private var expandedTable: some View {
-    // Grid instead of fixed column widths: the model column flexes with the
-    // card while the numeric columns hug their content.
-    Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 8, verticalSpacing: 4) {
-      GridRow {
-        Text("Model")
-          .frame(maxWidth: .infinity, alignment: .leading)
-        Text("Provider")
-          .gridColumnAlignment(.leading)
-        Text("Runs")
-          .gridColumnAlignment(.trailing)
-        Text("Calls")
-          .gridColumnAlignment(.trailing)
-        Text("Tokens In")
-          .gridColumnAlignment(.trailing)
-        Text("Tokens Out")
-          .gridColumnAlignment(.trailing)
-        Text("Cost")
-          .gridColumnAlignment(.trailing)
-      }
-      .font(.caption)
-      .foregroundColor(.secondary)
-
-      Divider()
-
-      let sorted = rows.sorted { $0.costUSD > $1.costUSD }
-      ForEach(sorted, id: \.modelId) { row in
-        GridRow {
-          Text(row.modelId)
-            .lineLimit(1)
-            .truncationMode(.tail)
-            .frame(maxWidth: .infinity, alignment: .leading)
-          Text(row.provider)
-          Text("\(row.runs)")
-          Text("\(row.calls)")
-          Text("\(row.tokensIn)")
-          Text("\(row.tokensOut)")
-          Text(row.costDisplay)
-        }
-        .font(.caption)
-      }
-    }
-  }
-}
-
-// MARK: - History row
-
-private struct HistoryDashboardRow: View {
+/// One recents row inside the glass container: title, date · duration ·
+/// speakers subtitle, kind chip, transcript pill, tags, and hover actions.
+/// Content stays opaque (the container is the glass; rows never stack glass).
+private struct HomeRecentRow: View {
   let entry: HistoryEntry
+  let detail: HistoryRecordInfo.HistoryDetail?
   var now: Date = Date()
+  let onOpen: () -> Void
+  let onReveal: () -> Void
+  let onDelete: () -> Void
 
-  /// Subtle badge for transcript-only records; clears when the record
-  /// completes (driven by the history record's status, not the file).
-  var showsTranscriptPill: Bool = false
+  @State private var isHovered = false
 
-  /// Untitled runs fall back to the source filename instead of the generic
-  /// "Transcript" heading (the date line below carries the rest).
   private var displayTitle: String {
     guard entry.title == "Transcript" else { return entry.title }
     return HistoryPresentation.fallbackTitle(for: entry.url) ?? entry.title
@@ -445,84 +504,121 @@ private struct HistoryDashboardRow: View {
     return HistoryPresentation.shortDate(for: entry.modifiedAt, now: now)
   }
 
+  private var subtitleParts: [String] {
+    var parts = [dateText]
+    if let minutes = detail?.durationMinutes {
+      parts.append(HomeDashboardView.minutesText(minutes))
+    }
+    if let speakers = detail?.speakerCount {
+      parts.append("\(speakers) speaker\(speakers == 1 ? "" : "s")")
+    }
+    return parts
+  }
+
+  private var kindChip: (text: String, tint: CraftChipTint)? {
+    switch entry.kind {
+    case .meeting: return ("Meeting", .red)
+    case .file: return ("File", .gold)
+    case .memo: return ("Memo", .green)
+    }
+  }
+
   var body: some View {
-    HStack(spacing: 8) {
-      VStack(alignment: .leading, spacing: 2) {
-        Text(displayTitle)
-          .font(.callout)
-          .fontWeight(.medium)
-          .lineLimit(1)
-          .truncationMode(.tail)
+    HStack(spacing: CraftTokens.spacing8) {
+      Button(action: onOpen) {
+        HStack(spacing: CraftTokens.spacing8) {
+          VStack(alignment: .leading, spacing: 2) {
+            Text(displayTitle)
+              .font(.callout)
+              .fontWeight(.medium)
+              .foregroundStyle(.primary)
+              .lineLimit(1)
+              .truncationMode(.tail)
 
-        Text(dateText)
-          .font(.caption2)
-          .foregroundColor(.secondary)
-      }
-
-      Spacer()
-
-      if showsTranscriptPill {
-        Text("transcript")
-          .font(.caption2)
-          .foregroundColor(.secondary)
-          .padding(.horizontal, 6)
-          .padding(.vertical, 2)
-          .overlay(
-            Capsule().strokeBorder(.secondary.opacity(0.35), lineWidth: 1)
-          )
-      }
-
-      if !entry.tags.isEmpty {
-        HStack(spacing: 4) {
-          ForEach(entry.tags.prefix(3), id: \.self) { tag in
-            Text(tag)
+            Text(subtitleParts.joined(separator: " · "))
               .font(.caption2)
+              .foregroundStyle(.secondary)
+          }
+
+          Spacer(minLength: 8)
+
+          if let chip = kindChip {
+            SoftTintChip(text: chip.text, tint: chip.tint)
+          }
+
+          if detail?.status == "transcribed" {
+            Text("transcript")
+              .font(.caption2)
+              .foregroundStyle(.secondary)
               .padding(.horizontal, 6)
               .padding(.vertical, 2)
-              .background(.secondary.opacity(0.12), in: Capsule())
+              .overlay(
+                Capsule().strokeBorder(.secondary.opacity(0.35), lineWidth: 1)
+              )
           }
-          if entry.tags.count > 3 {
-            Text("+\(entry.tags.count - 3)")
-              .font(.caption2)
-              .foregroundColor(.secondary)
+
+          if !entry.tags.isEmpty {
+            HStack(spacing: 4) {
+              ForEach(entry.tags.prefix(3), id: \.self) { tag in
+                Text(tag)
+                  .font(.caption2)
+                  .padding(.horizontal, 6)
+                  .padding(.vertical, 2)
+                  .background(.secondary.opacity(0.12), in: Capsule())
+              }
+              if entry.tags.count > 3 {
+                Text("+\(entry.tags.count - 3)")
+                  .font(.caption2)
+                  .foregroundStyle(.secondary)
+              }
+            }
           }
         }
+        .contentShape(Rectangle())
       }
+      .buttonStyle(.plain)
+
+      // Hover actions sit OUTSIDE the open button so they never double-fire it.
+      HStack(spacing: 2) {
+        Button(action: onReveal) {
+          Image(systemName: "folder")
+            .font(.system(size: 12))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help("Reveal in Finder")
+
+        Button(action: onDelete) {
+          Image(systemName: "trash")
+            .font(.system(size: 12))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.secondary)
+        .help("Delete")
+      }
+      .opacity(isHovered ? 1 : 0)
+      .animation(Tokens.animSnap, value: isHovered)
     }
     .padding(.vertical, 6)
-    .padding(.horizontal, 12)
+    .padding(.horizontal, 10)
     .frame(maxWidth: .infinity, alignment: .leading)
-    .contentShape(RoundedRectangle(cornerRadius: Metrics.rowCornerRadius))
-    .liquidGlass(.regular, in: RoundedRectangle(cornerRadius: Metrics.rowCornerRadius))
+    .background(
+      RoundedRectangle(cornerRadius: Metrics.rowCornerRadius, style: .continuous)
+        .fill(Color.primary.opacity(isHovered ? 0.06 : 0))
+    )
+    .onHover { isHovered = $0 }
+    .contentShape(Rectangle())
   }
 }
 
-/// Row buttons: hover wash + pressed dim over the row's glass surface.
-private struct HistoryRowButtonStyle: ButtonStyle {
-  func makeBody(configuration: Configuration) -> some View {
-    HistoryRowButtonBody(configuration: configuration)
-  }
-
-  private struct HistoryRowButtonBody: View {
-    let configuration: Configuration
-    @State private var isHovered = false
-
-    var body: some View {
-      configuration.label
-        .overlay(
-          RoundedRectangle(cornerRadius: Metrics.rowCornerRadius)
-            .fill(Color.primary.opacity(washOpacity))
-            .allowsHitTesting(false)
-        )
-        .onHover { isHovered = $0 }
-        .animation(Tokens.animSnap, value: isHovered)
-        .animation(Tokens.animSnap, value: configuration.isPressed)
-    }
-
-    private var washOpacity: Double {
-      if configuration.isPressed { return Tokens.rowPressedWashOpacity }
-      if isHovered { return Tokens.rowHoverWashOpacity }
-      return 0
-    }
-  }
+#if DEBUG
+#Preview("home populated") {
+  HomeDashboardView(
+    model: NotaModel(),
+    usageProvider: UsageStatsProvider(
+      projectDirectory: URL(fileURLWithPath: "/Users/xiafawu/Developer/Nota")
+    )
+  )
+  .frame(width: 900, height: 700)
 }
+#endif

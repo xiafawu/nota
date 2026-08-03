@@ -158,4 +158,62 @@ final class HomeDashboardStateTests: XCTestCase {
     XCTAssertEqual(vm.topModels.count, 1)
     XCTAssertEqual(vm.totalModelCount, 2)
   }
+
+  // MARK: - HomeGreeting (B4 header / E3 first run)
+
+  private func dateAt(hour: Int) -> Date {
+    Calendar.current.date(
+      bySettingHour: hour,
+      minute: 0,
+      second: 0,
+      of: Date()
+    )!
+  }
+
+  func testGreeting_firstRunSaysWelcomeWithFirstRunEyebrow() {
+    XCTAssertEqual(HomeGreeting.eyebrow(isFirstRun: true), "First run")
+    XCTAssertEqual(HomeGreeting.prefix(isFirstRun: true), "Welcome")
+  }
+
+  func testGreeting_usedStateShowsDateEyebrowAndTimeOfDay() {
+    // Non-first-run eyebrow is a formatted date, never the "First run" marker.
+    let eyebrow = HomeGreeting.eyebrow(isFirstRun: false, date: dateAt(hour: 9))
+    XCTAssertNotEqual(eyebrow, "First run")
+    XCTAssertFalse(eyebrow.isEmpty)
+    XCTAssertEqual(
+      HomeGreeting.prefix(isFirstRun: false, date: dateAt(hour: 9)),
+      "Good morning"
+    )
+  }
+
+  func testGreeting_timeOfDayPrefixByHour() {
+    XCTAssertEqual(HomeGreeting.timeOfDayPrefix(date: dateAt(hour: 5)), "Good morning")
+    XCTAssertEqual(HomeGreeting.timeOfDayPrefix(date: dateAt(hour: 11)), "Good morning")
+    XCTAssertEqual(HomeGreeting.timeOfDayPrefix(date: dateAt(hour: 12)), "Good afternoon")
+    XCTAssertEqual(HomeGreeting.timeOfDayPrefix(date: dateAt(hour: 16)), "Good afternoon")
+    XCTAssertEqual(HomeGreeting.timeOfDayPrefix(date: dateAt(hour: 17)), "Good evening")
+    XCTAssertEqual(HomeGreeting.timeOfDayPrefix(date: dateAt(hour: 21)), "Good evening")
+    XCTAssertEqual(HomeGreeting.timeOfDayPrefix(date: dateAt(hour: 22)), "Good night")
+    XCTAssertEqual(HomeGreeting.timeOfDayPrefix(date: dateAt(hour: 4)), "Good night")
+  }
+
+  func testGreeting_notFirstRunPrefixMatchesTimeOfDay() {
+    XCTAssertEqual(
+      HomeGreeting.prefix(isFirstRun: false, date: dateAt(hour: 18)),
+      HomeGreeting.timeOfDayPrefix(date: dateAt(hour: 18))
+    )
+  }
+
+  // MARK: - Stats-strip formatting
+
+  func testMinutesText_underAnHour() {
+    XCTAssertEqual(HomeDashboardView.minutesText(0), "0m")
+    XCTAssertEqual(HomeDashboardView.minutesText(45), "45m")
+  }
+
+  func testMinutesText_overAnHour() {
+    XCTAssertEqual(HomeDashboardView.minutesText(60), "1h 00m")
+    XCTAssertEqual(HomeDashboardView.minutesText(65), "1h 05m")
+    XCTAssertEqual(HomeDashboardView.minutesText(125), "2h 05m")
+  }
 }

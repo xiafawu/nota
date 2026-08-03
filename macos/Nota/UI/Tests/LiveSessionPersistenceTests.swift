@@ -397,4 +397,82 @@ final class LiveSessionPersistenceTests: XCTestCase {
     XCTAssertEqual(result.kinds["/tmp/legacy-live.summary.md"], .meeting, "legacy streaming-model record infers meeting")
     XCTAssertEqual(result.kinds["/tmp/legacy-file.summary.md"], .file, "legacy CLI record infers file")
   }
+
+  // MARK: - Home stats aggregation
+
+  private func writeRecord(named name: String, _ record: [String: Any]) throws {
+    let url = historyDirectory.appendingPathComponent(name)
+    try JSONSerialization.data(withJSONObject: record).write(to: url)
+  }
+
+  private func recordJSON(
+    createdAt: String,
+    kind: String? = nil,
+    durationMinutes: Int = 5,
+    actionItems: [String]? = nil,
+    outputPath: String
+  ) -> [String: Any] {
+    var json: [String: Any] = [
+      "createdAt": createdAt,
+      "durationMinutes": durationMinutes,
+      "outputPath": outputPath,
+      "options": ["model": "universal-3.5-pro-streaming", "diarize": false, "identify": false]
+    ]
+    if let kind { json["kind"] = kind }
+    if let actionItems { json["summary"] = ["actionItems": actionItems] }
+    return json
+  }
+
+  func testHomeStatsAggregatesWeekWindowKindsAndActionItems() throws {
+    // Monday 2026-08-03 09:00Z = "now" in the test.
+    let now = ISO8601DateFormatter().date(from: "2026-08-03T09:00:00.000Z")!
+    try writeRecord(named: "a.json", recordJSON(
+      createdAt: "2026-08-02T10:00:00.000Z", // this week
+      kind: "meeting",
+      durationMinutes: 12,
+      actionItems: ["[ ] Write the spec"],
+      outputPath: "/tmp/a.summary.md"
+    ))
+    try writeRecord(named: "b.json", recordJSON(
+      createdAt: "2026-08-01T10:00:00.000Z", // this week
+      kind: "memo",
+      durationMinutes: 3,
+      outputPath: "/tmp/b.summary.md"
+    ))
+    try writeRecord(named: "c.json", recordJSON(
+      createdAt: "2026-07-20T10:00:00.000Z", // outside the window
+      kind: "meeting",
+      durationMinutes: 99,
+      actionItems: ["[ ] Stale", "[ ] Also stale"],
+      outputPath: "/tmp/c.summary.md"
+    ))
+    try writeRecord(named: "d.json", recordJSON(
+      createdAt: "2026-08-03T08:00:00.000Z", // today
+      durationMinutes: 7,                    // no kind → legacy inference = meeting
+      outputPath: "/tmp/d.summary.md"
+    ))
+
+    let stats = HistoryRecordInfo.homeStats(historyDir: historyDirectory, now: now)
+
+    XCTAssertEqual(stats.transcribedMinutes, 12 + 3 + 7)
+    XCTAssertEqual(stats.meetings, 2)   // a + d (legacy meeting)
+    XCTAssertEqual(stats.memos, 1)      // b
+    XCTAssertEqual(stats.actionItems, 1) // only a's in-window summary counts
+    XCTAssertFalse(stats.isEmpty)
+  }
+
+  func testHomeStatsEmptyWhenNoRecordsInWindow() throws {
+    let now = ISO8601DateFormatter().date(from: "2026-08-03T09:00:00.000Z")!
+    try writeRecord(named: "a.json", recordJSON(
+      createdAt: "2026-07-20T10:00:00.000Z",
+      kind: "meeting",
+      durationMinutes: 99,
+      outputPath: "/tmp/a.summary.md"
+    ))
+
+    let stats = HistoryRecordInfo.homeStats(historyDir: historyDirectory, now: now)
+
+    XCTAssertTrue(stats.isEmpty)
+    XCTAssertEqual(stats.transcribedMinutes, 0)
+  }
 }
