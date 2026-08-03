@@ -93,15 +93,14 @@ extension HUDState {
   /// the session's feedback, and a pill hanging under it would be a second
   /// opinion about a session whose text has not been inserted at all.
   ///
-  /// With one exception, and it is what `isReviewRecording` is for. A card
-  /// being *extended* by a continuation (plan 14) is not a card waiting on its
-  /// owner: the microphone is open again, and the live states — the level
-  /// meter, and the rough draft the bar and prompter styles exist to show — are
-  /// the only thing on screen that says so. The card shows a mic dot, not a
-  /// transcript. The idle-derived states stay suppressed either way: a success
-  /// snippet or a polish warning speaks for text that is still sitting in the
-  /// card, uninserted. A `.failed` always shows — a review card has nowhere to
-  /// put an error, and swallowing one is how a session goes missing.
+  /// That includes a continuation recording into the card (changed 2026-08-03
+  /// on owner feedback — the earlier rule re-admitted the live states, and the
+  /// owner saw it as two HUDs narrating one session). The card's header
+  /// already carries the mic dot and "Listening…" while a continuation
+  /// records (`DictationReviewModel.isListening`), so the open microphone is
+  /// still announced — by the one surface the session owns. A `.failed`
+  /// always shows: a review card has nowhere to put an error, and swallowing
+  /// one is how a session goes missing.
   static func compute(
     controllerState: DictationState,
     isPolishInProgress: Bool,
@@ -109,17 +108,12 @@ extension HUDState {
     lastSecureFieldNotice: String?,
     lastProcessedText: String?,
     rmsLevel: Float,
-    isReviewing: Bool = false,
-    isReviewRecording: Bool = false
+    isReviewing: Bool = false
   ) -> HUDState {
     if isReviewing {
       switch controllerState {
       case .failed(let message):
         return .error(message: message)
-      case .listening where isReviewRecording:
-        return .listening(level: rmsLevel)
-      case .finalizing where isReviewRecording:
-        return .processing(step: isPolishInProgress ? "Polishing…" : "Transcribing…")
       default:
         return .hidden
       }

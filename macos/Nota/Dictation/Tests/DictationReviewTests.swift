@@ -352,10 +352,11 @@ final class ReviewHUDTests: XCTestCase {
     )
   }
 
-  /// A card being extended is not a card waiting on its owner: the microphone
-  /// is open, and the meter and the rough draft are the only thing on screen
-  /// that says so. The card shows a mic dot, not a transcript.
-  func testThePillComesBackWhileAContinuationIsRecording() {
+  /// One session, one surface (owner call 2026-08-03): while the card is up
+  /// the HUD stays down even for a continuation — the card's own header
+  /// carries the mic dot and "Listening…", and a second panel narrating the
+  /// same microphone read as two HUDs.
+  func testThePillStaysDownWhileAContinuationIsRecording() {
     XCTAssertEqual(
       HUDState.compute(
         controllerState: .listening,
@@ -364,10 +365,9 @@ final class ReviewHUDTests: XCTestCase {
         lastSecureFieldNotice: nil,
         lastProcessedText: nil,
         rmsLevel: 0.4,
-        isReviewing: true,
-        isReviewRecording: true
+        isReviewing: true
       ),
-      .listening(level: 0.4)
+      .hidden
     )
     XCTAssertEqual(
       HUDState.compute(
@@ -377,15 +377,14 @@ final class ReviewHUDTests: XCTestCase {
         lastSecureFieldNotice: nil,
         lastProcessedText: nil,
         rmsLevel: 0,
-        isReviewing: true,
-        isReviewRecording: true
+        isReviewing: true
       ),
-      .processing(step: "Polishing…")
+      .hidden
     )
   }
 
-  /// The idle-derived states stay suppressed either way: a success snippet
-  /// speaks for text that is still sitting in the card, uninserted.
+  /// The idle-derived states stay suppressed too: a success snippet speaks
+  /// for text that is still sitting in the card, uninserted.
   func testTheSuccessSnippetStaysSuppressedDuringAContinuation() {
     XCTAssertEqual(
       HUDState.compute(
@@ -395,8 +394,7 @@ final class ReviewHUDTests: XCTestCase {
         lastSecureFieldNotice: nil,
         lastProcessedText: "Ship the genc2rust patch.",
         rmsLevel: 0,
-        isReviewing: true,
-        isReviewRecording: true
+        isReviewing: true
       ),
       .hidden
     )

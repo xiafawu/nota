@@ -252,8 +252,7 @@ final class DictationHUDController {
       lastSecureFieldNotice: controller.lastSecureFieldNotice,
       lastProcessedText: controller.lastProcessedText,
       rmsLevel: controller.capture.rmsLevel,
-      isReviewing: controller.isReviewing,
-      isReviewRecording: controller.isReviewRecording
+      isReviewing: controller.isReviewing
     )
   }
 
