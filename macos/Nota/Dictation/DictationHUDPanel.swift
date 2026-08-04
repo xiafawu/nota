@@ -138,7 +138,17 @@ final class DictationHUDPanel: NSPanel {
   /// `style` picks the shape. `.pill` is the default and forwards the same
   /// bounded tail the pill has always been handed, so nothing about the default
   /// path is conditional on this parameter existing.
-  func update(state: HUDState, draft: HUDDraft = .empty, style: HUDStyle = .pill) {
+  ///
+  /// `glassOpacity` is the owner's tint weight. It rides along with the style
+  /// rather than being pushed separately because this is the one call the HUD
+  /// makes on every tick and on every show: whatever Settings last saved is on
+  /// the panel by its next frame, and no path has to remember to apply it.
+  func update(
+    state: HUDState,
+    draft: HUDDraft = .empty,
+    style: HUDStyle = .pill,
+    glassOpacity: Double = GlassTint.standard
+  ) {
     let styleChanged = style != self.style
     self.style = style
     hostingView.rootView = DictationHUDRootView(style: style, state: state, draft: draft)
@@ -149,6 +159,7 @@ final class DictationHUDPanel: NSPanel {
     // a state change that does not move the frame (a warning arriving at the same
     // width) still changes the shape the material has to take.
     dragView.showsGlass = state != .hidden
+    dragView.tintAlpha = GlassTint.clamped(glassOpacity)
     dragView.glassCornerRadius = HUDGlassMetrics.cornerRadius(
       style: style,
       state: state,

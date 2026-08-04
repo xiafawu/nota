@@ -570,6 +570,15 @@ struct DictationSettings: Codable, Equatable, Sendable {
   var screenCaptureFallbackEnabled: Bool = true
   /// Which shape the HUD takes. `.pill` is the pre-existing behavior.
   var hudStyle: HUDStyle = .pill
+  /// How strongly the floating surfaces' Liquid Glass is tinted — the HUD in all
+  /// three styles and the review card.
+  ///
+  /// Clamped on the way in as well as on the way back out of a payload: the
+  /// slider cannot produce a value outside `GlassTint.range`, but a hand-edited
+  /// defaults entry can, and an alpha of 0 is a panel nobody can read.
+  var hudGlassOpacity: Double = GlassTint.standard {
+    didSet { hudGlassOpacity = GlassTint.clamped(hudGlassOpacity) }
+  }
   /// How the finished text reaches the target app.
   ///
   /// Default `.immediate`, and deliberately so: the other two modes each change
@@ -584,6 +593,7 @@ struct DictationSettings: Codable, Equatable, Sendable {
     case screenContextEnabled, screenCaptureFallbackEnabled
     case deliveryMode
     case hudStyle
+    case hudGlassOpacity
   }
 
   /// The boolean this enum replaced. Read to migrate a payload written before
@@ -627,6 +637,13 @@ struct DictationSettings: Codable, Equatable, Sendable {
     // at. An unknown value (a newer build's style, a hand-edited typo) is the
     // same situation and gets the same answer.
     hudStyle = (try? container.decode(HUDStyle.self, forKey: .hudStyle)) ?? defaults.hudStyle
+    // Same shape, and the clamp on top: a payload predating the setting has no
+    // key and gets the default, and one carrying a value this build will not
+    // draw is corrected rather than refused — refusing throws, and a throw here
+    // resets every other dictation preference the owner has.
+    hudGlassOpacity = GlassTint.clamped(
+      (try? container.decode(Double.self, forKey: .hudGlassOpacity)) ?? defaults.hudGlassOpacity
+    )
   }
 
   /// Writes both the enum and the bool it replaced.
@@ -650,6 +667,7 @@ struct DictationSettings: Codable, Equatable, Sendable {
     try container.encode(screenCaptureFallbackEnabled, forKey: .screenCaptureFallbackEnabled)
     try container.encode(deliveryMode, forKey: .deliveryMode)
     try container.encode(hudStyle, forKey: .hudStyle)
+    try container.encode(hudGlassOpacity, forKey: .hudGlassOpacity)
 
     var legacy = encoder.container(keyedBy: LegacyCodingKeys.self)
     try legacy.encode(deliveryMode == .streaming, forKey: .streamingDelivery)

@@ -50,6 +50,15 @@ class GlassBackingView: NSView {
     didSet { glassView.isHidden = !showsGlass }
   }
 
+  /// How dark the plate is cast, retinting the live material on assignment.
+  ///
+  /// The owner sets this (Dictation → Heads-Up Display → Glass opacity), so it
+  /// can move while a panel is on screen; assigning it is the whole of applying
+  /// it. Only the alpha is theirs — the hue is fixed, see `GlassTint`.
+  var tintAlpha: Double = GlassTint.standard {
+    didSet { glassView.tintColor = GlassTint.color(alpha: tintAlpha) }
+  }
+
   init(inset: CGFloat) {
     self.inset = inset
     super.init(frame: .zero)
@@ -65,8 +74,10 @@ class GlassBackingView: NSView {
     // regular glass over a bright background is bright, and white-on-bright is
     // the "washed out" failure the flat dark body was chosen to avoid. The tint
     // is weak enough that the refraction still reads as glass and strong enough
-    // that the content never has to compete with what is behind it.
-    glassView.tintColor = Self.tint
+    // that the content never has to compete with what is behind it. How strong
+    // is the owner's call within bounds that keep both halves of that true —
+    // `GlassTint`, reassigned through `tintAlpha` whenever the setting moves.
+    glassView.tintColor = GlassTint.color(alpha: tintAlpha)
     addSubview(glassView)
   }
 
@@ -94,12 +105,44 @@ class GlassBackingView: NSView {
     glassView.cornerRadius = min(glassCornerRadius, min(card.width, card.height) / 2)
   }
 
-  /// The dark cast the glass is given. `Color(white: 0.09).opacity(0.9)` was the
-  /// flat body; this is the same hue at the weight a refracting material can
-  /// carry without becoming the flat body again. Eased from 0.55 with the move
-  /// to `.clear` (owner asked for more transparency) — still enough that white
-  /// text survives a white document behind the panel.
-  static let tint = NSColor(white: 0.06, alpha: 0.35)
+}
+
+// MARK: - Glass tint
+
+/// The dark cast the floating surfaces' glass is given, as arithmetic.
+///
+/// `Color(white: 0.09).opacity(0.9)` was the flat body this replaced; the hue is
+/// the same and is **not** adjustable — a tint that could move off neutral would
+/// colour a surface whose only job is to let white text be read over an
+/// arbitrary backdrop. What moves is the alpha, because the right weight is a
+/// judgement about the owner's own screen and wallpaper: shipped at 0.35 with
+/// the move to `.clear`, and reported as "a little too see-through" the same
+/// week (2026-08-03), which is what the setting exists to settle.
+///
+/// The bounds are what keep the setting from being able to break the surface.
+/// Below `range.lowerBound` the tint stops carrying white text over a white
+/// document — the washed-out failure the flat fill was originally chosen to
+/// prevent. Above `upperBound` the refraction stops reading as glass at all and
+/// the panel is that flat fill again. Every value in between is a look; neither
+/// end is.
+enum GlassTint {
+  /// Fixed. Only the alpha is the owner's.
+  static let hue: CGFloat = 0.06
+
+  /// What the slider offers, and what a stored value is clamped to.
+  static let range: ClosedRange<Double> = 0.20...0.90
+
+  /// The default, and the answer for a value that is not a number at all.
+  static let standard: Double = 0.55
+
+  static func clamped(_ alpha: Double) -> Double {
+    guard alpha.isFinite else { return standard }
+    return min(max(alpha, range.lowerBound), range.upperBound)
+  }
+
+  static func color(alpha: Double) -> NSColor {
+    NSColor(white: hue, alpha: CGFloat(clamped(alpha)))
+  }
 }
 
 // MARK: - GlassPlateView

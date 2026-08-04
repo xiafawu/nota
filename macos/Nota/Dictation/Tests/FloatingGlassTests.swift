@@ -138,6 +138,166 @@ final class GlassBackingViewTests: XCTestCase {
     view.showsGlass = false
     XCTAssertTrue(view.glassView.isHidden)
   }
+
+  /// A plate nobody has touched is already carrying the default weight — the
+  /// setting's factory value, not some third number the view invented.
+  func testTheGlassStartsAtTheDefaultTint() {
+    let view = GlassBackingView(inset: Self.inset)
+    XCTAssertEqual(view.tintAlpha, GlassTint.standard)
+    XCTAssertEqual(view.glassView.tintColor, GlassTint.color(alpha: GlassTint.standard))
+  }
+
+  /// **Assigning the alpha is the whole of applying it.** The setting can move
+  /// while a panel is on screen, so the live material has to be retinted rather
+  /// than the next-created one.
+  func testSettingTheAlphaRetintsTheLiveMaterial() {
+    let view = GlassBackingView(inset: Self.inset)
+    view.tintAlpha = 0.8
+    let tint = try? XCTUnwrap(view.glassView.tintColor?.usingColorSpace(.deviceRGB))
+    XCTAssertEqual(tint?.alphaComponent ?? 0, 0.8, accuracy: 0.001)
+    // The hue does not move with it: this is a neutral cast that lets white text
+    // be read, and a coloured one would be a different surface. Read off the RGB
+    // channels, not `whiteComponent` — that accessor throws on anything but a
+    // grey colour space.
+    XCTAssertEqual(tint?.redComponent ?? -1, GlassTint.hue, accuracy: 0.001)
+    XCTAssertEqual(tint?.blueComponent ?? -1, GlassTint.hue, accuracy: 0.001)
+  }
+
+  /// The view is the last boundary a stored number crosses before the window
+  /// server, so it corrects rather than trusts.
+  func testAnOutOfRangeAlphaIsClampedAtTheView() {
+    let view = GlassBackingView(inset: Self.inset)
+    view.tintAlpha = 5
+    XCTAssertEqual(
+      view.glassView.tintColor?.usingColorSpace(.deviceRGB)?.alphaComponent ?? 0,
+      CGFloat(GlassTint.range.upperBound),
+      accuracy: 0.001
+    )
+    view.tintAlpha = 0
+    XCTAssertEqual(
+      view.glassView.tintColor?.usingColorSpace(.deviceRGB)?.alphaComponent ?? 0,
+      CGFloat(GlassTint.range.lowerBound),
+      accuracy: 0.001
+    )
+  }
+}
+
+// MARK: - Glass tint
+
+/// The arithmetic behind the slider. Pure, so the bounds the setting promises
+/// are asserted once and every clamp on the path quotes them.
+final class GlassTintTests: XCTestCase {
+  func testTheDefaultIsInsideTheOfferedRange() {
+    XCTAssertTrue(GlassTint.range.contains(GlassTint.standard))
+    XCTAssertLessThan(GlassTint.range.lowerBound, GlassTint.range.upperBound)
+  }
+
+  func testValuesInsideTheRangeAreUntouched() {
+    for alpha in [GlassTint.range.lowerBound, 0.35, GlassTint.standard, GlassTint.range.upperBound] {
+      XCTAssertEqual(GlassTint.clamped(alpha), alpha, accuracy: 0.0001, "\(alpha)")
+    }
+  }
+
+  func testValuesOutsideTheRangeAreClampedToIt() {
+    XCTAssertEqual(GlassTint.clamped(-1), GlassTint.range.lowerBound)
+    XCTAssertEqual(GlassTint.clamped(0.19), GlassTint.range.lowerBound)
+    XCTAssertEqual(GlassTint.clamped(1), GlassTint.range.upperBound)
+    XCTAssertEqual(GlassTint.clamped(42), GlassTint.range.upperBound)
+  }
+
+  /// A comparison against NaN answers false in both directions, so a plain
+  /// min/max clamp would pass it straight through to a colour with no alpha.
+  func testANonNumberFallsBackToTheDefault() {
+    XCTAssertEqual(GlassTint.clamped(.nan), GlassTint.standard)
+    XCTAssertEqual(GlassTint.clamped(.infinity), GlassTint.standard)
+  }
+
+  /// Only the alpha is the owner's.
+  func testTheHueNeverMoves() {
+    for alpha in [0.2, 0.55, 0.9, 12.0] {
+      let color = try? XCTUnwrap(GlassTint.color(alpha: alpha).usingColorSpace(.deviceRGB))
+      XCTAssertEqual(color?.redComponent ?? -1, GlassTint.hue, accuracy: 0.001, "\(alpha)")
+      XCTAssertEqual(color?.greenComponent ?? -1, GlassTint.hue, accuracy: 0.001, "\(alpha)")
+    }
+  }
+}
+
+// MARK: - The setting
+
+/// `hudGlassOpacity` is a new key, and the field-by-field decode is what keeps
+/// adding one from costing the owner every other dictation preference they have.
+final class GlassOpacitySettingTests: XCTestCase {
+  override func tearDown() {
+    DictationSettingsStore.reset()
+    super.tearDown()
+  }
+
+  func testDefaultIsTheStandardTint() {
+    XCTAssertEqual(DictationSettings().hudGlassOpacity, GlassTint.standard)
+  }
+
+  func testMissingKeyDecodesToTheDefaultWithoutDisturbingOtherFields() throws {
+    // Every payload written before today is this one.
+    let json = """
+      {"engine":"apple","activation":"toggle","polishEnabled":true,
+       "showHUD":true,"deliveryMode":"review","hudStyle":"prompter",
+       "trigger":{"kind":"fnGlobe"}}
+      """
+    let settings = try JSONDecoder().decode(DictationSettings.self, from: Data(json.utf8))
+    XCTAssertEqual(settings.hudGlassOpacity, GlassTint.standard)
+    XCTAssertEqual(settings.hudStyle, .prompter)
+    XCTAssertEqual(settings.deliveryMode, .review)
+    XCTAssertEqual(settings.activation, .toggle)
+    XCTAssertEqual(settings.polishEnabled, true)
+  }
+
+  func testAnOutOfRangeStoredValueIsClampedNotRefused() throws {
+    for (stored, expected) in [("0.02", GlassTint.range.lowerBound),
+                               ("4", GlassTint.range.upperBound)] {
+      let json = """
+        {"engine":"apple","activation":"hold","showHUD":true,
+         "hudGlassOpacity":\(stored),"trigger":{"kind":"fnGlobe"}}
+        """
+      let settings = try JSONDecoder().decode(DictationSettings.self, from: Data(json.utf8))
+      XCTAssertEqual(settings.hudGlassOpacity, expected, "\(stored)")
+      // Refusing would throw, and a throw resets everything.
+      XCTAssertEqual(settings.showHUD, true)
+    }
+  }
+
+  func testAWrongTypeDecodesToTheDefault() throws {
+    let json = """
+      {"showHUD":true,"hudGlassOpacity":"very","trigger":{"kind":"fnGlobe"}}
+      """
+    let settings = try JSONDecoder().decode(DictationSettings.self, from: Data(json.utf8))
+    XCTAssertEqual(settings.hudGlassOpacity, GlassTint.standard)
+    XCTAssertEqual(settings.showHUD, true)
+  }
+
+  /// The setter clamps too: the slider cannot produce an out-of-range value, but
+  /// nothing else on the path is a slider.
+  func testAssigningOutOfRangeIsClamped() {
+    var settings = DictationSettings()
+    settings.hudGlassOpacity = 3
+    XCTAssertEqual(settings.hudGlassOpacity, GlassTint.range.upperBound)
+    settings.hudGlassOpacity = -3
+    XCTAssertEqual(settings.hudGlassOpacity, GlassTint.range.lowerBound)
+  }
+
+  func testItRoundTripsThroughJSONAndTheStore() throws {
+    for alpha in [GlassTint.range.lowerBound, 0.4, GlassTint.range.upperBound] {
+      var settings = DictationSettings()
+      settings.hudGlassOpacity = alpha
+      let decoded = try JSONDecoder().decode(
+        DictationSettings.self, from: JSONEncoder().encode(settings)
+      )
+      XCTAssertEqual(decoded.hudGlassOpacity, alpha, accuracy: 0.0001)
+      XCTAssertEqual(decoded, settings)
+
+      DictationSettingsStore.save(settings)
+      XCTAssertEqual(DictationSettingsStore.load().hudGlassOpacity, alpha, accuracy: 0.0001)
+    }
+  }
 }
 
 // MARK: - Panels carry it
@@ -242,6 +402,35 @@ final class DictationPanelGlassTests: XCTestCase {
       spinUntil { DictationReviewPanel.firstTextView(in: panel.contentView) != nil },
       "the glass backing hid the editor from the view tree"
     )
+  }
+
+  /// The owner's tint weight rides along with the style on the one call the HUD
+  /// makes every tick, so whatever Settings last saved is on the panel by its
+  /// next frame.
+  func testTheHUDPlateTakesTheOwnersTintWeight() throws {
+    let panel = DictationHUDPanel()
+    defer { panel.orderOut(nil) }
+    let drag = try XCTUnwrap(panel.contentView as? HUDDragView)
+
+    panel.update(state: .listening(level: 0.3), draft: .empty, style: .pill, glassOpacity: 0.85)
+    XCTAssertEqual(drag.tintAlpha, 0.85, accuracy: 0.0001)
+
+    // Out of range at the caller is corrected here rather than sent on.
+    panel.update(state: .listening(level: 0.3), draft: .empty, style: .pill, glassOpacity: 9)
+    XCTAssertEqual(drag.tintAlpha, GlassTint.range.upperBound)
+  }
+
+  /// The card is retinted through the presenter, which is what makes a Settings
+  /// visit reach a card that is already up.
+  func testTheReviewCardTakesTheOwnersTintWeight() throws {
+    let panel = DictationReviewPanel(model: DictationReviewModel())
+    defer { panel.orderOut(nil) }
+    let backing = try XCTUnwrap(panel.contentView as? GlassBackingView)
+
+    panel.setGlassTintAlpha(0.25)
+    XCTAssertEqual(backing.tintAlpha, 0.25, accuracy: 0.0001)
+    panel.setGlassTintAlpha(-4)
+    XCTAssertEqual(backing.tintAlpha, GlassTint.range.lowerBound)
   }
 
   private func spinUntil(_ condition: () -> Bool, timeout: TimeInterval = 2) -> Bool {

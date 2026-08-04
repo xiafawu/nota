@@ -1206,6 +1206,24 @@ The cache feeds cost computation for usage tracking.
   its own rim and a second one is the doubled outline the toolbar bullet above
   describes. `appearance = .darkAqua` on the panel is still owed, and now more
   than before: the glass resolves against it.
+  **How dark that tint is, is the owner's** (`DictationSettings.hudGlassOpacity`,
+  the Glass opacity slider in Dictation → Heads-Up Display; default 0.55, after
+  0.35 shipped and read as "a little too see-through"). Only the **alpha** moves
+  — `GlassTint` keeps the hue fixed at white 0.06, because a tint that could go
+  off neutral would colour a surface whose only job is to let white text be read
+  over an arbitrary backdrop — and it is clamped to `GlassTint.range`
+  (0.20…0.90) at every boundary a stored number crosses: the setter, the decode,
+  `GlassBackingView.tintAlpha`, and both panels' entry points. Neither end of
+  that range is a look: below it white text stops surviving a white document,
+  above it the refraction stops reading as glass and the panel is the flat fill
+  this replaced. It reaches the surfaces through the paths that already carry
+  settings — the HUD on `panel.update(…, glassOpacity:)`, which runs on every
+  RMS tick, and the review card through `DictationReviewPresenting.glassTintAlpha`,
+  which the controller assigns from `applySettings()` so a Settings visit retints
+  a card that is already up. The slider itself commits on mouse-up rather than
+  per frame: this pane saves and calls `reloadSettings()` on every change, which
+  restarts the hotkey event tap, and neither floating surface is on screen while
+  Settings is — so a live preview would cost keystrokes for nothing.
 - A review card is a **batch**, not a session (changed 2026-07-28 on user
   feedback). Pressing the trigger with one open continues it: the card stays,
   the new session's text is appended to whatever the owner has in the box, and

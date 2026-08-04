@@ -243,6 +243,14 @@ protocol DictationReviewPresenting: AnyObject {
   /// survives any number of continuation sessions, each of which the owner must
   /// be able to end from the same button.
   var onFinishRecording: (() -> Void)? { get set }
+  /// How strongly the card's glass is tinted (`GlassTint`).
+  ///
+  /// A presenter-level property rather than a field on
+  /// `DictationReviewRequest`, for the reason `onFinishRecording` is one: the
+  /// setting can move while a card is up, and a request is written once per
+  /// card. The controller assigns it from `applySettings()`, so a Settings visit
+  /// retints an open card and every card after it.
+  var glassTintAlpha: Double { get set }
   /// Show (or clear) a session failure in the card's status line.
   ///
   /// The card is the only surface a review session has — the HUD is suppressed
@@ -277,6 +285,13 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
   /// What the card's Finish button does. Owned by the controller — the presenter
   /// knows only that the owner asked for the session to stop.
   var onFinishRecording: (() -> Void)?
+
+  /// The owner's glass tint weight. Applied to the panel the moment it is set —
+  /// a card that is already up retints under the Settings slider — and again to
+  /// every panel this presenter shows, including a recreated one.
+  var glassTintAlpha: Double = GlassTint.standard {
+    didSet { panel?.setGlassTintAlpha(glassTintAlpha) }
+  }
 
   var isPresenting: Bool { pending != nil }
 
@@ -396,6 +411,10 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
     // over from the one it replaced.
     model.onDragChanged = { [weak panel] in panel?.dragChanged() }
     model.onDragEnded = { [weak panel] in panel?.dragEnded() }
+    // Here for the same reason as the drag callbacks: a recreated panel is a
+    // fresh `GlassBackingView` and starts on the built-in default, so the
+    // owner's weight has to be re-applied rather than assumed to have survived.
+    panel.setGlassTintAlpha(glassTintAlpha)
     panel.sizeToFitContent()
     panel.reposition()
     installKeyMonitor(for: panel)
@@ -643,6 +662,12 @@ final class DictationReviewPanel: NSPanel {
     backingView.setContent(hostingView)
     contentView = backingView
     pinnedCardTopLeft = ReviewPositionStore.load()
+  }
+
+  /// Retint the card's glass. Clamped here rather than trusted, because this is
+  /// the boundary a stored value crosses to reach the window server.
+  func setGlassTintAlpha(_ alpha: Double) {
+    backingView.tintAlpha = GlassTint.clamped(alpha)
   }
 
   // MARK: - Dragging

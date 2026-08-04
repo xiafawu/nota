@@ -689,6 +689,12 @@ final class StubReviewPresenter: DictationReviewPresenting {
   /// What the card's Finish button is wired to. The controller installs it at
   /// init, so a test can press Finish without a microphone or an event tap.
   var onFinishRecording: (() -> Void)?
+  /// The glass weight the controller has pushed. Every assignment, because
+  /// "never set" and "set back to the default" are different bugs.
+  var glassTintAlpha: Double = GlassTint.standard {
+    didSet { glassTintUpdates.append(glassTintAlpha) }
+  }
+  private(set) var glassTintUpdates: [Double] = []
 
   var latest: DictationReviewRequest? { presented.last }
 
@@ -785,6 +791,25 @@ final class DictationReviewBranchTests: XCTestCase {
       accessibilityElement: nil,
       processID: 4242
     )
+  }
+
+  /// The card's glass follows the Settings slider — at init, because the card of
+  /// the first session would otherwise be the built-in weight, and again on
+  /// every reload, because the slider can move while a card is on screen.
+  func testTheCardsGlassFollowsTheSetting() {
+    var settings = DictationSettings()
+    settings.deliveryMode = .review
+    settings.hudGlassOpacity = 0.3
+    DictationSettingsStore.save(settings)
+
+    let controller = DictationController(review: presenter)
+    XCTAssertEqual(presenter.glassTintAlpha, 0.3, accuracy: 0.0001)
+
+    settings.hudGlassOpacity = 0.85
+    DictationSettingsStore.save(settings)
+    controller.reloadSettings()
+    XCTAssertEqual(presenter.glassTintAlpha, 0.85, accuracy: 0.0001)
+    XCTAssertEqual(presenter.glassTintUpdates.last ?? 0, 0.85, accuracy: 0.0001)
   }
 
   /// The live recognizer, in the mode that must not act on it. A volatile

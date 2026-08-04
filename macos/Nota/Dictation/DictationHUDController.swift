@@ -139,7 +139,12 @@ final class DictationHUDController {
     // one an animation is about to overwrite.
     let styleChanged = style != panel.style
     lastStyle = style
-    panel.update(state: hudState, draft: lastDraft, style: style)
+    panel.update(
+      state: hudState,
+      draft: lastDraft,
+      style: style,
+      glassOpacity: controller.settings.hudGlassOpacity
+    )
 
     if controller.settings.showHUD, hudState != .hidden {
       // Position once per show — repositioning every tick teleports the HUD

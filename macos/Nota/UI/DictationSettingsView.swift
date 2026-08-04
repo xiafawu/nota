@@ -8,6 +8,9 @@ struct DictationSettingsView: View {
   var openDictionary: (() -> Void)?
 
   @State private var settings: DictationSettings = DictationSettingsStore.load()
+  /// The glass slider mid-drag; nil when it is not being dragged. See
+  /// `hudSection`.
+  @State private var glassOpacityDraft: Double?
 
   var body: some View {
     Form {
@@ -217,11 +220,35 @@ struct DictationSettingsView: View {
         }
         .pickerStyle(.radioGroup)
       }
+
+      // Not gated on `showHUD`: the review card is glass too, and it is the one
+      // surface a review session has whether or not the HUD is on.
+      //
+      // The drag is held in `glassOpacityDraft` and committed when the owner
+      // lets go, rather than binding straight at `settings`. Every other control
+      // here changes once per click, and this view saves and calls
+      // `reloadSettings()` on every change — which restarts the hotkey event tap.
+      // Doing that at slider-drag frame rate would cost the owner keystrokes for
+      // a preview they cannot see anyway: neither floating surface is on screen
+      // while Settings is.
+      Slider(
+        value: glassOpacityBinding,
+        in: GlassTint.range,
+        label: { Text("Glass opacity") },
+        minimumValueLabel: { Text("Clear").font(Tokens.settingsCaptionFont) },
+        maximumValueLabel: { Text("Solid").font(Tokens.settingsCaptionFont) },
+        onEditingChanged: { editing in
+          guard !editing, let value = glassOpacityDraft else { return }
+          glassOpacityDraft = nil
+          settings.hudGlassOpacity = value
+        }
+      )
     } header: {
       Text("Heads-Up Display")
     } footer: {
       VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
         footerText("Shows a floating panel with microphone level and status while dictating.")
+        footerText("How strongly the pill and the review card are tinted. Lower lets more of what is behind them through; higher keeps their white text readable over a bright window.")
         if settings.showHUD {
           footerText(settings.hudStyle.detail)
           if settings.hudStyle.isAboutLiveText,
@@ -237,6 +264,15 @@ struct DictationSettingsView: View {
   }
 
   // MARK: - Helpers
+
+  /// Reads the drag while there is one and the saved value otherwise, so the
+  /// knob follows the pointer without a save behind every frame of it.
+  private var glassOpacityBinding: Binding<Double> {
+    Binding(
+      get: { glassOpacityDraft ?? settings.hudGlassOpacity },
+      set: { glassOpacityDraft = $0 }
+    )
+  }
 
   private func footerText(_ text: String) -> some View {
     Text(text)
