@@ -256,6 +256,7 @@ final class DictationController: ObservableObject {
     // `applySettings()` has not: the first card of a run would otherwise be the
     // built-in weight rather than the owner's.
     self.review.glassTintAlpha = self.settings.hudGlassOpacity
+    self.review.glassMaterial = self.settings.hudGlassMaterial
     self.hotkeyMonitor.onTransition = { [weak self] transition in
       DispatchQueue.main.async { [weak self] in
         self?.handle(transition)
@@ -322,6 +323,7 @@ final class DictationController: ObservableObject {
     // next tick; the review presenter is told, because a card can be on screen
     // with nothing ticking at it.
     review.glassTintAlpha = settings.hudGlassOpacity
+    review.glassMaterial = settings.hudGlassMaterial
 
     // If the hotkey monitor is already running, restart it with the new config.
     if hotkeyMonitor.isRunning {

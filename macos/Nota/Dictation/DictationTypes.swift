@@ -579,6 +579,9 @@ struct DictationSettings: Codable, Equatable, Sendable {
   var hudGlassOpacity: Double = GlassTint.standard {
     didSet { hudGlassOpacity = GlassTint.clamped(hudGlassOpacity) }
   }
+  /// Which Liquid Glass material the floating surfaces use — frosted (the
+  /// diffusing plate) or clear (sharp backdrop, refractive rim).
+  var hudGlassMaterial: GlassMaterial = .standard
   /// How the finished text reaches the target app.
   ///
   /// Default `.immediate`, and deliberately so: the other two modes each change
@@ -594,6 +597,7 @@ struct DictationSettings: Codable, Equatable, Sendable {
     case deliveryMode
     case hudStyle
     case hudGlassOpacity
+    case hudGlassMaterial
   }
 
   /// The boolean this enum replaced. Read to migrate a payload written before
@@ -644,6 +648,11 @@ struct DictationSettings: Codable, Equatable, Sendable {
     hudGlassOpacity = GlassTint.clamped(
       (try? container.decode(Double.self, forKey: .hudGlassOpacity)) ?? defaults.hudGlassOpacity
     )
+    // Same rule as `hudStyle`: no key (older payload) or an unknown raw value
+    // (newer build, hand-edit) both mean the default material.
+    hudGlassMaterial =
+      (try? container.decode(GlassMaterial.self, forKey: .hudGlassMaterial))
+      ?? defaults.hudGlassMaterial
   }
 
   /// Writes both the enum and the bool it replaced.
@@ -668,6 +677,7 @@ struct DictationSettings: Codable, Equatable, Sendable {
     try container.encode(deliveryMode, forKey: .deliveryMode)
     try container.encode(hudStyle, forKey: .hudStyle)
     try container.encode(hudGlassOpacity, forKey: .hudGlassOpacity)
+    try container.encode(hudGlassMaterial, forKey: .hudGlassMaterial)
 
     var legacy = encoder.container(keyedBy: LegacyCodingKeys.self)
     try legacy.encode(deliveryMode == .streaming, forKey: .streamingDelivery)

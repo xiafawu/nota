@@ -143,7 +143,8 @@ final class DictationHUDController {
       state: hudState,
       draft: lastDraft,
       style: style,
-      glassOpacity: controller.settings.hudGlassOpacity
+      glassOpacity: controller.settings.hudGlassOpacity,
+      glassMaterial: controller.settings.hudGlassMaterial
     )
 
     if controller.settings.showHUD, hudState != .hidden {
@@ -199,7 +200,13 @@ final class DictationHUDController {
 
     let fresh = DictationHUDPanel()
     panel = fresh
-    fresh.update(state: lastShownState, draft: lastDraft, style: lastStyle)
+    fresh.update(
+      state: lastShownState,
+      draft: lastDraft,
+      style: lastStyle,
+      glassOpacity: controller?.settings.hudGlassOpacity ?? GlassTint.standard,
+      glassMaterial: controller?.settings.hudGlassMaterial ?? .standard
+    )
     fresh.reposition()
     fresh.show()
     heal()

@@ -221,8 +221,17 @@ struct DictationSettingsView: View {
         .pickerStyle(.radioGroup)
       }
 
-      // Not gated on `showHUD`: the review card is glass too, and it is the one
-      // surface a review session has whether or not the HUD is on.
+      // Not gated on `showHUD` (nor is the slider below): the review card is
+      // glass too, and it is the one surface a review session has whether or
+      // not the HUD is on. A picker commits once per click, so unlike the
+      // slider it binds straight at `settings`.
+      Picker("Glass material", selection: $settings.hudGlassMaterial) {
+        ForEach(GlassMaterial.allCases, id: \.self) { material in
+          Text(material.label).tag(material)
+        }
+      }
+      .pickerStyle(.radioGroup)
+
       //
       // The drag is held in `glassOpacityDraft` and committed when the owner
       // lets go, rather than binding straight at `settings`. Every other control
@@ -248,7 +257,7 @@ struct DictationSettingsView: View {
     } footer: {
       VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
         footerText("Shows a floating panel with microphone level and status while dictating.")
-        footerText("How strongly the pill and the review card are tinted. Lower lets more of what is behind them through; higher keeps their white text readable over a bright window.")
+        footerText("Frosted diffuses what is behind the pill and the review card; Clear lets it show through sharp. Opacity sets how strongly either is tinted — lower lets more through, higher keeps their white text readable over a bright window.")
         if settings.showHUD {
           footerText(settings.hudStyle.detail)
           if settings.hudStyle.isAboutLiveText,

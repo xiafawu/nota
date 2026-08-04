@@ -300,6 +300,65 @@ final class GlassOpacitySettingTests: XCTestCase {
   }
 }
 
+// MARK: - The material is a setting
+
+final class GlassMaterialSettingTests: XCTestCase {
+  override func tearDown() {
+    DictationSettingsStore.reset()
+    super.tearDown()
+  }
+
+  func testTheDefaultIsFrosted() {
+    XCTAssertEqual(GlassMaterial.standard, .frosted)
+    XCTAssertEqual(DictationSettings().hudGlassMaterial, .frosted)
+  }
+
+  func testMissingKeyAndUnknownValueBothDecodeToTheDefault() throws {
+    for payload in [
+      // Written before the material existed.
+      "{\"showHUD\":true,\"trigger\":{\"kind\":\"fnGlobe\"}}",
+      // A newer build's material, or a hand-edited typo.
+      "{\"showHUD\":true,\"hudGlassMaterial\":\"prismatic\",\"trigger\":{\"kind\":\"fnGlobe\"}}",
+    ] {
+      let settings = try JSONDecoder().decode(DictationSettings.self, from: Data(payload.utf8))
+      XCTAssertEqual(settings.hudGlassMaterial, .frosted, payload)
+      XCTAssertEqual(settings.showHUD, true, "a bad material must not reset anything else")
+    }
+  }
+
+  func testItRoundTripsThroughJSONAndTheStore() throws {
+    for material in GlassMaterial.allCases {
+      var settings = DictationSettings()
+      settings.hudGlassMaterial = material
+      let decoded = try JSONDecoder().decode(
+        DictationSettings.self, from: JSONEncoder().encode(settings)
+      )
+      XCTAssertEqual(decoded.hudGlassMaterial, material)
+
+      DictationSettingsStore.save(settings)
+      XCTAssertEqual(DictationSettingsStore.load().hudGlassMaterial, material)
+    }
+  }
+
+  /// The two cases map onto AppKit's two Liquid Glass styles — the whole reason
+  /// the enum has exactly these members.
+  @MainActor
+  func testTheCasesMapOntoAppKitsStyles() {
+    XCTAssertEqual(GlassMaterial.frosted.nsStyle, .regular)
+    XCTAssertEqual(GlassMaterial.clear.nsStyle, .clear)
+  }
+
+  @MainActor
+  func testAssigningTheMaterialRestylesTheLiveGlass() {
+    let view = GlassBackingView(inset: 24)
+    XCTAssertEqual(view.glassView.style, GlassMaterial.standard.nsStyle)
+    view.material = .clear
+    XCTAssertEqual(view.glassView.style, .clear)
+    view.material = .frosted
+    XCTAssertEqual(view.glassView.style, .regular)
+  }
+}
+
 // MARK: - Panels carry it
 
 /// Both floating dictation surfaces are glass, and both still keep every

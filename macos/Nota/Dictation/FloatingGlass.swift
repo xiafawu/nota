@@ -59,15 +59,17 @@ class GlassBackingView: NSView {
     didSet { glassView.tintColor = GlassTint.color(alpha: tintAlpha) }
   }
 
+  /// Which of the two Liquid Glass materials the plate is, restyling the live
+  /// view on assignment. Owner-set, same pathway as `tintAlpha`.
+  var material: GlassMaterial = .standard {
+    didSet { glassView.style = material.nsStyle }
+  }
+
   init(inset: CGFloat) {
     self.inset = inset
     super.init(frame: .zero)
     wantsLayer = true
-    // `.clear`, not `.regular`: regular is a frosted legibility plate that
-    // reads as plain blur over most backdrops; clear lets the backdrop flow
-    // through with the refractive rim — the "more transparent" the owner asked
-    // for (2026-08-03). Legibility is carried by the tint below.
-    glassView.style = .clear
+    glassView.style = material.nsStyle
     // Dark, deliberately, and it is the one thing carried over from the flat
     // fill this replaced. These panels sit over arbitrary content — a white
     // document as readily as a dark terminal — and their text is white. Untinted
@@ -105,6 +107,40 @@ class GlassBackingView: NSView {
     glassView.cornerRadius = min(glassCornerRadius, min(card.width, card.height) / 2)
   }
 
+}
+
+// MARK: - Glass material
+
+/// The two Liquid Glass materials `NSGlassEffectView` offers, as a setting.
+///
+/// `.frosted` is AppKit's `.regular` — a diffusing legibility plate; what is
+/// behind the panel blurs into it. `.clear` lets the backdrop flow through
+/// sharp, with the refractive rim. The owner has now asked for each in turn
+/// (2026-08-03: "more transparent" → clear; "a little bit too clear, might
+/// need a different material" → this picker), which is how the material became
+/// a setting rather than a constant. Raw-value Codable so an unknown value in
+/// a payload decodes to nil and the caller falls back to `.standard`.
+enum GlassMaterial: String, Codable, CaseIterable, Sendable {
+  case frosted, clear
+
+  /// The default: the diffusing plate. Over arbitrary desktops the frost is
+  /// what makes the panel read as its own surface rather than a smudge.
+  static let standard: GlassMaterial = .frosted
+
+  var nsStyle: NSGlassEffectView.Style {
+    switch self {
+    case .frosted: return .regular
+    case .clear: return .clear
+    }
+  }
+
+  /// Picker label.
+  var label: String {
+    switch self {
+    case .frosted: return "Frosted"
+    case .clear: return "Clear"
+    }
+  }
 }
 
 // MARK: - Glass tint

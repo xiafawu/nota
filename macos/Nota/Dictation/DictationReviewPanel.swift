@@ -251,6 +251,9 @@ protocol DictationReviewPresenting: AnyObject {
   /// card. The controller assigns it from `applySettings()`, so a Settings visit
   /// retints an open card and every card after it.
   var glassTintAlpha: Double { get set }
+  /// Which Liquid Glass material the card's plate is (`GlassMaterial`). Same
+  /// presenter-level pathway as `glassTintAlpha`, for the same reason.
+  var glassMaterial: GlassMaterial { get set }
   /// Show (or clear) a session failure in the card's status line.
   ///
   /// The card is the only surface a review session has — the HUD is suppressed
@@ -291,6 +294,11 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
   /// every panel this presenter shows, including a recreated one.
   var glassTintAlpha: Double = GlassTint.standard {
     didSet { panel?.setGlassTintAlpha(glassTintAlpha) }
+  }
+
+  /// The owner's material choice, same lifecycle as `glassTintAlpha`.
+  var glassMaterial: GlassMaterial = .standard {
+    didSet { panel?.setGlassMaterial(glassMaterial) }
   }
 
   var isPresenting: Bool { pending != nil }
@@ -415,6 +423,7 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
     // fresh `GlassBackingView` and starts on the built-in default, so the
     // owner's weight has to be re-applied rather than assumed to have survived.
     panel.setGlassTintAlpha(glassTintAlpha)
+    panel.setGlassMaterial(glassMaterial)
     panel.sizeToFitContent()
     panel.reposition()
     installKeyMonitor(for: panel)
@@ -668,6 +677,11 @@ final class DictationReviewPanel: NSPanel {
   /// the boundary a stored value crosses to reach the window server.
   func setGlassTintAlpha(_ alpha: Double) {
     backingView.tintAlpha = GlassTint.clamped(alpha)
+  }
+
+  /// Restyle the card's glass between the two Liquid Glass materials.
+  func setGlassMaterial(_ material: GlassMaterial) {
+    backingView.material = material
   }
 
   // MARK: - Dragging

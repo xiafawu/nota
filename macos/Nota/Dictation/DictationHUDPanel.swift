@@ -147,7 +147,8 @@ final class DictationHUDPanel: NSPanel {
     state: HUDState,
     draft: HUDDraft = .empty,
     style: HUDStyle = .pill,
-    glassOpacity: Double = GlassTint.standard
+    glassOpacity: Double = GlassTint.standard,
+    glassMaterial: GlassMaterial = .standard
   ) {
     let styleChanged = style != self.style
     self.style = style
@@ -160,6 +161,7 @@ final class DictationHUDPanel: NSPanel {
     // width) still changes the shape the material has to take.
     dragView.showsGlass = state != .hidden
     dragView.tintAlpha = GlassTint.clamped(glassOpacity)
+    dragView.material = glassMaterial
     dragView.glassCornerRadius = HUDGlassMetrics.cornerRadius(
       style: style,
       state: state,

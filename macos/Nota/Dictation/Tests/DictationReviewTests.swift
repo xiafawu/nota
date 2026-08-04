@@ -695,6 +695,11 @@ final class StubReviewPresenter: DictationReviewPresenting {
     didSet { glassTintUpdates.append(glassTintAlpha) }
   }
   private(set) var glassTintUpdates: [Double] = []
+  /// The material the controller has pushed, same bookkeeping as the tint.
+  var glassMaterial: GlassMaterial = .standard {
+    didSet { glassMaterialUpdates.append(glassMaterial) }
+  }
+  private(set) var glassMaterialUpdates: [GlassMaterial] = []
 
   var latest: DictationReviewRequest? { presented.last }
 
@@ -810,6 +815,24 @@ final class DictationReviewBranchTests: XCTestCase {
     controller.reloadSettings()
     XCTAssertEqual(presenter.glassTintAlpha, 0.85, accuracy: 0.0001)
     XCTAssertEqual(presenter.glassTintUpdates.last ?? 0, 0.85, accuracy: 0.0001)
+  }
+
+  /// Same pathway, other knob: the material picker reaches an open card the
+  /// same way the opacity slider does.
+  func testTheCardsMaterialFollowsTheSetting() {
+    var settings = DictationSettings()
+    settings.deliveryMode = .review
+    settings.hudGlassMaterial = .clear
+    DictationSettingsStore.save(settings)
+
+    let controller = DictationController(review: presenter)
+    XCTAssertEqual(presenter.glassMaterial, .clear)
+
+    settings.hudGlassMaterial = .frosted
+    DictationSettingsStore.save(settings)
+    controller.reloadSettings()
+    XCTAssertEqual(presenter.glassMaterial, .frosted)
+    XCTAssertEqual(presenter.glassMaterialUpdates.last, .frosted)
   }
 
   /// The live recognizer, in the mode that must not act on it. A volatile
