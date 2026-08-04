@@ -3,6 +3,7 @@ import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import {
+  applyClipNames,
   applySpeakerNames,
   computeSuggestions,
   enrollVoiceprintWithCheck,
@@ -441,5 +442,34 @@ describe("applySpeakerNames", () => {
     const result = applySpeakerNames(segments, { "Speaker 1": "Alice" }, labelMap);
     expect(result[0].speaker).toBe("Alice");
     expect(result[1].speaker).toBe("Alice");
+  });
+});
+
+describe("applyClipNames", () => {
+  it("re-keys clips through the same rename the segments get", () => {
+    const clips = { "Speaker 1": "a", "Speaker 2": "b" };
+    const result = applyClipNames(clips, { "Speaker 1": "Meghan Casey" });
+    expect(result).toEqual({ "Meghan Casey": "a", "Speaker 2": "b" });
+  });
+
+  it("collapses sibling labels via labelMap before renaming", () => {
+    const clips = { "Speaker 2": "b" };
+    const labelMap = { "Speaker 2": "Speaker 1" };
+    const result = applyClipNames(clips, { "Speaker 1": "Alice" }, labelMap);
+    expect(result).toEqual({ Alice: "b" });
+  });
+
+  it("agrees with applySpeakerNames on every label, so a rename can always find its clip", () => {
+    const nameMap = { "Speaker 1": "Meghan Casey", "Speaker 2": "Freya Wu" };
+    const segments: TranscriptSegment[] = [
+      { start: 0, end: 5, text: "A", speaker: "Speaker 1" },
+      { start: 5, end: 10, text: "B", speaker: "Speaker 2" },
+    ];
+    const clips = { "Speaker 1": "a", "Speaker 2": "b" };
+    const renamedSegments = applySpeakerNames(segments, nameMap);
+    const renamedClips = applyClipNames(clips, nameMap);
+    for (const seg of renamedSegments) {
+      expect(renamedClips[seg.speaker!]).toBeDefined();
+    }
   });
 });

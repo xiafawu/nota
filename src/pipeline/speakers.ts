@@ -645,6 +645,29 @@ export async function promptForSpeakerNames(
   return { names, enroll, learn: {} };
 }
 
+/**
+ * Re-key per-speaker clips through the same rename the segments get.
+ *
+ * The clip map and the segments must agree on labels: a later chip rename or
+ * `accept-suggestion` looks a clip up under the label the *segments* carry,
+ * and a clip stranded under the raw diarized label reads as "audio missing"
+ * (2026-08-04: auto-identify renamed Speaker 1 → a person at run time, the
+ * clip stayed keyed "Speaker 1", and the owner's rename-then-enroll on that
+ * record failed for a clip that was sitting right there).
+ */
+export function applyClipNames<T>(
+  clips: Record<string, T>,
+  nameMap: Record<string, string>,
+  labelMap: Record<string, string> = {},
+): Record<string, T> {
+  const renamed: Record<string, T> = {};
+  for (const [label, clip] of Object.entries(clips)) {
+    const canonical = labelMap[label] ?? label;
+    renamed[nameMap[canonical] ?? canonical] = clip;
+  }
+  return renamed;
+}
+
 export function applySpeakerNames(
   segments: TranscriptSegment[],
   nameMap: Record<string, string>,

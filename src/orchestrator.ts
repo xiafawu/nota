@@ -36,6 +36,7 @@ import {
   matchProfiles,
   rankProfileCandidates,
   promptForSpeakerNames,
+  applyClipNames,
   applySpeakerNames,
   computeSuggestions,
   enrollVoiceprintWithCheck,
@@ -760,7 +761,9 @@ export async function identifySpeakers(
 
     return {
       segments: applySpeakerNames(segments, nameMap),
-      clips,
+      // Same rename as the segments: a clip stranded under its raw diarized
+      // label is invisible to every later rename/enroll (see applyClipNames).
+      clips: applyClipNames(clips, nameMap),
       suggestions,
     };
   } catch (error) {
