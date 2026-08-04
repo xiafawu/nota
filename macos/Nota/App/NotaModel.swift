@@ -530,6 +530,14 @@ final class NotaModel: ObservableObject {
       return
     }
     try? FileManager.default.removeItem(at: entry.url)
+    // Speaker clips live exactly as long as their history record (decision 2):
+    // the per-speaker PCM clips sit in `<id>.assets/` beside the record JSON
+    // and die with it. Deleting a record whose assets dir is already gone
+    // must not error, hence try?.
+    let assetsURL = entry.url
+      .deletingPathExtension()
+      .appendingPathExtension("assets")
+    try? FileManager.default.removeItem(at: assetsURL)
     if selectedHistoryID == entry.id {
       newTranscription()
     }
@@ -634,8 +642,11 @@ final class NotaModel: ObservableObject {
       process.executableURL = URL(fileURLWithPath: "/bin/bash")
       process.currentDirectoryURL = projectDirectory
       var arguments = [runnerURL.path, url.path, outputURL.path, "-v"]
-      if identifySpeakers {
-        arguments.append("--identify")
+      // Identify-by-default (decision 1): recognition auto-runs on every
+      // diarized run when the store has >=1 enrolled speaker, so the toggle
+      // only ever needs to opt OUT. On = omit the flag (auto-identify).
+      if !identifySpeakers {
+        arguments.append("--no-identify")
       }
       if skipSummary {
         arguments.append("--no-summary")
@@ -915,6 +926,9 @@ final class NotaModel: ObservableObject {
       }.value
       self.cachedHistoryRecord = info
       self.enrichment.setRecord(record)
+      // Pending suggestions ride the record: attach them to the matching
+      // chips (decided entries are dropped by the map).
+      self.applySuggestions(record?.pendingSuggestions ?? [])
     }
 
     speakerChips = labels.map { label in
@@ -992,6 +1006,99 @@ final class NotaModel: ObservableObject {
       ) { [weak self] ok, _ in
         guard let self, ok else { return }
         self.applyTranscriptRename(oldLabel: chipLabel, newName: newName)
+      }
+    }
+  }
+
+  /// Attach pending suggestions (label → candidate) onto the matching chips.
+  /// Only the labels the open record actually proposes get a suggestion;
+  /// every other chip keeps its current face.
+  private func applySuggestions(_ suggestions: [SpeakerSuggestion]) {
+    let byLabel = pendingSuggestionMap(suggestions)
+    for idx in speakerChips.indices {
+      speakerChips[idx].suggestion = byLabel[speakerChips[idx].label]
+    }
+  }
+
+  /// Accept the pending suggestion for `label` (decision 4): the CLI renames
+  /// the label to the suggested name everywhere AND enrolls the clip as a new
+  /// voiceprint AND marks the suggestion accepted — one serialized verb. On
+  /// success the chip takes the suggested name with the .enrolled indicator
+  /// (same visual as a successful manual enroll) and the record reloads, so
+  /// a `summaryOutdated` flag set by the rename surfaces the regenerate
+  /// affordance (decision 5).
+  func acceptSuggestion(label: String) {
+    guard
+      let info = cachedHistoryRecord,
+      let idx = speakerChips.firstIndex(where: { $0.label == label }),
+      let suggestion = speakerChips[idx].suggestion
+    else {
+      return
+    }
+
+    // In-flight guard: a second tap while the first accept is queued must not
+    // spawn a duplicate verb. The .enrolling indicator gives visual feedback.
+    if speakerChips[idx].indicator == .enrolling { return }
+    speakerChips[idx].indicator = .enrolling
+
+    let chipLabel = label
+    Task {
+      await EnrollQueue.shared.enqueueSuggestionAccept(
+        historyID: info.historyID,
+        label: chipLabel
+      ) { [weak self] result in
+        guard let self else { return }
+        switch result {
+        case .enrolled:
+          // The CLI renamed the transcript; mirror the manual-rename
+          // propagation (sidecar move, body reload, chip re-derive) and keep
+          // the accepted indicator on the resulting chip.
+          if let idx = self.speakerChips.firstIndex(where: { $0.label == chipLabel }) {
+            self.speakerChips[idx].indicator = .enrolled
+          }
+          self.applyTranscriptRename(oldLabel: chipLabel, newName: suggestion.suggestedName)
+        case .skipped(let reason):
+          guard let idx = self.speakerChips.firstIndex(where: { $0.label == chipLabel }) else { return }
+          self.speakerChips[idx].indicator = .skipped(reason: reason.tooltip)
+        case .failed(let stderr):
+          guard let idx = self.speakerChips.firstIndex(where: { $0.label == chipLabel }) else { return }
+          self.speakerChips[idx].indicator = .failed(stderr: stderr)
+        }
+      }
+    }
+  }
+
+  /// Dismiss the pending suggestion for `label` (decision 4): decision state
+  /// only — the record's segments, clips, and store stay untouched. On
+  /// success the chip's suggestion clears (the chip stays unnamed) and the
+  /// record reloads so reopening the document doesn't resurrect the chip.
+  func dismissSuggestion(label: String) {
+    guard let info = cachedHistoryRecord else { return }
+    let chipLabel = label
+    Task {
+      await EnrollQueue.shared.enqueueSuggestionDismiss(
+        historyID: info.historyID,
+        label: chipLabel
+      ) { [weak self] ok, _ in
+        guard let self, ok else { return }
+        self.reloadChipsPreservingIndicators()
+      }
+    }
+  }
+
+  /// Rebuild the chips from the current document + record, keeping every
+  /// chip's enroll indicator (loadChips's conservative default would reset
+  /// named chips to the amber "no history record" state). Used after a
+  /// dismiss, where the record — not the body — is what changed.
+  private func reloadChipsPreservingIndicators() {
+    guard let documentURL = lastOutputURL else { return }
+    let indicators = Dictionary(
+      uniqueKeysWithValues: speakerChips.map { ($0.label, $0.indicator) }
+    )
+    loadChips(for: documentURL)
+    for idx in speakerChips.indices {
+      if let indicator = indicators[speakerChips[idx].label] {
+        speakerChips[idx].indicator = indicator
       }
     }
   }

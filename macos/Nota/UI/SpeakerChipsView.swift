@@ -38,6 +38,10 @@ struct SpeakerChip: Identifiable, Equatable {
   /// Current display name (empty = not yet mapped).
   var name: String
   var indicator: ChipIndicator
+  /// A pending tentative suggestion for this label ("Speaker 2 → Kenny Kim?
+  /// 0.62") — nil when the record has none (or it was decided). Set by
+  /// `NotaModel` from the open record's `suggestions`.
+  var suggestion: SpeakerSuggestion? = nil
 
   var id: String { label }
 

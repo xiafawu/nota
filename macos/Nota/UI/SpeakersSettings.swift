@@ -239,6 +239,15 @@ struct SpeakersSettingsView: View {
         .fontWeight(.medium)
         .lineLimit(1)
         .truncationMode(.middle)
+      if hasLowAgreement(entry) {
+        Text("low agreement")
+          .font(.caption2)
+          .foregroundStyle(.yellow)
+          .padding(.horizontal, 7)
+          .padding(.vertical, 1)
+          .background(.yellow.opacity(0.15), in: Capsule())
+          .help("One or more voiceprints for this speaker had low agreement at enrollment")
+      }
       Spacer(minLength: 4)
       Text("\(entry.profile.voiceprints.count)")
         .font(.caption2.monospacedDigit())
@@ -249,6 +258,12 @@ struct SpeakersSettingsView: View {
         .help("\(entry.profile.voiceprints.count) voiceprint\(entry.profile.voiceprints.count == 1 ? "" : "s")")
     }
     .padding(.vertical, 3)
+  }
+
+  /// Decision 6: a strongly disagreeing enrollment is flagged, never refused.
+  /// The badge is read-only — one low-agreement voiceprint flags the row.
+  private func hasLowAgreement(_ entry: SpeakerEntry) -> Bool {
+    entry.profile.voiceprints.contains { $0.lowAgreement == true }
   }
 
   @ViewBuilder

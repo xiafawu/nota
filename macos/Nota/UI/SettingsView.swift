@@ -87,7 +87,7 @@ struct SettingsView: View {
         Toggle(isOn: $identifySpeakers) {
           VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
             Text("Remember speakers")
-            Text("Identify recurring voices across recordings.")
+            Text("Auto-recognize voices you've enrolled on every recording. Turn off to skip recognition.")
               .font(Tokens.settingsCaptionFont)
               .foregroundStyle(.secondary)
           }

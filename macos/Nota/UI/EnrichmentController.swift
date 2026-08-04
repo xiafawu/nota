@@ -14,10 +14,45 @@ struct EnrichmentSummary: Codable, Equatable {
   var actionItems: [String]?
 }
 
+/// One tentative speaker suggestion on a history record. Mirrors
+/// `SpeakerSuggestion` in src/pipeline/history.ts — every field decodes
+/// tolerantly (unknown states, missing `decidedAt` while pending, absent
+/// array on legacy records).
+struct SpeakerSuggestion: Codable, Equatable, Hashable {
+  var label: String
+  var suggestedName: String
+  var score: Double
+  /// Optional so a malformed entry never fails the whole record decode —
+  /// the map drops anything without a voiceprint id anyway.
+  var voiceprintId: String? = nil
+  /// "pending" | "accepted" | "dismissed" — kept a String so an unknown
+  /// future state degrades to not-pending instead of failing the decode.
+  var state: String? = nil
+  var decidedAt: String?
+
+  var isPending: Bool { state == "pending" }
+
+  /// "0.62" — two decimals, the same rounding the CLI's list verb uses.
+  var scoreText: String { String(format: "%.2f", score) }
+}
+
+/// Map a record's pending suggestions onto `[label: suggestion]` — the pure
+/// shape `NotaModel` applies to the chip strip (decided entries and unknown
+/// states are dropped). Unit-tested; the CLI only ever writes pending entries
+/// here, but the app tolerates whatever the record carries.
+func pendingSuggestionMap(_ suggestions: [SpeakerSuggestion]) -> [String: SpeakerSuggestion] {
+  var byLabel: [String: SpeakerSuggestion] = [:]
+  for suggestion in suggestions where suggestion.isPending {
+    byLabel[suggestion.label] = suggestion
+  }
+  return byLabel
+}
+
 /// The enrichment-relevant slice of a `~/.nota/history/<id>.json` record.
 /// Unknown keys (segments, usage, …) are ignored by Codable; `summaryEdited`
 /// and `tagsEdited` are the E3 per-field flags — absent on legacy records,
-/// which reads as "never edited".
+/// which reads as "never edited". `suggestions` and `summaryOutdated` are the
+/// speaker-workflow additions (decision 4/5), both absent on legacy records.
 struct EnrichmentRecord: Codable, Equatable {
   let id: String
   var status: String
@@ -25,11 +60,18 @@ struct EnrichmentRecord: Codable, Equatable {
   var summaryEdited: Bool?
   var tagsEdited: Bool?
   var outputPath: String?
+  var suggestions: [SpeakerSuggestion]? = nil
+  var summaryOutdated: Bool? = nil
 
   var tags: [String] { summary?.tags ?? [] }
   var isSummaryEdited: Bool { summaryEdited ?? false }
   var isTagsEdited: Bool { tagsEdited ?? false }
   var hasSummaryNarrative: Bool { !(summary?.narrative ?? "").isEmpty }
+  /// True when a rename/accept landed on a record that already has a summary
+  /// (the narrative still references the old label) — drives the one-click
+  /// "Regenerate summary" affordance until used or dismissed.
+  var isSummaryOutdated: Bool { summaryOutdated ?? false }
+  var pendingSuggestions: [SpeakerSuggestion] { (suggestions ?? []).filter(\.isPending) }
 
   static func decode(_ data: Data) throws -> EnrichmentRecord {
     do {
@@ -55,6 +97,9 @@ struct EnrichmentEditPayload: Codable, Equatable {
   var tags: [String]?
   var summaryEdited: Bool?
   var tagsEdited: Bool?
+  /// Dismisses the "Regenerate summary" affordance (decision 5) — the CLI
+  /// clears/keeps the flag per this field.
+  var summaryOutdated: Bool?
 }
 
 // MARK: - Pure state helpers (unit-tested)
@@ -408,6 +453,14 @@ final class EnrichmentController: ObservableObject {
     let trimmed = narrative.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return nil }
     return applyEdit(EnrichmentEditPayload(summary: trimmed, summaryEdited: true))
+  }
+
+  /// Dismiss the "Regenerate summary" affordance (decision 5): writes
+  /// `summaryOutdated: false` through the apply-enrichment plumbing. The
+  /// record keeps its stale summary — the user chose not to regenerate.
+  @discardableResult
+  func dismissSummaryOutdated() -> Task<Void, Never>? {
+    applyEdit(EnrichmentEditPayload(summaryOutdated: false))
   }
 
   /// Append a manual tag (lowercase-normalized, case-insensitive dedup).

@@ -14,6 +14,10 @@ struct DocumentHeaderView: View {
   @Binding var chips: [SpeakerChip]
   var compact: Bool = false
   let onRename: (_ label: String, _ newName: String) -> Void
+  /// Accept/dismiss a chip's pending speaker suggestion (decision 4). No-ops
+  /// when the caller doesn't surface suggestions (previews, imported docs).
+  var onAcceptSuggestion: (_ label: String) -> Void = { _ in }
+  var onDismissSuggestion: (_ label: String) -> Void = { _ in }
   /// Non-nil when the open document has a history record: tags render as
   /// editable chips driven by the record (×-on-hover removal plus an
   /// always-visible "+ add tag" chip). Nil keeps the static pills for
@@ -38,8 +42,13 @@ struct DocumentHeaderView: View {
 
         // Speaker chip strip — injected between subtitle and tags
         if !chips.isEmpty {
-          SpeakerChipStrip(chips: $chips, onRename: onRename)
-            .padding(.top, Metrics.tagTopPadding)
+          SpeakerChipStrip(
+            chips: $chips,
+            onRename: onRename,
+            onAcceptSuggestion: onAcceptSuggestion,
+            onDismissSuggestion: onDismissSuggestion
+          )
+          .padding(.top, Metrics.tagTopPadding)
         }
 
         if let tagEditing {
@@ -76,6 +85,8 @@ struct DocumentHeaderView: View {
 private struct SpeakerChipStrip: View {
   @Binding var chips: [SpeakerChip]
   let onRename: (_ label: String, _ newName: String) -> Void
+  var onAcceptSuggestion: (_ label: String) -> Void = { _ in }
+  var onDismissSuggestion: (_ label: String) -> Void = { _ in }
 
   var body: some View {
     FlowLayout(spacing: Metrics.tagSpacing, lineSpacing: Metrics.tagSpacing) {
@@ -83,7 +94,9 @@ private struct SpeakerChipStrip: View {
         SpeakerChipButton(
           chip: $chips[index],
           color: SpeakerColors.color(at: index),
-          onRename: onRename
+          onRename: onRename,
+          onAcceptSuggestion: onAcceptSuggestion,
+          onDismissSuggestion: onDismissSuggestion
         )
       }
     }
@@ -94,6 +107,8 @@ private struct SpeakerChipButton: View {
   @Binding var chip: SpeakerChip
   let color: Color
   let onRename: (_ label: String, _ newName: String) -> Void
+  var onAcceptSuggestion: (_ label: String) -> Void = { _ in }
+  var onDismissSuggestion: (_ label: String) -> Void = { _ in }
 
   @State private var showRenamePopover = false
   @State private var draft = ""
@@ -103,6 +118,65 @@ private struct SpeakerChipButton: View {
   }
 
   var body: some View {
+    Group {
+      if let suggestion = chip.suggestion {
+        suggestionChip(suggestion)
+      } else {
+        renameChip
+      }
+    }
+    .animation(Tokens.animSnap, value: chip.suggestion)
+  }
+
+  /// A pending suggestion takes over the chip face: `<label> → <name>?
+  /// <score>` with accept/dismiss. Not a Button — the actions are the two
+  /// buttons inside, so the whole face must not swallow their clicks.
+  private func suggestionChip(_ suggestion: SpeakerSuggestion) -> some View {
+    HStack(spacing: 4) {
+      Circle()
+        .fill(color)
+        .frame(width: Metrics.speakerDotSize, height: Metrics.speakerDotSize)
+      Text("\(chip.label) → \(suggestion.suggestedName)? \(suggestion.scoreText)")
+        .font(Tokens.historyTagFont)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+      Button {
+        onAcceptSuggestion(chip.label)
+      } label: {
+        Image(systemName: "checkmark")
+          .font(.system(size: 8, weight: .bold))
+      }
+      .buttonStyle(.plain)
+      .foregroundStyle(.green)
+      .help("Accept \"\(suggestion.suggestedName)\" and enroll this voiceprint")
+      .accessibilityLabel("Accept suggestion")
+      Button {
+        onDismissSuggestion(chip.label)
+      } label: {
+        Image(systemName: "xmark")
+          .font(.system(size: 8, weight: .bold))
+      }
+      .buttonStyle(.plain)
+      .foregroundStyle(.secondary)
+      .help("Dismiss this suggestion")
+      .accessibilityLabel("Dismiss suggestion")
+    }
+    .padding(.horizontal, Metrics.tagPillH)
+    .padding(.vertical, Metrics.tagPillV)
+    .background(
+      Capsule()
+        .strokeBorder(
+          style: StrokeStyle(lineWidth: 1, dash: [2, 2])
+        )
+        .foregroundStyle(color.opacity(0.7))
+    )
+    .help(suggestionHelp(suggestion))
+  }
+
+  /// The usual rename face. Chips with no name yet render a subtle
+  /// unnamed state — dashed outline + tertiary text — so "still needs a
+  /// name" reads at a glance without shouting (decision 5).
+  private var renameChip: some View {
     Button {
       draft = chip.name
       showRenamePopover = true
@@ -121,11 +195,29 @@ private struct SpeakerChipButton: View {
       .padding(.vertical, Metrics.tagPillV)
     }
     .buttonStyle(.plain)
-    .background(Tokens.tagPillFill, in: Capsule())
+    .background(unnamed ? AnyShapeStyle(Color.clear) : AnyShapeStyle(Tokens.tagPillFill), in: Capsule())
+    .overlay {
+      if unnamed {
+        Capsule()
+          .strokeBorder(
+            style: StrokeStyle(lineWidth: 1, dash: [3, 2])
+          )
+          .foregroundStyle(.secondary.opacity(0.5))
+      }
+    }
     .help(helpText)
     .popover(isPresented: $showRenamePopover, arrowEdge: .bottom) {
       renamePopover
     }
+  }
+
+  /// True when the chip has no display name and no suggestion pending.
+  private var unnamed: Bool {
+    chip.name.isEmpty && chip.suggestion == nil
+  }
+
+  private func suggestionHelp(_ suggestion: SpeakerSuggestion) -> String {
+    "\(chip.label) → \(suggestion.suggestedName)? \(suggestion.scoreText) — accept or dismiss"
   }
 
   /// Enroll status rides as a small accessory; the dot is reserved for the

@@ -31,7 +31,9 @@ private func recordJSON(
   narrative: String? = "A generated narrative.",
   tags: [String] = ["planning", "roadmap"],
   summaryEdited: Bool? = nil,
-  tagsEdited: Bool? = nil
+  tagsEdited: Bool? = nil,
+  suggestions: [[String: Any]]? = nil,
+  summaryOutdated: Bool? = nil
 ) throws -> Data {
   var summary: [String: Any] = [
     "title": "Team Sync",
@@ -61,7 +63,35 @@ private func recordJSON(
   if let tagsEdited {
     record["tagsEdited"] = tagsEdited
   }
+  if let suggestions {
+    record["suggestions"] = suggestions
+  }
+  if let summaryOutdated {
+    record["summaryOutdated"] = summaryOutdated
+  }
   return try JSONSerialization.data(withJSONObject: record)
+}
+
+/// One pending-suggestion dict in the record's on-disk shape.
+private func suggestionJSON(
+  label: String = "Speaker 2",
+  suggestedName: String = "Kenny Kim",
+  score: Double = 0.623,
+  voiceprintId: String = "20260717-004104Z",
+  state: String = "pending",
+  decidedAt: String? = nil
+) -> [String: Any] {
+  var dict: [String: Any] = [
+    "label": label,
+    "suggestedName": suggestedName,
+    "score": score,
+    "voiceprintId": voiceprintId,
+    "state": state,
+  ]
+  if let decidedAt {
+    dict["decidedAt"] = decidedAt
+  }
+  return dict
 }
 
 // MARK: - Mock process layer (the CLI contract is mocked; the TS side is
@@ -621,5 +651,234 @@ final class EnrichmentControllerTests: XCTestCase {
 
     XCTAssertEqual(controller.activity, .idle)
     XCTAssertEqual(controller.record?.id, "rec-2")
+  }
+}
+
+// MARK: - Speaker suggestion decode (decision 4)
+
+final class SpeakerSuggestionDecodeTests: XCTestCase {
+  func testDecode_pendingSuggestionCarriesFullShape() throws {
+    let data = try recordJSON(
+      suggestions: [suggestionJSON(score: 0.623)],
+      summaryOutdated: true
+    )
+    let record = try EnrichmentRecord.decode(data)
+
+    XCTAssertEqual(record.pendingSuggestions.count, 1)
+    let suggestion = try XCTUnwrap(record.pendingSuggestions.first)
+    XCTAssertEqual(suggestion.label, "Speaker 2")
+    XCTAssertEqual(suggestion.suggestedName, "Kenny Kim")
+    XCTAssertEqual(suggestion.score, 0.623, accuracy: 0.0001)
+    XCTAssertEqual(suggestion.voiceprintId, "20260717-004104Z")
+    XCTAssertEqual(suggestion.state, "pending")
+    XCTAssertTrue(suggestion.isPending)
+    XCTAssertNil(suggestion.decidedAt)
+    XCTAssertEqual(suggestion.scoreText, "0.62")
+    XCTAssertTrue(record.isSummaryOutdated)
+  }
+
+  func testDecode_decidedSuggestionIsNotPending() throws {
+    let data = try recordJSON(
+      suggestions: [
+        suggestionJSON(state: "accepted", decidedAt: "2026-07-18T10:00:00.000Z"),
+        suggestionJSON(label: "Speaker 3", state: "dismissed", decidedAt: "2026-07-18T10:00:00.000Z"),
+      ]
+    )
+    let record = try EnrichmentRecord.decode(data)
+
+    XCTAssertTrue(record.pendingSuggestions.isEmpty)
+    XCTAssertEqual(record.suggestions?.count, 2)
+  }
+
+  func testDecode_unknownSuggestionStateDegradesToNotPending() throws {
+    let data = try recordJSON(suggestions: [suggestionJSON(state: "maybe")])
+    let record = try EnrichmentRecord.decode(data)
+
+    XCTAssertTrue(record.pendingSuggestions.isEmpty)
+  }
+
+  func testDecode_legacyRecordWithoutSuggestionFieldsLoadsExactlyAsBefore() throws {
+    let data = try recordJSON()
+    let record = try EnrichmentRecord.decode(data)
+
+    XCTAssertNil(record.suggestions)
+    XCTAssertNil(record.summaryOutdated)
+    XCTAssertTrue(record.pendingSuggestions.isEmpty)
+    XCTAssertFalse(record.isSummaryOutdated)
+    XCTAssertEqual(record.id, "rec-1")
+    XCTAssertEqual(record.summary?.narrative, "A generated narrative.")
+  }
+
+  func testDecode_partialSuggestionEntryIsTolerated() throws {
+    // A suggestion missing its id/state must not fail the whole record decode
+    // — it degrades to not-pending and is dropped by the chip map.
+    let data = try recordJSON(
+      suggestions: [["label": "Speaker 2", "suggestedName": "Kenny Kim", "score": 0.5]]
+    )
+    let record = try EnrichmentRecord.decode(data)
+
+    XCTAssertEqual(record.suggestions?.count, 1)
+    XCTAssertTrue(record.pendingSuggestions.isEmpty)
+  }
+
+  func testRegeneratedSummaryClearsOutdatedFlag() throws {
+    // The CLI writes summaryOutdated: false when it sets a fresh summary
+    // (src/pipeline/history.ts) — decode must surface the cleared flag.
+    let data = try recordJSON(summaryOutdated: false)
+    let record = try EnrichmentRecord.decode(data)
+
+    XCTAssertFalse(record.isSummaryOutdated)
+  }
+}
+
+// MARK: - Pending-suggestion map (chip threading)
+
+final class PendingSuggestionMapTests: XCTestCase {
+  func testMap_keepsOnlyPendingEntries_ByLabel() {
+    let pending = SpeakerSuggestion(
+      label: "Speaker 2", suggestedName: "Kenny Kim", score: 0.62,
+      voiceprintId: "a", state: "pending", decidedAt: nil
+    )
+    let accepted = SpeakerSuggestion(
+      label: "Speaker 1", suggestedName: "Alice", score: 0.8,
+      voiceprintId: "b", state: "accepted", decidedAt: "2026-07-18T10:00:00.000Z"
+    )
+
+    let map = pendingSuggestionMap([pending, accepted])
+
+    XCTAssertEqual(map.count, 1)
+    XCTAssertEqual(map["Speaker 2"], pending)
+    XCTAssertNil(map["Speaker 1"])
+  }
+
+  func testMap_lastPendingWinsPerLabel() {
+    let first = SpeakerSuggestion(
+      label: "Speaker 2", suggestedName: "Kenny Kim", score: 0.62,
+      voiceprintId: "a", state: "pending", decidedAt: nil
+    )
+    let second = SpeakerSuggestion(
+      label: "Speaker 2", suggestedName: "Kenny Kim", score: 0.71,
+      voiceprintId: "b", state: "pending", decidedAt: nil
+    )
+
+    let map = pendingSuggestionMap([first, second])
+
+    XCTAssertEqual(map["Speaker 2"], second)
+  }
+
+  func testMap_emptyInput() {
+    XCTAssertTrue(pendingSuggestionMap([]).isEmpty)
+  }
+}
+
+// MARK: - Regenerate-summary affordance (decision 5)
+
+final class SummaryOutdatedDismissTests: XCTestCase {
+  @MainActor
+  func testDismissSummaryOutdated_writesFalseThroughApplyEnrichment() async throws {
+    let runner = MockEnrichmentRunner()
+    runner.result = .success(try recordJSON())
+    let controller = EnrichmentController(
+      runner: runner,
+      summaryModelResolver: { "gpt-5-mini" }
+    )
+    // Any installed record works — dismissal only writes the flag.
+    controller.setRecord(makeRecord(status: "completed", narrative: "Old text."))
+
+    var kinds: [EnrichmentController.UpdateKind] = []
+    controller.onRecordUpdated = { kinds.append($1) }
+
+    await controller.dismissSummaryOutdated()?.value
+
+    XCTAssertEqual(runner.calls.count, 1)
+    XCTAssertEqual(runner.calls[0].arguments, ["history", "apply-enrichment", "rec-1", "--json"])
+    let payload = try XCTUnwrap(runner.calls[0].stdinJSON)
+    let json = try XCTUnwrap(JSONSerialization.jsonObject(with: payload) as? [String: Any])
+    XCTAssertEqual(json["summaryOutdated"] as? Bool, false)
+    // Dismissal touches nothing else.
+    XCTAssertNil(json["summary"])
+    XCTAssertNil(json["summaryEdited"])
+    XCTAssertNil(json["tags"])
+    XCTAssertNil(json["tagsEdited"])
+    XCTAssertEqual(kinds, [.edited])
+  }
+}
+
+// MARK: - Voiceprint low-agreement flag (decision 6)
+
+final class VoiceprintLowAgreementTests: XCTestCase {
+  private func decodeStore(_ json: [String: Any]) throws -> SpeakerStore {
+    let data = try JSONSerialization.data(withJSONObject: json)
+    return try JSONDecoder().decode(SpeakerStore.self, from: data)
+  }
+
+  func testDecode_v4VoiceprintWithLowAgreementFlag() throws {
+    let store = try decodeStore([
+      "version": 4,
+      "speakers": [
+        "Kenny Kim": [
+          "voiceprints": [[
+            "id": "20260717-004104Z",
+            "embedding": [0.1, 0.2],
+            "enrolledAt": "2026-07-17T00:41:04.000Z",
+            "source": "hist-1",
+            "lowAgreement": true,
+          ]],
+        ],
+      ],
+    ])
+
+    let voiceprint = try XCTUnwrap(store.speakers["Kenny Kim"]?.voiceprints.first)
+    XCTAssertEqual(voiceprint.lowAgreement, true)
+  }
+
+  func testDecode_absentFlagReadsNil() throws {
+    let store = try decodeStore([
+      "version": 4,
+      "speakers": [
+        "Kenny Kim": [
+          "voiceprints": [[
+            "id": "20260717-004104Z",
+            "embedding": [0.1, 0.2],
+            "enrolledAt": "2026-07-17T00:41:04.000Z",
+            "source": "hist-1",
+          ]],
+        ],
+      ],
+    ])
+
+    let voiceprint = try XCTUnwrap(store.speakers["Kenny Kim"]?.voiceprints.first)
+    XCTAssertNil(voiceprint.lowAgreement)
+  }
+
+  func testDecode_v1LegacyProfileStillMigrates() throws {
+    // Legacy flat profile shape (embedding/enrolledAt/source at the top):
+    // the migration decoder must keep working with the new field added.
+    let store = try decodeStore([
+      "version": 2,
+      "speakers": [
+        "Kenny Kim": [
+          "embedding": [0.1, 0.2],
+          "enrolledAt": "2026-07-17T00:41:04.000Z",
+          "source": "hist-1",
+        ],
+      ],
+    ])
+
+    let profile = try XCTUnwrap(store.speakers["Kenny Kim"])
+    XCTAssertEqual(profile.voiceprints.count, 1)
+    XCTAssertEqual(profile.voiceprints.first?.id, "2026-07-17T00:41:04.000Z")
+    XCTAssertNil(profile.voiceprints.first?.lowAgreement)
+  }
+
+  func testEncode_omitsAbsentLowAgreement() throws {
+    let voiceprint = Voiceprint(
+      id: "a", embedding: [0.1], enrolledAt: "2026-07-17T00:41:04.000Z",
+      source: "hist-1", lowAgreement: nil
+    )
+    let data = try JSONEncoder().encode(voiceprint)
+    let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+
+    XCTAssertNil(json["lowAgreement"], "absent flag must not be written as null")
   }
 }

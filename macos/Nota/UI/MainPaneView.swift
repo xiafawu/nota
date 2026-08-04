@@ -19,6 +19,9 @@ struct MainPaneView: View {
   @Binding var speakerChips: [SpeakerChip]
   let onDropURL: (URL) -> Void
   let onRename: (_ label: String, _ newName: String) -> Void
+  /// Accept/dismiss a chip's pending speaker suggestion (decision 4).
+  var onAcceptSuggestion: (_ label: String) -> Void = { _ in }
+  var onDismissSuggestion: (_ label: String) -> Void = { _ in }
 
   var body: some View {
     ZStack {
@@ -30,6 +33,8 @@ struct MainPaneView: View {
           document: document,
           speakerChips: $speakerChips,
           onRename: onRename,
+          onAcceptSuggestion: onAcceptSuggestion,
+          onDismissSuggestion: onDismissSuggestion,
           enrichment: EnrichmentController.shared
         )
       case .liveMeeting:
@@ -123,6 +128,8 @@ private struct RichDocumentPane: View {
   let document: DocumentRender
   @Binding var speakerChips: [SpeakerChip]
   let onRename: (_ label: String, _ newName: String) -> Void
+  var onAcceptSuggestion: (_ label: String) -> Void = { _ in }
+  var onDismissSuggestion: (_ label: String) -> Void = { _ in }
   @ObservedObject var enrichment: EnrichmentController
 
   /// True once the rich-text body has scrolled beneath the header; drives the
@@ -149,6 +156,8 @@ private struct RichDocumentPane: View {
             chips: $speakerChips,
             compact: isBodyScrolled,
             onRename: onRename,
+            onAcceptSuggestion: onAcceptSuggestion,
+            onDismissSuggestion: onDismissSuggestion,
             tagEditing: tagEditing
           )
           Divider()
@@ -408,6 +417,15 @@ private struct EnrichmentSlotView: View {
     VStack(alignment: .leading, spacing: 8) {
       summaryHeader(narrative: narrative, edited: edited)
 
+      // Decision 5: a rename/accept on a record that already has a summary
+      // leaves the narrative referencing the old label. One-click
+      // "Regenerate summary" until used or dismissed; the record's
+      // summaryOutdated flag (cleared by the CLI on regeneration or by the
+      // dismiss below) drives visibility.
+      if controller.record?.isSummaryOutdated == true {
+        outdatedSummaryBanner
+      }
+
       if isSummaryExpanded {
         ScrollView(.vertical) {
           expandedSummaryContent(narrative: narrative)
@@ -434,6 +452,43 @@ private struct EnrichmentSlotView: View {
       summaryDrawerHeight,
       availableHeight: availableHeight
     )
+  }
+
+  /// One-click regenerate affordance for a record whose summary references
+  /// pre-rename speaker labels (decision 5). Regenerate runs the same
+  /// confirm-gated path as the header button; the × dismisses the reminder
+  /// via the apply-enrichment plumbing (`summaryOutdated: false`).
+  private var outdatedSummaryBanner: some View {
+    HStack(spacing: 8) {
+      Image(systemName: "exclamationmark.triangle")
+        .font(.caption)
+        .foregroundStyle(.yellow)
+      Text("Speaker names changed — the summary still references the old names.")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .lineLimit(1)
+        .truncationMode(.middle)
+        .help("Regenerate to update the summary with the renamed speakers")
+      Spacer(minLength: 4)
+      Button("Regenerate summary") {
+        requestSummaryGeneration()
+      }
+      .controlSize(.small)
+      .help("Regenerate the summary with the updated speaker names")
+      Button {
+        controller.dismissSummaryOutdated()
+      } label: {
+        Image(systemName: "xmark")
+          .font(.system(size: 8, weight: .bold))
+          .foregroundStyle(.secondary)
+      }
+      .buttonStyle(.plain)
+      .help("Dismiss this reminder")
+      .accessibilityLabel("Dismiss summary reminder")
+    }
+    .padding(.horizontal, Metrics.tagPillH * 2)
+    .padding(.vertical, Metrics.tagPillV * 2)
+    .background(.yellow.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
   }
 
   private func summaryHeader(narrative: String, edited: Bool) -> some View {

@@ -9,6 +9,10 @@ struct Voiceprint: Codable, Hashable {
   var embedding: [Double]
   var enrolledAt: String
   var source: String
+  /// Set by the CLI when enrollment flagged a strongly disagreeing new
+  /// voiceprint (decision 6: warn, never refuse). Absent on v3-and-earlier
+  /// voiceprints, which reads as "no flag". Tolerant: `decodeIfPresent`.
+  var lowAgreement: Bool? = nil
 }
 
 /// A speaker profile is a *pointer*: one name → N voiceprints (one per
@@ -50,7 +54,13 @@ struct SpeakerProfile: Codable, Hashable {
     let enrolledAt = try container.decode(String.self, forKey: .legacyEnrolledAt)
     let source = try container.decode(String.self, forKey: .legacySource)
     self.voiceprints = [
-      Voiceprint(id: enrolledAt, embedding: embedding, enrolledAt: enrolledAt, source: source)
+      Voiceprint(
+        id: enrolledAt,
+        embedding: embedding,
+        enrolledAt: enrolledAt,
+        source: source,
+        lowAgreement: nil
+      )
     ]
   }
 

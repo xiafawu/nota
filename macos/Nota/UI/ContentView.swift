@@ -187,7 +187,9 @@ struct ContentView: View {
       isDropTargeted: $model.isDropTargeted,
       speakerChips: $model.speakerChips,
       onDropURL: { url in model.accept(url) },
-      onRename: { label, newName in model.renameChip(label: label, newName: newName) }
+      onRename: { label, newName in model.renameChip(label: label, newName: newName) },
+      onAcceptSuggestion: { label in model.acceptSuggestion(label: label) },
+      onDismissSuggestion: { label in model.dismissSuggestion(label: label) }
     )
   }
 
@@ -216,7 +218,9 @@ struct ContentView: View {
       isDropTargeted: $model.isDropTargeted,
       speakerChips: $model.speakerChips,
       onDropURL: { url in model.accept(url) },
-      onRename: { label, newName in model.renameChip(label: label, newName: newName) }
+      onRename: { label, newName in model.renameChip(label: label, newName: newName) },
+      onAcceptSuggestion: { label in model.acceptSuggestion(label: label) },
+      onDismissSuggestion: { label in model.dismissSuggestion(label: label) }
     )
   }
 
