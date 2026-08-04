@@ -413,10 +413,10 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
   private func configureAndShow(_ panel: DictationReviewPanel) -> Bool {
     self.panel = panel
     panel.delegate = self
-    // The card is dragged by its title row, and a dropped position is
-    // remembered. Wired here rather than in the model's init because it is the
-    // *panel* that gets moved, and a recreated panel has to take the callbacks
-    // over from the one it replaced.
+    // The card is dragged from anywhere but its editor, and a dropped position
+    // is remembered. Wired here rather than in the model's init because it is
+    // the *panel* that gets moved, and a recreated panel has to take the
+    // callbacks over from the one it replaced.
     model.onDragChanged = { [weak panel] in panel?.dragChanged() }
     model.onDragEnded = { [weak panel] in panel?.dragEnded() }
     // Here for the same reason as the drag callbacks: a recreated panel is a
@@ -539,8 +539,9 @@ final class DictationReviewModel: ObservableObject {
   /// what stopping a session involves.
   var onFinishRecording: (() -> Void)?
 
-  /// Move the card with the pointer (title-row drag), and remember where it was
-  /// dropped. Installed by the presenter; nil in a preview or a bare unit test.
+  /// Move the card with the pointer — the container gesture owns the whole card
+  /// except the editor and the two buttons — and remember where it was dropped.
+  /// Installed by the presenter; nil in a preview or a bare unit test.
   var onDragChanged: (() -> Void)?
   var onDragEnded: (() -> Void)?
 
@@ -613,9 +614,9 @@ final class DictationReviewPanel: NSPanel {
   /// AppKit rather than `.glassEffect`, for the reason `GlassBackingView`
   /// documents: a SwiftUI glass modifier in a transparent panel refracts only its
   /// own hierarchy and reads as a flat blur. Plain `GlassBackingView` rather than
-  /// the HUD's `HUDDragView` subclass — this card is dragged by one row and its
-  /// editor must keep text selection everywhere else, so nothing here may claim
-  /// every point.
+  /// the HUD's `HUDDragView` subclass — the card's drag is a SwiftUI gesture on
+  /// its container, and the editor must keep text selection, so nothing here may
+  /// claim every point the way `HUDDragView` does.
   private let backingView = GlassBackingView(inset: DictationReviewView.shadowMargin)
 
   /// The owner types in this panel. A borderless window answers false, so it is
@@ -646,13 +647,13 @@ final class DictationReviewPanel: NSPanel {
     hasShadow = false
     hidesOnDeactivate = false
     isReleasedWhenClosed = false
-    // The title row is the drag handle (see `DictationReviewView.titleRow`), and
-    // it is the ONLY mover: AppKit's background drag reports nothing, and "the
-    // owner chose this position" is precisely the fact that has to be
-    // remembered. Two movers on one frame is also how the HUD's drag was got
-    // wrong the first time. Leaving it off has a second benefit here that the
-    // HUD does not have — this card contains a text view, and a drag inside it
-    // must select text.
+    // The whole card is the drag handle (see `DictationReviewView.body`), and
+    // that SwiftUI gesture is the ONLY mover: AppKit's background drag reports
+    // nothing, and "the owner chose this position" is precisely the fact that
+    // has to be remembered. Two movers on one frame is also how the HUD's drag
+    // was got wrong the first time. Leaving it off has a second benefit here
+    // that the HUD does not have — this card contains a text view, and a drag
+    // inside it must select text.
     isMovableByWindowBackground = false
     collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
     isFloatingPanel = true
@@ -967,9 +968,13 @@ enum ReviewPanelLayout {
 ///   pushes the earlier ones up. That is the same reading line the HUD pill and
 ///   the prompter pin — the newest words nearest the fixed edge — and here the
 ///   fixed edge is the row the owner is about to press a button in.
-/// - The **bottom meta row is the drag handle** now, for the reason the title row
-///   was: it is the one part of the card that is neither an editor nor a button,
-///   so a drag on it can never be a text selection or a mis-click on Apply.
+/// - **The whole card is the drag handle** — everything except the editor and
+///   the two buttons (owner, 2026-08-04: "drag from anywhere but its editor").
+///   The editor is safe because it is an AppKit `NSTextView`, which consumes
+///   its own mouse-downs and never forwards them to a SwiftUI ancestor — a
+///   drag starting on text still selects text; the buttons are safe because
+///   SwiftUI buttons take precedence over a container gesture. One handle, not
+///   two: the meta row keeps no gesture of its own.
 struct DictationReviewView: View {
   @ObservedObject var model: DictationReviewModel
 
@@ -1018,6 +1023,20 @@ struct DictationReviewView: View {
     // card again, drawn over the material that replaced it.
     .environment(\.colorScheme, .dark)
     .padding(Self.shadowMargin)
+    // The whole card is the drag handle: everything except the editor and the
+    // two buttons (owner, 2026-08-04). The editor is safe because it is an
+    // AppKit `NSTextView` that consumes its own mouse-downs and never forwards
+    // them to a SwiftUI ancestor — a drag starting on text still selects text;
+    // the buttons are safe because SwiftUI buttons take precedence over a
+    // container gesture. `contentShape` here, AFTER the shadow-margin padding,
+    // is what makes the transparent glass margin grabbable too — the same
+    // trick the meta row's `Spacer` used.
+    .contentShape(Rectangle())
+    .gesture(
+      DragGesture(minimumDistance: 2)
+        .onChanged { _ in model.onDragChanged?() }
+        .onEnded { _ in model.onDragEnded?() }
+    )
   }
 
   /// The card's name, a mic dot while a session is recording, and the word
@@ -1048,20 +1067,6 @@ struct DictationReviewView: View {
         .monospacedDigit()
         .foregroundStyle(.secondary)
     }
-    // This row is the card's drag handle — the one part of it that is neither an
-    // editor nor a button, so a drag here can never be a text selection or a
-    // mis-click on Apply. It moved to the bottom with the rest of the chrome and
-    // is still the only mover: `isMovableByWindowBackground` stays off, because
-    // AppKit's background drag reports nothing and "the owner chose this
-    // position" is exactly the fact `ReviewPositionStore` has to record.
-    // `contentShape` is what makes the `Spacer` grabbable too; without it the
-    // handle would be the two labels alone.
-    .contentShape(Rectangle())
-    .gesture(
-      DragGesture(minimumDistance: 2)
-        .onChanged { _ in model.onDragChanged?() }
-        .onEnded { _ in model.onDragEnded?() }
-    )
   }
 
   private var wordCountLabel: String {

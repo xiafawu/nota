@@ -1831,6 +1831,44 @@ final class DictationReviewPresenterTests: XCTestCase {
     presenter.dismiss()
     XCTAssertEqual(discards, 2)
   }
+
+  /// The container drag's wiring: the card's gesture calls the model's
+  /// callbacks, and the presenter wires those to the panel — the thing that
+  /// moves, and the thing that records where it was dropped. A bare model has
+  /// neither; a presented one must have both.
+  func testPresentingWiresTheDragCallbacksOntoTheModel() {
+    let presenter = DictationReviewPresenter()
+    XCTAssertNil(presenter.model.onDragChanged, "no card, no drag wiring")
+    XCTAssertNil(presenter.model.onDragEnded)
+
+    presenter.present(request(onDiscard: {}))
+    defer { presenter.dismiss() }
+
+    XCTAssertNotNil(
+      presenter.model.onDragChanged,
+      "the container gesture's onChanged must reach the panel"
+    )
+    XCTAssertNotNil(
+      presenter.model.onDragEnded,
+      "the container gesture's onEnded must reach the panel"
+    )
+  }
+
+  /// The far end of the same wiring: a drag that ends records the dropped
+  /// position — the fact the card is restored to next launch. The gesture
+  /// itself needs a real screen; these are the two callbacks the container
+  /// invokes, and they run the panel's move-and-record path.
+  func testADroppedDragRecordsThePanelsPosition() {
+    defer { ReviewPositionStore.clear() }
+    let presenter = DictationReviewPresenter()
+    presenter.present(request(onDiscard: {}))
+    defer { presenter.dismiss() }
+
+    XCTAssertNil(ReviewPositionStore.load(), "a fresh suite has no stored position")
+    presenter.model.onDragChanged?()
+    presenter.model.onDragEnded?()
+    XCTAssertNotNil(ReviewPositionStore.load(), "a dropped drag must record where the card was put")
+  }
 }
 
 // MARK: - The panel itself
