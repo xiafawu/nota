@@ -144,23 +144,28 @@ final class GlassBackingViewTests: XCTestCase {
   func testTheGlassStartsAtTheDefaultTint() {
     let view = GlassBackingView(inset: Self.inset)
     XCTAssertEqual(view.tintAlpha, GlassTint.standard)
-    XCTAssertEqual(view.glassView.tintColor, GlassTint.color(alpha: GlassTint.standard))
+    XCTAssertEqual(view.tintView.alphaValue, CGFloat(GlassTint.standard), accuracy: 0.001)
   }
 
   /// **Assigning the alpha is the whole of applying it.** The setting can move
-  /// while a panel is on screen, so the live material has to be retinted rather
+  /// while a panel is on screen, so the live tint has to be redrawn rather
   /// than the next-created one.
+  ///
+  /// The tint is our own overlay, not `NSGlassEffectView.tintColor`: the
+  /// frosted material's legibility treatment absorbed the alpha and the
+  /// Settings slider visibly did nothing on it.
   func testSettingTheAlphaRetintsTheLiveMaterial() {
     let view = GlassBackingView(inset: Self.inset)
     view.tintAlpha = 0.8
-    let tint = try? XCTUnwrap(view.glassView.tintColor?.usingColorSpace(.deviceRGB))
-    XCTAssertEqual(tint?.alphaComponent ?? 0, 0.8, accuracy: 0.001)
+    XCTAssertEqual(view.tintView.alphaValue, 0.8, accuracy: 0.001)
     // The hue does not move with it: this is a neutral cast that lets white text
-    // be read, and a coloured one would be a different surface. Read off the RGB
-    // channels, not `whiteComponent` — that accessor throws on anything but a
-    // grey colour space.
-    XCTAssertEqual(tint?.redComponent ?? -1, GlassTint.hue, accuracy: 0.001)
-    XCTAssertEqual(tint?.blueComponent ?? -1, GlassTint.hue, accuracy: 0.001)
+    // be read, and a coloured one would be a different surface.
+    let fill = view.tintView.layer.flatMap { $0.backgroundColor }.flatMap { NSColor(cgColor: $0) }?
+      .usingColorSpace(.deviceRGB)
+    XCTAssertEqual(fill?.redComponent ?? -1, GlassTint.hue, accuracy: 0.001)
+    XCTAssertEqual(fill?.blueComponent ?? -1, GlassTint.hue, accuracy: 0.001)
+    // And the material itself carries no second tint that could double-dim.
+    XCTAssertNil(view.glassView.tintColor)
   }
 
   /// The view is the last boundary a stored number crosses before the window
@@ -169,13 +174,13 @@ final class GlassBackingViewTests: XCTestCase {
     let view = GlassBackingView(inset: Self.inset)
     view.tintAlpha = 5
     XCTAssertEqual(
-      view.glassView.tintColor?.usingColorSpace(.deviceRGB)?.alphaComponent ?? 0,
+      view.tintView.alphaValue,
       CGFloat(GlassTint.range.upperBound),
       accuracy: 0.001
     )
     view.tintAlpha = 0
     XCTAssertEqual(
-      view.glassView.tintColor?.usingColorSpace(.deviceRGB)?.alphaComponent ?? 0,
+      view.tintView.alphaValue,
       CGFloat(GlassTint.range.lowerBound),
       accuracy: 0.001
     )

@@ -47,16 +47,29 @@ class GlassBackingView: NSView {
   /// content collapses to nothing while the window frame stays put — without
   /// this the panel would be a bare pane of glass with no content on it.
   var showsGlass: Bool = true {
-    didSet { glassView.isHidden = !showsGlass }
+    didSet {
+      glassView.isHidden = !showsGlass
+      tintView.isHidden = !showsGlass
+    }
   }
 
-  /// How dark the plate is cast, retinting the live material on assignment.
+  /// The tint, drawn by us and not by the material (see `tintView`).
+  let tintView = TintOverlayView()
+
+  /// How dark the plate is cast, redrawing the live tint on assignment.
   ///
   /// The owner sets this (Dictation → Heads-Up Display → Glass opacity), so it
   /// can move while a panel is on screen; assigning it is the whole of applying
   /// it. Only the alpha is theirs — the hue is fixed, see `GlassTint`.
+  ///
+  /// The tint is an overlay view of our own, NOT `NSGlassEffectView.tintColor`:
+  /// the `.regular` material runs the tint through its own legibility
+  /// treatment, and alpha moves that are obvious on `.clear` are invisible on
+  /// frosted — measured 2026-08-03 as "the slider is not changing the pill's
+  /// opacity if the material is frosted". An overlay we draw obeys the slider
+  /// identically on both materials.
   var tintAlpha: Double = GlassTint.standard {
-    didSet { glassView.tintColor = GlassTint.color(alpha: tintAlpha) }
+    didSet { tintView.alphaValue = CGFloat(GlassTint.clamped(tintAlpha)) }
   }
 
   /// Which of the two Liquid Glass materials the plate is, restyling the live
@@ -70,17 +83,20 @@ class GlassBackingView: NSView {
     super.init(frame: .zero)
     wantsLayer = true
     glassView.style = material.nsStyle
+    addSubview(glassView)
     // Dark, deliberately, and it is the one thing carried over from the flat
     // fill this replaced. These panels sit over arbitrary content — a white
     // document as readily as a dark terminal — and their text is white. Untinted
-    // regular glass over a bright background is bright, and white-on-bright is
-    // the "washed out" failure the flat dark body was chosen to avoid. The tint
-    // is weak enough that the refraction still reads as glass and strong enough
+    // glass over a bright background is bright, and white-on-bright is the
+    // "washed out" failure the flat dark body was chosen to avoid. The cast is
+    // weak enough that the refraction still reads as glass and strong enough
     // that the content never has to compete with what is behind it. How strong
     // is the owner's call within bounds that keep both halves of that true —
-    // `GlassTint`, reassigned through `tintAlpha` whenever the setting moves.
-    glassView.tintColor = GlassTint.color(alpha: tintAlpha)
-    addSubview(glassView)
+    // `GlassTint`, applied through `tintAlpha` whenever the setting moves.
+    tintView.wantsLayer = true
+    tintView.layer?.backgroundColor = NSColor(white: GlassTint.hue, alpha: 1).cgColor
+    tintView.alphaValue = CGFloat(GlassTint.clamped(tintAlpha))
+    addSubview(tintView, positioned: .above, relativeTo: glassView)
   }
 
   @available(*, unavailable)
@@ -92,7 +108,7 @@ class GlassBackingView: NSView {
   func setContent(_ view: NSView) {
     view.frame = bounds
     view.autoresizingMask = [.width, .height]
-    addSubview(view, positioned: .above, relativeTo: glassView)
+    addSubview(view, positioned: .above, relativeTo: tintView)
     autoresizesSubviews = true
   }
 
@@ -101,10 +117,15 @@ class GlassBackingView: NSView {
     let card = bounds.insetBy(dx: inset, dy: inset)
     guard card.width > 0, card.height > 0 else {
       glassView.frame = .zero
+      tintView.frame = .zero
       return
     }
+    let radius = min(glassCornerRadius, min(card.width, card.height) / 2)
     glassView.frame = card
-    glassView.cornerRadius = min(glassCornerRadius, min(card.width, card.height) / 2)
+    glassView.cornerRadius = radius
+    tintView.frame = card
+    tintView.layer?.cornerRadius = radius
+    tintView.layer?.cornerCurve = .continuous
   }
 
 }
@@ -189,6 +210,13 @@ enum GlassTint {
 /// point the HUD could not be dragged by or the review card's editor could not
 /// be selected in.
 final class GlassPlateView: NSGlassEffectView {
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+}
+
+/// The dark cast, as a view of our own so the opacity slider works on both
+/// materials (see `GlassBackingView.tintAlpha`). Takes no clicks, same as the
+/// plate under it.
+final class TintOverlayView: NSView {
   override func hitTest(_ point: NSPoint) -> NSView? { nil }
 }
 

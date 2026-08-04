@@ -1065,7 +1065,12 @@ struct DictationReviewView: View {
   }
 
   private var wordCountLabel: String {
-    let count = DictationReview.wordCount(model.text)
+    // The live draft counts too: while a session records, the box shows the
+    // committed buffer plus the words still in flight, and a count that reads
+    // "0 words" against a box visibly filling with speech is worse than no
+    // count (owner report 2026-08-03). The draft is cleared when the session
+    // ends, so the finished card's count is exactly the buffer's.
+    let count = DictationReview.wordCount(model.text) + model.draft.wordCount
     return count == 1 ? "1 word" : "\(count) words"
   }
 
