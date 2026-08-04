@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   deleteSpeaker,
+  doctorSpeakers,
   listSpeakers,
   mergeSpeakers,
   reassignVoiceprint,
@@ -340,5 +341,89 @@ describe("showSpeaker", () => {
   it("throws when the speaker is missing", async () => {
     writeStore({ version: 3, speakers: {} });
     await expect(showSpeaker("Ghost", { storePath })).rejects.toThrow(/Ghost/);
+  });
+
+  it("surfaces the lowAgreement flag on a voiceprint", async () => {
+    writeStore({
+      version: 4,
+      speakers: {
+        Brian: {
+          voiceprints: [
+            { ...vp("2026-07-14T00:00:00.000Z"), lowAgreement: true },
+          ],
+        },
+      },
+    });
+
+    await showSpeaker("Brian", { storePath });
+    const parsed = JSON.parse(stdoutChunks.join(""));
+    expect(parsed.voiceprints[0].lowAgreement).toBe(true);
+  });
+});
+
+describe("doctorSpeakers", () => {
+  it("reports a healthy store with no stdout rows", async () => {
+    writeStore({
+      version: 4,
+      speakers: {
+        Alice: { voiceprints: [vp("2026-01-01T00:00:00.000Z")] },
+      },
+    });
+
+    await doctorSpeakers({ storePath });
+    expect(stdoutChunks.join("")).toBe("");
+    expect(stderrChunks.join("")).toContain("Store looks healthy");
+  });
+
+  it("lists flagged low-agreement voiceprints with their best same-name score", async () => {
+    // Brian's two enrollments disagree at 0.025 (the research-doc pair).
+    writeStore({
+      version: 4,
+      speakers: {
+        Brian: {
+          voiceprints: [
+            vp("2026-07-14T00:00:00.000Z", "a.m4a", [1, 0, 0, 0]),
+            {
+              ...vp("2026-07-21T00:00:00.000Z", "b.m4a", [0.025, 0.9997, 0, 0]),
+              lowAgreement: true,
+            },
+          ],
+        },
+      },
+    });
+
+    await doctorSpeakers({ storePath });
+
+    const out = stdoutChunks.join("");
+    expect(out).toContain(
+      "Brian\t2026-07-21T00:00:00.000Z\t0.025",
+    );
+    expect(stderrChunks.join("")).toContain("Low-agreement voiceprints");
+  });
+
+  it("lists same-name pairs below 0.30 even when unflagged (legacy garbage)", async () => {
+    writeStore({
+      version: 4,
+      speakers: {
+        Brian: {
+          voiceprints: [
+            // v1 healthy, v2 garbage (0.1 from v1, no flag — legacy), v3
+            // healthy and agreeing with v1 at 0.95.
+            vp("2026-07-14T00:00:00.000Z", "a.m4a", [1, 0, 0, 0]),
+            vp("2026-07-21T00:00:00.000Z", "b.m4a", [0.1, 0.995, 0, 0]),
+            vp("2026-07-28T00:00:00.000Z", "c.m4a", [0.95, 0.312, 0, 0]),
+          ],
+        },
+      },
+    });
+
+    await doctorSpeakers({ storePath });
+
+    const out = stdoutChunks.join("");
+    // Only the (v1, v2) pair is below 0.30; (v1, v3) = 0.95 and
+    // (v2, v3) = 0.405 are healthy and must not appear.
+    expect(out).toContain("Brian\t2026-07-14T00:00:00.000Z\t2026-07-21T00:00:00.000Z\t0.100");
+    expect(out).not.toContain("2026-07-28");
+    expect(stderrChunks.join("")).toContain("below 0.30");
   });
 });

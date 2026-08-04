@@ -12,6 +12,7 @@ import {
 import {
   deleteSpeaker,
   describeSpeaker,
+  doctorSpeakers,
   listSpeakers,
   mergeSpeakers,
   reassignVoiceprint,
@@ -19,6 +20,12 @@ import {
   showSpeaker,
 } from "./cli/speakers.js";
 import { enrollSpeaker, EnrollError } from "./cli/enroll.js";
+import {
+  acceptSuggestion,
+  dismissSuggestion,
+  listSuggestions,
+  recomputeSuggestions,
+} from "./cli/suggestions.js";
 import {
   EnrichError,
   applyEnrichment,
@@ -247,6 +254,57 @@ history
     }
   });
 
+history
+  .command("suggestions")
+  .description(
+    "List pending speaker suggestions (tab-separated; header on stderr)",
+  )
+  .option(
+    "--recompute <id>",
+    "Recompute a record's suggestions from its stored clips against the current store (on-demand backfill)",
+  )
+  .action(async (options) => {
+    try {
+      if (options.recompute) {
+        await recomputeSuggestions(options.recompute);
+      } else {
+        await listSuggestions();
+      }
+    } catch (error) {
+      handleSuggestionError(error);
+    }
+  });
+
+history
+  .command("accept-suggestion")
+  .description(
+    "Accept a pending suggestion: rename the label to the suggested name and enroll the record's clip as a voiceprint",
+  )
+  .argument("<id>", "History record id or unique prefix")
+  .argument("<label>", 'Pending suggestion label (e.g. "Speaker 2")')
+  .action(async (id: string, label: string) => {
+    try {
+      await acceptSuggestion(id, label);
+    } catch (error) {
+      handleSuggestionError(error);
+    }
+  });
+
+history
+  .command("dismiss-suggestion")
+  .description(
+    "Dismiss a pending suggestion on this record only (store untouched)",
+  )
+  .argument("<id>", "History record id or unique prefix")
+  .argument("<label>", 'Pending suggestion label (e.g. "Speaker 2")')
+  .action(async (id: string, label: string) => {
+    try {
+      await dismissSuggestion(id, label);
+    } catch (error) {
+      handleSuggestionError(error);
+    }
+  });
+
 // Hidden plumbing verb: the macOS app persists summary/tag edits through this
 // (spawned like `usage --json`), so there is exactly one markdown renderer and
 // one atomicity implementation. Not part of the user-facing CLI surface.
@@ -268,6 +326,13 @@ function handleEnrichError(error: unknown): never {
     `\nError: ${error instanceof Error ? error.message : String(error)}`,
   );
   process.exit(error instanceof EnrichError ? error.exitCode : 1);
+}
+
+function handleSuggestionError(error: unknown): never {
+  console.error(
+    `\nError: ${error instanceof Error ? error.message : String(error)}`,
+  );
+  process.exit(error instanceof EnrollError ? error.exitCode : 1);
 }
 
 program
@@ -374,6 +439,19 @@ speakers
   .action(async (vpId: string, newName: string) => {
     try {
       await reassignVoiceprint(vpId, newName);
+    } catch (error) {
+      handleSpeakerError(error);
+    }
+  });
+
+speakers
+  .command("doctor")
+  .description(
+    "List low-agreement voiceprints and same-name pairs below 0.30 (tab-separated)",
+  )
+  .action(async () => {
+    try {
+      await doctorSpeakers();
     } catch (error) {
       handleSpeakerError(error);
     }

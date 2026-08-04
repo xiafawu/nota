@@ -2,10 +2,12 @@ import {
   DEFAULT_SPEAKERS_FILE,
   loadProfiles,
   saveProfiles,
+  LOW_AGREEMENT_FLOOR,
   type SpeakerProfile,
   type SpeakerStore,
   type Voiceprint,
 } from "../pipeline/speakers.js";
+import { cosine } from "../pipeline/embed.js";
 import { listHistoryRecords } from "../pipeline/history.js";
 import { loadConfig } from "../config.js";
 import { generateDescription } from "../pipeline/describe-speaker.js";
@@ -216,9 +218,89 @@ export async function showSpeaker(
       enrolledAt: vp.enrolledAt,
       source: vp.source,
       embeddingDimension: vp.embedding.length,
+      ...(vp.lowAgreement ? { lowAgreement: true } : {}),
     })),
   };
   process.stdout.write(`${JSON.stringify(view, null, 2)}\n`);
+}
+
+/**
+ * `nota speakers doctor` — surface enrollment-quality problems (decision 6):
+ * voiceprints flagged `lowAgreement` at enroll time, and every same-name
+ * voiceprint pair scoring below {@link LOW_AGREEMENT_FLOOR} (0.30) — the
+ * second list catches legacy garbage pairs that predate the flag. Findings
+ * as tab-separated rows on stdout (scriptable), guidance on stderr. A clean
+ * store prints nothing on stdout.
+ */
+export async function doctorSpeakers(
+  options?: SpeakerCommandOptions,
+): Promise<void> {
+  const store = await loadProfiles(resolveStorePath(options));
+
+  // 1. Flagged prints, with their best same-name agreement.
+  const flagged: { name: string; vp: Voiceprint; best: number }[] = [];
+  // 2. Every same-name pair below the floor, flagged or not.
+  const pairs: { name: string; a: Voiceprint; b: Voiceprint; score: number }[] = [];
+  for (const [name, profile] of Object.entries(store.speakers)) {
+    for (const vp of profile.voiceprints) {
+      if (vp.lowAgreement !== true) continue;
+      const best = profile.voiceprints.reduce<number | null>((acc, other) => {
+        if (other === vp) return acc;
+        const score = cosine(vp.embedding, other.embedding);
+        return acc === null ? score : Math.max(acc, score);
+      }, null);
+      if (best !== null) flagged.push({ name, vp, best });
+    }
+    for (let i = 0; i < profile.voiceprints.length; i++) {
+      for (let j = i + 1; j < profile.voiceprints.length; j++) {
+        const score = cosine(
+          profile.voiceprints[i].embedding,
+          profile.voiceprints[j].embedding,
+        );
+        if (score < LOW_AGREEMENT_FLOOR) {
+          pairs.push({
+            name,
+            a: profile.voiceprints[i],
+            b: profile.voiceprints[j],
+            score,
+          });
+        }
+      }
+    }
+  }
+
+  if (flagged.length === 0 && pairs.length === 0) {
+    process.stderr.write(
+      "No low-agreement voiceprints or same-name pairs below 0.30. Store looks healthy.\n",
+    );
+    return;
+  }
+
+  process.stderr.write(
+    "Low-agreement voiceprints (marked at enrollment; see `nota speakers show <name>`):\n",
+  );
+  process.stderr.write(
+    "Fix with `nota speakers reassign <vp-id> <name>` or `nota speakers delete <name>`.\n",
+  );
+  for (const { name, vp, best } of flagged) {
+    process.stdout.write(
+      `${name}\t${vp.id}\t${best.toFixed(3)}\n`,
+    );
+  }
+
+  if (pairs.length > 0) {
+    process.stderr.write(
+      "Same-name voiceprint pairs below 0.30 (enrollment-condition garbage):\n",
+    );
+    process.stderr.write(
+      "Delete or reassign the weaker print; re-enroll the speaker in better conditions.\n",
+    );
+    for (const { name, a, b, score } of pairs) {
+      process.stdout.write(
+        `${name}\t${a.id}\t${b.id}\t${score.toFixed(3)}\n`,
+      );
+    }
+  }
 }
 
 export async function describeSpeaker(
