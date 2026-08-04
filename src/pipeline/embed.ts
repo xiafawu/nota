@@ -1,3 +1,6 @@
+import { access } from "node:fs/promises";
+import { homedir } from "node:os";
+import path from "node:path";
 import { SAMPLE_RATE } from "../utils/pcm.js";
 import { resolveModel, type ModelSpec } from "../utils/model.js";
 
@@ -253,6 +256,21 @@ export async function computeEmbeddings(
 export async function isIdentityAvailable(): Promise<boolean> {
   try {
     await loadBackend();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * True when the speaker-identification ONNX model is already on disk, without
+ * triggering a download. The orchestrator uses this to emit a one-line notice
+ * before the first-run download starts (identify-by-default means the model
+ * is fetched during a normal diarized run, so the user should be told why).
+ */
+export async function isModelDownloaded(): Promise<boolean> {
+  try {
+    await access(path.join(homedir(), ".nota", "models", MODEL_SPEC.name));
     return true;
   } catch {
     return false;

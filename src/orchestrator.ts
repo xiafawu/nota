@@ -37,6 +37,10 @@ import {
   rankProfileCandidates,
   promptForSpeakerNames,
   applySpeakerNames,
+  computeSuggestions,
+  enrollVoiceprintWithCheck,
+  DEFAULT_SPEAKERS_FILE,
+  type SpeakerSuggestion,
 } from "./pipeline/speakers.js";
 import { applyVerdicts, verifySpeakers } from "./pipeline/verify-speakers.js";
 import {
@@ -48,6 +52,7 @@ import {
   computeEmbedding,
   computeEmbeddings,
   isIdentityAvailable,
+  isModelDownloaded,
   TENTATIVE_THRESHOLD,
 } from "./pipeline/embed.js";
 import { decodePcm, slicePcm, concatToSeconds, SAMPLE_RATE } from "./utils/pcm.js";
@@ -83,14 +88,35 @@ function emitPhase(stage: string) {
   }
 }
 
-function historyOptions(config: AppConfig): HistoryOptions {
+function historyOptions(
+  config: AppConfig,
+  identify: boolean,
+): HistoryOptions {
   return {
     language: config.language,
     diarize: config.diarize,
-    identify: config.identify,
+    identify,
     numSpeakers: config.numSpeakers,
     model: config.summaryModel,
   };
+}
+
+/**
+ * Resolve the effective speaker-identification decision (decision 1):
+ * `--identify` forces on, `--no-identify` forces off, and the default is
+ * auto — recognition runs on every diarized transcription whenever the
+ * store has at least one enrolled voiceprint. Reading the store here (before
+ * any paid call) also lets the AssemblyAI path skip the qta pre-conversion
+ * when auto would no-op on an empty store.
+ */
+export async function resolveIdentifyActive(
+  config: Pick<AppConfig, "identify">,
+  storePath = DEFAULT_SPEAKERS_FILE,
+): Promise<boolean> {
+  if (config.identify === true) return true;
+  if (config.identify === false) return false;
+  const store = await loadProfiles(storePath);
+  return Object.keys(store.speakers).length > 0;
 }
 
 export async function runPipeline(options: PipelineOptions): Promise<string> {
@@ -243,13 +269,24 @@ async function runAssemblyAIPipeline(
 ): Promise<string> {
   const verbose = config.verbose;
 
-  // 1b. Pre-convert .qta to .wav if speaker identification is needed
-  //     (the original file may be a temp file that gets deleted during transcription)
+  // 0. Decide whether recognition runs at all (decision 1: auto by default).
+  //    Needed before the .qta pre-conversion below, which only exists to give
+  //    identify a decodable local file.
+  const identifyActive = await resolveIdentifyActive(config);
+
+  // 1b. Pre-convert .qta to .wav when the run will read the audio after
+  //     transcription — speaker identification, or clip capture for history
+  //     (decision 2). The original may be a temp file that gets deleted when
+  //     the share sheet closes during transcription, so the durable 16 kHz
+  //     copy must exist up front.
+  const needsLocalAudio =
+    (identifyActive || config.history) &&
+    path.extname(inputPath).toLowerCase() === ".qta";
   let localAudioPath: string | null = null;
-  if (config.identify && path.extname(inputPath).toLowerCase() === ".qta") {
+  if (needsLocalAudio) {
     const spinner0 = log(
       verbose,
-      "Converting audio for speaker identification...",
+      "Converting audio for speaker analysis...",
     );
     localAudioPath = path.join(tmpdir(), `nota-local-${Date.now()}.wav`);
     await execFileAsync("ffmpeg", [
@@ -273,6 +310,7 @@ async function runAssemblyAIPipeline(
       config,
       localAudioPath,
       contentHash,
+      identifyActive,
     );
   } finally {
     if (localAudioPath) {
@@ -288,6 +326,7 @@ async function runAssemblyAIPipelineInner(
   config: AppConfig,
   localAudioPath: string | null,
   contentHash: string | undefined,
+  identifyActive: boolean,
 ): Promise<string> {
   const verbose = config.verbose;
 
@@ -315,10 +354,17 @@ async function runAssemblyAIPipelineInner(
   };
   transcriptionUsage.costUSD = costForUsage(transcriptionUsage);
 
-  // 2b. Identify speakers by voice (if enabled)
+  // 2b. Identify speakers by voice (if enabled) and capture per-speaker clips.
+  //     Clips are captured on EVERY diarized run (decision 2) — recognition
+  //     or not — so the chips can enroll or the record can be recomputed
+  //     later, after this (often temporary) audio file is gone. `--no-history`
+  //     stores nothing.
   let segments = result.segments;
   let speakerClipsPcm: Record<string, Int16Array> | undefined;
-  if (config.identify) {
+  let suggestions: SpeakerSuggestion[] | undefined;
+  const wantsClips =
+    config.history && segments.some((seg) => Boolean(seg.speaker));
+  if (identifyActive) {
     const audioForEmbeddings = localAudioPath ?? inputPath;
     const ident = await identifySpeakers(
       audioForEmbeddings,
@@ -327,9 +373,11 @@ async function runAssemblyAIPipelineInner(
       verbose,
     );
     segments = ident.segments;
-    // Persist clips so the macOS viewer can enroll a name later, after this
-    // (often temporary) audio file is gone.
     speakerClipsPcm = ident.clips;
+    suggestions = ident.suggestions;
+  } else if (wantsClips) {
+    const audioForClips = localAudioPath ?? inputPath;
+    speakerClipsPcm = await captureSpeakerClips(audioForClips, segments);
   }
 
   const capturedAt = await resolveCaptureDate(inputPath);
@@ -342,7 +390,7 @@ async function runAssemblyAIPipelineInner(
     const history = await createHistoryRecord({
       sourcePath: inputPath,
       provider: config.provider,
-      options: historyOptions(config),
+      options: historyOptions(config, identifyActive),
       kind: config.kind,
       durationMinutes,
       transcriptText: result.text,
@@ -351,6 +399,7 @@ async function runAssemblyAIPipelineInner(
       capturedAt: capturedAt ? capturedAt.toISOString() : null,
       contentHash,
       speakerClipsPcm,
+      suggestions,
       usage: [transcriptionUsage],
     });
     historyId = history.id;
@@ -442,6 +491,40 @@ interface IdentifyOutput {
   segments: TranscriptSegment[];
   /** Per-label PCM clips (>= CLIP_MIN_SEC) to persist for later enrollment. */
   clips: Record<string, Int16Array>;
+  /**
+   * Tentative-band suggestions for labels whose best cosine is in
+   * [0.50, 0.65) (decision 3). Labels resolved by name during this run
+   * (confident or TTY-confirmed) are excluded.
+   */
+  suggestions: SpeakerSuggestion[];
+}
+
+/**
+ * Capture one representative PCM clip per diarized speaker label (longest
+ * utterances first, up to CLIP_TARGET_SEC). Runs with `minSec = 0` return
+ * every label (embedding still needs short clips); the default keeps only
+ * clips worth enrolling later. Decision 2: called on every diarized run with
+ * history enabled, whether or not recognition matched.
+ */
+export async function captureSpeakerClips(
+  inputPath: string,
+  segments: TranscriptSegment[],
+  minSec = CLIP_MIN_SEC,
+): Promise<Record<string, Int16Array>> {
+  const pcm = await decodePcm(inputPath);
+  const labels = [
+    ...new Set(segments.map((s) => s.speaker).filter(Boolean) as string[]),
+  ];
+  const clips: Record<string, Int16Array> = {};
+  for (const label of labels) {
+    const ranges = selectClipRanges(segments, label, CLIP_TARGET_SEC);
+    const clip = concatToSeconds(
+      ranges.map((r) => slicePcm(pcm, [r])),
+      CLIP_TARGET_SEC,
+    );
+    if (clip.length >= minSec * SAMPLE_RATE) clips[label] = clip;
+  }
+  return clips;
 }
 
 export async function identifySpeakers(
@@ -450,6 +533,14 @@ export async function identifySpeakers(
   config: AppConfig,
   verbose: boolean,
 ): Promise<IdentifyOutput> {
+  // Identify-by-default means a first diarized run downloads the ONNX model
+  // unprompted: say so in one line before the download starts (decision 1).
+  // Failure below still no-ops identity with the existing message.
+  if (!(await isModelDownloaded())) {
+    console.error(
+      "Downloading the speaker-identification model on first use (one-time).",
+    );
+  }
   let identityAvailable = false;
   try {
     identityAvailable = await isIdentityAvailable();
@@ -463,26 +554,15 @@ export async function identifySpeakers(
         "not be loaded. Check the model download and installation, then retry. " +
         "Using generic labels.",
     );
-    return { segments, clips: {} };
+    return { segments, clips: {}, suggestions: [] };
   }
   const spinner = log(verbose, "Identifying speakers (ONNX)...");
   try {
-    const pcm = await decodePcm(inputPath);
-    const labels = [
-      ...new Set(segments.map((s) => s.speaker).filter(Boolean) as string[]),
-    ];
-
-    // One representative clip per speaker (longest utterances first). Keep
-    // only clips with enough speech to be worth enrolling later.
-    const pcmByLabel: Record<string, Int16Array> = {};
+    // Embed every label (including short clips — computeEmbeddings skips
+    // insufficient ones), then keep only enrollment-worthy clips for storage.
+    const pcmByLabel = await captureSpeakerClips(inputPath, segments, 0);
     const clips: Record<string, Int16Array> = {};
-    for (const label of labels) {
-      const ranges = selectClipRanges(segments, label, CLIP_TARGET_SEC);
-      const clip = concatToSeconds(
-        ranges.map((r) => slicePcm(pcm, [r])),
-        CLIP_TARGET_SEC,
-      );
-      pcmByLabel[label] = clip;
+    for (const [label, clip] of Object.entries(pcmByLabel)) {
       if (clip.length >= CLIP_MIN_SEC * SAMPLE_RATE) clips[label] = clip;
     }
 
@@ -492,6 +572,7 @@ export async function identifySpeakers(
     const store = await loadProfiles();
     const matches = matchProfiles(labelEmbeddings, store);
     const acousticCandidates = rankProfileCandidates(labelEmbeddings, store);
+    let suggestions = computeSuggestions(labelEmbeddings, store);
     spinner?.succeed("Speaker identification complete");
 
     const nameMap: Record<string, string> = {};
@@ -553,6 +634,9 @@ export async function identifySpeakers(
       }
     }
 
+    const labels = [
+      ...new Set(segments.map((s) => s.speaker).filter(Boolean) as string[]),
+    ];
     const unmatched = labels.filter((l) => !nameMap[l] && !tentative[l]);
     const unresolvedLabels = labels.filter((l) => !nameMap[l]);
     const fallbackRecommendations: SpeakerResolutionRecommendation[] = unresolvedLabels.map(
@@ -638,7 +722,8 @@ export async function identifySpeakers(
       // `--identify` run also persists voiceprints (the macOS viewer instead
       // enrolls post-hoc from the stored clip via `nota enroll`). A selected
       // existing candidate is in `learn` and is appended only as an explicit
-      // user correction.
+      // user correction. Enrollment consistency (decision 6) warns and flags
+      // `lowAgreement` when the new print disagrees with the person's prints.
       let enrolled = 0;
       for (const [label, name] of Object.entries({ ...enroll, ...learn })) {
         // A `learn` entry is only produced by selecting a known enrolled
@@ -651,15 +736,12 @@ export async function identifySpeakers(
         try {
           const embedding =
             labelEmbeddings[label] ?? Array.from(await computeEmbedding(clip));
-          const now = new Date().toISOString();
-          const vp = {
-            id: now,
+          enrollVoiceprintWithCheck(
+            store,
+            name,
             embedding,
-            enrolledAt: now,
-            source: path.basename(inputPath),
-          };
-          if (store.speakers[name]) store.speakers[name].voiceprints.push(vp);
-          else store.speakers[name] = { voiceprints: [vp] };
+            path.basename(inputPath),
+          );
           enrolled++;
         } catch (e) {
           if (verbose) {
@@ -672,7 +754,15 @@ export async function identifySpeakers(
       if (enrolled > 0) await saveProfiles(store);
     }
 
-    return { segments: applySpeakerNames(segments, nameMap), clips };
+    // Labels resolved to a name this run (confident or TTY-confirmed) have no
+    // pending decision left to offer: drop their suggestions.
+    suggestions = suggestions.filter((s) => !nameMap[s.label]);
+
+    return {
+      segments: applySpeakerNames(segments, nameMap),
+      clips,
+      suggestions,
+    };
   } catch (error) {
     spinner?.fail("Speaker identification unavailable (using generic labels)");
     console.error(
@@ -684,7 +774,7 @@ export async function identifySpeakers(
         `  ${error instanceof Error ? error.message : String(error)}`,
       );
     }
-    return { segments, clips: {} };
+    return { segments, clips: {}, suggestions: [] };
   }
 }
 
@@ -770,7 +860,31 @@ async function runWhisperPipeline(
 
   const capturedAt = await resolveCaptureDate(inputPath);
 
-  // 4c. Save transcript history before summarization so the transcript survives
+  // 4c. Identify speakers (auto by default — decision 1) and capture
+  //     per-speaker clips on every diarized run (decision 2).
+  let speakerClipsPcm: Record<string, Int16Array> | undefined;
+  let suggestions: SpeakerSuggestion[] | undefined;
+  const identifyActive = await resolveIdentifyActive(config);
+  const diarizedSegments = diarization ? merged.segments : undefined;
+  if (diarizedSegments && identifyActive) {
+    const ident = await identifySpeakers(
+      inputPath,
+      diarizedSegments,
+      config,
+      verbose,
+    );
+    merged = { ...merged, segments: ident.segments };
+    speakerClipsPcm = ident.clips;
+    suggestions = ident.suggestions;
+  } else if (
+    diarizedSegments &&
+    config.history &&
+    diarizedSegments.some((seg) => Boolean(seg.speaker))
+  ) {
+    speakerClipsPcm = await captureSpeakerClips(inputPath, diarizedSegments);
+  }
+
+  // 4d. Save transcript history before summarization so the transcript survives
   //     even if the GPT summary step fails.
   let historyId: string | undefined;
   if (config.history) {
@@ -778,7 +892,7 @@ async function runWhisperPipeline(
     const history = await createHistoryRecord({
       sourcePath: inputPath,
       provider: config.provider,
-      options: historyOptions(config),
+      options: historyOptions(config, identifyActive),
       kind: config.kind,
       durationMinutes,
       transcriptText: merged.text,
@@ -786,6 +900,8 @@ async function runWhisperPipeline(
       outputPath,
       capturedAt: capturedAt ? capturedAt.toISOString() : null,
       contentHash,
+      speakerClipsPcm,
+      suggestions,
       usage: [transcriptionUsageW],
     });
     historyId = history.id;

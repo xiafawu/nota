@@ -1,3 +1,6 @@
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, it, expect, vi } from "vitest";
 
 const embedMocks = vi.hoisted(() => ({
@@ -37,6 +40,7 @@ vi.mock("../src/pipeline/speakers.js", async () => {
 
 import {
   identifySpeakers,
+  resolveIdentifyActive,
   runPipeline,
   selectClipRanges,
 } from "../src/orchestrator.js";
@@ -78,7 +82,7 @@ describe("identifySpeakers", () => {
 
     await expect(
       identifySpeakers("audio.wav", segments, config, false),
-    ).resolves.toEqual({ segments, clips: {} });
+    ).resolves.toEqual({ segments, clips: {}, suggestions: [] });
     expect(error).toHaveBeenCalledWith(
       expect.stringMatching(/ONNX.*model.*onnxruntime-node/i),
     );
@@ -93,7 +97,7 @@ describe("identifySpeakers", () => {
 
     await expect(
       identifySpeakers("audio.wav", segments, config, false),
-    ).resolves.toEqual({ segments, clips: {} });
+    ).resolves.toEqual({ segments, clips: {}, suggestions: [] });
     expect(error).toHaveBeenCalledWith(expect.stringMatching(/ONNX.*model/i));
   });
 
@@ -107,7 +111,7 @@ describe("identifySpeakers", () => {
 
     await expect(
       identifySpeakers("audio.wav", segments, config, false),
-    ).resolves.toEqual({ segments, clips: {} });
+    ).resolves.toEqual({ segments, clips: {}, suggestions: [] });
     expect(error).toHaveBeenCalledWith(expect.stringMatching(/onnxruntime-node/i));
   });
 
@@ -152,6 +156,49 @@ describe("identifySpeakers", () => {
         },
       }),
     );
+  });
+});
+
+describe("resolveIdentifyActive", () => {
+  let dir: string;
+  let storeFile: string;
+  beforeEach(async () => {
+    dir = await mkdtemp(path.join(tmpdir(), "nota-idactive-"));
+    storeFile = path.join(dir, "speakers.json");
+  });
+  afterEach(async () => {
+    await rm(dir, { recursive: true, force: true });
+  });
+
+  it("forces on with --identify even on an empty store", async () => {
+    await expect(resolveIdentifyActive({ identify: true }, storeFile)).resolves.toBe(true);
+  });
+
+  it("forces off with --no-identify even when voiceprints exist", async () => {
+    await writeFile(
+      storeFile,
+      JSON.stringify({
+        version: 4,
+        speakers: { Alice: { voiceprints: [{ id: "t", embedding: [1], enrolledAt: "t", source: "a" }] } },
+      }),
+    );
+    await expect(resolveIdentifyActive({ identify: false }, storeFile)).resolves.toBe(false);
+  });
+
+  it("auto-runs when the store has at least one enrolled speaker", async () => {
+    speakerMocks.loadProfiles.mockResolvedValue({
+      version: 4,
+      speakers: {
+        Alice: {
+          voiceprints: [{ id: "t", embedding: [1], enrolledAt: "t", source: "a" }],
+        },
+      },
+    });
+    await expect(resolveIdentifyActive({ identify: undefined }, storeFile)).resolves.toBe(true);
+  });
+
+  it("auto no-ops on an empty or missing store", async () => {
+    await expect(resolveIdentifyActive({ identify: undefined }, storeFile)).resolves.toBe(false);
   });
 });
 

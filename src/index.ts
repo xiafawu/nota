@@ -96,7 +96,11 @@ program
   .option("--no-diarize", "Skip pyannote diarization for --provider whisper")
   .option(
     "--identify",
-    "Identify and remember speakers by voice across recordings",
+    "Identify and remember speakers by voice across recordings (forced on)",
+  )
+  .option(
+    "--no-identify",
+    "Disable speaker identification (by default it auto-runs whenever voiceprints exist)",
   )
   .option(
     "--no-summary",

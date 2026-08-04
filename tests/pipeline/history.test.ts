@@ -11,8 +11,10 @@ import {
   listHistoryRecords,
   loadHistoryRecord,
   mergeTags,
+  renameRecordSpeaker,
   setRecordSummary,
   setRecordTags,
+  setSuggestionState,
   speakerClipPath,
   writeSpeakerClip,
 } from "../../src/pipeline/history.js";
@@ -554,5 +556,211 @@ describe("history", () => {
     expect(loaded.speakerClips?.["Speaker 1"]).toBe(`${record.id}.assets/Speaker 1.pcm`);
     const buf = await readFile(speakerClipPath(record.id, "Speaker 1", historyDir));
     expect(buf.length).toBe(4); // 2 Int16 samples
+  });
+
+  describe("speaker suggestions", () => {
+    const suggestion = (label: string, name = "Kenny Kim", score = 0.623) => ({
+      label,
+      suggestedName: name,
+      score,
+      voiceprintId: "20260717-004104Z",
+      state: "pending" as const,
+    });
+
+    it("persists suggestions at creation and round-trips them", async () => {
+      const record = await createHistoryRecord(
+        {
+          sourcePath: "/tmp/sugg.m4a",
+          provider: "assemblyai",
+          options: { diarize: true, identify: true, model: "gpt-4o" },
+          durationMinutes: 4,
+          transcriptText: "hi",
+          segments: [
+            { start: 0, end: 1, text: "hi", speaker: "Speaker 1" },
+            { start: 1, end: 2, text: "yo", speaker: "Speaker 2" },
+          ],
+          suggestions: [suggestion("Speaker 2")],
+        },
+        historyDir,
+      );
+      expect(record.suggestions).toEqual([suggestion("Speaker 2")]);
+      const loaded = await loadHistoryRecord(record.id, historyDir);
+      expect(loaded.suggestions).toEqual([suggestion("Speaker 2")]);
+    });
+
+    it("legacy records without a suggestions field load unchanged (suggestions absent)", async () => {
+      const record = await createHistoryRecord(
+        {
+          sourcePath: "/tmp/legacy-sugg.m4a",
+          provider: "assemblyai",
+          options: { diarize: true, identify: true, model: "gpt-4o" },
+          durationMinutes: 4,
+          transcriptText: "hi",
+          segments: [],
+        },
+        historyDir,
+      );
+      expect(record.suggestions).toBeUndefined();
+      const onDisk = JSON.parse(
+        await readFile(path.join(historyDir, `${record.id}.json`), "utf-8"),
+      );
+      expect(onDisk.suggestions).toBeUndefined();
+      const loaded = await loadHistoryRecord(record.id, historyDir);
+      expect(loaded.suggestions).toBeUndefined();
+    });
+
+    it("accepts and dismisses pending suggestions with a decidedAt stamp", async () => {
+      const record = await createHistoryRecord(
+        {
+          sourcePath: "/tmp/sugg.m4a",
+          provider: "assemblyai",
+          options: { diarize: true, identify: true, model: "gpt-4o" },
+          durationMinutes: 4,
+          transcriptText: "hi",
+          segments: [],
+          suggestions: [suggestion("Speaker 1"), suggestion("Speaker 2", "Freya Wu", 0.55)],
+        },
+        historyDir,
+      );
+
+      const accepted = await setSuggestionState(record.id, "Speaker 1", "accepted", historyDir);
+      expect(accepted.suggestions?.[0]).toMatchObject({
+        label: "Speaker 1",
+        state: "accepted",
+      });
+      expect(accepted.suggestions?.[0].decidedAt).toBeTruthy();
+      // The other suggestion is untouched.
+      expect(accepted.suggestions?.[1]).toMatchObject({ label: "Speaker 2", state: "pending" });
+      expect(accepted.suggestions?.[1].decidedAt).toBeUndefined();
+
+      const dismissed = await setSuggestionState(record.id, "Speaker 2", "dismissed", historyDir);
+      expect(dismissed.suggestions?.[1]).toMatchObject({ state: "dismissed" });
+
+      // Round-trip through disk.
+      const loaded = await loadHistoryRecord(record.id, historyDir);
+      expect(loaded.suggestions?.map((s) => [s.label, s.state])).toEqual([
+        ["Speaker 1", "accepted"],
+        ["Speaker 2", "dismissed"],
+      ]);
+    });
+
+    it("refuses to decide a label with no pending suggestion, naming the pending ones", async () => {
+      const record = await createHistoryRecord(
+        {
+          sourcePath: "/tmp/sugg.m4a",
+          provider: "assemblyai",
+          options: { diarize: true, identify: true, model: "gpt-4o" },
+          durationMinutes: 4,
+          transcriptText: "hi",
+          segments: [],
+          suggestions: [suggestion("Speaker 1")],
+        },
+        historyDir,
+      );
+      // Already decided → not pending anymore.
+      await setSuggestionState(record.id, "Speaker 1", "dismissed", historyDir);
+      await expect(
+        setSuggestionState(record.id, "Speaker 1", "accepted", historyDir),
+      ).rejects.toThrow(/No pending suggestion for label "Speaker 1"/);
+      await expect(
+        setSuggestionState(record.id, "Speaker 9", "dismissed", historyDir),
+      ).rejects.toThrow(/Pending suggestions: \(none\)/);
+    });
+
+    it("fails for a missing record", async () => {
+      await expect(
+        setSuggestionState("nope-000000Z-00000000", "Speaker 1", "accepted", historyDir),
+      ).rejects.toThrow(/History record not found/);
+    });
+  });
+
+  describe("summary staleness (decision 5)", () => {
+    const summary = {
+      title: "Sync",
+      tags: [],
+      narrative: "Kenny spoke.",
+      keyTopics: [],
+      decisions: [],
+      actionItems: [],
+    };
+
+    it("renameRecordSpeaker marks a completed record's summary outdated", async () => {
+      const record = await createHistoryRecord(
+        {
+          sourcePath: "/tmp/rename-stale.m4a",
+          provider: "assemblyai",
+          options: { diarize: true, identify: false, model: "gpt-4o" },
+          durationMinutes: 4,
+          transcriptText: "hi",
+          segments: [{ start: 0, end: 1, text: "hi", speaker: "Speaker 1" }],
+        },
+        historyDir,
+      );
+      await completeHistoryRecord(record.id, { summary, outputPath: "/tmp/x.md" }, historyDir);
+      const renamed = await renameRecordSpeaker(record.id, "Speaker 1", "Kenny Kim", historyDir);
+      expect(renamed.record.summaryOutdated).toBe(true);
+    });
+
+    it("renameRecordSpeaker leaves a transcript-only record unstale", async () => {
+      const record = await createHistoryRecord(
+        {
+          sourcePath: "/tmp/rename-fresh.m4a",
+          provider: "assemblyai",
+          options: { diarize: true, identify: false, model: "gpt-4o" },
+          durationMinutes: 4,
+          transcriptText: "hi",
+          segments: [{ start: 0, end: 1, text: "hi", speaker: "Speaker 1" }],
+        },
+        historyDir,
+      );
+      const renamed = await renameRecordSpeaker(record.id, "Speaker 1", "Kenny Kim", historyDir);
+      expect(renamed.record.summaryOutdated).toBeUndefined();
+    });
+
+    it("setRecordSummary clears the outdated flag", async () => {
+      const record = await createHistoryRecord(
+        {
+          sourcePath: "/tmp/rename-stale.m4a",
+          provider: "assemblyai",
+          options: { diarize: true, identify: false, model: "gpt-4o" },
+          durationMinutes: 4,
+          transcriptText: "hi",
+          segments: [{ start: 0, end: 1, text: "hi", speaker: "Speaker 1" }],
+        },
+        historyDir,
+      );
+      await completeHistoryRecord(record.id, { summary, outputPath: "/tmp/x.md" }, historyDir);
+      const renamed = await renameRecordSpeaker(record.id, "Speaker 1", "Kenny Kim", historyDir);
+      expect(renamed.record.summaryOutdated).toBe(true);
+      const refreshed = await setRecordSummary(
+        record.id,
+        { summary: { ...summary, narrative: "Kenny Kim spoke." } },
+        historyDir,
+      );
+      expect(refreshed.summaryOutdated).toBe(false);
+    });
+
+    it("applyEnrichmentToRecord writes the summaryOutdated flag (app dismiss path)", async () => {
+      const record = await createHistoryRecord(
+        {
+          sourcePath: "/tmp/dismiss-stale.m4a",
+          provider: "assemblyai",
+          options: { diarize: true, identify: false, model: "gpt-4o" },
+          durationMinutes: 4,
+          transcriptText: "hi",
+          segments: [{ start: 0, end: 1, text: "hi", speaker: "Speaker 1" }],
+        },
+        historyDir,
+      );
+      await completeHistoryRecord(record.id, { summary, outputPath: "/tmp/x.md" }, historyDir);
+      await renameRecordSpeaker(record.id, "Speaker 1", "Kenny Kim", historyDir);
+      const dismissed = await applyEnrichmentToRecord(
+        record.id,
+        { summaryOutdated: false },
+        historyDir,
+      );
+      expect(dismissed.summaryOutdated).toBe(false);
+      expect(dismissed.summary?.narrative).toBe("Kenny spoke."); // untouched
+    });
   });
 });

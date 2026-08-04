@@ -68,7 +68,14 @@ export interface AppConfig {
   diarize: boolean;
   summary: boolean;
   numSpeakers?: number;
-  identify: boolean;
+  /**
+   * Speaker identification mode: `true` = forced on (`--identify`), `false` =
+   * off (`--no-identify`), `undefined` = auto — recognition runs on every
+   * diarized transcription whenever the store has ≥1 enrolled speaker
+   * (decision 1 of the speaker-workflow spec). This is the one tri-state in
+   * the config on purpose: the default flipped from opt-in to auto.
+   */
+  identify: boolean | undefined;
   history: boolean;
   /** Reprocess even when an identical audio file is already in history. */
   force: boolean;
@@ -254,7 +261,9 @@ export function loadConfig(
     diarize: provider === "assemblyai" ? true : (options.diarize ?? true),
     summary: options.summary ?? true,
     numSpeakers: options.numSpeakers,
-    identify: options.identify ?? false,
+    // No `?? false`: undefined means auto (identify-by-default). `--identify`
+    // → true (force), `--no-identify` → false (off).
+    identify: options.identify,
     verifySpeakers: options.verifySpeakers ?? true,
     force: options.force ?? false,
     history: options.history ?? true,

@@ -238,10 +238,13 @@ async function checkIdentity(config: AppConfig): Promise<PreflightCheck> {
   if (available) {
     return {
       ...base,
-      status: config.identify ? "ok" : "optional",
-      detail: config.identify
-        ? "On — ONNX voice model ready"
-        : "Available — enable with --identify",
+      status: config.identify === false ? "optional" : "ok",
+      detail:
+        config.identify === false
+          ? "Off — disabled with --no-identify"
+          : config.identify === true
+            ? "On — ONNX voice model ready"
+            : "Auto — runs when voiceprints exist",
     };
   }
   return {

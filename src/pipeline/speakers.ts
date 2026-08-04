@@ -28,6 +28,12 @@ export interface Voiceprint {
   embedding: number[];
   enrolledAt: string;
   source: string;
+  /**
+   * True when this voiceprint disagreed strongly with the person's existing
+   * prints at enrollment time (see {@link enrollVoiceprintWithCheck}).
+   * Optional: legacy voiceprints predate the flag; absent means no flag.
+   */
+  lowAgreement?: boolean;
 }
 
 export interface SpeakerDescription {
@@ -249,6 +255,148 @@ export function rankProfileCandidates(
     out[label] = candidates.sort((a, b) => b.confidence - a.confidence).slice(0, limit);
   }
   return out;
+}
+
+/**
+ * Minimum same-name cosine for a new voiceprint to be considered consistent
+ * with the person's existing prints at enrollment time. A new print scoring
+ * below this against every existing print of the same person is flagged
+ * `lowAgreement` (warn, never refuse). From docs/research/voiceprint-cosine-bands.md:
+ * same-name enrollment pairs span 0.025–0.623 (Brian's pair is 0.025), so a
+ * print this far from its own name is near-certainly enrollment-condition
+ * garbage.
+ */
+export const LOW_AGREEMENT_WARN_THRESHOLD =
+  parseFloat(process.env.NOTA_LOW_AGREEMENT_WARN ?? "") || 0.5;
+
+/**
+ * Doctor-report floor for same-name voiceprint pairs (see decision 6 of the
+ * speaker-workflow spec): `nota speakers doctor` lists every same-name pair
+ * scoring below this, flagged or not, so legacy garbage pairs surface too.
+ */
+export const LOW_AGREEMENT_FLOOR =
+  parseFloat(process.env.NOTA_LOW_AGREEMENT_FLOOR ?? "") || 0.3;
+
+export type SuggestionState = "pending" | "accepted" | "dismissed";
+
+/**
+ * A tentative-band speaker suggestion persisted on a history record. For each
+ * diarized label whose best cosine against an enrolled voiceprint lands in
+ * [TENTATIVE_THRESHOLD, MATCH_THRESHOLD), the record carries one of these so
+ * the macOS chip can offer accept/dismiss without re-running recognition.
+ * Confident matches auto-label and never produce a suggestion.
+ */
+export interface SpeakerSuggestion {
+  /** Diarized label on the record (e.g. "Speaker 2"). */
+  label: string;
+  /** Enrolled speaker name the label best matches. */
+  suggestedName: string;
+  /** Best cosine of the label's clip against `voiceprintId`. */
+  score: number;
+  /** Id of the voiceprint that produced the best score. */
+  voiceprintId: string;
+  state: SuggestionState;
+  /** ISO timestamp when accepted/dismissed; absent while pending. */
+  decidedAt?: string;
+}
+
+/**
+ * Compute tentative-band suggestions per label. Independent of
+ * `rankMatches`' global name claiming: each label's best candidate is
+ * evaluated on its own, so two labels can each suggest the same name (both
+ * may later be accepted — renaming allows merging into one person). A label
+ * is suggested only when its best score is in [TENTATIVE, MATCH); confident
+ * and below-floor labels never produce one.
+ */
+export function computeSuggestions(
+  labelEmbeddings: Record<string, number[]>,
+  store: SpeakerStore,
+): SpeakerSuggestion[] {
+  const suggestions: SpeakerSuggestion[] = [];
+  for (const [label, embedding] of Object.entries(labelEmbeddings)) {
+    let bestName: string | undefined;
+    let bestVoiceprintId = "";
+    let bestScore = -Infinity;
+    for (const [name, profile] of Object.entries(store.speakers)) {
+      for (const vp of profile.voiceprints) {
+        const score = cosine(embedding, vp.embedding);
+        if (score > bestScore) {
+          bestScore = score;
+          bestName = name;
+          bestVoiceprintId = vp.id;
+        }
+      }
+    }
+    if (
+      bestName === undefined ||
+      bestScore < TENTATIVE_THRESHOLD ||
+      bestScore >= MATCH_THRESHOLD
+    ) {
+      continue;
+    }
+    suggestions.push({
+      label,
+      suggestedName: bestName,
+      score: bestScore,
+      voiceprintId: bestVoiceprintId,
+      state: "pending",
+    });
+  }
+  return suggestions.sort((a, b) => a.label.localeCompare(b.label));
+}
+
+export interface EnrollOutcome {
+  /** The new voiceprint (already appended to the store). */
+  voiceprint: Voiceprint;
+  /**
+   * Best cosine of the new embedding against the person's pre-existing
+   * voiceprints; `null` for a first enrollment (nothing to compare).
+   */
+  agreement: number | null;
+  /** True when the new print was flagged `lowAgreement`. */
+  lowAgreement: boolean;
+}
+
+/**
+ * Enrollment hygiene (decision 6): append a voiceprint to `name`'s profile,
+ * comparing the new embedding against the person's existing prints first.
+ * Strong disagreement (best same-name cosine below
+ * {@link LOW_AGREEMENT_WARN_THRESHOLD}) warns on stderr naming the score and
+ * marks the new print `lowAgreement: true` — never refuses, never silent.
+ * A first enrollment has nothing to compare and is never flagged.
+ */
+export function enrollVoiceprintWithCheck(
+  store: SpeakerStore,
+  name: string,
+  embedding: number[],
+  source: string,
+): EnrollOutcome {
+  const now = new Date().toISOString();
+  const existing = store.speakers[name]?.voiceprints ?? [];
+  let agreement: number | null = null;
+  for (const vp of existing) {
+    const score = cosine(embedding, vp.embedding);
+    agreement = agreement === null ? score : Math.max(agreement, score);
+  }
+  const lowAgreement =
+    agreement !== null && agreement < LOW_AGREEMENT_WARN_THRESHOLD;
+  const voiceprint: Voiceprint = {
+    id: now,
+    embedding,
+    enrolledAt: now,
+    source,
+    ...(lowAgreement ? { lowAgreement: true } : {}),
+  };
+  if (store.speakers[name]) store.speakers[name].voiceprints.push(voiceprint);
+  else store.speakers[name] = { voiceprints: [voiceprint] };
+  if (lowAgreement) {
+    process.stderr.write(
+      `Warning: new voiceprint for "${name}" scores ${agreement!.toFixed(3)} ` +
+        `against the best existing voiceprint — strongly inconsistent. ` +
+        `Marked lowAgreement; see \`nota speakers doctor\`.\n`,
+    );
+  }
+  return { voiceprint, agreement, lowAgreement };
 }
 
 export interface TentativeMatch {

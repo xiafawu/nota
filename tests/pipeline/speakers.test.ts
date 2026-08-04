@@ -4,6 +4,8 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import {
   applySpeakerNames,
+  computeSuggestions,
+  enrollVoiceprintWithCheck,
   loadProfiles,
   matchProfiles,
   saveProfiles,
@@ -249,6 +251,163 @@ describe("speaker store v4", () => {
     const loaded = await loadProfiles(file);
     expect(loaded.version).toBe(4);
     expect(loaded.speakers).toEqual({});
+  });
+});
+
+describe("computeSuggestions", () => {
+  const store: SpeakerStore = {
+    version: 4,
+    speakers: {
+      Alice: {
+        voiceprints: [{ id: "alice-1", embedding: [1, 0], enrolledAt: "t1", source: "a.m4a" }],
+      },
+      Bob: {
+        voiceprints: [{ id: "bob-1", embedding: [0, 1], enrolledAt: "t2", source: "b.m4a" }],
+      },
+    },
+  };
+  // Single-speaker store for the band boundaries: any [x, y] unit vector
+  // scores x against Alice and y against Bob, so a second enrolled name would
+  // otherwise capture the y component and change the best candidate.
+  const aliceOnly: SpeakerStore = {
+    version: 4,
+    speakers: {
+      Alice: {
+        voiceprints: [{ id: "alice-1", embedding: [1, 0], enrolledAt: "t1", source: "a.m4a" }],
+      },
+    },
+  };
+
+  it("suggests at the tentative floor 0.50 (inclusive)", () => {
+    // (cos 60°) = [0.5, 0.866] → dot with Alice's [1, 0] is exactly 0.50
+    // (within float epsilon of the norm-scaled dot product).
+    const out = computeSuggestions({ "Speaker 1": [0.5, Math.sqrt(3) / 2] }, aliceOnly);
+    expect(out).toHaveLength(1);
+    expect(out[0]).toMatchObject({
+      label: "Speaker 1",
+      suggestedName: "Alice",
+      voiceprintId: "alice-1",
+      state: "pending",
+    });
+    expect(out[0].score).toBeCloseTo(0.5, 12);
+  });
+
+  it("suggests just below the match threshold 0.649", () => {
+    // [0.649, sqrt(1 − 0.649²)] is unit length; dot with [1, 0] = 0.649.
+    const out = computeSuggestions(
+      { "Speaker 1": [0.649, Math.sqrt(1 - 0.649 * 0.649)] },
+      aliceOnly,
+    );
+    expect(out[0]).toMatchObject({
+      suggestedName: "Alice",
+      score: 0.649,
+      state: "pending",
+    });
+  });
+
+  it("treats exactly 0.65 as confident — no suggestion (auto-labeled instead)", () => {
+    const out = computeSuggestions({ "Speaker 1": [0.65, Math.sqrt(1 - 0.65 * 0.65)] }, aliceOnly);
+    expect(out).toEqual([]);
+  });
+
+  it("drops scores below the tentative floor (0.49)", () => {
+    const out = computeSuggestions({ "Speaker 1": [0.49, Math.sqrt(1 - 0.49 * 0.49)] }, aliceOnly);
+    expect(out).toEqual([]);
+  });
+
+  it("uses the best voiceprint and reports its id", () => {
+    const multi: SpeakerStore = {
+      version: 4,
+      speakers: {
+        Alice: {
+          voiceprints: [
+            { id: "alice-old", embedding: [0.2, Math.sqrt(1 - 0.2 * 0.2)], enrolledAt: "t1", source: "a.m4a" },
+            { id: "alice-new", embedding: [0.6, Math.sqrt(1 - 0.6 * 0.6)], enrolledAt: "t2", source: "a.m4a" },
+          ],
+        },
+      },
+    };
+    const out = computeSuggestions({ "Speaker 1": [1, 0] }, multi);
+    expect(out[0]).toMatchObject({ suggestedName: "Alice", score: 0.6, voiceprintId: "alice-new" });
+  });
+
+  it("suggests the same name for two labels independently (no global claiming)", () => {
+    const out = computeSuggestions(
+      {
+        "Speaker 1": [0.55, Math.sqrt(1 - 0.55 * 0.55)],
+        "Speaker 2": [0.52, Math.sqrt(1 - 0.52 * 0.52)],
+      },
+      aliceOnly,
+    );
+    expect(out.map((s) => s.label)).toEqual(["Speaker 1", "Speaker 2"]);
+    expect(out.every((s) => s.suggestedName === "Alice")).toBe(true);
+  });
+
+  it("returns an empty list for an empty store or no embeddings", () => {
+    expect(computeSuggestions({ "Speaker 1": [0.55, 0.5] }, { version: 4, speakers: {} })).toEqual([]);
+    expect(computeSuggestions({}, store)).toEqual([]);
+  });
+});
+
+describe("enrollVoiceprintWithCheck", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+  const baseStore = (): SpeakerStore => ({
+    version: 4,
+    speakers: {
+      Alice: {
+        voiceprints: [{ id: "alice-1", embedding: [1, 0], enrolledAt: "t1", source: "a.m4a" }],
+      },
+    },
+  });
+
+  it("appends a first voiceprint without comparison or flag", () => {
+    const store = { version: 4, speakers: {} } as SpeakerStore;
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const out = enrollVoiceprintWithCheck(store, "New", [1, 0], "x.m4a");
+    expect(out.agreement).toBeNull();
+    expect(out.lowAgreement).toBe(false);
+    expect(store.speakers.New.voiceprints).toHaveLength(1);
+    expect(stderr).not.toHaveBeenCalled();
+  });
+
+  it("flags and warns when the new print strongly disagrees (0.025)", () => {
+    const store = baseStore();
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const out = enrollVoiceprintWithCheck(store, "Alice", [0.025, Math.sqrt(1 - 0.025 * 0.025)], "b.m4a");
+    expect(out.agreement).toBeCloseTo(0.025, 3);
+    expect(out.lowAgreement).toBe(true);
+    expect(out.voiceprint.lowAgreement).toBe(true);
+    expect(stderr).toHaveBeenCalledWith(
+      expect.stringContaining('scores 0.025 against the best existing voiceprint'),
+    );
+  });
+
+  it("does not flag an agreeing print (0.8)", () => {
+    const store = baseStore();
+    const stderr = vi.spyOn(process.stderr, "write").mockImplementation(() => true);
+    const out = enrollVoiceprintWithCheck(store, "Alice", [0.8, Math.sqrt(1 - 0.8 * 0.8)], "b.m4a");
+    expect(out.lowAgreement).toBe(false);
+    expect(out.voiceprint.lowAgreement).toBeUndefined();
+    expect(stderr).not.toHaveBeenCalled();
+  });
+
+  it("keeps the lowAgreement flag through a store round-trip", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "nota-spk-agree-"));
+    try {
+      const store = baseStore();
+      enrollVoiceprintWithCheck(store, "Alice", [0.1, Math.sqrt(1 - 0.1 * 0.1)], "b.m4a");
+      const file = path.join(dir, "speakers.json");
+      await saveProfiles(store, file);
+      const loaded = await loadProfiles(file);
+      expect(loaded.speakers.Alice.voiceprints.map((vp) => vp.lowAgreement)).toEqual([
+        undefined,
+        true,
+      ]);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
 

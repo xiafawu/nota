@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import type { Provider } from "../config.js";
 import type { MeetingSummary } from "./summarize.js";
 import type { TranscriptSegment } from "./transcribe.js";
+import type { SpeakerSuggestion, SuggestionState } from "./speakers.js";
 
 export type HistoryStatus = "transcribed" | "completed";
 
@@ -99,6 +100,20 @@ export interface HistoryRecord {
    * the JSON in place; the CLI never writes it. Absent means unpinned.
    */
   pinned?: boolean;
+  /**
+   * Tentative-band speaker suggestions from the run that created this record
+   * (decision 3 of the speaker-workflow spec): one entry per diarized label
+   * whose best cosine landed in [0.50, 0.65), carrying its decision state.
+   * Optional: legacy records predate the field and simply have no suggestions.
+   */
+  suggestions?: SpeakerSuggestion[];
+  /**
+   * True when a speaker rename/accept landed on a record that already has a
+   * summary: the narrative still references the old label, so the app shows
+   * a one-click "Regenerate summary" affordance until used or dismissed
+   * (decision 5). Cleared whenever a fresh summary is set. Absent means false.
+   */
+  summaryOutdated?: boolean;
   outputPath?: string;
   status: HistoryStatus;
 }
@@ -125,6 +140,11 @@ export interface CreateHistoryInput {
    * Present when usage tracking is enabled.
    */
   usage?: UsageEntry[];
+  /**
+   * Tentative-band speaker suggestions computed during recognition, persisted
+   * so the macOS chip can offer accept/dismiss without re-running the model.
+   */
+  suggestions?: SpeakerSuggestion[];
   outputPath?: string;
 }
 
@@ -200,6 +220,7 @@ export async function createHistoryRecord(
     segments: input.segments,
     outputPath: input.outputPath,
     usage: input.usage,
+    suggestions: input.suggestions,
     status: "transcribed",
   };
 
@@ -300,6 +321,9 @@ export async function setRecordSummary(
     summary: input.summary,
     outputPath: input.outputPath ?? record.outputPath,
     usage: input.usage ? [...(record.usage ?? []), ...input.usage] : record.usage,
+    // A freshly set summary is never stale (decision 5): any previous
+    // rename-induced staleness is resolved by this very summary.
+    summaryOutdated: false,
     status: "completed",
   };
   if (input.summaryEdited !== undefined) updated.summaryEdited = input.summaryEdited;
@@ -353,6 +377,12 @@ export interface EnrichmentPatch {
   tags?: string[];
   summaryEdited?: boolean;
   tagsEdited?: boolean;
+  /**
+   * New value for the record's `summaryOutdated` flag; omitted = keep the
+   * current value. The app dismisses the "Regenerate summary" affordance
+   * through this (decision 5).
+   */
+  summaryOutdated?: boolean;
 }
 
 /**
@@ -382,6 +412,9 @@ export async function applyEnrichmentToRecord(
   }
   if (patch.summaryEdited !== undefined) updated.summaryEdited = patch.summaryEdited;
   if (patch.tagsEdited !== undefined) updated.tagsEdited = patch.tagsEdited;
+  if (patch.summaryOutdated !== undefined) {
+    updated.summaryOutdated = patch.summaryOutdated;
+  }
 
   await writeFile(filePath, JSON.stringify(updated, null, 2), "utf-8");
   return updated;
@@ -537,6 +570,10 @@ export async function renameRecordSpeaker(
     updatedAt: new Date().toISOString(),
     segments,
     speakerClips,
+    // A rename never touches the existing summary, so a completed record's
+    // narrative now references a stale label: surface the one-click
+    // "Regenerate summary" affordance (decision 5).
+    ...(record.summary ? { summaryOutdated: true } : {}),
   };
   await writeFile(
     historyPath(record.id, historyDir),
@@ -582,4 +619,50 @@ export function formatHistoryList(records: HistoryRecord[]): string {
     ].join("\t"),
   );
   return ["Created\tID\tProvider\tStatus\tSource", ...rows].join("\n");
+}
+
+export type SuggestionDecision = Extract<SuggestionState, "accepted" | "dismissed">;
+
+/**
+ * Apply a user decision to a pending suggestion on a record (decision 4):
+ * `accepted`/`dismissed` are written with a `decidedAt` stamp and the record
+ * is persisted. Only pending suggestions are decid(e)able — an already
+ * decided or unknown label throws. Dismissal touches nothing else; acceptance
+ * is composed by the CLI verb (rename + enroll), not by this helper.
+ */
+export async function setSuggestionState(
+  idOrPrefix: string,
+  label: string,
+  state: SuggestionDecision,
+  historyDir = DEFAULT_HISTORY_DIR,
+): Promise<HistoryRecord> {
+  const record = await loadHistoryRecord(idOrPrefix, historyDir);
+  const suggestions = record.suggestions ?? [];
+  const target = suggestions.find(
+    (s) => s.label === label && s.state === "pending",
+  );
+  if (!target) {
+    const pending = suggestions
+      .filter((s) => s.state === "pending")
+      .map((s) => s.label);
+    throw new Error(
+      `No pending suggestion for label "${label}" in history "${record.id}". ` +
+        `Pending suggestions: ${pending.join(", ") || "(none)"}`,
+    );
+  }
+  const updated: HistoryRecord = {
+    ...record,
+    updatedAt: new Date().toISOString(),
+    suggestions: suggestions.map((s) =>
+      s === target
+        ? { ...s, state, decidedAt: new Date().toISOString() }
+        : s,
+    ),
+  };
+  await writeFile(
+    historyPath(record.id, historyDir),
+    JSON.stringify(updated, null, 2),
+    "utf-8",
+  );
+  return updated;
 }
