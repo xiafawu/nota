@@ -1947,6 +1947,107 @@ final class DictationReviewPanelTests: XCTestCase {
     XCTAssertEqual(ReviewEditor.attributedDraft(.empty).length, 0)
   }
 
+  // MARK: - Bottom chrome, upward text
+
+  /// **The chrome is along the bottom and the text is above it** (owner,
+  /// 2026-08-03). Asserted on the real view tree rather than on a constant: the
+  /// editor's box has to sit above BOTH chrome rows, which is what makes the
+  /// batch read toward the buttons instead of away from them.
+  func testTheEditorSitsAboveTheChrome() throws {
+    let (panel, _) = makePanel("Ship the patch.")
+    defer { panel.orderOut(nil) }
+    panel.present()
+    XCTAssertTrue(spin(until: { DictationReviewPanel.firstTextView(in: panel.contentView) != nil }))
+    let editor = try XCTUnwrap(DictationReviewPanel.firstTextView(in: panel.contentView))
+    let scrollView = try XCTUnwrap(editor.enclosingScrollView)
+    let content = try XCTUnwrap(panel.contentView)
+
+    let box = scrollView.convert(scrollView.bounds, to: content)
+    let card = content.bounds.insetBy(
+      dx: DictationReviewView.shadowMargin,
+      dy: DictationReviewView.shadowMargin
+    )
+    // Cocoa coordinates: larger y is higher up. Two claims, and together they
+    // are the inversion — the box is flush to the TOP of the card (nothing but
+    // its padding above it), and there is room for two chrome rows BELOW it.
+    XCTAssertGreaterThan(
+      box.maxY,
+      card.maxY - 30,
+      "something is still stacked above the editor"
+    )
+    XCTAssertGreaterThan(
+      box.minY,
+      card.minY + 40,
+      "there is no room under the editor — the chrome is not along the bottom"
+    )
+    XCTAssertLessThanOrEqual(box.maxY, card.maxY + 1, "the editor overflows the card")
+
+    // And inside that box, a short batch rests on the BOTTOM edge rather than
+    // floating at the top of the empty space above it. The text view fills the
+    // box (the scroll view re-imposes that on every tile), so the fact that
+    // moves is the container's ORIGIN — which is what carries the glyphs, the
+    // caret and the hit testing together.
+    XCTAssertGreaterThan(
+      editor.textContainerOrigin.y,
+      40,
+      "a one-line batch is not resting on the bottom of its box"
+    )
+
+    // A batch that fills the box is not pushed anywhere: past that point the
+    // shift is zero and the box scrolls exactly as it did before the inversion.
+    editor.textStorage?.mutableString.setString(
+      (1...40).map { "sentence number \($0)." }.joined(separator: " ")
+    )
+    XCTAssertEqual(
+      editor.textContainerOrigin.y,
+      NSTextView().textContainerOrigin.y + editor.textContainerInset.height,
+      accuracy: 3,
+      "a full box must not be shifted"
+    )
+  }
+
+  /// A batch shorter than the box rests on its BOTTOM edge, so the newest words
+  /// sit against the row the owner is about to press a button in — the same
+  /// reading line the pill and the prompter pin. Once the text outgrows the box
+  /// the inset is gone and the box scrolls exactly as it always did.
+  func testShortTextRestsOnTheBoxesBottomEdge() {
+    XCTAssertEqual(ReviewEditorLayout.topInset(contentHeight: 0, visibleHeight: 116), 116)
+    XCTAssertEqual(ReviewEditorLayout.topInset(contentHeight: 40, visibleHeight: 116), 76)
+    XCTAssertEqual(ReviewEditorLayout.topInset(contentHeight: 116, visibleHeight: 116), 0)
+    XCTAssertEqual(
+      ReviewEditorLayout.topInset(contentHeight: 500, visibleHeight: 116),
+      0,
+      "a text taller than the box must not be pushed off the top of it"
+    )
+    // A box that has not been laid out yet reports nothing, and a negative inset
+    // would scroll the buffer out of sight.
+    XCTAssertEqual(ReviewEditorLayout.topInset(contentHeight: 40, visibleHeight: 0), 0)
+  }
+
+  /// The card is a constant size, which is why its dragged anchor is still its
+  /// top-left. The inversion moved the chrome, not the geometry: nothing on the
+  /// card grows, so there is no upward growth for a bottom-left anchor to serve
+  /// and no stored point whose meaning changed.
+  func testTheCardStillHasOneFixedHeight() {
+    let model = DictationReviewModel()
+    let panel = DictationReviewPanel(model: model)
+    defer { panel.orderOut(nil) }
+    panel.sizeToFitContent()
+    let empty = panel.frame.height
+
+    model.text = (1...40).map { "sentence number \($0)." }.joined(separator: " ")
+    model.isListening = true
+    model.draft = HUDDraft(finalized: String(repeating: "more words ", count: 40), volatileTail: "now")
+    panel.sizeToFitContent()
+
+    XCTAssertEqual(
+      panel.frame.height,
+      empty,
+      accuracy: 0.5,
+      "the card resized under the owner's caret"
+    )
+  }
+
   /// Word count and Apply/Discard read the same string the owner edits.
   func testTheModelCarriesWhatTheOwnerTyped() throws {
     let (panel, model) = makePanel("Ship the patch")

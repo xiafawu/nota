@@ -580,6 +580,15 @@ final class DictationReviewPanel: NSPanel {
   private static let logger = Logger(subsystem: "com.xiafawu.nota", category: "dictation.review")
 
   private let hostingView: NSHostingView<DictationReviewView>
+  /// The card's Liquid Glass plate, with the hosting view above it.
+  ///
+  /// AppKit rather than `.glassEffect`, for the reason `GlassBackingView`
+  /// documents: a SwiftUI glass modifier in a transparent panel refracts only its
+  /// own hierarchy and reads as a flat blur. Plain `GlassBackingView` rather than
+  /// the HUD's `HUDDragView` subclass — this card is dragged by one row and its
+  /// editor must keep text selection everywhere else, so nothing here may claim
+  /// every point.
+  private let backingView = GlassBackingView(inset: DictationReviewView.shadowMargin)
 
   /// The owner types in this panel. A borderless window answers false, so it is
   /// said explicitly.
@@ -603,9 +612,9 @@ final class DictationReviewPanel: NSPanel {
     isOpaque = false
     backgroundColor = .clear
     // No window shadow: a window shadow can only draw INSIDE the window frame,
-    // which turns it into a dark rectangle behind a rounded card. The card
-    // draws its own SwiftUI shadow inside `DictationReviewView.shadowMargin`,
-    // exactly as the HUD pill does.
+    // which turns it into a dark rectangle behind a rounded card. The glass plate
+    // is inset by `DictationReviewView.shadowMargin` and its own treatment falls
+    // into that margin, exactly as the HUD pill's does.
     hasShadow = false
     hidesOnDeactivate = false
     isReleasedWhenClosed = false
@@ -630,7 +639,9 @@ final class DictationReviewPanel: NSPanel {
     // environment. The card is dark in both system themes; so is this.
     appearance = NSAppearance(named: .darkAqua)
 
-    contentView = hostingView
+    backingView.glassCornerRadius = DictationReviewView.cornerRadius
+    backingView.setContent(hostingView)
+    contentView = backingView
     pinnedCardTopLeft = ReviewPositionStore.load()
   }
 
@@ -904,13 +915,28 @@ enum ReviewPanelLayout {
 
 // MARK: - DictationReviewView
 
-/// The card: one dark translucent surface, a hairline, and no other chrome —
-/// the same grammar as the HUD pill it replaces on screen.
+/// The card: one pane of Liquid Glass and no other chrome — the same grammar as
+/// the HUD pill it replaces on screen.
+///
+/// **The text is on top and the chrome is along the bottom** (owner, 2026-08-03:
+/// "the review, dictation, listening, number of words stuff should be along the
+/// bottom rows, and the text grows upwards"). Two consequences worth stating,
+/// because both are the reason the inversion is more than a reordering:
+///
+/// - The editor is **bottom-aligned**, so a short batch sits against the chrome
+///   rather than floating at the top of an empty box, and each new sentence
+///   pushes the earlier ones up. That is the same reading line the HUD pill and
+///   the prompter pin — the newest words nearest the fixed edge — and here the
+///   fixed edge is the row the owner is about to press a button in.
+/// - The **bottom meta row is the drag handle** now, for the reason the title row
+///   was: it is the one part of the card that is neither an editor nor a button,
+///   so a drag on it can never be a text selection or a mis-click on Apply.
 struct DictationReviewView: View {
   @ObservedObject var model: DictationReviewModel
 
-  /// Transparent margin around the card reserved for its drop shadow. A window
-  /// cannot draw outside its own frame, so the room has to come from inside.
+  /// Transparent margin around the card: the glass plate's inset, and the room
+  /// its shadow falls into. A window cannot draw outside its own frame, so the
+  /// room has to come from inside.
   static let shadowMargin: CGFloat = 24
   static let minCardWidth: CGFloat = 520
   static let minCardHeight: CGFloat = 200
@@ -927,42 +953,42 @@ struct DictationReviewView: View {
   /// under their caret.
   static let editorHeight: CGFloat = 116
 
-  private static let cornerRadius: CGFloat = 16
+  /// Corner curvature of the card. Internal because the glass plate underneath
+  /// is an AppKit view and has to be told the same number
+  /// (`DictationReviewPanel.init`).
+  static let cornerRadius: CGFloat = 16
 
   var body: some View {
+    // Text first, chrome last — and both chrome rows are pinned to the bottom by
+    // being last in a `VStack` whose only flexible row is the editor above them.
     VStack(alignment: .leading, spacing: Self.rowSpacing) {
-      titleRow
       editor
-      footer
+      metaRow
+      controlsRow
     }
     .padding(18)
     .frame(
       minWidth: Self.minCardWidth,
       minHeight: Self.minCardHeight,
-      alignment: .topLeading
+      alignment: .bottomLeading
     )
-    // Same body as the pill: fixed dark translucent fill with light content
-    // forced on top of it, rather than an adaptive material that reads
-    // light-and-frosted over light content.
-    .background { cardShape.fill(Color(white: 0.09).opacity(0.9)) }
-    .overlay { cardShape.strokeBorder(Color.white.opacity(0.25), lineWidth: 0.5) }
+    // No fill, no hairline, no SwiftUI shadow: the card's body is an
+    // `NSGlassEffectView` laid out at exactly this rect by `GlassBackingView`.
+    // A SwiftUI glass modifier here would refract only this hierarchy — a flat
+    // blur — and a flat fill painted on top of the plate would simply be the old
+    // card again, drawn over the material that replaced it.
     .environment(\.colorScheme, .dark)
-    .shadow(color: .black.opacity(0.32), radius: 18, y: 6)
     .padding(Self.shadowMargin)
   }
 
-  private var cardShape: RoundedRectangle {
-    RoundedRectangle(cornerRadius: Self.cornerRadius, style: .continuous)
-  }
-
-  /// Title, a mic dot while a continuation is recording, and the word count.
+  /// The card's name, a mic dot while a session is recording, and the word
+  /// count — the first of the two bottom rows.
   ///
   /// The dot is the card borrowing the HUD pill's own grammar rather than
   /// growing a second visual language: the pill's listening state is a filled
-  /// accent circle, and this is that circle in the header row. Nothing else
-  /// moves — the card must not resize under the owner's cursor while they are
-  /// mid-edit.
-  private var titleRow: some View {
+  /// accent circle, and this is that circle. Nothing else moves — the card must
+  /// not resize under the owner's cursor while they are mid-edit.
+  private var metaRow: some View {
     HStack(alignment: .firstTextBaseline, spacing: 12) {
       Text("Review dictation")
         .font(.headline)
@@ -983,10 +1009,14 @@ struct DictationReviewView: View {
         .monospacedDigit()
         .foregroundStyle(.secondary)
     }
-    // The header is the card's drag handle — the one part of it that is neither
-    // an editor nor a button, so a drag here can never be a text selection or a
-    // mis-click on Apply. `contentShape` is what makes the `Spacer` grabbable
-    // too; without it the handle would be the two labels alone.
+    // This row is the card's drag handle — the one part of it that is neither an
+    // editor nor a button, so a drag here can never be a text selection or a
+    // mis-click on Apply. It moved to the bottom with the rest of the chrome and
+    // is still the only mover: `isMovableByWindowBackground` stays off, because
+    // AppKit's background drag reports nothing and "the owner chose this
+    // position" is exactly the fact `ReviewPositionStore` has to record.
+    // `contentShape` is what makes the `Spacer` grabbable too; without it the
+    // handle would be the two labels alone.
     .contentShape(Rectangle())
     .gesture(
       DragGesture(minimumDistance: 2)
@@ -1022,6 +1052,10 @@ struct DictationReviewView: View {
   /// Borderless by construction: no bezel, no scroll background, no focus ring
   /// box. The card is the container; a second box inside it is what made the
   /// panel read as a bare text input.
+  ///
+  /// Since the inversion it is also **bottom-aligned** — see
+  /// `ReviewEditorLayout` — so the batch reads from the chrome upward and the
+  /// incoming words sit right against the row the owner decides in.
   private var editor: some View {
     ReviewEditor(
       text: $model.text,
@@ -1031,7 +1065,9 @@ struct DictationReviewView: View {
     .frame(height: Self.editorHeight)
   }
 
-  private var footer: some View {
+  /// Status line and the two decisions — the last row on the card, and the edge
+  /// the text above it grows away from.
+  private var controlsRow: some View {
     HStack(spacing: 10) {
       statusLine
       Spacer(minLength: 12)
@@ -1133,6 +1169,9 @@ struct DictationReviewView: View {
 ///    differs from what this view last put there, so a keystroke that flows
 ///    binding → `updateNSView` does not reset the selection the owner is typing
 ///    at.
+/// 4. **Short text sits at the BOTTOM of the box.** The chrome is along the
+///    bottom of the card and the text grows upward into the empty space above it
+///    (owner, 2026-08-03). See `ReviewEditorLayout`.
 struct ReviewEditor: NSViewRepresentable {
   @Binding var text: String
   /// The live draft, or nil when no session is recording into this card.
@@ -1141,14 +1180,16 @@ struct ReviewEditor: NSViewRepresentable {
 
   func makeCoordinator() -> Coordinator { Coordinator(self) }
 
-  func makeNSView(context: Context) -> NSScrollView {
-    let scrollView = NSScrollView()
+  func makeNSView(context: Context) -> ReviewScrollView {
+    let scrollView = ReviewScrollView()
     scrollView.drawsBackground = false
     scrollView.borderType = .noBorder
     scrollView.hasVerticalScroller = false
     scrollView.autohidesScrollers = true
 
-    let textView = NSTextView()
+    // Bottom-aligned: a batch shorter than the box rests on its bottom edge, so
+    // the text grows up toward the chrome instead of away from it.
+    let textView = BottomAlignedTextView()
     textView.delegate = context.coordinator
     textView.drawsBackground = false
     textView.isRichText = false
@@ -1186,8 +1227,9 @@ struct ReviewEditor: NSViewRepresentable {
     return scrollView
   }
 
-  func updateNSView(_ scrollView: NSScrollView, context: Context) {
+  func updateNSView(_ scrollView: ReviewScrollView, context: Context) {
     context.coordinator.parent = self
+    defer { Self.realignToBottom(scrollView) }
     guard let textView = context.coordinator.textView,
           let storage = textView.textStorage
     else { return }
@@ -1220,6 +1262,18 @@ struct ReviewEditor: NSViewRepresentable {
       // looking at the top of their own buffer.
       if suffix.length > 0 { textView.scrollToEndOfDocument(nil) }
     }
+  }
+
+  /// Re-ask for the bottom alignment.
+  ///
+  /// `textContainerOrigin` is read while drawing, and the amount it shifts by
+  /// changes whenever the text's height does — but an edit invalidates only the
+  /// range it touched, and a shift moves every glyph in the view. So the whole
+  /// box is invalidated after a content change, and again from
+  /// `ReviewScrollView.layout`, which is the first moment the box's own height
+  /// is known.
+  static func realignToBottom(_ scrollView: ReviewScrollView) {
+    scrollView.documentView?.needsDisplay = true
   }
 
   private static var font: NSFont { .systemFont(ofSize: NSFont.systemFontSize) }
@@ -1290,6 +1344,93 @@ struct ReviewEditor: NSViewRepresentable {
       buffer = textView.string
       parent.text = textView.string
     }
+  }
+}
+
+// MARK: - ReviewScrollView
+
+/// The editor's scroll view, with one addition: it re-asks for the bottom
+/// alignment once it has been laid out.
+///
+/// The alignment depends on the box's height, and the box's height is known only
+/// after AppKit has laid the panel out — which happens after the first
+/// `updateNSView`. Without this a card presented with a short batch would draw it
+/// at the top of the box once and correct itself only on the next keystroke.
+final class ReviewScrollView: NSScrollView {
+  override func layout() {
+    super.layout()
+    ReviewEditor.realignToBottom(self)
+  }
+}
+
+// MARK: - BottomAlignedTextView
+
+/// A text view that draws a short batch against the BOTTOM of its box.
+///
+/// The card's chrome is along its bottom and the text grows upward into the
+/// space above it (owner, 2026-08-03) — the reading line the HUD pill and the
+/// prompter already pin: the newest words nearest the edge that does not move.
+///
+/// `textContainerOrigin` is the hook, and the two obvious alternatives were both
+/// tried and both measured wrong:
+///
+/// - `NSScrollView.contentInsets` moves the scrollable area, not the document. A
+///   document no taller than its clip view is pinned to the clip's leading edge
+///   by `constrainBoundsRect` whatever the inset says, so the text did not move.
+/// - Letting the text view shrink to its text (`minSize = .zero`) and
+///   bottom-aligning it in a custom clip view does not survive: the scroll view
+///   re-imposes the clip's size as `minSize` on every tile, so the document is
+///   always exactly as tall as the box and there is nothing left to align.
+///
+/// `textContainerInset` is not a candidate at all — it is symmetric, padding the
+/// bottom by whatever it pads the top, and the ask is asymmetric.
+///
+/// Shifting the container's ORIGIN moves the glyphs, the caret and the hit
+/// testing together, which is why a click still puts the caret where the owner
+/// pointed. Past the point where the text fills the box the shift is zero and the
+/// box behaves exactly as it did before the inversion.
+final class BottomAlignedTextView: NSTextView {
+  override var textContainerOrigin: NSPoint {
+    var origin = super.textContainerOrigin
+    origin.y += ReviewEditorLayout.topInset(
+      contentHeight: usedContentHeight,
+      visibleHeight: bounds.height
+    )
+    return origin
+  }
+
+  /// How tall the text is, measured off the attributed storage rather than
+  /// asked of a layout manager.
+  ///
+  /// Deliberately not `NSTextLayoutManager.usageBoundsForTextContainer`: this
+  /// getter is read *during* layout and drawing, and reaching back into the
+  /// layout that is asking is how a getter like this recurses. `boundingRect` is
+  /// the same arithmetic the prompter's line count already trusts, and the width
+  /// it needs is the container's, which is fixed by `widthTracksTextView`.
+  private var usedContentHeight: CGFloat {
+    guard let storage = textStorage, storage.length > 0 else { return 0 }
+    let width = textContainer.map { $0.size.width - $0.lineFragmentPadding * 2 }
+      ?? bounds.width
+    guard width > 0 else { return 0 }
+    let height = storage.boundingRect(
+      with: CGSize(width: width, height: .greatestFiniteMagnitude),
+      options: [.usesLineFragmentOrigin, .usesFontLeading]
+    ).height
+    return height + textContainerInset.height * 2
+  }
+}
+
+// MARK: - ReviewEditorLayout
+
+/// Where the batch sits inside the editor's box, as arithmetic.
+enum ReviewEditorLayout {
+  /// Empty space ABOVE the text when it rests on the box's bottom edge.
+  ///
+  /// Zero once the text is at least as tall as the box, which is what keeps this
+  /// from fighting the scrolling: past that point there is no empty space to
+  /// distribute and the box behaves exactly as it did before the inversion.
+  static func topInset(contentHeight: CGFloat, visibleHeight: CGFloat) -> CGFloat {
+    max(0, visibleHeight - max(contentHeight, 0))
   }
 }
 

@@ -408,15 +408,38 @@ goes into a small floating card instead of the target app:
   then answered no, the close route's discard was swallowed, and `isReviewing`
   stayed true — suppressing the pill until an unrelated session cleared it.
 - **The card, not a text box.** Same grammar as the HUD pill: one borderless
-  panel, `Color(white: 0.09).opacity(0.9)` fill, hairline stroke, its own shadow
-  inside a 24pt transparent margin (a window cannot draw outside its frame), and
-  `colorScheme` forced dark in both system themes. Title row with a word count,
-  a borderless editor with no bezel or focus-ring box, and a footer of Discard
-  (esc, subdued) + Apply (⌘↩, accent). The buttons are drawn by the card rather
-  than `.bordered`/`.borderedProminent`, which would put system light-mode
-  chrome on a surface that has committed to being dark. Level is `.statusBar`,
-  not `.floating`: activation used to be what raised the panel over a fullscreen
-  app, and nothing does now.
+  panel, **Liquid Glass** (an `NSGlassEffectView` inset inside a 24pt transparent
+  margin — a window cannot draw outside its frame), and `colorScheme` forced dark
+  in both system themes. A borderless editor with no bezel or focus-ring box, and
+  two chrome rows along the bottom. The buttons are drawn by the card rather than
+  `.bordered`/`.borderedProminent`, which would put system light-mode chrome on a
+  surface that has committed to being dark. Level is `.statusBar`, not
+  `.floating`: activation used to be what raised the panel over a fullscreen app,
+  and nothing does now.
+- **The chrome is along the bottom and the text grows upward** (owner,
+  2026-08-03: "the review, dictation, listening, number of words stuff should be
+  along the bottom rows, and the text grows upwards"). Top to bottom the card is
+  now editor → meta row ("Review dictation", the mic dot + "Listening…", the word
+  count) → controls row (status line, Discard, Finish/Apply). Three things it
+  owes:
+  - **The editor is bottom-aligned**, so a short batch rests against the chrome
+    and each new sentence pushes the earlier ones up — the reading line the pill
+    and the prompter already pin, with the fixed edge being the row the owner is
+    about to press a button in. `BottomAlignedTextView` does it by shifting
+    `textContainerOrigin`, which moves the glyphs, the caret and the hit testing
+    together. The two obvious alternatives were tried and measured wrong:
+    `NSScrollView.contentInsets` moves the scrollable area and not a document
+    that already fits its clip view, and letting the text view shrink
+    (`minSize = .zero`) does not survive — the scroll view re-imposes the clip's
+    size as `minSize` on every tile. `textContainerInset` is symmetric and was
+    never a candidate.
+  - **The meta row is the drag handle**, for the same reason the title row was:
+    it is the one part of the card that is neither an editor nor a button, so a
+    drag on it can never be a text selection or a mis-click on Apply.
+  - **The stored position is unchanged.** `ReviewPositionStore` still holds the
+    card's **top-left**, because the card is still a constant size — the
+    inversion moved rows, not geometry, and nothing on the card grows. A
+    bottom-left anchor would only be owed if it did.
 - **⌘↩ and Escape come from a local key monitor**, not `.keyboardShortcut`
   alone: `NSTextView` answers `cancelOperation:` itself, so Escape would never
   reach a SwiftUI cancel button. The monitor is scoped to the panel's own events
@@ -608,9 +631,11 @@ goes into a small floating card instead of the target app:
   `model.apply()` / `model.discard()`, the same call the buttons make, so
   "what Apply means" is written down once.
 
-- **The card is draggable, and it keeps its own position.** The **title row** is
-  the handle (`DragGesture` → `DictationReviewPanel.dragChanged/dragEnded`), not
-  the window background: this card contains a text view and a drag inside it has
+- **The card is draggable, and it keeps its own position.** The **meta row** is
+  the handle (`DragGesture` → `DictationReviewPanel.dragChanged/dragEnded`) — the
+  title row until the chrome moved to the bottom on 2026-08-03, and the same row
+  either way — not the window background: this card contains a text view and a
+  drag inside it has
   to select text, and AppKit's background drag reports nothing — "the owner
   chose this position" is precisely the fact that has to be remembered. The drag
   is measured against `NSEvent.mouseLocation`, never the gesture's translation,
@@ -623,7 +648,9 @@ goes into a small floating card instead of the target app:
   horizontal centre is the only x that survives a switch between a 200pt pill
   and a 600pt prompter. This card is a constant-size surface — the draft is
   drawn inside the editor, so nothing grows it — and its meaningful anchor is
-  simply the **top-left**. One shared point would mean dragging either
+  simply the **top-left**. That survived the chrome moving to the bottom: a
+  bottom-left anchor would be owed only if the card grew upward, and it does not
+  grow at all. One shared point would mean dragging either
   surface moved the other, through an anchor that means nothing on the far side.
   Restoring validates rather than trusts (`ReviewPanelLayout.validatedTopLeft`):
   a point no current screen contains is dropped and the automatic placement
@@ -655,8 +682,28 @@ does not know, decodes to `.pill` — which is what its owner was looking at.
   (meter-only height, the constant draft-block width, one `draftLineHeight` per
   line, and that no draft can outgrow `HUDPillMetrics.maxCardHeight`, which is
   what `reposition()` reserves). The bar and the prompter still carry their own
-  copies of the HUD material (`HUDSurface`) and their own meter
-  (`HUDCompactMeter`) rather than refactoring the pill's into something shared.
+  surface modifier (`HUDSurface`) and their own meter (`HUDCompactMeter`) rather
+  than refactoring the pill's into something shared.
+
+**All three styles are Liquid Glass, and none of them draws it.** The material is
+an `NSGlassEffectView` (`GlassBackingView`, laid out at the card rect — the
+window frame inset by the 24pt shadow margin) with the SwiftUI hosting view above
+it. A SwiftUI `.glassEffect`/`.liquidGlass` inside a transparent panel was
+measured to render as a flat blur: it refracts only its own hierarchy, and a
+HUD's hierarchy is a glyph and a line of text. What is left in SwiftUI is the
+content, the padding (which is what every pinned fitting size measures, so not
+one baseline number moved), and the **semantic** wash and stroke for `.warning`
+and `.error` — the neutral fill and the hairline are gone, because the plate
+carries its own rim and a second one is the doubled outline the toolbar pills
+already taught us to stop drawing. The plate is tinted dark
+(`GlassBackingView.tint`): these panels sit over arbitrary content and their text
+is white, and untinted regular glass over a bright background is the washed-out
+failure the flat dark body was originally chosen to avoid. Corner curvature is
+restated for the plate by `HUDGlassMetrics.cornerRadius` (a capsule for the pill,
+capped at 20 for the two states that wrap to a second line, each other style's own
+radius), since an AppKit view cannot take a `Shape`. The plate takes no clicks
+(`GlassPlateView.hitTest` returns nil) — the HUD claims every point for its drag
+handle and the review card's editor has to keep text selection.
 - **Bar.** A fixed 520×40 strip: mic dot + meter left, one 13pt line right. Its
   one promise is that it **never** changes size — the content view is a hard
   `.frame(width:height:)`, so long text truncates into the lane instead of
@@ -1135,6 +1182,30 @@ The cache feeds cost computation for usage tracking.
   HUD pill did not, and under a Light-pinned app it rendered as a washed light
   capsule with dark-styled content on top of it. Any new floating panel that
   commits to one look owes the same line.
+- **A floating panel's Liquid Glass is AppKit's, not SwiftUI's** (2026-08-03).
+  `.glassEffect`/`.liquidGlass` inside a transparent `NSPanel` refracts only the
+  content inside its own SwiftUI hierarchy — measured, and on a HUD whose
+  hierarchy is a mic glyph and a line of text the result is a flat grey blur,
+  which is why the dictation surfaces originally pivoted to a hand-drawn dark
+  fill instead. `NSGlassEffectView` is a real AppKit view with a
+  window-server-side effect and refracts the screen *behind* the panel, which is
+  the whole point of glass on something that floats. So both dictation panels put
+  one under their hosting view (`GlassBackingView`), and the rules that fall out
+  are worth restating for the next floating surface: the plate is laid out at the
+  **card** rect (the frame inset by the shadow margin) with the hosting view
+  above it at **full** bounds, because the padding that produces that margin lives
+  inside the hosted view and is what every pinned fitting-size baseline measures;
+  the plate is given the panel's corner radius as a *number*
+  (`HUDGlassMetrics.cornerRadius`), since an AppKit view cannot take a `Shape`;
+  it is tinted dark, because these panels sit over arbitrary content with white
+  text on them and untinted regular glass over a bright background is exactly the
+  washed-out surface the flat fill existed to prevent; and it takes no clicks, or
+  it would swallow the HUD's drag handle and the review card's text selection.
+  What SwiftUI keeps is the padding, the forced dark `colorScheme`, and any
+  **semantic** wash — the neutral fill and the hairline go, because the plate has
+  its own rim and a second one is the doubled outline the toolbar bullet above
+  describes. `appearance = .darkAqua` on the panel is still owed, and now more
+  than before: the glass resolves against it.
 - A review card is a **batch**, not a session (changed 2026-07-28 on user
   feedback). Pressing the trigger with one open continues it: the card stays,
   the new session's text is appended to whatever the owner has in the box, and

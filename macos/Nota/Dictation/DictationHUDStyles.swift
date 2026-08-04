@@ -3,34 +3,34 @@ import SwiftUI
 
 // MARK: - Shared surface
 
-/// The HUD's material, shared by every style that is not the pill.
+/// The HUD's surface, shared by every style that is not the pill.
 ///
-/// Same grammar as `DictationHUDContentView` and the review card: one dark
-/// translucent fill, a hairline stroke to separate it from dark backgrounds, a
-/// shadow that falls off inside a transparent margin (a window cannot draw
-/// outside its own frame), and `colorScheme` forced dark in both system themes.
+/// Same grammar as `DictationHUDContentView` and the review card, and since the
+/// glass landed that grammar has one fewer thing in it: the **material is not
+/// drawn in SwiftUI at all**. `GlassBackingView` lays an `NSGlassEffectView` out
+/// at exactly the rect this margin reserves, under the hosting view, because a
+/// SwiftUI glass modifier inside a transparent `NSPanel` refracts only its own
+/// hierarchy and renders as a flat blur.
+///
+/// What is left here is the two things AppKit cannot do from underneath — force
+/// `colorScheme` dark in both system themes, and reserve the margin the plate is
+/// inset by. The `cornerRadius` is still the style's, and it is still meaningful:
+/// `HUDGlassMetrics.cornerRadius` restates it for the plate, and a test pins the
+/// two together.
 ///
 /// The pill deliberately keeps its own inline copy of this chrome rather than
 /// adopting the modifier: it is the default style and the regression baseline,
 /// and re-expressing its background through a shared abstraction is exactly the
 /// kind of "identical refactor" that turns out not to be.
 struct HUDSurface: ViewModifier {
-  /// Continuous corner radius. The pill's capsule shape does not generalize —
-  /// a 40pt bar would be a lozenge and a 200pt card a stadium.
+  /// Continuous corner radius of the glass beneath. The pill's capsule shape
+  /// does not generalize — a 40pt bar would be a lozenge and a 200pt card a
+  /// stadium.
   var cornerRadius: CGFloat
 
   func body(content: Content) -> some View {
     content
-      .background {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-          .fill(Color(white: 0.09).opacity(0.9))
-      }
-      .overlay {
-        RoundedRectangle(cornerRadius: cornerRadius, style: .continuous)
-          .strokeBorder(Color.white.opacity(0.25), lineWidth: 0.5)
-      }
       .environment(\.colorScheme, .dark)
-      .shadow(color: .black.opacity(0.24), radius: 10, y: 3)
       .padding(DictationHUDContentView.shadowMargin)
   }
 }

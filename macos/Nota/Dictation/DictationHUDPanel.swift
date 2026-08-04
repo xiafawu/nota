@@ -17,7 +17,7 @@ final class DictationHUDPanel: NSPanel {
   private static let logger = Logger(subsystem: "com.xiafawu.nota", category: "dictation.hud")
 
   private let hostingView: NSHostingView<DictationHUDRootView>
-  private let dragView = HUDDragView()
+  private let dragView = HUDDragView(inset: DictationHUDContentView.shadowMargin)
 
   /// Where the owner dragged the HUD, as the pill rect's **bottom-center**
   /// point in screen coordinates — nil until they drag one.
@@ -91,9 +91,14 @@ final class DictationHUDPanel: NSPanel {
     // The hosting view lives inside the drag view rather than being the content
     // view itself: SwiftUI decides its own hit testing, and the drag has to work
     // over every pixel of the surface. `HUDDragView.hitTest` claims them all.
-    hostingView.autoresizingMask = [.width, .height]
-    dragView.autoresizesSubviews = true
-    dragView.addSubview(hostingView)
+    //
+    // The drag view is also what carries the Liquid Glass plate (see
+    // `GlassBackingView`): the material is an `NSGlassEffectView` laid out at the
+    // pill rect, with the hosting view above it at full bounds. SwiftUI's own
+    // glass modifiers were measured to render as a flat blur inside a transparent
+    // panel — they refract only their own hierarchy, and a HUD's hierarchy is a
+    // glyph and a line of text.
+    dragView.setContent(hostingView)
     contentView = dragView
 
     pinnedPillBottomCenter = HUDPositionStore.load()
@@ -139,6 +144,16 @@ final class DictationHUDPanel: NSPanel {
     hostingView.rootView = DictationHUDRootView(style: style, state: state, draft: draft)
     hostingView.layoutSubtreeIfNeeded()
     let size = hostingView.fittingSize
+
+    // Before the sub-point guard below, not after: the glass is the surface, and
+    // a state change that does not move the frame (a warning arriving at the same
+    // width) still changes the shape the material has to take.
+    dragView.showsGlass = state != .hidden
+    dragView.glassCornerRadius = HUDGlassMetrics.cornerRadius(
+      style: style,
+      state: state,
+      cardHeight: max(size.height - DictationHUDContentView.shadowMargin * 2, 0)
+    )
 
     var frame = self.frame
     // Sub-point churn is not worth restarting a 0.26s animation for, and this
@@ -395,7 +410,12 @@ final class DictationHUDPanel: NSPanel {
 /// **The window frame is still animated in exactly one place.** A drag calls
 /// `setFrameOrigin` directly — no animation, no `animator()` — so it can never
 /// be in flight against the growth animation in `DictationHUDPanel.update`.
-final class HUDDragView: NSView {
+///
+/// It is a `GlassBackingView` because the HUD's material is an AppKit
+/// `NSGlassEffectView` and the drag handle is the one view that already spans
+/// the whole surface. The glass is a sibling *under* the hosting view and takes
+/// no clicks, so `hitTest` below still claims every point.
+final class HUDDragView: GlassBackingView {
   var onDragEnded: (() -> Void)?
 
   private var mouseDownLocation: NSPoint?
@@ -640,34 +660,34 @@ struct DictationHUDContentView: View {
   var roughDraft: String?
 
   var body: some View {
-    // Solid dark capsule (Wispr Flow / macOS dictation indicator grammar):
-    // fixed dark translucent body, light content forced via dark color
-    // scheme — legible over any background, never washes out. Deliberate
-    // pivot away from adaptive Liquid Glass, which reads light-and-frosted
-    // over light content.
+    // **The body is the glass, and the glass is not drawn here.** The pill's
+    // material is an `NSGlassEffectView` laid out at exactly this rect by
+    // `GlassBackingView`, because a SwiftUI glass modifier inside a transparent
+    // panel refracts only its own hierarchy and reads as a flat blur. What is
+    // left in SwiftUI is the content, the semantic wash for the two states that
+    // have one, and — unchanged — the padding, which is what every pinned
+    // fitting-size baseline measures.
     if case .hidden = state {
       Color.clear.frame(width: 0, height: 0)
     } else {
       content
         .padding(.horizontal, HUDPillMetrics.horizontalPadding)
         .padding(.vertical, HUDPillMetrics.verticalPadding)
-        .background {
-          ZStack {
-            pillShape.fill(Color(white: 0.09).opacity(0.9))
-            if let tint = stateTint {
-              pillShape.fill(tint)
-            }
-          }
-        }
-        .overlay {
-          pillShape
-            .strokeBorder(strokeColor, lineWidth: 0.5)
-        }
+        // Warning and error only. A neutral fill here would be the flat body
+        // again, painted over the material that replaced it; a wash is the one
+        // thing glass cannot say for itself.
+        .background { if let tint = stateTint { pillShape.fill(tint) } }
+        // Likewise the hairline: the glass carries its own rim, and a second
+        // stroke on top of it is the doubled outline the toolbar pills already
+        // taught us to stop drawing. Warning and error keep theirs, because it
+        // is semantic rather than structural.
+        .overlay { if let stroke = semanticStrokeColor {
+          pillShape.strokeBorder(stroke, lineWidth: 0.5)
+        } }
         .environment(\.colorScheme, .dark)
-        .shadow(color: .black.opacity(0.24), radius: 10, y: 3)
-        // Margin gives the shadow room to fall off INSIDE the window — a
-        // window cannot draw outside its own frame, and without this the
-        // shadow renders as a dark rectangle filling the pill-sized window.
+        // Margin gives the glass its inset inside the window — a window cannot
+        // draw outside its own frame, and the material's own shadow and rim need
+        // the room the pill's SwiftUI shadow used to fall into.
         .padding(Self.shadowMargin)
       // Deliberately no `.animation(value: state)` here: it animated the
       // pill's layout at the same time DictationHUDPanel.update animated the
@@ -677,7 +697,8 @@ struct DictationHUDContentView: View {
     }
   }
 
-  /// Transparent margin around the pill reserved for its drop shadow.
+  /// Transparent margin around the pill: the glass plate's inset, and the room
+  /// its shadow falls into.
   static let shadowMargin: CGFloat = 24
 
   /// Warning/error messages allow two lines; a Capsule's end-caps grow with
@@ -703,13 +724,14 @@ struct DictationHUDContentView: View {
     }
   }
 
-  /// Hairline carries the pill's separation on dark backgrounds; warning and
-  /// error tint it with their semantic color to reinforce the wash.
-  private var strokeColor: Color {
+  /// The stroke that says something, as opposed to the one that separated the
+  /// pill from its background — the glass's own rim does that now. Nil for every
+  /// state that has nothing semantic to say.
+  private var semanticStrokeColor: Color? {
     switch state {
     case .error: return .red.opacity(0.55)
     case .warning: return .orange.opacity(0.5)
-    default: return .white.opacity(0.25)
+    default: return nil
     }
   }
 
