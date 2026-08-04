@@ -54,7 +54,11 @@ class GlassBackingView: NSView {
     self.inset = inset
     super.init(frame: .zero)
     wantsLayer = true
-    glassView.style = .regular
+    // `.clear`, not `.regular`: regular is a frosted legibility plate that
+    // reads as plain blur over most backdrops; clear lets the backdrop flow
+    // through with the refractive rim — the "more transparent" the owner asked
+    // for (2026-08-03). Legibility is carried by the tint below.
+    glassView.style = .clear
     // Dark, deliberately, and it is the one thing carried over from the flat
     // fill this replaced. These panels sit over arbitrary content — a white
     // document as readily as a dark terminal — and their text is white. Untinted
@@ -92,8 +96,10 @@ class GlassBackingView: NSView {
 
   /// The dark cast the glass is given. `Color(white: 0.09).opacity(0.9)` was the
   /// flat body; this is the same hue at the weight a refracting material can
-  /// carry without becoming the flat body again.
-  static let tint = NSColor(white: 0.06, alpha: 0.55)
+  /// carry without becoming the flat body again. Eased from 0.55 with the move
+  /// to `.clear` (owner asked for more transparency) — still enough that white
+  /// text survives a white document behind the panel.
+  static let tint = NSColor(white: 0.06, alpha: 0.35)
 }
 
 // MARK: - GlassPlateView
