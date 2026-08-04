@@ -54,7 +54,7 @@ Two pipeline paths controlled by `--provider`:
   - `cli-engine.ts` — spawns `claude -p` / `codex exec` for a `cli` summary model: argv, stdin, env hygiene, timeout, failure contract, `--version` probe
   - `diarize.ts` — calls Python pyannote script, aligns speaker labels (whisper only)
   - `embed.ts` — computes ONNX WeSpeaker d-vectors in Node and compares them by cosine similarity
-  - `speakers.ts` — loads the persistent v4 voiceprint store and matches diarized labels to enrolled speakers
+  - `speakers.ts` — loads the persistent v4 voiceprint store, matches diarized labels to enrolled speakers, computes tentative-band suggestions, and enforces enrollment consistency (`lowAgreement`)
   - `write.ts` — generates markdown output file; header carries **Captured** (recording time from container metadata, fs-birthtime fallback) and **Transcribed** (processing time) dates
 - **src/utils/** — Shared helpers: ffmpeg wrapper (`ffmpeg.ts`), PCM decoding/slicing (`pcm.ts`), ONNX model download/cache (`model.ts`), token estimation (`tokens.ts`), capture-date resolution (`capture-date.ts`).
 
@@ -64,7 +64,8 @@ Two pipeline paths controlled by `--provider`:
 - `--transcribe-model <id>` — transcription model id from the registry (overrides settings.json and `--provider`)
 - `--num-speakers <n>` — expected speaker count (assemblyai only)
 - `--no-diarize` — skip pyannote diarization for whisper-path transcription
-- `--identify` — identify and remember recurring speakers by voice
+- `--identify` — force speaker identification on (default is auto: recognition runs on every diarized transcription whenever the store has ≥1 enrolled voiceprint)
+- `--no-identify` — disable speaker identification even when voiceprints exist
 - `-o, --output <path>` — output file path
 - `-l, --language <lang>` — audio language hint
 - `-m, --model <model>` — summary model id. Precedence: this flag > `settings.json` > key-aware default chain (`deepseek-v4-flash` > `gpt-5.4-mini` > `gemini-3.6-flash` based on available API keys).
@@ -93,7 +94,22 @@ fallback to `~/.meetingsum/speakers.json`):
 - `nota speakers delete <name>` — remove a profile
 - `nota speakers merge <src> <dst>` — concatenate `<src>`'s voiceprints into `<dst>` (dedup by id), drop `<src>`
 - `nota speakers reassign <vp-id> <new-name>` — move one voiceprint to another speaker profile
+- `nota speakers doctor` — list low-agreement voiceprints (flagged at enrollment) and same-name voiceprint pairs scoring below 0.30, suggesting `reassign`/`delete`
 - `nota enroll <history-id> <speaker-label> <name>` — enroll a stored per-speaker history clip
+
+Enrollment hygiene: at enroll time a new voiceprint that strongly disagrees
+with the person's existing prints (best same-name cosine < 0.5) warns on
+stderr naming the score and is marked `lowAgreement` on the voiceprint —
+never refused, never silent.
+
+Tentative-band speaker suggestions live on history records (field
+`suggestions`, `state: pending|accepted|dismissed`) — see the suggestion
+verbs under `nota history` in the CLI section:
+
+- `nota history suggestions` — list pending suggestions as tab-separated rows (record id, label, suggested name, score); header on stderr
+- `nota history suggestions --recompute <id>` — recompute a record's suggestions from its stored clips against the current store (on-demand backfill)
+- `nota history accept-suggestion <id> <label>` — rename the label to the suggested name (segments, clip, output markdown) AND enroll the record's clip as a new voiceprint; exit codes mirror `nota enroll`
+- `nota history dismiss-suggestion <id> <label>` — clear the suggestion on this record only; store untouched
 
 Commands exit non-zero if a referenced profile is missing. Confirmation lines
 are written to stderr so stdout stays scriptable.
@@ -1075,9 +1091,11 @@ The cache feeds cost computation for usage tracking.
 - AssemblyAI as default provider: transcription + diarization in one API call ($0.15/hr)
 - Whisper retained as fallback via `--provider whisper`
 - `.qta` files auto-converted to `.m4a` via ffmpeg before AssemblyAI upload
-- Speaker identity is a pure-Node ONNX d-vector pipeline: `onnxruntime-node` runs the WeSpeaker ResNet34-LM model over JavaScript-computed Kaldi fbank features, and stored L2-normalized embeddings are matched by cosine similarity. It needs no Python, hosted API, or identity-specific API key. The pinned model is downloaded on first use, checksum-verified, and cached at `~/.nota/models/wespeaker_en_voxceleb_resnet34_LM.onnx`; if the model or native runtime cannot load, identity no-ops with a clear message while the rest of the pipeline continues.
-- Voice audio is captured **during** the pipeline run (the source audio is often a temp file deleted afterward): a short per-speaker PCM clip is saved under `~/.nota/history/<id>.assets/<label>.pcm`, and naming a speaker later enrolls an ONNX embedding from that stored clip, so enrollment works without the original audio. Speaker store schema v4 holds numeric d-vector arrays under `~/.nota/speakers.json`; incompatible v3 Eagle voiceprints are dropped with a warning and must be re-enrolled.
-- Optional `--identify` recognizes enrolled speakers automatically and prompts for unknown ones (interactive TTY); freshly-typed names are enrolled inline from the captured clip
+- Speaker identity is a pure-Node ONNX d-vector pipeline: `onnxruntime-node` runs the WeSpeaker ResNet34-LM model over JavaScript-computed Kaldi fbank features, and stored L2-normalized embeddings are matched by cosine similarity. It needs no Python, hosted API, or identity-specific API key. The pinned model is downloaded on first use, checksum-verified, and cached at `~/.nota/models/wespeaker_en_voxceleb_resnet34_LM.onnx`; if the model or native runtime cannot load, identity no-ops with a clear message while the rest of the pipeline continues. The first-run download announces itself with one stderr line (identify-by-default means it happens mid-run).
+- Voice audio is captured **during** the pipeline run (the source audio is often a temp file deleted afterward): a per-speaker PCM clip is saved under `~/.nota/history/<id>.assets/<label>.pcm` on **every** diarized run with history enabled — recognition or not — and naming a speaker later enrolls an ONNX embedding from that stored clip, so enrollment works without the original audio. Speaker store schema v4 holds numeric d-vector arrays under `~/.nota/speakers.json`; incompatible v3 Eagle voiceprints are dropped with a warning and must be re-enrolled.
+- Speaker identification is **auto by default** (decision 1 of the speaker-workflow map, XIA-406): recognition runs on every diarized transcription whenever the store has ≥1 enrolled voiceprint, in both the CLI and the macOS app. `--no-identify` (and the app's identify toggle) opts out; `--identify` forces it on, which is the path for first-time enrollment of unknown speakers (interactive TTY; freshly-typed names are enrolled inline from the captured clip). A `.qta` input is pre-converted to a durable 16 kHz wav whenever the run will read the audio after transcription (identification or clip capture), because the source temp file may vanish when the share sheet closes.
+- Tentative-band matches ([0.50, 0.65) cosine) are never silently dropped: they persist on the history record as `suggestions` (`{label, suggestedName, score, voiceprintId, state, decidedAt?}`) and surface on the macOS speaker chip as "Speaker 2 → Kenny Kim? 0.62" with accept/dismiss. Accept = rename propagation (segments, clip, output `.md`) + enroll the record's clip as a new voiceprint; dismiss = clear on this record only. `nota history suggestions --recompute <id>` backfills an old record from its stored clips (no migration sweep). Confident matches (≥ 0.65) auto-label as before; threshold bands are fixed (0.65 / 0.50, measured in `docs/research/voiceprint-cosine-bands.md`) — never per-speaker, never learned.
+- Enrollment hygiene: a new voiceprint that disagrees strongly with the person's existing prints (best same-name cosine < 0.5) warns on stderr naming the score and is marked `lowAgreement` on the print — never refused, never silent. `nota speakers doctor` lists flagged prints and same-name pairs below 0.30 for delete/reassign. A rename/accept landing on a completed record sets `summaryOutdated`, which surfaces a one-click "Regenerate summary" affordance in the app until used or dismissed; a fresh summary clears it.
 - Long transcripts (>100k tokens) are summarized in sections then rolled up
 - Output saved as markdown file next to input by default
 - Byte-level (SHA-256) duplicate detection: when history is enabled (the default), Nota hashes the raw audio once in `runPipeline` and, if an identical file already has a *completed* history record whose output `.md` still exists, reuses that summary and skips transcription. `--force` overrides; a hash failure warns but still transcribes. This gates the common case (same file shared twice) cheaply before any paid call; it is a byte hash, not an acoustic fingerprint, so a re-encoded copy of the same recording is not detected. Legacy records (pre-feature) have no `contentHash` and never match. Example: `nota recording.m4a --force` reprocesses a file already in history.
@@ -1374,7 +1392,7 @@ The cache feeds cost computation for usage tracking.
 - Environment variable: `DEEPSEEK_API_KEY` — required when the resolved summary model is a DeepSeek model (`deepseek-v4-flash`/`deepseek-v4-pro`). Note: `deepseek-v4-flash` is the cheapest default and is selected first when `DEEPSEEK_API_KEY` is set.
 - Environment variable: `OPENROUTER_API_KEY` — required when the resolved summary model is an `openrouter/…` model. No OpenRouter model is ever chosen by default (it is absent from the key-aware chain), so this key is needed only after an explicit `-m` or `nota settings set summary.model`. `nota config` shows whether it resolves.
 - `claude` or `codex` on PATH, logged in — required only when the resolved summary model is a `claude-code/…` or `codex/…` id. No API key applies and none is passed; the CLI uses its own login. Never chosen by default, so this is needed only after an explicit `-m` or `nota settings set summary.model`. `nota config` shows which binaries resolve and at what version.
-- Speaker identity (`--identify` and `nota enroll`) needs no API key or Python. It uses `onnxruntime-node` and auto-downloads its checksum-pinned ONNX model on first use.
+- Speaker identity (auto-run, `--identify`, and `nota enroll`) needs no API key or Python. It uses `onnxruntime-node` and auto-downloads its checksum-pinned ONNX model on first use.
 - For `--provider whisper` with diarization only: Python 3.8+ with `pyannote.audio`, plus `HUGGINGFACE_TOKEN` (pyannote is not used for speaker identity)
 
 ### API-key config file
