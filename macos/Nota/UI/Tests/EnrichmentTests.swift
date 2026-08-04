@@ -882,3 +882,29 @@ final class VoiceprintLowAgreementTests: XCTestCase {
     XCTAssertNil(json["lowAgreement"], "absent flag must not be written as null")
   }
 }
+
+// MARK: - Generic-label predicate
+
+/// A chip whose label is already a person's name (auto-identified at run
+/// time) is named, whatever the sidecar says — only diarizer placeholders
+/// ("Speaker 3") may render the dashed unnamed state.
+final class SpeakerChipGenericLabelTests: XCTestCase {
+  func testDiarizerPlaceholdersAreGeneric() {
+    XCTAssertTrue(SpeakerChip.isGenericLabel("Speaker 1"))
+    XCTAssertTrue(SpeakerChip.isGenericLabel("Speaker 12"))
+  }
+
+  func testPersonNamesAndOddLabelsAreNot() {
+    XCTAssertFalse(SpeakerChip.isGenericLabel("Freya Wu"))
+    XCTAssertFalse(SpeakerChip.isGenericLabel("Meghan Casey"))
+    // Not the diarizer's shape: prefixes and suffixes don't count.
+    XCTAssertFalse(SpeakerChip.isGenericLabel("Speaker 1 (guest)"))
+    XCTAssertFalse(SpeakerChip.isGenericLabel("Guest Speaker 1"))
+    XCTAssertFalse(SpeakerChip.isGenericLabel("Speaker"))
+  }
+
+  func testChipExposesThePredicate() {
+    XCTAssertFalse(SpeakerChip(label: "Freya Wu", name: "", indicator: .none).hasGenericLabel)
+    XCTAssertTrue(SpeakerChip(label: "Speaker 2", name: "", indicator: .none).hasGenericLabel)
+  }
+}

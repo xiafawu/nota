@@ -919,16 +919,28 @@ final class NotaModel: ObservableObject {
     let docPath = documentURL.path
     Task { @MainActor [weak self] in
       guard let self else { return }
-      let (info, record) = await Task.detached(priority: .utility) { () -> (HistoryRecordInfo?, EnrichmentRecord?) in
+      let (info, record, enrolledNames) = await Task.detached(priority: .utility) { () -> (HistoryRecordInfo?, EnrichmentRecord?, Set<String>) in
         let info = HistoryRecordInfo.find(outputPath: docPath, historyDir: historyDir)
         let record = info.flatMap { EnrichmentRecord.load(from: $0.recordURL) }
-        return (info, record)
+        return (info, record, Set(SpeakerProfileStore.load().speakers.keys))
       }.value
       self.cachedHistoryRecord = info
       self.enrichment.setRecord(record)
       // Pending suggestions ride the record: attach them to the matching
       // chips (decided entries are dropped by the map).
       self.applySuggestions(record?.pendingSuggestions ?? [])
+      // Reconcile indicators against the voiceprint store: the conservative
+      // amber default only ever got cleared by an APP-side enroll, so a
+      // speaker enrolled through the CLI (or auto-identified at run time)
+      // wore "no history record" forever. Enrolled-in-store is the truth the
+      // accessory is trying to report; say so.
+      for idx in self.speakerChips.indices {
+        let chip = self.speakerChips[idx]
+        let display = chip.name.isEmpty ? chip.label : chip.name
+        if enrolledNames.contains(display) {
+          self.speakerChips[idx].indicator = .enrolled
+        }
+      }
     }
 
     speakerChips = labels.map { label in

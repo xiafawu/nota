@@ -211,9 +211,12 @@ private struct SpeakerChipButton: View {
     }
   }
 
-  /// True when the chip has no display name and no suggestion pending.
+  /// True when the chip has no display name and no suggestion pending — and
+  /// the label is a diarizer placeholder. A label that is already a person's
+  /// name (auto-identified at run time, so no sidecar entry exists) is named,
+  /// whatever the sidecar says.
   private var unnamed: Bool {
-    chip.name.isEmpty && chip.suggestion == nil
+    chip.name.isEmpty && chip.suggestion == nil && chip.hasGenericLabel
   }
 
   private func suggestionHelp(_ suggestion: SpeakerSuggestion) -> String {

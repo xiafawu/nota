@@ -45,6 +45,17 @@ struct SpeakerChip: Identifiable, Equatable {
 
   var id: String { label }
 
+  /// True when the label is a diarizer placeholder ("Speaker 3") rather than
+  /// a person's name an identify pass already resolved at run time. A chip
+  /// whose label IS a name must not render as unnamed — the body carries
+  /// "Freya Wu", not "Speaker 2", and dashing it says "needs a name" about a
+  /// speaker who has one (owner report 2026-08-04).
+  var hasGenericLabel: Bool { Self.isGenericLabel(label) }
+
+  static func isGenericLabel(_ label: String) -> Bool {
+    label.range(of: #"^Speaker \d+$"#, options: .regularExpression) != nil
+  }
+
   var displayText: String {
     if name.isEmpty { return "\(label) → ?" }
     if name == label { return name }
