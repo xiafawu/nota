@@ -157,19 +157,34 @@ struct HistoryDrawerView: View {
       }
       .pickerStyle(.segmented)
       .labelsHidden()
-      .overlay(alignment: model.historyDrawerTab == .transcripts ? .trailing : .leading) {
-        if let count = inactiveTabMatchCount {
-          Text("\(count)")
-            .font(.system(size: 9, weight: .semibold))
-            .foregroundStyle(.white)
-            .padding(.horizontal, 5)
-            .padding(.vertical, 1)
-            .background(Capsule().fill(Color.accentColor))
-            .offset(y: -9)
-            .padding(.horizontal, 14)
-            .allowsHitTesting(false)
+      // The badge sits over ONE half of the control at a time, so it is drawn
+      // in a half-width container inside an overlay that spans the whole
+      // control rather than by flipping the overlay's alignment. Alignment is
+      // not an animatable value: flipping it teleported the badge across the
+      // picker on every tab switch. A frame's position is animatable, so the
+      // badge now slides to the other segment with the selection.
+      .overlay {
+        GeometryReader { proxy in
+          if let count = inactiveTabMatchCount {
+            Text("\(count)")
+              .font(.system(size: 9, weight: .semibold))
+              .foregroundStyle(.white)
+              .padding(.horizontal, 5)
+              .padding(.vertical, 1)
+              .background(Capsule().fill(Color.accentColor))
+              .frame(width: proxy.size.width / 2, alignment: .trailing)
+              .padding(.trailing, 10)
+              .offset(
+                x: model.historyDrawerTab == .transcripts ? proxy.size.width / 2 : 0,
+                y: -9
+              )
+              .transition(.opacity.combined(with: .scale(scale: 0.6)))
+          }
         }
+        .allowsHitTesting(false)
       }
+      .animation(Tokens.animFast, value: model.historyDrawerTab)
+      .animation(Tokens.animFast, value: inactiveTabMatchCount)
     }
     .padding(.horizontal, CraftTokens.spacing16)
     .padding(.bottom, CraftTokens.spacing8)
@@ -212,12 +227,33 @@ struct HistoryDrawerView: View {
 
   // MARK: - Tab content
 
+  /// The two lists slide in the direction of travel and cross-fade, the way a
+  /// segmented control's content moves elsewhere on the platform. Without a
+  /// transition the whole list is replaced between frames, which is what read
+  /// as the switch being abrupt — the `Picker` itself was always animating its
+  /// own selection.
+  ///
+  /// `.id(tab)` is what makes it a transition at all: a `switch` inside a
+  /// `ViewBuilder` produces one view whose contents change, so SwiftUI sees an
+  /// update rather than an insertion and removal, and a `.transition` on it
+  /// would never fire.
   @ViewBuilder
   private var content: some View {
-    switch model.historyDrawerTab {
-    case .transcripts: transcriptList
-    case .dictation: dictationList
+    Group {
+      switch model.historyDrawerTab {
+      case .transcripts: transcriptList
+      case .dictation: dictationList
+      }
     }
+    .id(model.historyDrawerTab)
+    .transition(
+      .asymmetric(
+        insertion: .move(edge: model.historyDrawerTab == .dictation ? .trailing : .leading)
+          .combined(with: .opacity),
+        removal: .opacity
+      )
+    )
+    .animation(Tokens.animFast, value: model.historyDrawerTab)
   }
 
   private var pinnedEntries: [HistoryEntry] {

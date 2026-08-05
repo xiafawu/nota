@@ -15,14 +15,53 @@ private struct LiquidGlassModifier<S: Shape>: ViewModifier {
 }
 
 private struct LiquidGlassButtonModifier: ViewModifier {
+  let prominent: Bool
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
   func body(content: Content) -> some View {
     if reduceTransparency {
-      content.buttonStyle(.bordered)
+      content.buttonStyle(prominent ? AnyPrimitiveButtonStyle(.borderedProminent) : AnyPrimitiveButtonStyle(.bordered))
     } else {
-      content.buttonStyle(.glass)
+      content.buttonStyle(prominent ? AnyPrimitiveButtonStyle(.glassProminent) : AnyPrimitiveButtonStyle(.glass))
     }
+  }
+}
+
+/// A type-erased `PrimitiveButtonStyle` so one modifier can pick between the
+/// plain and prominent styles at runtime. `buttonStyle(_:)` is generic over
+/// the style, so the two arms would otherwise be different types and could
+/// not be chosen with a ternary.
+private struct AnyPrimitiveButtonStyle: PrimitiveButtonStyle {
+  private let makeBodyClosure: (Configuration) -> AnyView
+
+  init<S: PrimitiveButtonStyle>(_ style: S) {
+    makeBodyClosure = { configuration in
+      AnyView(style.makeBody(configuration: configuration))
+    }
+  }
+
+  func makeBody(configuration: Configuration) -> some View {
+    makeBodyClosure(configuration)
+  }
+}
+
+/// A circular Liquid Glass button sized for a single icon — the shape ADR 0005
+/// specifies for the bottom-right local cluster.
+///
+/// The glass has to come from the **button style**, not from a hand-drawn
+/// `Circle().fill(.thinMaterial)` behind an icon: a material is a blur, glass
+/// refracts, and only the style gives the pressed and hover states the rest of
+/// the app's controls have. It also has to come from the style rather than a
+/// `.liquidGlass(in: .circle)` background, or the shape would be painted at
+/// the label's size while the style drew its own capsule around it.
+private struct LocalClusterButtonModifier: ViewModifier {
+  let prominent: Bool
+
+  func body(content: Content) -> some View {
+    content
+      .buttonBorderShape(.circle)
+      .controlSize(.large)
+      .modifier(LiquidGlassButtonModifier(prominent: prominent))
   }
 }
 
@@ -51,8 +90,15 @@ extension View {
     modifier(LiquidGlassModifier(glass: glass, shape: shape))
   }
 
-  func liquidGlassButton() -> some View {
-    modifier(LiquidGlassButtonModifier())
+  func liquidGlassButton(prominent: Bool = false) -> some View {
+    modifier(LiquidGlassButtonModifier(prominent: prominent))
+  }
+
+  /// Circular glass button for the bottom-right local cluster (ADR 0005).
+  /// `prominent` is the accent-filled variant — used for the Summary button
+  /// once a summary exists.
+  func localClusterButton(prominent: Bool = false) -> some View {
+    modifier(LocalClusterButtonModifier(prominent: prominent))
   }
 
   func dropTargetGlass(isTargeted: Bool) -> some View {

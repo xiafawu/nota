@@ -28,6 +28,9 @@ struct SummaryRailView: View {
   /// the slot had it — at 380pt the rail permanently takes the stacked arm
   /// (decision 4).
   @State private var structuredColumnsWidth: CGFloat = 0
+  /// How tall the narrative reads when it is not being edited, so the editor
+  /// can open at that height rather than jumping to a fixed minimum.
+  @State private var narrativeHeight: CGFloat = 0
 
   /// Minimum measured width at which decisions + action items render side by
   /// side; below it they stack. Each column keeps a readable wrapped measure
@@ -207,6 +210,15 @@ struct SummaryRailView: View {
             Text(record?.summary?.narrative ?? "")
               .font(.body)
               .frame(maxWidth: .infinity, alignment: .leading)
+              // Remember how tall the narrative reads, so clicking into it
+              // opens an editor of the same height instead of jumping to a
+              // fixed minimum. A three-line summary should not become a
+              // 100pt box under the cursor.
+              .onGeometryChange(for: CGFloat.self) { proxy in
+                proxy.size.height
+              } action: { height in
+                narrativeHeight = height
+              }
               .contentShape(Rectangle())
               .onTapGesture { beginEdit() }
               .help("Click to edit")
@@ -252,6 +264,9 @@ struct SummaryRailView: View {
     .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
   }
 
+  static let editorMinHeight: CGFloat = 64
+  static let editorMaxHeight: CGFloat = 220
+
   /// What Escape does, in the words of the setting that decides it — the
   /// caption may not promise a commit the `Ask me` policy will not make.
   private var escapeCaption: String {
@@ -267,7 +282,15 @@ struct SummaryRailView: View {
         .font(.body)
         .scrollContentBackground(.hidden)
         .padding(6)
-        .frame(minHeight: 100, maxHeight: 220)
+        // Open at the height the narrative was just reading at (plus the
+        // editor's own padding), not at a fixed minimum — swapping a Text for
+        // a TextEditor must not move the text under the cursor that clicked
+        // it. Floored so a one-line summary is still a usable box, capped so
+        // a long one scrolls rather than pushing the rail's chrome off.
+        .frame(
+          minHeight: min(max(narrativeHeight + 12, Self.editorMinHeight), Self.editorMaxHeight),
+          maxHeight: Self.editorMaxHeight
+        )
         .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 8))
         .overlay(
           RoundedRectangle(cornerRadius: 8)

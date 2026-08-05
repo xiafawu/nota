@@ -93,12 +93,20 @@ struct MainPaneView: View {
   /// Share (decision 11 — the toolbar's ShareMenu reused as-is, host only).
   /// Two individual round glass buttons, icon-only with tooltips (ADR 0005),
   /// floating over the content, inset from its trailing and bottom edges.
+  /// The label box every cluster button draws into. Fixing the *label* rather
+  /// than the control is what keeps the two buttons the same size: the glass
+  /// button style adds its own padding around whatever it is given, so two
+  /// labels of different widths (an icon and the word "Share") produce two
+  /// differently shaped controls — which is exactly what a reused toolbar
+  /// `Label` did here before.
+  static let clusterGlyphSize: CGFloat = 17
+
   private var localCluster: some View {
     HStack(spacing: CraftTokens.spacing8) {
       if enrichment.record != nil {
         summaryClusterButton
       }
-      ShareMenu(model: model)
+      ShareMenu(model: model, style: .localCluster)
     }
     .padding(.trailing, CraftTokens.spacing16)
     .padding(.bottom, CraftTokens.spacing16)
@@ -131,38 +139,37 @@ struct MainPaneView: View {
         enrichment.generateSummary()
       }
     } label: {
+      // One glyph-sized label in every state, so the glass button style keeps
+      // one size across all four (decision 9) — the ring in particular must
+      // not resize the control mid-generation.
       ZStack {
         if isGenerating {
-          Circle()
-            .fill(.thinMaterial)
-            .overlay(Circle().strokeBorder(.secondary.opacity(0.4), lineWidth: 1))
-          ProgressView()
-            .controlSize(.small)
+          ProgressView().controlSize(.small)
         } else {
-          Circle()
-            .fill(hasSummary ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.thinMaterial))
-            .overlay(
-              Circle().strokeBorder(
-                hasSummary ? Color.clear : Color.secondary.opacity(0.5),
-                lineWidth: 1
-              )
-            )
           Image(systemName: hasSummary ? "text.alignleft" : "plus")
             .font(.system(size: 14, weight: .semibold))
-            .foregroundStyle(hasSummary ? .white : .secondary)
-        }
-        if isStale {
-          Circle()
-            .fill(.yellow)
-            .frame(width: 9, height: 9)
-            .overlay(Circle().strokeBorder(.black.opacity(0.3), lineWidth: 1))
-            .offset(x: 12.5, y: -12.5)
         }
       }
-      .frame(width: 34, height: 34)
-      .contentShape(Circle())
+      .frame(width: Self.clusterGlyphSize, height: Self.clusterGlyphSize)
     }
-    .buttonStyle(.plain)
+    // Real Liquid Glass from the button style, not a hand-drawn
+    // `Circle().fill(.thinMaterial)`: a material is a blur, glass refracts,
+    // and only the style carries the hover and pressed states.
+    .localClusterButton(prominent: hasSummary && !isGenerating)
+    // The stale dot rides OUTSIDE the style's shape so the glass does not
+    // blur it and the button's own size is unchanged by it (decision 12).
+    .overlay(alignment: .topTrailing) {
+      if isStale {
+        Circle()
+          .fill(.yellow)
+          .frame(width: 9, height: 9)
+          .overlay(Circle().strokeBorder(.black.opacity(0.3), lineWidth: 1))
+          .offset(x: 2, y: -2)
+          .allowsHitTesting(false)
+      }
+    }
+    .animation(Tokens.animFast, value: isGenerating)
+    .animation(Tokens.animFast, value: hasSummary)
     .disabled(!isEnabled)
     .help(hasSummary ? "Summary" : "Generate summary")
     .accessibilityLabel(hasSummary ? "Summary" : "Generate summary")

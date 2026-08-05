@@ -261,7 +261,23 @@ struct ContentView: View {
 // is reused as-is, only its host changes.
 
 struct ShareMenu: View {
+  /// Where this menu is being hosted. The two hosts want different chrome and
+  /// the difference is not cosmetic: in a **toolbar**, macOS 26 draws the
+  /// Liquid Glass capsule around the item itself, so the menu supplies only a
+  /// label. In the **local cluster** it is a free-floating control over the
+  /// content and has to draw its own glass — as a circle, icon-only, matching
+  /// the Summary button beside it (ADR 0005).
+  ///
+  /// This enum exists because moving the view between hosts silently changed
+  /// what its own `.liquidGlassButton()` did: harmless under a toolbar that
+  /// was already drawing glass, a label-width capsule once it wasn't.
+  enum Style {
+    case toolbar
+    case localCluster
+  }
+
   @ObservedObject var model: NotaModel
+  var style: Style = .toolbar
 
   var body: some View {
     Menu {
@@ -303,10 +319,39 @@ struct ShareMenu: View {
         .disabled(model.lastOutputURL == nil)
       }
     } label: {
-      Label("Share", systemImage: "square.and.arrow.up")
+      switch style {
+      case .toolbar:
+        Label("Share", systemImage: "square.and.arrow.up")
+      case .localCluster:
+        Image(systemName: "square.and.arrow.up")
+          .font(.system(size: 14, weight: .semibold))
+          .frame(
+            width: MainPaneView.clusterGlyphSize,
+            height: MainPaneView.clusterGlyphSize
+          )
+      }
     }
     .menuIndicator(.hidden)
     .help("Copy, export, or reveal transcript")
-    .liquidGlassButton()
+    .accessibilityLabel("Share")
+    .modifier(ShareMenuChrome(style: style))
+  }
+}
+
+/// Applies the chrome each host needs. Kept as a modifier rather than a
+/// ternary because the two arms return different view types.
+private struct ShareMenuChrome: ViewModifier {
+  let style: ShareMenu.Style
+
+  func body(content: Content) -> some View {
+    switch style {
+    case .toolbar:
+      // The toolbar already draws the glass capsule around its items on
+      // macOS 26; a second one here is the doubled outline CLAUDE.md warns
+      // about. The style stays for the reduce-transparency fallback.
+      content.liquidGlassButton()
+    case .localCluster:
+      content.localClusterButton()
+    }
   }
 }
