@@ -252,6 +252,15 @@ struct SummaryRailView: View {
     .background(.thinMaterial, in: RoundedRectangle(cornerRadius: 12))
   }
 
+  /// What Escape does, in the words of the setting that decides it — the
+  /// caption may not promise a commit the `Ask me` policy will not make.
+  private var escapeCaption: String {
+    switch model.summaryDismissalBehavior {
+    case .save: return "Esc closes and saves your changes"
+    case .ask: return "Esc closes — you'll be asked about unsaved changes"
+    }
+  }
+
   private var editor: some View {
     VStack(alignment: .leading, spacing: 8) {
       TextEditor(text: $model.summaryDraft)
@@ -264,10 +273,20 @@ struct SummaryRailView: View {
           RoundedRectangle(cornerRadius: 8)
             .strokeBorder(Color.accentColor.opacity(0.5), lineWidth: 1)
         )
-      // No .onExitCommand here: Escape is deliberately the dismissal gesture
-      // (decision 13) — it commits under the default setting rather than
-      // cancelling the edit.
-      Text("Esc closes and saves your changes")
+        // Escape is the dismissal gesture while editing (decision 13) — it
+        // commits under the default setting rather than cancelling the edit.
+        //
+        // It has to be delivered HERE and not only by the panel's hidden
+        // `.cancelAction` button: `TextEditor` is an `NSTextView`, which
+        // answers `cancelOperation:` itself and never forwards it to a
+        // SwiftUI ancestor. The same trap is documented on the dictation
+        // review card, where ⌘↩/Escape need a local key monitor for exactly
+        // this reason. With the caret in this editor — the only state where
+        // decision 13 means anything — the hidden button is unreachable, so
+        // Escape would be a silent no-op underneath a caption promising it
+        // works. The hidden button still covers the not-editing case.
+        .onExitCommand { requestDismissal() }
+      Text(escapeCaption)
         .font(.caption2)
         .foregroundStyle(.secondary)
     }
