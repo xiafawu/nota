@@ -49,7 +49,23 @@ struct SummaryRailView: View {
         .ignoresSafeArea()
 
       panel
-        .padding(CraftTokens.spacing16)
+        .padding(.horizontal, CraftTokens.spacing16)
+        // Two asymmetric margins, each paying for something specific.
+        //
+        // Top: the panel's shadow is drawn *inside* the content area, which is
+        // clipped at the toolbar's edge. A card flush against that edge has
+        // the upper half of its shadow cut off in a straight line — the shadow
+        // reaches `shadowRadius - shadowOffsetY` above the card, so that much
+        // margin is what keeps it whole.
+        //
+        // Bottom: the rail rises from the local cluster's own corner and must
+        // not land on top of the buttons that opened it. Clearing the cluster
+        // means its full diameter plus a gap, on top of the ordinary inset.
+        .padding(.top, Self.shadowRadius - Self.shadowOffsetY)
+        .padding(
+          .bottom,
+          CraftTokens.spacing16 + LocalCluster.diameter + CraftTokens.spacing8
+        )
         .zIndex(1)
 
       // Escape dismisses via a hidden cancel action — but while editing it
@@ -109,8 +125,14 @@ struct SummaryRailView: View {
     .frame(width: SummaryDrawerLayout.railWidth)
     .frame(maxHeight: .infinity, alignment: .top)
     .craftGlassPanel(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
-    .shadow(color: .black.opacity(0.25), radius: 24, y: 8)
+    .shadow(color: .black.opacity(0.25), radius: Self.shadowRadius, y: Self.shadowOffsetY)
   }
+
+  /// Named because the top margin is derived from them: the shadow's reach
+  /// above the card is what decides how far below the toolbar edge the card
+  /// has to sit to avoid being clipped.
+  private static let shadowRadius: CGFloat = 24
+  private static let shadowOffsetY: CGFloat = 8
 
   private var isGenerating: Bool {
     enrichment.activity != .idle
@@ -521,9 +543,14 @@ struct SummaryRailView: View {
       sectionLabel("Action Items")
       ForEach(Array(actionItems.enumerated()), id: \.offset) { _, item in
         HStack(alignment: .firstTextBaseline, spacing: 6) {
-          Image(systemName: "square")
-            .font(.caption)
-            .foregroundStyle(.secondary)
+          // A bullet, not an empty checkbox. A checkbox is an affordance: it
+          // says this app tracks whether the item is done, and offers to be
+          // clicked. Nota does neither — action items are text the summariser
+          // produced and nothing here ever writes a completion back. The same
+          // bullet the Decisions column uses says what these are (a list) and
+          // promises nothing it cannot keep.
+          Text("•")
+            .foregroundStyle(.tertiary)
           Text(inlineMarkdownAttributed(displayActionItem(item)))
             .font(.subheadline)
             .fixedSize(horizontal: false, vertical: true)
@@ -540,8 +567,8 @@ struct SummaryRailView: View {
       .foregroundStyle(.secondary)
   }
 
-  /// The pipeline writes action items as `[ ] …` checkboxes; the square icon
-  /// already carries that affordance here, so strip the textual prefix.
+  /// The pipeline writes action items as `[ ] …` checkboxes; the rail renders
+  /// them as bullets, so the textual prefix is stripped rather than shown.
   private func displayActionItem(_ item: String) -> String {
     item.hasPrefix("[ ] ") ? String(item.dropFirst(4)) : item
   }
