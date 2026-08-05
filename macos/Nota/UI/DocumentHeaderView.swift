@@ -284,24 +284,94 @@ private struct SpeakerChipButton: View {
 
 // MARK: - Editable tags (record-driven)
 
-/// Inputs for the editable tag row: current record tags plus add/remove
-/// callbacks that persist through the CLI's apply-enrichment verb.
+/// Inputs for the editable tag row: current record tags plus add/remove and
+/// generate callbacks that persist through the CLI's apply-enrichment and tag
+/// verbs. Generation progress and failure ride on the row (decision 28).
 struct EnrichmentTagEditing {
   var tags: [String]
+  /// True while the tag generation verb is in flight — the row shows a
+  /// progress spinner instead of the generate affordance (decision 28).
+  var isGenerating: Bool
+  /// The tag generation failure message. The controller's error channel is
+  /// shared with the summary rail; only tagging-kind failures belong here.
+  var errorMessage: String?
+  /// Regeneration over edited tags requires confirmation (edited-is-protected;
+  /// the row presents the confirm alert).
+  var needsConfirm: Bool
   var onAdd: (String) -> Void
   var onRemove: (String) -> Void
+  /// Starts tag generation (unconfirmed — the row gates on `needsConfirm`).
+  var onGenerate: () -> Void
 }
 
 private struct EditableTagRow: View {
   let state: EnrichmentTagEditing
 
+  @State private var showGenerateConfirm = false
+
   var body: some View {
-    FlowLayout(spacing: Metrics.tagSpacing, lineSpacing: Metrics.tagSpacing) {
-      ForEach(state.tags, id: \.self) { tag in
-        RemovableTagChip(tag: tag, onRemove: { state.onRemove(tag) })
+    VStack(alignment: .leading, spacing: 4) {
+      FlowLayout(spacing: Metrics.tagSpacing, lineSpacing: Metrics.tagSpacing) {
+        ForEach(state.tags, id: \.self) { tag in
+          RemovableTagChip(tag: tag, onRemove: { state.onRemove(tag) })
+        }
+        // Decision 28: the generate-tags affordance sits on the tag row —
+        // "Generate tags" when empty, a `+` when not — because it is the
+        // action of the thing displayed there (ADR 0005). Progress replaces
+        // it while a generation runs.
+        if state.isGenerating {
+          ProgressView()
+            .controlSize(.mini)
+            .padding(.horizontal, Metrics.tagPillH)
+            .padding(.vertical, Metrics.tagPillV)
+            .help("Generating tags…")
+        } else {
+          generateButton
+        }
+        AddTagChip(onAdd: state.onAdd)
       }
-      AddTagChip(onAdd: state.onAdd)
+      if let message = state.errorMessage {
+        Label(message, systemImage: "exclamationmark.triangle")
+          .font(.caption)
+          .foregroundStyle(.red)
+          .lineLimit(2)
+      }
     }
+    .alert("Regenerate tags?", isPresented: $showGenerateConfirm) {
+      Button("Cancel", role: .cancel) {}
+      Button("Regenerate") { state.onGenerate() }
+    } message: {
+      Text("You've edited these tags. Generated tags are merged with yours — manual tags are kept.")
+    }
+  }
+
+  private var generateButton: some View {
+    Button {
+      if state.needsConfirm {
+        showGenerateConfirm = true
+      } else {
+        state.onGenerate()
+      }
+    } label: {
+      if state.tags.isEmpty {
+        Text("Generate tags")
+          .font(Tokens.historyTagFont)
+      } else {
+        Image(systemName: "plus")
+          .font(.system(size: 9, weight: .bold))
+      }
+    }
+    .buttonStyle(.plain)
+    .foregroundStyle(.secondary)
+    .padding(.horizontal, Metrics.tagPillH)
+    .padding(.vertical, Metrics.tagPillV)
+    .background(
+      Capsule()
+        .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
+        .foregroundStyle(.secondary.opacity(0.5))
+    )
+    .help("Generate tags")
+    .accessibilityLabel(state.tags.isEmpty ? "Generate tags" : "Generate more tags")
   }
 }
 

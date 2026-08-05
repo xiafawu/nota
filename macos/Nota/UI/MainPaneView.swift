@@ -268,12 +268,18 @@ private struct RichDocumentPane: View {
 
   /// Tags become editable chips only when the document has a history record —
   /// the record is truth for tag content; imported markdown keeps static pills.
+  /// The generate-tags affordance rides the row (decision 28), carrying its
+  /// progress, its failure, and the edited-tags confirm gate.
   private var tagEditing: EnrichmentTagEditing? {
     guard let record = enrichment.record else { return nil }
     return EnrichmentTagEditing(
       tags: record.tags,
+      isGenerating: enrichment.activity == .tagging,
+      errorMessage: enrichment.errorActivity == .tagging ? enrichment.errorMessage : nil,
+      needsConfirm: enrichmentNeedsConfirm(record: record, target: .tags),
       onAdd: { enrichment.addTag($0) },
-      onRemove: { enrichment.removeTag($0) }
+      onRemove: { enrichment.removeTag($0) },
+      onGenerate: { enrichment.generateTags() }
     )
   }
 }
