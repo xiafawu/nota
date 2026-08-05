@@ -102,11 +102,18 @@ struct MainPaneView: View {
   static let clusterGlyphSize: CGFloat = 17
 
   private var localCluster: some View {
-    HStack(spacing: CraftTokens.spacing8) {
-      if enrichment.record != nil {
-        summaryClusterButton
+    // A `GlassEffectContainer` is what makes two adjacent plates read as one
+    // cluster: it merges their lensing rather than letting each refract
+    // independently, which is the difference between a pair of controls and
+    // two unrelated bubbles that happen to be near each other. A toolbar gets
+    // this for free; a hand-placed pair has to ask.
+    GlassEffectContainer(spacing: CraftTokens.spacing8) {
+      HStack(spacing: CraftTokens.spacing8) {
+        if enrichment.record != nil {
+          summaryClusterButton
+        }
+        ShareMenu(model: model, style: .localCluster)
       }
-      ShareMenu(model: model, style: .localCluster)
     }
     .padding(.trailing, CraftTokens.spacing16)
     .padding(.bottom, CraftTokens.spacing16)
