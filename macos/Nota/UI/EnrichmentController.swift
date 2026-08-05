@@ -115,16 +115,17 @@ enum EnrichmentField: Equatable {
   case tags
 }
 
-/// The single layout slot between the document header and the transcript:
-/// placeholder → in-flight row → summary section (E2 single-slot morph).
+/// The state the summary rail renders from: hidden (no record) → in-flight
+/// row → summary content (decisions 9/10/29). The old dashed "No summary yet"
+/// placeholder is retired: the Summary button starts generation AND opens the
+/// rail, so there is no path to an empty rail.
 enum EnrichmentSlotState: Equatable {
   case hidden
-  case placeholder
   case generating(kind: EnrichmentActivity, modelID: String)
   case summary(narrative: String, edited: Bool)
 }
 
-/// Select the slot state from the record + in-flight activity. Record is
+/// Select the rail state from the record + in-flight activity. Record is
 /// truth: the summary section and Edited badge derive from record fields,
 /// never from UI-local state.
 func enrichmentSlotState(
@@ -138,9 +139,6 @@ func enrichmentSlotState(
   }
   if record.hasSummaryNarrative {
     return .summary(narrative: record.summary?.narrative ?? "", edited: record.isSummaryEdited)
-  }
-  if record.status == "transcribed" {
-    return .placeholder
   }
   return .hidden
 }
@@ -354,6 +352,11 @@ final class EnrichmentController: ObservableObject {
   @Published private(set) var generatingModelID = ""
   @Published private(set) var isSavingEdit = false
   @Published var errorMessage: String?
+  /// Which kind of generation the current `errorMessage` belongs to (nil for
+  /// edit-save failures and no error). Two surfaces consume one error
+  /// channel now — the tag row (decision 28) and the summary rail — so the
+  /// failure must know its kind to be shown in the right place.
+  @Published private(set) var errorActivity: EnrichmentActivity?
 
   /// Fired after any successful CLI mutation so the app model can reload the
   /// rewritten `.md`, refresh the dashboard pill, and (for generations)
@@ -391,6 +394,7 @@ final class EnrichmentController: ObservableObject {
     generationID += 1
     record = newRecord
     errorMessage = nil
+    errorActivity = nil
   }
 
   // MARK: Generation (summarize / tag verbs)
@@ -418,6 +422,7 @@ final class EnrichmentController: ObservableObject {
   private func generate(_ kind: EnrichmentActivity, arguments: [String]) -> Task<Void, Never>? {
     guard activity == .idle else { return nil }
     errorMessage = nil
+    errorActivity = nil
     activity = kind
     generatingModelID = summaryModelResolver()
     generationID += 1
@@ -435,6 +440,7 @@ final class EnrichmentController: ObservableObject {
       } catch {
         guard self.generationID == id else { return }
         self.errorMessage = error.localizedDescription
+        self.errorActivity = kind
       }
       if self.generationID == id {
         self.activity = .idle
@@ -487,6 +493,7 @@ final class EnrichmentController: ObservableObject {
   private func applyEdit(_ payload: EnrichmentEditPayload) -> Task<Void, Never>? {
     guard let record, !isSavingEdit else { return nil }
     errorMessage = nil
+    errorActivity = nil
     isSavingEdit = true
     let id = generationID
 

@@ -171,21 +171,25 @@ final class EnrichmentSlotStateTests: XCTestCase {
     )
   }
 
-  func testTranscribedNoSummary_placeholder() {
+  func testTranscribedNoSummary_hidden() {
+    // The placeholder case is retired (decisions 9/10): the Summary button
+    // starts generation AND opens the rail, so the rail never shows a
+    // "No summary yet" card — with no narrative there is nothing to render.
     let record = makeRecord(status: "transcribed")
     XCTAssertEqual(
       enrichmentSlotState(record: record, activity: .idle, modelID: "m"),
-      .placeholder
+      .hidden
     )
   }
 
-  func testTranscribedTagsOnly_staysPlaceholder() {
-    // Tags-only generation does not flip status; the summary slot still
-    // offers generation because there is no narrative yet.
+  func testTranscribedTagsOnly_hidden() {
+    // Tags-only generation does not flip status; without a narrative the rail
+    // still has nothing to render (the tag affordance lives on the header
+    // row, decision 28).
     let record = makeRecord(status: "transcribed", tags: ["planning"])
     XCTAssertEqual(
       enrichmentSlotState(record: record, activity: .idle, modelID: "m"),
-      .placeholder
+      .hidden
     )
   }
 
@@ -548,8 +552,51 @@ final class EnrichmentControllerTests: XCTestCase {
     await controller.generateSummary()?.value
 
     XCTAssertEqual(controller.errorMessage, "summary was edited; pass --force")
+    // The error knows its kind: the tag row and the summary rail share one
+    // error channel and each shows only its own failures (decision 28).
+    XCTAssertEqual(controller.errorActivity, .summarizing)
     XCTAssertEqual(controller.record, before)
     XCTAssertEqual(controller.activity, .idle)
+  }
+
+  func testGenerateTagsFailure_errorActivityIsTagging() async {
+    let runner = MockEnrichmentRunner()
+    runner.result = .failure(EnrichmentCLIError.cliFailed(2, stderr: "boom"))
+    let controller = makeController(runner: runner)
+
+    await controller.generateTags()?.value
+
+    XCTAssertEqual(controller.errorActivity, .tagging)
+    XCTAssertNotNil(controller.errorMessage)
+  }
+
+  func testEditSaveFailure_errorActivityCleared() async {
+    let runner = MockEnrichmentRunner()
+    runner.result = .failure(EnrichmentCLIError.cliFailed(2, stderr: "nope"))
+    let controller = makeController(
+      runner: runner,
+      record: makeRecord(status: "completed", narrative: "Old text.")
+    )
+
+    await controller.saveSummaryEdit("New text.")?.value
+
+    XCTAssertNotNil(controller.errorMessage)
+    XCTAssertNil(controller.errorActivity, "edit failures belong to no generation kind")
+  }
+
+  func testNextGeneration_clearsPreviousErrorKind() async {
+    let runner = MockEnrichmentRunner()
+    runner.result = .failure(EnrichmentCLIError.cliFailed(2, stderr: "first"))
+    let controller = makeController(runner: runner)
+
+    await controller.generateTags()?.value
+    XCTAssertEqual(controller.errorActivity, .tagging)
+
+    runner.result = .success(try recordJSON(status: "completed", narrative: "Fresh."))
+    await controller.generateSummary()?.value
+
+    XCTAssertNil(controller.errorMessage)
+    XCTAssertNil(controller.errorActivity)
   }
 
   func testGenerate_undecodableStdout_surfacesError() async {

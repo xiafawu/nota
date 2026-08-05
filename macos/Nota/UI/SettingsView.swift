@@ -10,7 +10,7 @@ private enum SettingsTab: Hashable {
 
   var idealHeight: CGFloat {
     switch self {
-    case .general: 260
+    case .general: 300
     case .dictation: 600
     case .dictionary: 560
     case .models: 400
@@ -116,6 +116,23 @@ struct SettingsView: View {
         .onChange(of: memoDiarization) { _, newValue in
           NotaSettingsStore.memoDiarizationEnabled = newValue
         }
+        // Decision 13: one switch governs every dismissal of the summary rail
+        // with unsaved edits — click-outside, Escape, Close, record switch,
+        // and phase leave. "Save it" (default) commits the draft and closes;
+        // "Ask me" confirms first (save / discard / keep editing).
+        Picker(selection: $summaryDismissalBehavior) {
+          ForEach(SummaryRailDismissalBehavior.allCases, id: \.self) { behavior in
+            Text(behavior.label).tag(behavior)
+          }
+        } label: {
+          VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
+            Text("Closing the summary with unsaved edits")
+            Text("Save it commits the draft and closes; Ask me confirms first.")
+              .font(Tokens.settingsCaptionFont)
+              .foregroundStyle(.secondary)
+          }
+        }
+        .pickerStyle(.segmented)
         Picker(selection: $appearanceRaw) {
           ForEach(AppearanceSetting.allCases) { setting in
             Text(setting.label).tag(setting.rawValue)
