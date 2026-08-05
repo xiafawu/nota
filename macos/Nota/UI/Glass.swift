@@ -54,13 +54,19 @@ private struct AnyPrimitiveButtonStyle: PrimitiveButtonStyle {
 /// the app's controls have. It also has to come from the style rather than a
 /// `.liquidGlass(in: .circle)` background, or the shape would be painted at
 /// the label's size while the style drew its own capsule around it.
+/// Sized to match a **toolbar** item, not scaled up: the cluster is the same
+/// class of control as History and Settings at the top right, only local, and
+/// the two sets read as unrelated if they are different sizes. Toolbar items
+/// are bare `Button`s at the default control size that the toolbar wraps in
+/// its own glass, so the cluster takes the default control size too — an
+/// earlier `.controlSize(.large)` here is what made them look like a
+/// different kind of button.
 private struct LocalClusterButtonModifier: ViewModifier {
   let prominent: Bool
 
   func body(content: Content) -> some View {
     content
       .buttonBorderShape(.circle)
-      .controlSize(.large)
       .modifier(LiquidGlassButtonModifier(prominent: prominent))
   }
 }

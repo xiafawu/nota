@@ -147,7 +147,7 @@ struct MainPaneView: View {
           ProgressView().controlSize(.small)
         } else {
           Image(systemName: hasSummary ? "text.alignleft" : "plus")
-            .font(.system(size: 14, weight: .semibold))
+            .imageScale(.medium)
         }
       }
       .frame(width: Self.clusterGlyphSize, height: Self.clusterGlyphSize)
@@ -155,7 +155,15 @@ struct MainPaneView: View {
     // Real Liquid Glass from the button style, not a hand-drawn
     // `Circle().fill(.thinMaterial)`: a material is a blur, glass refracts,
     // and only the style carries the hover and pressed states.
-    .localClusterButton(prominent: hasSummary && !isGenerating)
+    //
+    // Prominent means the rail is OPEN, not that a summary exists. Keying the
+    // accent fill to "has a summary" made the button permanently blue for
+    // every record that had one — a colour that answered a question nobody
+    // was asking and tracked nothing the owner did. As a selected state it is
+    // the ordinary toolbar-toggle idiom: the control is lit while the thing
+    // it opens is on screen. Which of the four states the button is in is
+    // still carried by the glyph and the dot (decision 9).
+    .localClusterButton(prominent: model.isSummaryRailPresented)
     // The stale dot rides OUTSIDE the style's shape so the glass does not
     // blur it and the button's own size is unchanged by it (decision 12).
     .overlay(alignment: .topTrailing) {
@@ -170,6 +178,7 @@ struct MainPaneView: View {
     }
     .animation(Tokens.animFast, value: isGenerating)
     .animation(Tokens.animFast, value: hasSummary)
+    .animation(Tokens.animFast, value: model.isSummaryRailPresented)
     .disabled(!isEnabled)
     .help(hasSummary ? "Summary" : "Generate summary")
     .accessibilityLabel(hasSummary ? "Summary" : "Generate summary")

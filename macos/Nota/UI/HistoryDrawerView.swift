@@ -149,43 +149,10 @@ struct HistoryDrawerView: View {
   /// match count as a small badge (decision 17); the badge disappears when
   /// the query clears.
   private var tabControl: some View {
-    HStack(spacing: CraftTokens.spacing8) {
-      Picker("", selection: $model.historyDrawerTab) {
-        ForEach(HistoryDrawerTab.allCases) { tab in
-          Text(tab.title).tag(tab)
-        }
-      }
-      .pickerStyle(.segmented)
-      .labelsHidden()
-      // The badge sits over ONE half of the control at a time, so it is drawn
-      // in a half-width container inside an overlay that spans the whole
-      // control rather than by flipping the overlay's alignment. Alignment is
-      // not an animatable value: flipping it teleported the badge across the
-      // picker on every tab switch. A frame's position is animatable, so the
-      // badge now slides to the other segment with the selection.
-      .overlay {
-        GeometryReader { proxy in
-          if let count = inactiveTabMatchCount {
-            Text("\(count)")
-              .font(.system(size: 9, weight: .semibold))
-              .foregroundStyle(.white)
-              .padding(.horizontal, 5)
-              .padding(.vertical, 1)
-              .background(Capsule().fill(Color.accentColor))
-              .frame(width: proxy.size.width / 2, alignment: .trailing)
-              .padding(.trailing, 10)
-              .offset(
-                x: model.historyDrawerTab == .transcripts ? proxy.size.width / 2 : 0,
-                y: -9
-              )
-              .transition(.opacity.combined(with: .scale(scale: 0.6)))
-          }
-        }
-        .allowsHitTesting(false)
-      }
-      .animation(Tokens.animFast, value: model.historyDrawerTab)
-      .animation(Tokens.animFast, value: inactiveTabMatchCount)
-    }
+    HistoryTabStrip(
+      selection: $model.historyDrawerTab,
+      badgeCount: inactiveTabMatchCount
+    )
     .padding(.horizontal, CraftTokens.spacing16)
     .padding(.bottom, CraftTokens.spacing8)
   }
@@ -227,11 +194,15 @@ struct HistoryDrawerView: View {
 
   // MARK: - Tab content
 
-  /// The two lists slide in the direction of travel and cross-fade, the way a
-  /// segmented control's content moves elsewhere on the platform. Without a
-  /// transition the whole list is replaced between frames, which is what read
-  /// as the switch being abrupt — the `Picker` itself was always animating its
-  /// own selection.
+  /// The lists **cross-fade**; they do not slide.
+  ///
+  /// A slide was tried and looked wrong, for a reason specific to this
+  /// surface: the two lists are different heights, so a horizontal move
+  /// animates a tall list and a short one past each other inside a fixed
+  /// 380pt column while the drawer's own height changes underneath them —
+  /// three things moving at once for one tab press. The motion that belongs
+  /// to a segmented control lives on the *indicator*, which now slides
+  /// (`HistoryTabStrip`); the content's job is to change without flicker.
   ///
   /// `.id(tab)` is what makes it a transition at all: a `switch` inside a
   /// `ViewBuilder` produces one view whose contents change, so SwiftUI sees an
@@ -246,13 +217,7 @@ struct HistoryDrawerView: View {
       }
     }
     .id(model.historyDrawerTab)
-    .transition(
-      .asymmetric(
-        insertion: .move(edge: model.historyDrawerTab == .dictation ? .trailing : .leading)
-          .combined(with: .opacity),
-        removal: .opacity
-      )
-    )
+    .transition(.opacity)
     .animation(Tokens.animFast, value: model.historyDrawerTab)
   }
 
@@ -602,5 +567,93 @@ private struct HistoryDrawerRow: View {
     )
     .onHover { isHovered = $0 }
     .contentShape(Rectangle())
+  }
+}
+
+// MARK: - Tab strip
+
+/// The drawer's Transcripts / Dictation switch (decision 14).
+///
+/// Not a `Picker(.segmented)`. A stock segmented control is an opaque, boxed
+/// control drawn for a form: inside a translucent glass drawer it reads as a
+/// slab pasted onto the panel, and its selection changes with no motion of
+/// its own — which is what made switching tabs feel abrupt even though the
+/// list beneath it was animating.
+///
+/// This is the capsule strip the platform uses on glass: a soft track, and a
+/// single selection capsule that **slides** between the two labels via
+/// `matchedGeometryEffect`. One indicator moving is the whole animation, and
+/// because it is a geometry match rather than two views appearing and
+/// disappearing, it interpolates properly instead of cross-fading in place.
+private struct HistoryTabStrip: View {
+  @Binding var selection: HistoryDrawerTab
+  /// Live-query match count for the tab that is NOT selected (decision 17).
+  let badgeCount: Int?
+
+  @Namespace private var indicator
+  @State private var hoveredTab: HistoryDrawerTab?
+
+  var body: some View {
+    HStack(spacing: 2) {
+      ForEach(HistoryDrawerTab.allCases) { tab in
+        segment(tab)
+      }
+    }
+    .padding(2)
+    .background(
+      Capsule(style: .continuous)
+        .fill(Color.primary.opacity(0.06))
+    )
+    .animation(Tokens.animFast, value: selection)
+    .animation(Tokens.animFast, value: badgeCount)
+  }
+
+  private func segment(_ tab: HistoryDrawerTab) -> some View {
+    let isSelected = selection == tab
+
+    return Button {
+      selection = tab
+    } label: {
+      Text(tab.title)
+        .font(.system(size: 12, weight: isSelected ? .semibold : .regular))
+        .foregroundStyle(isSelected ? Color.primary : Color.secondary)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 4)
+        .contentShape(Capsule(style: .continuous))
+        .background {
+          if isSelected {
+            Capsule(style: .continuous)
+              .fill(.background)
+              .shadow(color: .black.opacity(0.12), radius: 1.5, y: 0.5)
+              // The ONE indicator, matched across both segments — this is
+              // what slides. Two independently appearing capsules would
+              // cross-fade in place instead.
+              .matchedGeometryEffect(id: "selection", in: indicator)
+          } else if hoveredTab == tab {
+            Capsule(style: .continuous)
+              .fill(Color.primary.opacity(0.05))
+          }
+        }
+        // The badge rides on its own segment, so nothing has to be positioned
+        // by hand against the control's width and nothing teleports when the
+        // selection moves: the count simply belongs to the tab it counts.
+        .overlay(alignment: .topTrailing) {
+          if !isSelected, let badgeCount {
+            Text("\(badgeCount)")
+              .font(.system(size: 9, weight: .semibold))
+              .foregroundStyle(.white)
+              .padding(.horizontal, 4)
+              .padding(.vertical, 1)
+              .background(Capsule().fill(Color.accentColor))
+              .offset(x: 4, y: -5)
+              .transition(.opacity.combined(with: .scale(scale: 0.7)))
+              .allowsHitTesting(false)
+          }
+        }
+    }
+    .buttonStyle(.plain)
+    .onHover { hoveredTab = $0 ? tab : nil }
+    .accessibilityLabel(tab.title)
+    .accessibilityAddTraits(isSelected ? [.isSelected] : [])
   }
 }

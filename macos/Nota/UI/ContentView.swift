@@ -324,7 +324,7 @@ struct ShareMenu: View {
         Label("Share", systemImage: "square.and.arrow.up")
       case .localCluster:
         Image(systemName: "square.and.arrow.up")
-          .font(.system(size: 14, weight: .semibold))
+          .imageScale(.medium)
           .frame(
             width: MainPaneView.clusterGlyphSize,
             height: MainPaneView.clusterGlyphSize
