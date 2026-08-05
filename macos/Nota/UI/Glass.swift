@@ -54,19 +54,27 @@ private struct AnyPrimitiveButtonStyle: PrimitiveButtonStyle {
 /// the app's controls have. It also has to come from the style rather than a
 /// `.liquidGlass(in: .circle)` background, or the shape would be painted at
 /// the label's size while the style drew its own capsule around it.
-/// Sized to match a **toolbar** item, not scaled up: the cluster is the same
-/// class of control as History and Settings at the top right, only local, and
-/// the two sets read as unrelated if they are different sizes. Toolbar items
-/// are bare `Button`s at the default control size that the toolbar wraps in
-/// its own glass, so the cluster takes the default control size too — an
-/// earlier `.controlSize(.large)` here is what made them look like a
-/// different kind of button.
+/// Sized to match a **toolbar** item: the cluster is the same class of control
+/// as History and Settings at the top right, only local, and the two sets read
+/// as unrelated if they are different sizes.
+///
+/// `.large` is not a decoration. A toolbar applies its own metrics to the bare
+/// `Button`s it is given, so "default control size" in the content area is
+/// visibly *smaller* than the same button in a toolbar — matching the toolbar
+/// means asking for the larger size explicitly, not omitting the modifier.
+///
+/// `.menuStyle(.button)` is what lets a `Menu` wear this at all. A `Menu`
+/// ignores `.buttonStyle` unless it is told to render as a button first, so
+/// Share silently kept no glass while the Summary `Button` beside it took it —
+/// two controls, one style modifier, one of them a no-op.
 private struct LocalClusterButtonModifier: ViewModifier {
   let prominent: Bool
 
   func body(content: Content) -> some View {
     content
+      .menuStyle(.button)
       .buttonBorderShape(.circle)
+      .controlSize(.large)
       .modifier(LiquidGlassButtonModifier(prominent: prominent))
   }
 }
