@@ -41,6 +41,9 @@ extension HistoryPresentation {
 /// selection, Escape, and click-outside; this view owns content only.
 struct HistoryDrawerView: View {
   @ObservedObject var model: NotaModel
+  /// Dictation history for the drawer's Dictation tab (decisions 14-21);
+  /// wired through ContentView by the app (lane 0).
+  @ObservedObject var dictationController: DictationController
   let onClose: () -> Void
 
   @State private var searchText = ""

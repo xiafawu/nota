@@ -7,6 +7,87 @@ let supportedExtensions: Set<String> = [
   "mp3", "wav", "m4a", "aac", "caf", "aif", "aiff", "ogg", "webm", "flac", "qta", "mov", "mp4"
 ]
 
+// MARK: - Summary rail dismissal policy (decisions 7/13)
+
+/// What dismissing the summary rail with unsaved edits does. One setting
+/// governs every dismissal — click-outside, Escape, Close, record switch, and
+/// phase leave (decision 13: "one switch, no per-gesture split").
+enum SummaryRailDismissalBehavior: String, CaseIterable {
+  /// Commit the draft and close (default).
+  case save
+  /// Confirm first: save / discard / keep editing.
+  case ask
+
+  static let defaultsKey = "summaryRailDismissalBehavior"
+
+  var label: String {
+    switch self {
+    case .save: return "Save it"
+    case .ask: return "Ask me"
+    }
+  }
+
+  /// Unknown or missing stored values fall back to the default rather than
+  /// throwing — a payload written without the key decodes to Save it.
+  static func load(from defaults: UserDefaults) -> SummaryRailDismissalBehavior {
+    guard
+      let raw = defaults.string(forKey: defaultsKey),
+      let behavior = SummaryRailDismissalBehavior(rawValue: raw)
+    else {
+      return .save
+    }
+    return behavior
+  }
+}
+
+/// The three answers to an Ask-me dismissal confirm (decision 13).
+enum SummaryRailDismissalChoice {
+  case save
+  case discard
+  case keepEditing
+}
+
+/// The pure dismissal decision, given whether a draft is being edited and the
+/// setting. Unit-tested; `NotaModel.requestSummaryRailDismissal` applies it.
+func summaryRailDismissalDecision(
+  editing: Bool,
+  behavior: SummaryRailDismissalBehavior
+) -> SummaryRailDismissalDecision {
+  guard editing else { return .close }
+  switch behavior {
+  case .save: return .commitAndClose
+  case .ask: return .ask
+  }
+}
+
+enum SummaryRailDismissalDecision: Equatable {
+  /// No draft in flight: close immediately.
+  case close
+  /// Save it: commit the draft, then close.
+  case commitAndClose
+  /// Ask me: defer the close until the user answers.
+  case ask
+}
+
+// MARK: - History drawer tab (decision 14)
+
+/// Which tab the history drawer shows. Owned on the model so the popover's
+/// "Show all N in Nota →" route (decision 26) can land on the Dictation tab
+/// without reaching into the drawer view, and so ⌘L keeps the last tab.
+enum HistoryDrawerTab: String, CaseIterable, Identifiable {
+  case transcripts
+  case dictation
+
+  var id: String { rawValue }
+
+  var title: String {
+    switch self {
+    case .transcripts: return "Transcripts"
+    case .dictation: return "Dictation"
+    }
+  }
+}
+
 @MainActor
 final class NotaModel: ObservableObject {
   @Published var selectedURL: URL?
@@ -121,6 +202,18 @@ final class NotaModel: ObservableObject {
         self.accept(first)
       }
     }
+    // The menu-bar popover's "Show all N in Nota →" (decision 26) posts this
+    // to land the main window's drawer on the Dictation tab without a view
+    // reaching into the drawer.
+    NotificationCenter.default.addObserver(
+      forName: .notaShowHistoryDrawer,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      Task { @MainActor in
+        self?.showHistoryDrawer(tab: .dictation)
+      }
+    }
     // Re-render whenever enrichment state changes: the document view's summary
     // slot, header tag chips, and stripped body all derive from the controller.
     enrichmentSink = enrichment.objectWillChange.sink { [weak self] in
@@ -184,8 +277,115 @@ final class NotaModel: ObservableObject {
   /// source of truth across phases.
   @Published var isHistoryDrawerPresented = false
 
+  /// The drawer's active tab (decision 14). Binding source for the drawer's
+  /// segmented control; the popover's "Show all in Nota" route sets it.
+  @Published var historyDrawerTab: HistoryDrawerTab = .transcripts
+
   func toggleHistoryDrawer() {
     isHistoryDrawerPresented.toggle()
+  }
+
+  /// Open the drawer on a specific tab. The only in-app route that needs this
+  /// is the menu-bar popover's "Show all N in Nota →" (decision 26); ⌘L keeps
+  /// the last-used tab.
+  func showHistoryDrawer(tab: HistoryDrawerTab) {
+    historyDrawerTab = tab
+    isHistoryDrawerPresented = true
+  }
+
+  // MARK: - Summary rail
+
+  /// Whether the summary rail overlay is presented (decision 1). Owned here
+  /// so the Summary button (MainPaneView), the overlay host (ContentView),
+  /// and the record/phase transitions share one source of truth.
+  @Published var isSummaryRailPresented = false
+  /// True while the rail's summary editor is active. The draft below is that
+  /// record's text, so ANY close — click-outside, Escape, Close, record
+  /// switch, phase leave — commits (or asks) per `summaryDismissalBehavior`
+  /// rather than dropping it (decisions 7/13).
+  @Published var isSummaryEditing = false
+  @Published var summaryDraft = ""
+  /// Editing-dismissal policy (decision 13), UserDefaults-backed like
+  /// `identifySpeakers`. Defaults to Save it.
+  @Published var summaryDismissalBehavior: SummaryRailDismissalBehavior =
+    SummaryRailDismissalBehavior.load(from: .standard) {
+    didSet {
+      UserDefaults.standard.set(
+        summaryDismissalBehavior.rawValue,
+        forKey: SummaryRailDismissalBehavior.defaultsKey
+      )
+    }
+  }
+  /// True while an Ask-me dismissal confirm is up (the rail presents it).
+  @Published private(set) var isSummaryRailDismissalPending = false
+  /// The work deferred behind the Ask-me confirm — the record switch or phase
+  /// change that requested the dismissal. Runs only once the draft resolves,
+  /// so it never races the commit.
+  private var pendingRailDismissalCompletion: (() -> Void)?
+
+  /// Close the rail unconditionally — no draft policy. Used by the
+  /// Cancel-generation path (no draft can be in flight while generating) and
+  /// as the close step of a resolved dismissal.
+  func closeSummaryRail() {
+    isSummaryRailPresented = false
+    isSummaryEditing = false
+    isSummaryRailDismissalPending = false
+    pendingRailDismissalCompletion = nil
+  }
+
+  /// Every dismissal of the rail with a dirty draft goes through this policy
+  /// (decisions 7/13): not editing → close; Save it → commit + close; Ask me
+  /// → defer until the user answers via `resolveSummaryRailDismissal`.
+  /// `completion` runs only after the draft is resolved; record-switch and
+  /// phase-leave callers pass their switch work here so it never races the
+  /// commit (the record is still installed while the draft commits).
+  func requestSummaryRailDismissal(completion: (() -> Void)? = nil) {
+    guard isSummaryRailPresented else {
+      completion?()
+      return
+    }
+    switch summaryRailDismissalDecision(
+      editing: isSummaryEditing,
+      behavior: summaryDismissalBehavior
+    ) {
+    case .close:
+      closeSummaryRail()
+      completion?()
+    case .commitAndClose:
+      commitSummaryDraft()
+      closeSummaryRail()
+      completion?()
+    case .ask:
+      guard !isSummaryRailDismissalPending else { return }
+      isSummaryRailDismissalPending = true
+      pendingRailDismissalCompletion = completion
+    }
+  }
+
+  /// The Ask-me confirm's three answers (decision 13). Keep Editing cancels
+  /// the dismissal — and therefore the record switch / phase change that
+  /// requested it.
+  func resolveSummaryRailDismissal(_ choice: SummaryRailDismissalChoice) {
+    guard isSummaryRailDismissalPending else { return }
+    let completion = pendingRailDismissalCompletion
+    switch choice {
+    case .save:
+      commitSummaryDraft()
+      closeSummaryRail()
+      completion?()
+    case .discard:
+      closeSummaryRail()
+      completion?()
+    case .keepEditing:
+      isSummaryRailDismissalPending = false
+      pendingRailDismissalCompletion = nil
+    }
+  }
+
+  private func commitSummaryDraft() {
+    let trimmed = summaryDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else { return }
+    enrichment.saveSummaryEdit(trimmed)
   }
 
   /// Persist the pinned flag on the entry's history record (a no-op for
@@ -243,6 +443,14 @@ final class NotaModel: ObservableObject {
   }
 
   func accept(_ url: URL) {
+    // Decisions 6/7: a new file is a record switch — close the rail, resolving
+    // any dirty draft first, before the incoming file replaces the record.
+    requestSummaryRailDismissal { [weak self] in
+      self?.performAccept(url)
+    }
+  }
+
+  private func performAccept(_ url: URL) {
     // The share extension can't open a file in another sandboxed app directly,
     // so it hands the staged copy over as nota://import?path=<abs path>.
     // Normalise that back to a file URL; plain file opens pass through.
@@ -296,6 +504,12 @@ final class NotaModel: ObservableObject {
   }
 
   func transcribe() {
+    requestSummaryRailDismissal { [weak self] in
+      self?.performTranscribe()
+    }
+  }
+
+  private func performTranscribe() {
     guard let selectedURL, !isRunning else {
       return
     }
@@ -359,6 +573,14 @@ final class NotaModel: ObservableObject {
   /// `.failed` state (rendered by the live pane's error banner) and are
   /// mirrored here for the status pill.
   func startLiveSession(kind: HistoryKind = .meeting) {
+    // Decision 6: entering the live-meeting phase closes the rail. The draft
+    // (if any) commits or asks first; the session starts only once resolved.
+    requestSummaryRailDismissal { [weak self] in
+      self?.performStartLiveSession(kind: kind)
+    }
+  }
+
+  private func performStartLiveSession(kind: HistoryKind = .meeting) {
     guard liveSession.state != .recording, liveSession.state != .stopping else {
       return
     }
@@ -386,6 +608,17 @@ final class NotaModel: ObservableObject {
   /// persistence entirely (status shows why); the session itself settles back
   /// to `.idle` inside `liveSession.stop()`.
   func stopLiveSession() {
+    guard liveSession.state == .recording || liveSession.state == .stopping else {
+      return
+    }
+    // Decision 6: stopping leaves the live-meeting phase; a rail left open by
+    // a previous "Keep editing" resolves its draft before the stop proceeds.
+    requestSummaryRailDismissal { [weak self] in
+      self?.performStopLiveSession()
+    }
+  }
+
+  private func performStopLiveSession() {
     guard liveSession.state == .recording || liveSession.state == .stopping else {
       return
     }
@@ -494,6 +727,15 @@ final class NotaModel: ObservableObject {
     guard !isRunning else {
       return
     }
+    // Decision 6: opening a different transcript closes the rail; decision 7:
+    // a dirty draft still commits (or asks) on that close, because it is that
+    // record's text. The switch itself is deferred until the draft resolves.
+    requestSummaryRailDismissal { [weak self] in
+      self?.performOpenHistory(entry)
+    }
+  }
+
+  private func performOpenHistory(_ entry: HistoryEntry) {
     do {
       markdown = try String(contentsOf: entry.url, encoding: .utf8)
       lastOutputURL = entry.url
@@ -512,6 +754,14 @@ final class NotaModel: ObservableObject {
     guard !isRunning else {
       return
     }
+    // Decisions 6/7: leaving the document phase closes the rail; the draft
+    // commits (or asks) first — it is the outgoing record's text.
+    requestSummaryRailDismissal { [weak self] in
+      self?.performNewTranscription()
+    }
+  }
+
+  private func performNewTranscription() {
     markdown = ""
     lastOutputURL = nil
     selectedURL = nil

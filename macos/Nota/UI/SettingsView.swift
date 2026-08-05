@@ -23,6 +23,9 @@ private enum SettingsTab: Hashable {
 struct SettingsView: View {
   @Binding var identifySpeakers: Bool
   @Binding var skipSummary: Bool
+  /// Summary-rail dismissal policy (decision 13); the General-tab picker
+  /// lands in the summary-rail lane.
+  @Binding var summaryDismissalBehavior: SummaryRailDismissalBehavior
   @State private var memoDiarization = NotaSettingsStore.memoDiarizationEnabled
   @AppStorage(AppearanceSetting.defaultsKey) private var appearanceRaw =
     AppearanceSetting.system.rawValue
@@ -42,10 +45,12 @@ struct SettingsView: View {
   init(
     identifySpeakers: Binding<Bool>,
     skipSummary: Binding<Bool>,
+    summaryDismissalBehavior: Binding<SummaryRailDismissalBehavior>,
     dictationController: DictationController? = nil
   ) {
     self._identifySpeakers = identifySpeakers
     self._skipSummary = skipSummary
+    self._summaryDismissalBehavior = summaryDismissalBehavior
     self.dictationController = dictationController
   }
 
@@ -467,10 +472,18 @@ struct ApiKeysSettingsView: View {
 
 #if DEBUG
 #Preview("on") {
-  SettingsView(identifySpeakers: .constant(true), skipSummary: .constant(false))
+  SettingsView(
+    identifySpeakers: .constant(true),
+    skipSummary: .constant(false),
+    summaryDismissalBehavior: .constant(.save)
+  )
 }
 
 #Preview("off") {
-  SettingsView(identifySpeakers: .constant(false), skipSummary: .constant(false))
+  SettingsView(
+    identifySpeakers: .constant(false),
+    skipSummary: .constant(false),
+    summaryDismissalBehavior: .constant(.save)
+  )
 }
 #endif

@@ -26,7 +26,7 @@ struct NotaApp: App {
     .menuBarExtraStyle(.window)
 
     WindowGroup("Nota", id: "document") {
-      ContentView(model: model)
+      ContentView(model: model, dictationController: dictationController)
         .frame(minWidth: Metrics.windowMinWidth, minHeight: Metrics.windowMinHeight)
         .onOpenURL { url in
           model.accept(url)
@@ -70,14 +70,16 @@ struct NotaApp: App {
       #endif
     }
 
-    Window("Dictation History", id: "dictation-history") {
-      DictationHistoryView(controller: dictationController)
-    }
+    // The standalone "Dictation History" window scene is retired (decision
+    // 22): history now lives in the unified drawer (⌘L, Dictation tab) and
+    // the popover's Recent dictations section. `DictationHistoryView.swift`
+    // is deleted with that lane.
 
     Settings {
       SettingsView(
         identifySpeakers: $model.identifySpeakers,
         skipSummary: $model.skipSummary,
+        summaryDismissalBehavior: $model.summaryDismissalBehavior,
         dictationController: dictationController
       )
     }
@@ -206,4 +208,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 extension Notification.Name {
   static let notaOpenURLs = Notification.Name("NotaOpenURLs")
   static let notaReopenMainWindow = Notification.Name("NotaReopenMainWindow")
+  /// The popover's "Show all N in Nota →" (decision 26): open the main window
+  /// and land the history drawer on the Dictation tab.
+  static let notaShowHistoryDrawer = Notification.Name("NotaShowHistoryDrawer")
 }

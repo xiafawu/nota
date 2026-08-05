@@ -4,6 +4,9 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
   @ObservedObject var model: NotaModel
+  /// The dictation controller, passed through for the history drawer's
+  /// Dictation tab (decision 16) and the popover bridge (decision 26).
+  @ObservedObject private var dictationController: DictationController
   /// Observed separately from `model` (which holds it as a plain `let`): the
   /// phase decision reads `liveSession.state`, so ContentView must re-render
   /// when the session publishes its own changes.
@@ -18,8 +21,9 @@ struct ContentView: View {
   /// Motion (XIA-404 glass audit).
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-  init(model: NotaModel) {
+  init(model: NotaModel, dictationController: DictationController) {
     self.model = model
+    self.dictationController = dictationController
     _liveSession = ObservedObject(wrappedValue: model.liveSession)
     let projectDir = URL(
       fileURLWithPath: ProcessInfo.processInfo.environment["NOTA_PROJECT_DIR"]
@@ -82,8 +86,19 @@ struct ContentView: View {
         historyDrawerLayer
           .transition(reduceMotion ? .opacity : .move(edge: .trailing).combined(with: .opacity))
       }
+      if model.isSummaryRailPresented {
+        // Decision 1: the rail is a SwiftUI overlay in the window's ZStack —
+        // same mechanism as the drawer, not a Window scene or NSPanel. It
+        // rises from the bottom-right corner (its own button) rather than
+        // sliding from the opposite side. Dismissal (click-outside, Escape,
+        // Close) runs the decision-13 draft policy inside the rail.
+        SummaryRailView(model: model)
+          .transition(reduceMotion ? .opacity : .move(edge: .bottom).combined(with: .opacity))
+          .zIndex(2)
+      }
     }
     .animation(Tokens.animFast, value: model.isHistoryDrawerPresented)
+    .animation(Tokens.animFast, value: model.isSummaryRailPresented)
     .animation(Tokens.animFast, value: phase)
     // No `.toolbarBackground(.hidden)`: the bar stays borderless at rest but
     // regains its scroll-edge material once content scrolls beneath it.
@@ -106,7 +121,10 @@ struct ContentView: View {
         .onTapGesture { model.isHistoryDrawerPresented = false }
         .ignoresSafeArea()
 
-      HistoryDrawerView(model: model) {
+      HistoryDrawerView(
+        model: model,
+        dictationController: dictationController
+      ) {
         model.isHistoryDrawerPresented = false
       }
       .padding(CraftTokens.spacing16)
@@ -148,16 +166,15 @@ struct ContentView: View {
 
     ToolbarItem(placement: .primaryAction) {
       switch phase {
-      case .document:
-        if !model.markdown.isEmpty || model.lastOutputURL != nil {
-          ShareMenu(model: model)
-        }
       case .home:
         SettingsLink {
           Label("Settings", systemImage: "gearshape")
         }
         .help("Open settings")
-      case .running, .liveMeeting:
+      case .document, .running, .liveMeeting:
+        // Decision 11 (ADR 0005): per-transcript actions live in the content
+        // area's bottom-right cluster, not the toolbar. The toolbar's
+        // trailing edge holds global chrome only: History + Settings.
         EmptyView()
       }
     }
@@ -239,8 +256,11 @@ struct ContentView: View {
 }
 
 // MARK: - Share menu (extracted for reuse)
+// Internal (not private): decision 11 moves Share out of the toolbar into the
+// bottom-right local cluster beside Summary (MainPaneView); the view itself
+// is reused as-is, only its host changes.
 
-private struct ShareMenu: View {
+struct ShareMenu: View {
   @ObservedObject var model: NotaModel
 
   var body: some View {
