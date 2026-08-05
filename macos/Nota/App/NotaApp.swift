@@ -72,8 +72,8 @@ struct NotaApp: App {
 
     // The standalone "Dictation History" window scene is retired (decision
     // 22): history now lives in the unified drawer (⌘L, Dictation tab) and
-    // the popover's Recent dictations section. `DictationHistoryView.swift`
-    // is deleted with that lane.
+    // the popover's Recent dictations section; the standalone history view
+    // was deleted with that lane.
 
     Settings {
       SettingsView(
