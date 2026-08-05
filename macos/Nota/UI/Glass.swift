@@ -14,34 +14,40 @@ private struct LiquidGlassModifier<S: Shape>: ViewModifier {
   }
 }
 
+/// Applies one of four button styles by branching in a `@ViewBuilder`, never
+/// by type-erasing the style itself.
+///
+/// A hand-rolled `AnyPrimitiveButtonStyle` was tried here so a ternary could
+/// pick between the plain and prominent glass, and it silently cost the glass:
+/// re-implementing `makeBody` to return an `AnyView` hands SwiftUI an opaque
+/// view where it expected a style it can recognise, and the window server's
+/// glass is attached from the recognised style rather than from anything in
+/// the returned hierarchy. It failed *selectively*, which is what made it hard
+/// to see — the `Button` still looked plausibly styled while the `Menu` beside
+/// it rendered no chrome at all.
+///
+/// Branching produces four different concrete types, which is exactly why the
+/// erasure was reached for; `@ViewBuilder` accepts them because each branch is
+/// its own arm of the result builder's generated enum.
 private struct LiquidGlassButtonModifier: ViewModifier {
   let prominent: Bool
   @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
+  @ViewBuilder
   func body(content: Content) -> some View {
     if reduceTransparency {
-      content.buttonStyle(prominent ? AnyPrimitiveButtonStyle(.borderedProminent) : AnyPrimitiveButtonStyle(.bordered))
+      if prominent {
+        content.buttonStyle(.borderedProminent)
+      } else {
+        content.buttonStyle(.bordered)
+      }
     } else {
-      content.buttonStyle(prominent ? AnyPrimitiveButtonStyle(.glassProminent) : AnyPrimitiveButtonStyle(.glass))
+      if prominent {
+        content.buttonStyle(.glassProminent)
+      } else {
+        content.buttonStyle(.glass)
+      }
     }
-  }
-}
-
-/// A type-erased `PrimitiveButtonStyle` so one modifier can pick between the
-/// plain and prominent styles at runtime. `buttonStyle(_:)` is generic over
-/// the style, so the two arms would otherwise be different types and could
-/// not be chosen with a ternary.
-private struct AnyPrimitiveButtonStyle: PrimitiveButtonStyle {
-  private let makeBodyClosure: (Configuration) -> AnyView
-
-  init<S: PrimitiveButtonStyle>(_ style: S) {
-    makeBodyClosure = { configuration in
-      AnyView(style.makeBody(configuration: configuration))
-    }
-  }
-
-  func makeBody(configuration: Configuration) -> some View {
-    makeBodyClosure(configuration)
   }
 }
 
