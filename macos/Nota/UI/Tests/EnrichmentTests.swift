@@ -584,7 +584,7 @@ final class EnrichmentControllerTests: XCTestCase {
     XCTAssertNil(controller.errorActivity, "edit failures belong to no generation kind")
   }
 
-  func testNextGeneration_clearsPreviousErrorKind() async {
+  func testNextGeneration_clearsPreviousErrorKind() async throws {
     let runner = MockEnrichmentRunner()
     runner.result = .failure(EnrichmentCLIError.cliFailed(2, stderr: "first"))
     let controller = makeController(runner: runner)

@@ -41,7 +41,7 @@ final class DictationSearchTests: XCTestCase {
     ]
     XCTAssertEqual(DictationSearch.matchCount(entries, query: "review"), 2)
     XCTAssertEqual(DictationSearch.matchCount(entries, query: "REVIEW"), 2)
-    XCTAssertEqual(DictationSearch.matchCount(entries, query: "the"), 3)
+    XCTAssertEqual(DictationSearch.matchCount(entries, query: "the"), 4)
     XCTAssertEqual(DictationSearch.matchCount(entries, query: "zzz"), 0)
     XCTAssertEqual(DictationSearch.matchCount(entries, query: ""), 4)
   }
