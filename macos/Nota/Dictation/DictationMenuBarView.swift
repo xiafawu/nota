@@ -48,18 +48,15 @@ struct DictationMenuBarView: View {
 
       Divider()
 
+      // Recent dictations (decisions 23-27): always renders — with nothing in
+      // it, one italic line.
+      recentDictationsSection
+
+      Divider()
+
       VStack(alignment: .leading, spacing: 1) {
         Button("Open Nota") {
           openDocumentWindow()
-        }
-
-        Button {
-          openHistoryWindow()
-        } label: {
-          Label(
-            "Dictation History (\(controller.dictationHistory.count))",
-            systemImage: "clock.arrow.circlepath"
-          )
         }
 
         Button("Settings…") {
@@ -83,6 +80,47 @@ struct DictationMenuBarView: View {
     .frame(width: 360)
     .onAppear {
       controller.start()
+    }
+  }
+
+  /// The three newest dictations, each copying on click and inserting again
+  /// while hovered (decision 24), plus the only popover route that needs the
+  /// main window: "Show all N in Nota →" opens it on the drawer's Dictation
+  /// tab (decision 26).
+  private var recentDictationsSection: some View {
+    VStack(alignment: .leading, spacing: 6) {
+      Text("Recent dictations")
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .kerning(0.8)
+
+      if controller.dictationHistory.isEmpty {
+        Text("Finished dictations appear here.")
+          .font(.callout)
+          .italic()
+          .foregroundStyle(.secondary)
+      } else {
+        VStack(alignment: .leading, spacing: 1) {
+          ForEach(controller.dictationHistory.prefix(3)) { entry in
+            RecentDictationRow(
+              entry: entry,
+              onCopy: { controller.copyDictationHistory(entry.id) },
+              onInsertAgain: { controller.retryDictationHistory(entry.id) }
+            )
+          }
+
+          Button {
+            showAllInNota()
+          } label: {
+            Text("Show all \(controller.dictationHistory.count) in Nota →")
+              .font(.callout)
+              .foregroundStyle(Color.accentColor)
+          }
+          .buttonStyle(MenuRowButtonStyle())
+          .help("Open the history drawer on the Dictation tab")
+        }
+        .padding(.horizontal, -8)
+      }
     }
   }
 
@@ -157,11 +195,15 @@ struct DictationMenuBarView: View {
     }
   }
 
-  private func openHistoryWindow() {
-    openWindow(id: "dictation-history")
+  /// Decision 26: the one popover action that needs the main window. Opens it
+  /// (creating it from a cold state if needed) and lands the drawer on the
+  /// Dictation tab through model state, never by reaching into the drawer.
+  private func showAllInNota() {
+    openWindow(id: "document")
     DispatchQueue.main.async {
       NSApp.activate(ignoringOtherApps: true)
     }
+    NotificationCenter.default.post(name: .notaShowHistoryDrawer, object: nil)
   }
 
   private func openSettingsWindow() {
@@ -187,6 +229,67 @@ struct DictationMenuBarView: View {
     case .hold: return "Hold \(triggerLabel) to dictate"
     case .toggle: return "Press \(triggerLabel) to toggle dictation"
     }
+  }
+}
+
+/// One recent dictation in the popover (decision 24): up to two lines of
+/// text, then `2:44 PM · Slack`-style meta plus the status label. Click
+/// copies; hover replaces the status text with "↩ Insert again" and the same
+/// click then retries insertion into the focused app. No ⌥-click modifier —
+/// the hover state is the visible mode switch.
+private struct RecentDictationRow: View {
+  let entry: DictationHistoryEntry
+  let onCopy: () -> Void
+  let onInsertAgain: () -> Void
+
+  @State private var isHovering = false
+
+  var body: some View {
+    Button {
+      if isHovering {
+        onInsertAgain()
+      } else {
+        onCopy()
+      }
+    } label: {
+      VStack(alignment: .leading, spacing: 2) {
+        Text(entry.text)
+          .font(.callout)
+          .lineLimit(2)
+          .truncationMode(.tail)
+          .multilineTextAlignment(.leading)
+
+        HStack(spacing: 6) {
+          Text(entry.completedAt, format: .dateTime.hour().minute())
+          Text("·")
+          Text(entry.targetLabel)
+            .lineLimit(1)
+            .truncationMode(.tail)
+          Spacer(minLength: 4)
+          Text(isHovering ? "↩ Insert again" : entry.status.label)
+            .fontWeight(.medium)
+            .foregroundStyle(
+              isHovering
+                ? Color.accentColor
+                : (entry.status == .failed ? .orange : .secondary)
+            )
+        }
+        .font(.caption)
+        .foregroundStyle(.secondary)
+      }
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.horizontal, 8)
+      .padding(.vertical, 5)
+      .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
+      .background(
+        RoundedRectangle(cornerRadius: 6, style: .continuous)
+          .fill(Color.primary.opacity(isHovering ? 0.07 : 0))
+      )
+    }
+    .buttonStyle(.plain)
+    .onHover { isHovering = $0 }
+    .help(isHovering ? "Insert again into the focused app" : "Copy the text")
+    .accessibilityLabel("\(entry.text). \(entry.status.label). \(entry.targetLabel).")
   }
 }
 
