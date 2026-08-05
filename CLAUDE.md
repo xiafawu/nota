@@ -449,9 +449,22 @@ goes into a small floating card instead of the target app:
     (`minSize = .zero`) does not survive — the scroll view re-imposes the clip's
     size as `minSize` on every tile. `textContainerInset` is symmetric and was
     never a candidate.
-  - **The meta row is the drag handle**, for the same reason the title row was:
-    it is the one part of the card that is neither an editor nor a button, so a
-    drag on it can never be a text selection or a mis-click on Apply.
+  - **The whole card is the drag handle** — everything except the editor and
+    the two buttons (owner, 2026-08-04: "drag from anywhere but its editor").
+    The meta row alone held it until then, on the reasoning that it is the one
+    part of the card that is neither an editor nor a button, so a drag there can
+    never be a text selection or a mis-click on Apply. That reasoning was sound
+    and its conclusion was too small: a 20pt strip on a 560×260 card, on a
+    surface that is now up from the moment the hotkey goes down, reads as a card
+    that cannot be moved at all — the glass plate takes no clicks and
+    `isMovableByWindowBackground` is off, so pressing anywhere else did nothing
+    whatsoever. The gesture therefore lives on `DictationReviewView.body`'s root,
+    after the shadow-margin padding so the transparent margin is grabbable too.
+    What kept the old rule safe still holds without it: the editor is an AppKit
+    `NSTextView`, which consumes its own mouse-downs and never forwards them to a
+    SwiftUI ancestor, so a drag starting on text still selects text; and SwiftUI
+    buttons take precedence over a container gesture. One handle, not two — the
+    meta row keeps no gesture of its own.
   - **The stored position is unchanged.** `ReviewPositionStore` still holds the
     card's **top-left**, because the card is still a constant size — the
     inversion moved rows, not geometry, and nothing on the card grows. A
@@ -647,13 +660,20 @@ goes into a small floating card instead of the target app:
   `model.apply()` / `model.discard()`, the same call the buttons make, so
   "what Apply means" is written down once.
 
-- **The card is draggable, and it keeps its own position.** The **meta row** is
-  the handle (`DragGesture` → `DictationReviewPanel.dragChanged/dragEnded`) — the
-  title row until the chrome moved to the bottom on 2026-08-03, and the same row
-  either way — not the window background: this card contains a text view and a
+- **The card is draggable, and it keeps its own position.** The **whole card**
+  is the handle (`DragGesture` on `DictationReviewView.body`'s root →
+  `DictationReviewPanel.dragChanged/dragEnded`) — the title row until the chrome
+  moved to the bottom on 2026-08-03, then the meta row, then everything but the
+  editor and the buttons on 2026-08-04, when the owner reported the card would
+  not move: with the pill suppressed for the whole of a `.review` session, a
+  20pt strip was the entire target and every other press did nothing at all.
+  Still not the window background: this card contains a text view and a
   drag inside it has
   to select text, and AppKit's background drag reports nothing — "the owner
-  chose this position" is precisely the fact that has to be remembered. The drag
+  chose this position" is precisely the fact that has to be remembered. The
+  editor is what makes a container gesture safe rather than reckless — an AppKit
+  `NSTextView` consumes its own mouse-downs and never forwards them to a SwiftUI
+  ancestor. The drag
   is measured against `NSEvent.mouseLocation`, never the gesture's translation,
   because the gesture's coordinate space is anchored to the window the drag is
   moving. `reposition()` honours a validated pin and returns early, exactly as
