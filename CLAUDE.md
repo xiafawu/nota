@@ -1140,15 +1140,84 @@ recording → transcribing → transcribed → summarizing → done
   rather than naming a stage that never got the chance to fail on its own.
 - **`audioPath` is relative to the record's own assets folder** (normally just
   `recording.caf`), so the whole store can be relocated without rewriting a
-  single record (XIA-428). `audioBytes` is its size at seal time. `sourcePath`
-  stays absolute for the consumers that read it, and is the *fallback* for
-  records that predate `audioPath` — never the authority when both exist.
+  single record (XIA-428). `sourcePath` stays absolute for the consumers that
+  read it, and is the *fallback* for records that predate `audioPath` — never
+  the authority when both exist. `LiveSessionPersistence.resolvedAudioURL`
+  (Swift) and `recordAudioPath` (TS) are the two halves of that rule;
+  `HistoryRecordInfo.find` resolves through the Swift one, so a record whose
+  store moved still names audio that is really there. Nothing in the TS CLI
+  reads a record's audio yet — every verb takes its input path from argv — so
+  `recordAudioPath` is exercised by tests alone, deliberately.
+- **`audioBytes` is corrected at every exit, never only at the seal.**
+  `beginRecording` writes 0, which is true at sample zero and a lie from the
+  first buffer on; `sealTranscript` stamps the final size, and `settleAsFailed`
+  and the launch sweep stamp whatever was captured before things went wrong. An
+  interrupted record's recording is playable, so the record may not describe it
+  as empty. The field is always present, so no consumer has to tell "zero" from
+  "never written".
 - **Nothing deletes audio.** `deleteAudioFile()` and every call to it are gone;
-  `LiveMeetingSession.closeAudioFile()` closes the handle and touches the file.
-  A failed transcription leaves the audio; a failed summary leaves the audio
+  `LiveMeetingSession.closeAudioFile()` drops the handle and the URL and does
+  **not** touch the file — `audioFile = nil; audioURL = nil` is the whole body,
+  and there is deliberately no delete counterpart anywhere in that type. A
+  failed transcription leaves the audio; a failed summary leaves the audio
   **and** the transcript. Audio is the one artifact that cannot be regenerated,
   and the failures are exactly when it is wanted. Deletion is an explicit user
   verb, not a failure path.
+
+### The session lifecycle around that record
+
+The record is the durable half; these are the rules the *call sites* owe it.
+They live in `LiveSessionOwner` (`macos/Nota/App/LiveSessionLifecycle.swift`)
+rather than in `NotaModel`, because `NotaModel.init` sweeps the real `~/.nota`
+and runs preflight — a test cannot build one, and every defect below was a call
+site, not the machine.
+
+- **A Start press is accepted the moment it is seen, and the pane says so.**
+  `LiveMeetingSession.start` stays `.idle` across the mic-permission prompt and
+  the whole realtime open + `Begin` round trip, and a guard that asked only "is
+  it recording?" admitted a second press in that window. The second press wrote
+  a second record, took ownership, and cancelled the first task — whose cleanup
+  then cleared the *new* owner, so Stop found no record, sealed nothing, and the
+  whole meeting's transcript was lost while the record still said `recording`.
+  `isStarting` closes it in the model; `LiveMeetingControls.starting` closes it
+  on screen (the Start button is withdrawn, the header says "Starting…", and
+  ContentView enters the live phase from the press rather than from
+  `.recording`).
+- **A task may only clean up after itself.** `release`/`settle` take the record
+  the task was started for and do nothing unless it is still the owned one. An
+  unconditional `activeRecord = nil` in a cancelled task is what disowned a
+  live session.
+- **Every exit reaches a terminal status, and each has a route.** Clean stop
+  seals; a mid-session failure keeps the pane with **Save Transcript** (a failed
+  session is stoppable on purpose — `stop()` accepts `.failed` so the transcript
+  it heard can still be sealed), Try Again and Discard, and each of those
+  settles the record; a **server-initiated** end (`Termination`, or a clean
+  close) leaves no affordance at all, so `observeLiveSessionState` runs the stop
+  path itself; a process that goes away is the launch sweep's job. `.failed` is
+  deliberately not auto-settled: the banner is a pending decision, not a strand.
+- **A failure is written in the stage the record is IN.** `settleAsFailed` reads
+  the stage off the record instead of trusting the call site. `canAdvance`
+  refuses any other stage, `updateStatus` then writes *nothing*, and a discarded
+  false is a record claiming a live stage forever — which is exactly what the
+  stop path's `failed(stage: .transcribing)` on a `recording` record did.
+- **A write that did not land is never reported as success.** `mutateRecord` and
+  `updateStatus` are not `@discardableResult`; `sealTranscript` throws
+  `recordUnwritable` rather than returning a `SavedSession` for content that is
+  not on disk. And it writes the **content first and the status last**: the two
+  are separate atomic writes, and a crash between them must leave `transcribing`
+  (which the sweep resolves) rather than `transcribed` (a rest state the sweep
+  will never revisit, with no transcript and no `outputPath` in it).
+- **The CLI's write path honors the machine too.** `canCompleteWithSummary`
+  gates every verb that lands a summary (`setRecordSummary`,
+  `completeHistoryRecord`, `applyEnrichmentToRecord`), so `nota history
+  summarize` can no longer write `done` over a record that never reached a
+  transcript. It is expressed through `canAdvance` rather than beside it, and it
+  still admits the three real retries: `summarizing`, `done` (`--force`), and
+  `failed:summarizing`.
+- **`nota history show` and `nota history list` print the state the app
+  displays.** `historyStatusLabel` wraps `describeHistoryStatus`; `show` puts it
+  on **stderr** (stdout stays the record's JSON) and `list` carries it in a
+  trailing `State` column beside the raw `status` scripts match on.
 
 ## Key Design Decisions
 
@@ -1164,6 +1233,19 @@ recording → transcribing → transcribed → summarizing → done
   ones), the status has to be a typed machine rather than an ad-hoc string (so
   a record cannot claim to have skipped a stage), and no failure path may
   remove a file. See Record Lifecycle.
+- A durable record is only worth what its **call sites** honor, and all three
+  of that inversion's real defects were call sites rather than the machine
+  (XIA-430, second pass). A live session's record ownership therefore lives in
+  one testable type (`LiveSessionOwner`): one record at a time with the press
+  accepted the instant it is seen (a second press during the invisible,
+  seconds-long start window used to disown the session that was recording the
+  meeting), cleanup that may only clear the record the task itself started, and
+  a settle on every way out — including the two the user cannot reach, a
+  server-initiated end and a process that went away. Writes are checked and the
+  content is written before the status claims it: a `SavedSession` returned for
+  a write that did not land is a record saying Transcribed with no transcript
+  in it, and a status flipped first turns a crash into a record the launch
+  sweep will never look at again. See Record Lifecycle → the session lifecycle.
 - Model registry (`src/registry.ts`) is the single source of truth: model id → task, provider, required API key env, base URL. Transcription models are statically curated; summary models are sourced dynamically from the auto-refreshed catalog (`src/catalog.ts` + `~/.nota/models-catalog.json`) with a baked in-repo fallback. Only the API keys the resolved models actually need are required.
 - Summary model ids are auto-admitted weekly: mainline chat models (gpt-5.x, gemini flash/pro, deepseek v4+) matching allowlist predicates. Run `nota models list` for the current set.
 - Summary default is key-aware: `deepseek-v4-flash` > `gpt-5.4-mini` > `gemini-3.6-flash` based on which API key is set. A hint is printed when DeepSeek is skipped despite being the cheapest option. CLI engines never join that chain (ADR 0003).
