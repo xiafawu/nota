@@ -135,6 +135,13 @@ final class UsageStatsProvider: ObservableObject {
   /// Home stats-strip figures, refreshed independently of the CLI cost fetch.
   @Published var homeStats = HomeStats()
 
+  /// What the store costs on disk (XIA-436), as `nota history storage --json`
+  /// computed it. Deliberately fetched rather than recomputed: the sheet and
+  /// the CLI must not be able to disagree about the figure the owner is asked
+  /// to accept. Nil until the first fetch lands, or when it failed — the
+  /// section simply does not render, which is better than a wrong number.
+  @Published var storage: StoredStorageSummary?
+
   private let projectDirectory: URL
   private var cache: [String: UsageSummaryResponse] = [:]
 
@@ -184,6 +191,22 @@ final class UsageStatsProvider: ObservableObject {
     isLoading = false
   }
 
+  /// Refresh the store's size from `nota history storage --json`.
+  ///
+  /// A failure leaves `storage` nil and is not surfaced as an error: the
+  /// storage section is an addition to the sheet, and a missing figure must
+  /// not take the cost report down with it.
+  func refreshStorage() async {
+    guard
+      let stdout = try? await runCLI(arguments: ["history", "storage", "--json"]),
+      let data = stdout.data(using: .utf8),
+      let summary = try? JSONDecoder().decode(StoredStorageSummary.self, from: data)
+    else {
+      return
+    }
+    storage = summary
+  }
+
   // MARK: - Private
 
   private func fetch(window: String) async throws -> UsageSummaryResponse {
@@ -203,6 +226,11 @@ final class UsageStatsProvider: ObservableObject {
 
   /// Shell out to `node dist/index.js usage --json --window <window>`.
   private func runCLI(window: String) async throws -> String {
+    try await runCLI(arguments: ["usage", "--json", "--window", window])
+  }
+
+  /// Shell out to `node dist/index.js <arguments…>`.
+  private func runCLI(arguments: [String]) async throws -> String {
     let shell = Process()
     shell.executableURL = URL(fileURLWithPath: "/bin/bash")
     shell.currentDirectoryURL = projectDirectory
@@ -226,7 +254,7 @@ final class UsageStatsProvider: ObservableObject {
       if [ ! -f "dist/index.js" ]; then
         npm run build 2>/dev/null || exit 1
       fi
-      exec node dist/index.js usage --json --window \#(window)
+      exec node dist/index.js \#(arguments.joined(separator: " "))
       """#,
     ]
 

@@ -1108,21 +1108,32 @@ final class NotaModel: ObservableObject {
   }
 
   /// Throw a live session away without sealing it (the failure banner's
-  /// Discard). Nothing is deleted: the record comes to rest as
-  /// `failed(stage:)` with its audio — and whatever transcript it had — still
-  /// in it, because audio is the one artifact that cannot be regenerated.
-  /// Settling BEFORE `cancel()` is what makes this deterministic rather than
-  /// leaving it to the state observer below.
+  /// Discard).
+  ///
+  /// The record and its audio are **deleted** (XIA-436). Until then this
+  /// settled the record as `failed(stage:)` and kept everything, on the
+  /// reasoning that audio cannot be regenerated — which is right for a session
+  /// that FAILED and wrong for one the owner discarded. Discard is an explicit
+  /// verb, not a failure path, and the standing "nothing deletes audio
+  /// automatically" rule is about the automatic ones; a button labelled
+  /// Discard that leaves the recording on disk is the one that lies.
+  ///
+  /// `release`, not `settle`: the record is gone, and asking a deleted record
+  /// to take a status write would only log a failure. Deleting BEFORE
+  /// `cancel()` keeps this deterministic rather than leaving it to the state
+  /// observer below.
   func discardLiveSession() {
     // Discard is also a way out of the live pane, and it hands nothing off.
     isLiveSessionHandedOff = true
     if let started = liveRecords.beginStop() {
-      liveRecords.settle(started)
+      RecordingStore.discardLiveRecording(started)
+      liveRecords.release(started)
       liveRecords.finishedStopping()
       status = "Recording discarded"
     }
     liveSession.cancel()
     syncLiveSessionFlags()
+    refreshHistory()
   }
 
   /// Settle a record whose session ended without anyone pressing Stop.
@@ -1250,6 +1261,51 @@ final class NotaModel: ObservableObject {
     speakerChips = []
     cachedHistoryRecord = nil
     enrichment.setRecord(nil)
+  }
+
+  // MARK: - Deletion verbs (XIA-436)
+  //
+  // Thin delegations: every rule about WHAT may be deleted lives in
+  // `RecordingStore`, which is reachable from a test. Nothing below is ever
+  // called on a timer — each one is downstream of a menu item and a
+  // confirmation.
+
+  /// The record behind a drawer row, or nil when it cannot be found.
+  func locateRecording(for entry: HistoryEntry) -> RecordingStore.LocatedRecord? {
+    RecordingStore.locate(outputPath: entry.url, historyDirectory: notaHistoryDirectory())
+  }
+
+  /// Delete a record's recording and keep everything else (the containment
+  /// rule's safe direction). The row stays; only its audio goes.
+  func deleteRecordingAudio(_ record: RecordingStore.LocatedRecord) {
+    guard !isRunning else { return }
+    let freed = record.audioBytes ?? 0
+    if RecordingStore.deleteAudio(record, historyDirectory: notaHistoryDirectory()) {
+      status = freed > 0
+        ? "Deleted \(StorageFormat.bytes(freed)) of audio — transcript kept"
+        : "No audio was kept for this recording"
+    } else {
+      status = "Could not delete the audio"
+    }
+    refreshHistory()
+  }
+
+  /// Delete a record, its audio included. The exported `.md` is never touched.
+  ///
+  /// The row therefore SURVIVES — it is built from that `.md`, which is still
+  /// on disk where the owner saved it. What goes is everything Nota keeps:
+  /// the recording, the transcript record, the speaker clips. The open
+  /// document resets if it was this one, because summary editing, the speaker
+  /// chips and regeneration are all backed by the record that just went away.
+  func deleteRecording(_ record: RecordingStore.LocatedRecord, entry: HistoryEntry) {
+    guard !isRunning else { return }
+    if RecordingStore.deleteRecord(record) {
+      status = "Deleted recording — the exported file was kept"
+    } else {
+      status = "Could not delete the record"
+    }
+    if selectedHistoryID == entry.id { newTranscription() }
+    refreshHistory()
   }
 
   func deleteHistory(_ entry: HistoryEntry) {

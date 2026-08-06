@@ -403,6 +403,16 @@ struct HistoryDrawerView: View {
     // XIA-435: the row IS the progress UI. One call — the accessory observes
     // the ledger itself (see ProcessingRowAccessory.swift).
     .processingStatus(model.processingSource(for: entry))
+    // XIA-436 owns the row's context menu and attaches it in exactly one line.
+    .recordingDeletionMenu(
+      entry: entry,
+      locate: { model.locateRecording(for: entry) },
+      onDeleteAudio: { model.deleteRecordingAudio($0) },
+      // No `onClose()` on an empty history here, unlike the trash button's
+      // path: rows are built from the exported `.md` files, and this verb
+      // never deletes one — so the row stays and the list cannot empty.
+      onDeleteRecord: { model.deleteRecording($0, entry: entry) }
+    )
     .disabled(model.isRunning)
   }
 

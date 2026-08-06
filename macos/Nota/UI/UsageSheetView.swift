@@ -91,6 +91,16 @@ struct UsageSheetView: View {
           loadedContent(viewModel: UsageSheetViewModel(rows: rows))
         }
       }
+
+      // Storage (XIA-436) sits below the money and outside every branch
+      // above: a store full of recordings is worth showing even when there is
+      // no spend to report, and a usage fetch that failed says nothing about
+      // how much disk the owner is using.
+      if let storage = usageProvider.storage, storage.count > 0 {
+        Spacer(minLength: 0)
+        Divider()
+        StorageSummaryView(summary: storage)
+      }
     }
     .padding(CraftTokens.spacing24)
     .frame(width: 440, height: 480)
@@ -102,6 +112,9 @@ struct UsageSheetView: View {
         usageWindow = "30d"
       }
       Task { await usageProvider.refresh(window: usageWindow) }
+      // Storage is not windowed — it is the whole store — so it is fetched
+      // once here rather than on every window change.
+      Task { await usageProvider.refreshStorage() }
     }
     .onChange(of: usageWindow) { _, newValue in
       Task { await usageProvider.refresh(window: newValue) }
