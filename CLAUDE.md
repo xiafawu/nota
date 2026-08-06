@@ -1099,6 +1099,153 @@ in the background. A baked snapshot ships in-repo as the fallback. To see the
 current catalog: `nota models list`. To force a refresh: `nota models refresh`.
 The cache feeds cost computation for usage tracking.
 
+## The Recording Surface
+
+What a live session looks like while it is running (XIA-431 the accent,
+XIA-432 the pane). One arrangement, three components, one colour.
+
+### The ember
+
+`CraftTokens.ember(_:)` — `#d1662a` light, `#e8823a` dark — means exactly one
+thing: **the microphone is open.** It is not a brand colour, it does not vary
+by meeting-vs-memo, and nothing outside the recording components may draw with
+it. A second consumer would make it mean "Nota" instead of "we are capturing"
+and the signal would be gone. It is warm because everything else here is cool:
+the Craft Glass ground is a periwinkle/indigo wash and `primaryBlue` is the
+confident action, so the accent is the one warm thing in the room. The dark
+value is lifted and desaturated on purpose — `#d1662a` over the smoky wash
+reads as brown rather than as a live signal. `emberWash(_:)` is the same hue at
+10/16% for a ring interior or a meter lane; it is a glow, not a fill, and body
+text keeps its contrast over it.
+
+### The three components (`macos/Nota/UI/RecordingAccent.swift`)
+
+- **`SessionMeter`** is the live level, and it is **information**. It is the
+  only proof on screen that the microphone is actually open and hearing
+  something. Two variants (`.tall` in the column, `.compact` in a strip or
+  island) rather than a free `height`, because a meter whose bar count varies
+  continuously has no baseline to pin. It has a **floor**: a silent room draws
+  the minimum bar height, never nothing, since a blank meter and an absent
+  meter look the same.
+- **`SessionRing`** is the breathing ember circle, and it is **decoration**. It
+  carries no state the owner needs; it breathes because a live session should
+  feel alive.
+- **`SessionTimer`** is the elapsed clock — mono, tabular, and the single most
+  legible thing on the surface, because in a conversation what matters is the
+  indicator that things are flowing.
+
+### Why the timer's metrics are a type and not a view
+
+`SessionTimerMetrics` is pure arithmetic (`text`, `form`, `fontSize`,
+`plateWidth`) for the reason `HUDPillMetrics` and `HUDPrompterMetrics` are: the
+numbers are then asserted without a window server, a hosting view or a
+microphone. The decision it holds is the **step**: `mm:ss` draws at the
+caller's size and `h:mm:ss` at 72% of it, and the change happens exactly once,
+at the hour. It is deliberately not a fitted or auto-shrinking font — those
+re-measure on every tick and the digits would breathe with the seconds.
+
+The half that makes the step free is `plateWidth`, which reserves the wider of
+the two forms **up front** and is therefore independent of `elapsed` by
+construction. That is what makes "the plate keeps its width" a fact about the
+code rather than a hope about the metrics: crossing the hour re-sizes the
+glyphs inside a box that never moves, and `hh:mm:ss` is reserved rather than
+`h:mm:ss` so a tenth hour cannot ask for a second step.
+
+### Reduce Motion is answered differently by the two, on purpose
+
+`RecordingMotion` writes it down once, and the asymmetry is the whole point:
+
+- The **meter keeps moving** under Reduce Motion — with a plainer curve, no
+  spring overshoot, but it moves. Freezing it would not calm the interface; it
+  would make a live session and a wedged one look identical.
+- The **ring stops breathing** and holds at a steady scale and opacity. Nothing
+  is lost: the meter is already saying the thing the ring was dressing up.
+
+`reduceMotion` is deliberately **not** a parameter of
+`SessionMeterMetrics.barHeights`. The heights are what the microphone is doing,
+and that is not a motion preference; only the curve between two readings is.
+
+### Reduce Transparency changes the material and nothing else
+
+The panels degrade to opaque system materials through the existing
+`liquidGlass` branch, and the hairline and the shadow stay — they are constants
+on `CraftTokens`, not properties of the glass. Nothing moves: every number in
+`RecordingPaneMetrics` is a constant, so there is nothing for an accessibility
+setting to reach. And the ember is untouched — it is a function of the colour
+scheme alone. Stop is a **solid** fill rather than glass for exactly this
+reason: a glass Stop would go quiet precisely where the material degrades, and
+Stop is the one control that may never be hard to find.
+
+### The pane (B2, `macos/Nota/UI/RecordingPane.swift`)
+
+A ~288pt session column on the **trailing** edge, with the transcript taking
+the rest at full height. Trailing rather than leading because ⌘L — the history
+drawer — owns this window's left edge, and two surfaces competing for one edge
+is a surface the owner has to think about. A column rather than a band across
+the top because the transcript should not pay height for the indicator.
+
+Top to bottom: the 58pt timer inside the ring, the tall meter, the kind line,
+`Mark ⌘K` (ghost) and `Stop` (solid ember, **the only filled control on the
+surface**), then the marker list at the bottom, newest first. The markers are
+last because they accumulate, and a list that grows must not push the fixed
+things around.
+
+- **The ring is derived, not typed in.** `ringDiameterNeeded` circumscribes the
+  timer's reserved plate, so the step at the hour changes the glyphs inside a
+  circle that never moves and a future change to the base size cannot silently
+  clip the clock. It clears the **glyphs**, not the line box —
+  `ringGlyphHeightRatio` — because monospaced digits and a colon have neither
+  ascenders nor descenders, and a ring sized to the line box is a ring sized to
+  whitespace: 30pt larger than the thing it encircles, reading as a balloon
+  around a clock rather than a ring on one.
+- **The column scrolls, and that is a measured decision.** At full size it is
+  taller than `Metrics.windowMinHeight`. The alternative was shrinking the
+  timer, which is the one thing the column exists to make large — so the column
+  keeps its size and a window too short for it scrolls rather than clipping the
+  marker list to a half-drawn heading. A `minHeight` tied to the container
+  keeps the ordinary case identical to the design, `Spacer` and all. The marker
+  list is deliberately **not** its own scroll view: two nested on one axis fight
+  over every wheel event.
+- **Below ~720pt the column folds into a one-row strip** (`RecordingPaneLayout`,
+  which decides from the width and nothing else). The timer steps to 26pt, the
+  meter to `.compact`, the ring to a breathing **dot** — a ring containing a
+  26pt clock would be ~114pt tall and a strip is not. The marker list is the
+  only thing the fold gives up, which is why that is one predicate and not a
+  per-element table. The window minimum is 780pt wide, so the fold is what
+  happens when ⌘L takes the width, which is exactly when the transcript needs
+  it back.
+- **The kind reaches the surface as one word.** No mode chrome, no toggle, no
+  segmented control, and above all no change to the accent: a kind is
+  relabelable after the fact, and a colour that moved with it would be lying
+  about a record the owner reclassified. `RecordingPaneCopy.all(kind:controls:)`
+  owns every fixed string the pane can draw so the promise is diffable —
+  `testAMemoAndAMeetingDifferByExactlyOneString` walks every state and fails if
+  a second string ever differs.
+- **The transcript lays out a speaker column the pipeline does not fill yet.**
+  `LiveTranscriptLine.speaker` is nil today, `LiveTranscript.blocks` already
+  groups consecutive lines by it, and the block draws the name above its text
+  when there is one. Realtime speaker labels are a known unresolved follow-up;
+  the grouping is not waiting to be written, it is waiting to be fed, and the
+  day it is the transcript gains names and not one number in
+  `RecordingPaneMetrics` moves. The volatile tail is a line like any other —
+  it continues the turn it belongs to and differs only in being drawn at 55%,
+  the same opacity the HUD prompter dims its in-flight run to.
+- **There is one clock.** `LiveMeetingFormat.duration` delegates to
+  `SessionTimerMetrics.text`. The gutter timestamp beside a transcript line,
+  the time on a marker row and the big clock in the column name the same
+  instant, and two implementations of "the same instant" is a disagreement
+  waiting for a rounding change.
+- **Only a live session wears the column** (`LiveMeetingControls
+  .showsRecordingPane`). A failed session gets the banner over whatever it
+  heard: the column is the indicator that a session is *flowing*, and a
+  breathing ring with a live meter over a dead microphone is the exact lie the
+  meter exists to make impossible.
+- **`LiveMeetingSession.micLevel`** republishes `MicCapture.rmsLevel` rather
+  than exposing the capture engine, which would hand a view `start()` and
+  `stop()` as well. It goes to **zero** when capture ends (`stopCapture`, the
+  one call all five exits share), because a meter frozen at the last thing it
+  heard is a meter claiming a live session.
+
 ## Record Lifecycle
 
 A history record is created at **sample zero**, not built at the end (XIA-430).
