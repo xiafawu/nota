@@ -8,6 +8,8 @@ import type { TranscriptSegment } from "./transcribe.js";
 import type { SpeakerSuggestion, SuggestionState } from "./speakers.js";
 import {
   type HistoryStatus,
+  canCompleteWithSummary,
+  describeHistoryStatus,
   normalizeHistoryStatus,
 } from "./history-status.js";
 
@@ -19,6 +21,7 @@ export {
   HISTORY_STAGES,
   HISTORY_STATUSES,
   canAdvance,
+  canCompleteWithSummary,
   describeHistoryStatus,
   failedStatus,
   failureStage,
@@ -262,6 +265,23 @@ async function readHistoryFile(filePath: string): Promise<HistoryRecord> {
   };
 }
 
+/**
+ * Refuse a summary write that would declare an unfinished record done.
+ *
+ * The machine is only worth what its write path honors: without this, `nota
+ * history summarize <id>` on a record still saying `recording` (a live session
+ * in progress, or one whose process went away) wrote `done` over it, and the
+ * app and the CLI disagreed about what had happened to the user's meeting.
+ * Thrown rather than silently skipped — the caller asked for a summary of a
+ * transcript that is not there.
+ */
+function assertCompletable(record: HistoryRecord): void {
+  if (canCompleteWithSummary(record.status)) return;
+  throw new Error(
+    `Record ${record.id} is ${record.status} — a summary cannot complete a record that has no transcript yet.`,
+  );
+}
+
 export async function createHistoryRecord(
   input: CreateHistoryInput,
   historyDir = DEFAULT_HISTORY_DIR,
@@ -314,6 +334,7 @@ export async function completeHistoryRecord(
 ): Promise<HistoryRecord> {
   const filePath = historyPath(id, historyDir);
   const record = await readHistoryFile(filePath);
+  assertCompletable(record);
   const updated: HistoryRecord = {
     ...record,
     updatedAt: new Date().toISOString(),
@@ -378,6 +399,7 @@ export async function setRecordSummary(
 ): Promise<HistoryRecord> {
   const filePath = historyPath(id, historyDir);
   const record = await readHistoryFile(filePath);
+  assertCompletable(record);
   const updated: HistoryRecord = {
     ...record,
     updatedAt: new Date().toISOString(),
@@ -471,6 +493,7 @@ export async function applyEnrichmentToRecord(
     updated.summary = summary;
   }
   if (patch.summary !== undefined && patch.summary.trim().length > 0) {
+    assertCompletable(record);
     updated.status = "done";
   }
   if (patch.summaryEdited !== undefined) updated.summaryEdited = patch.summaryEdited;
@@ -667,6 +690,20 @@ export async function findHistoryByHash(
   return records.find((record) => record.contentHash === contentHash) ?? null;
 }
 
+/**
+ * The status a record is IN, as the app words it — "Recording",
+ * "Interrupted", "Failed (summarizing)". One function for both halves of the
+ * CLI's output and for `nota history show`, so a record's state reads the same
+ * wherever it is printed. The raw `status` string stays alongside it: that is
+ * what scripts match on, and it is the field the two implementations agree
+ * about.
+ */
+export function historyStatusLabel(record: HistoryRecord): string {
+  return describeHistoryStatus(record.status, {
+    interrupted: record.interrupted === true,
+  });
+}
+
 export function formatHistoryList(records: HistoryRecord[]): string {
   if (records.length === 0) {
     return "No Nota history records found.";
@@ -679,9 +716,10 @@ export function formatHistoryList(records: HistoryRecord[]): string {
       record.provider,
       record.status,
       record.sourceName,
+      historyStatusLabel(record),
     ].join("\t"),
   );
-  return ["Created\tID\tProvider\tStatus\tSource", ...rows].join("\n");
+  return ["Created\tID\tProvider\tStatus\tSource\tState", ...rows].join("\n");
 }
 
 export type SuggestionDecision = Extract<SuggestionState, "accepted" | "dismissed">;

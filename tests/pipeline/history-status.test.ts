@@ -5,6 +5,7 @@ import path from "node:path";
 import {
   HISTORY_STATUSES,
   canAdvance,
+  canCompleteWithSummary,
   describeHistoryStatus,
   failedStatus,
   failureStage,
@@ -15,6 +16,9 @@ import {
   type HistoryStatus,
 } from "../../src/pipeline/history-status.js";
 import {
+  applyEnrichmentToRecord,
+  formatHistoryList,
+  historyStatusLabel,
   loadHistoryRecord,
   recordAudioPath,
   setRecordSummary,
@@ -234,6 +238,158 @@ describe("tolerant decode of a legacy record", () => {
       await readFile(path.join(historyDir, `${id}.json`), "utf-8"),
     );
     expect(onDisk.status).toBe("done");
+  });
+});
+
+describe("the write path honors the machine", () => {
+  const summary = {
+    title: "T",
+    tags: [] as string[],
+    narrative: "n",
+    keyTopics: [] as string[],
+    decisions: [] as string[],
+    actionItems: [] as string[],
+  };
+
+  async function writeRecord(
+    historyDir: string,
+    id: string,
+    status: string,
+  ): Promise<void> {
+    await writeFile(
+      path.join(historyDir, `${id}.json`),
+      JSON.stringify({
+        id,
+        createdAt: "2026-01-01T00:00:00.000Z",
+        updatedAt: "2026-01-01T00:00:00.000Z",
+        capturedAt: null,
+        sourcePath: "/tmp/a.m4a",
+        sourceName: "a.m4a",
+        provider: "assemblyai",
+        options: { diarize: false, identify: false, model: "gpt-5-mini" },
+        durationMinutes: 1,
+        transcriptText: "",
+        segments: [],
+        status,
+      }),
+      "utf-8",
+    );
+  }
+
+  it("admits a summary only where one can honestly complete a record", () => {
+    // The record has a transcript, or is being/has been summarized.
+    expect(canCompleteWithSummary("transcribed")).toBe(true);
+    expect(canCompleteWithSummary("summarizing")).toBe(true);
+    // A regeneration (--force), and a retry of the one retryable stage.
+    expect(canCompleteWithSummary("done")).toBe(true);
+    expect(canCompleteWithSummary("failed:summarizing")).toBe(true);
+    // Nothing to summarize: no transcript ever landed.
+    expect(canCompleteWithSummary("recording")).toBe(false);
+    expect(canCompleteWithSummary("failed:recording")).toBe(false);
+    expect(canCompleteWithSummary("failed:transcribing")).toBe(false);
+  });
+
+  it("refuses to declare a live recording done", async () => {
+    // `nota history summarize` used to write `done` over whatever it found —
+    // including a session that was still recording, or one whose process went
+    // away with no transcript in the record at all.
+    const historyDir = await tempHistoryDir();
+    const id = "20260101-000000Z-abcdef05";
+    await writeRecord(historyDir, id, "recording");
+
+    await expect(
+      setRecordSummary(id, { summary }, historyDir),
+    ).rejects.toThrow(/recording/);
+
+    const onDisk = JSON.parse(
+      await readFile(path.join(historyDir, `${id}.json`), "utf-8"),
+    );
+    expect(onDisk.status).toBe("recording");
+    expect(onDisk.summary).toBeUndefined();
+  });
+
+  it("refuses a record whose transcription failed", async () => {
+    const historyDir = await tempHistoryDir();
+    const id = "20260101-000000Z-abcdef06";
+    await writeRecord(historyDir, id, "failed:transcribing");
+    await expect(
+      setRecordSummary(id, { summary }, historyDir),
+    ).rejects.toThrow(/failed:transcribing/);
+  });
+
+  it("still lets a failed summary be retried, on a record that has its transcript", async () => {
+    const historyDir = await tempHistoryDir();
+    const id = "20260101-000000Z-abcdef07";
+    await writeRecord(historyDir, id, "failed:summarizing");
+    const updated = await setRecordSummary(id, { summary }, historyDir);
+    expect(updated.status).toBe<HistoryStatus>("done");
+  });
+
+  it("refuses a hand-applied enrichment on a live record too", async () => {
+    const historyDir = await tempHistoryDir();
+    const id = "20260101-000000Z-abcdef08";
+    await writeRecord(historyDir, id, "recording");
+    await expect(
+      applyEnrichmentToRecord(id, { summary: "typed by hand" }, historyDir),
+    ).rejects.toThrow(/recording/);
+  });
+
+  it("lets tags alone through, since they complete nothing", async () => {
+    const historyDir = await tempHistoryDir();
+    const id = "20260101-000000Z-abcdef09";
+    await writeRecord(historyDir, id, "recording");
+    const updated = await applyEnrichmentToRecord(
+      id,
+      { tags: ["standup"] },
+      historyDir,
+    );
+    expect(updated.status).toBe<HistoryStatus>("recording");
+  });
+});
+
+describe("the CLI prints the status the app displays", () => {
+  const base = {
+    id: "20260101-000000Z-abcdef10",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    updatedAt: "2026-01-01T00:00:00.000Z",
+    capturedAt: null,
+    sourcePath: "/tmp/a.m4a",
+    sourceName: "a.m4a",
+    provider: "assemblyai" as const,
+    options: { diarize: false, identify: false, model: "gpt-5-mini" },
+    durationMinutes: 1,
+    transcriptText: "",
+    segments: [],
+  };
+
+  it("words a record's state the way the app's own status line does", () => {
+    expect(historyStatusLabel({ ...base, status: "recording" })).toBe(
+      "Recording",
+    );
+    expect(historyStatusLabel({ ...base, status: "transcribed" })).toBe(
+      "Transcribed",
+    );
+    expect(
+      historyStatusLabel({ ...base, status: "failed:summarizing" }),
+    ).toBe("Failed (summarizing)");
+  });
+
+  it("says Interrupted for a record the launch sweep resolved", () => {
+    expect(
+      historyStatusLabel({
+        ...base,
+        status: "failed:recording",
+        interrupted: true,
+      }),
+    ).toBe("Interrupted");
+  });
+
+  it("carries that state into the list, next to the raw status scripts match on", () => {
+    const list = formatHistoryList([
+      { ...base, status: "failed:recording", interrupted: true },
+    ]);
+    expect(list).toContain("Created\tID\tProvider\tStatus\tSource\tState");
+    expect(list).toContain("failed:recording\ta.m4a\tInterrupted");
   });
 });
 

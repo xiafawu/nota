@@ -117,6 +117,33 @@ export function canAdvance(from: HistoryStatus, to: HistoryStatus): boolean {
 }
 
 /**
+ * May a summary write complete this record?
+ *
+ * The one guard the CLI's write path owes the machine. `nota history
+ * summarize` (and every other verb that lands a summary) used to write `done`
+ * onto whatever it found, so a record still saying `recording` — a live
+ * session in progress, or one whose process went away — could be declared
+ * finished by a summary of a transcript it does not have.
+ *
+ * It is expressed through `canAdvance` rather than beside it, so there is one
+ * definition of the lifecycle and not two. Three cases are admitted on top of
+ * "may reach `summarizing`", and each is a real user action:
+ *   - `summarizing` — the write that finishes the stage it is in.
+ *   - `done` — a regeneration (`--force`), which is the flag's whole purpose.
+ *   - `failed:summarizing` — a retry of the one stage that can be retried,
+ *     on a record that still holds its audio and its transcript.
+ * A record that never reached a transcript is refused in every case.
+ */
+export function canCompleteWithSummary(status: HistoryStatus): boolean {
+  if (canAdvance(status, "summarizing")) return true;
+  return (
+    status === "summarizing" ||
+    status === "done" ||
+    status === "failed:summarizing"
+  );
+}
+
+/**
  * Read a status off a record that may predate this vocabulary.
  *
  * Tolerant per the repo's decoding convention: a record on disk is never

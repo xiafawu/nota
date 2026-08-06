@@ -5,6 +5,7 @@ import { loadConfig } from "./config.js";
 import { runPipeline } from "./orchestrator.js";
 import {
   formatHistoryList,
+  historyStatusLabel,
   listHistoryRecords,
   loadHistoryRecord,
   renameRecordSpeaker,
@@ -191,6 +192,10 @@ history
   .action(async (id: string) => {
     try {
       const record = await loadHistoryRecord(id);
+      // The state the app is showing for this record, in the app's own words
+      // — on stderr, so stdout stays the record's JSON and nothing that pipes
+      // this into `jq` has to change.
+      console.error(`Status: ${historyStatusLabel(record)} (${record.status})`);
       console.log(JSON.stringify(record, null, 2));
     } catch (error) {
       console.error(
