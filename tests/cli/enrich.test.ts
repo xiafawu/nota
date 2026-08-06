@@ -111,7 +111,7 @@ describe("summarizeRecord", () => {
 
     const updated = await summarizeRecord(record.id, { historyDir });
 
-    expect(updated.status).toBe("completed");
+    expect(updated.status).toBe("done");
     expect(updated.summary?.narrative).toBe("A freshly generated summary.");
     expect(updated.summaryEdited).toBe(false);
     // Usage entry captured through makeSummaryUsage (task "summary").
@@ -122,7 +122,7 @@ describe("summarizeRecord", () => {
     expect(readFileSync(outputPath, "utf-8")).toContain("Enriched Meeting");
     // Persisted, not just returned.
     const loaded = await loadHistoryRecord(record.id, historyDir);
-    expect(loaded.status).toBe("completed");
+    expect(loaded.status).toBe("done");
   });
 
   it("exits 2 when the summary was hand-edited and --force is absent", async () => {

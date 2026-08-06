@@ -80,7 +80,8 @@ final class LiveMeetingSession: ObservableObject {
     let segments: [LiveSegment]
     let transcriptText: String
     let duration: TimeInterval
-    /// Temp 16 kHz mono CAF if the recording worked, else nil.
+    /// The 16 kHz mono CAF inside the record's assets folder, if the recording
+    /// worked. Nil when no destination was given or the file could not be opened.
     let audioURL: URL?
   }
 
@@ -107,11 +108,20 @@ final class LiveMeetingSession: ObservableObject {
   /// or `.apple` (on-device recognition — the memo path without an
   /// AssemblyAI key).
   ///
+  /// `audioDestination` is where the session records — since XIA-430 that is
+  /// the record's own `<id>.assets/recording.caf`, created before this call.
+  /// Nil records no audio at all (tests, and any caller with no record).
+  ///
   /// On any setup failure the session transitions to `.failed(message)` first
   /// (so the UI's error banner renders off the published state) and then
   /// throws `MicCaptureError`/`AssemblyAIError`.
-  func start(diarize: Bool = false, engine: LiveEngine = .assemblyAI) async throws {
+  func start(
+    diarize: Bool = false,
+    engine: LiveEngine = .assemblyAI,
+    audioDestination: URL? = nil
+  ) async throws {
     cancel()
+    self.audioDestination = audioDestination
 
     // 1. API key — only the AssemblyAI engine needs one; fail fast, before
     //    permission prompts or any engine work.
@@ -203,7 +213,7 @@ final class LiveMeetingSession: ObservableObject {
       receiveTask = nil
       webSocketTask?.cancel(with: .normalClosure, reason: nil)
       teardownWS()
-      deleteAudioFile()
+      closeAudioFile()
       failStart(error)
       throw error
     }
@@ -315,7 +325,7 @@ final class LiveMeetingSession: ObservableObject {
     appleSpeech = nil
     appleHypothesesTask?.cancel()
     appleHypothesesTask = nil
-    deleteAudioFile()
+    closeAudioFile()
 
     // Reset state.
     segments = []
@@ -324,6 +334,7 @@ final class LiveMeetingSession: ObservableObject {
     startedAt = nil
     didReceiveTermination = false
     finalDuration = nil
+    audioDestination = nil
     lastResult = nil
     state = .idle
   }
@@ -439,6 +450,11 @@ final class LiveMeetingSession: ObservableObject {
 
   private var audioFile: AVAudioFile?
   private var audioURL: URL?
+  /// Where this session records, handed in by `start(audioDestination:)`.
+  /// It is a start parameter rather than settable state so `cancel()` — which
+  /// `start()` calls on itself first — can never clear it out from under the
+  /// session it is about to begin.
+  private var audioDestination: URL?
 
   /// Apple-engine state (nil when the session runs on AssemblyAI).
   private var appleSpeech: AppleSpeechStream?
@@ -511,7 +527,7 @@ final class LiveMeetingSession: ObservableObject {
       appleHypothesesTask?.cancel()
       appleHypothesesTask = nil
       appleSpeech = nil
-      deleteAudioFile()
+      closeAudioFile()
       failStart(error)
       throw error
     }
@@ -737,12 +753,19 @@ final class LiveMeetingSession: ObservableObject {
     }
   }
 
-  /// Create the temp 16 kHz mono CAF the result will carry. Failure is
-  /// non-fatal: the transcript still works, `audioURL` just stays nil.
+  /// Open the 16 kHz mono CAF this session records into. Since XIA-430 the
+  /// destination is the record's OWN assets folder, handed in by the caller
+  /// before the microphone opens — the audio is written where it belongs from
+  /// the first sample, so there is nothing to move afterwards and nothing to
+  /// lose if the process never reaches the end. A session started without a
+  /// destination (tests, and any caller that has no record) records nothing;
+  /// failure stays non-fatal either way, and `audioURL` simply stays nil.
   private func prepareAudioFile() {
-    let url = FileManager.default.temporaryDirectory
-      .appendingPathComponent("NotaLiveMeeting-\(UUID().uuidString)")
-      .appendingPathExtension("caf")
+    guard let url = audioDestination else {
+      audioFile = nil
+      audioURL = nil
+      return
+    }
     let settings: [String: Any] = [
       AVFormatIDKey: kAudioFormatLinearPCM,
       AVSampleRateKey: 16_000.0,
@@ -766,8 +789,8 @@ final class LiveMeetingSession: ObservableObject {
     }
   }
 
-  /// Close the audio file and hand its URL to the result. The file is kept on
-  /// disk — the persistence slice moves it into the output directory.
+  /// Close the audio file and hand its URL to the result. The file stays
+  /// exactly where it was written — inside the record's assets folder.
   private func finalizeAudioFile() -> URL? {
     audioFile = nil
     let url = audioURL
@@ -775,11 +798,13 @@ final class LiveMeetingSession: ObservableObject {
     return url
   }
 
-  private func deleteAudioFile() {
+  /// Close the file handle without touching the file. This is what every
+  /// abort path calls, and the *only* thing it may do: audio is never
+  /// auto-deleted (XIA-430 — deleting it is an explicit user verb, and a
+  /// failed session is precisely when the recording is wanted most). There is
+  /// deliberately no delete counterpart anywhere in this type.
+  private func closeAudioFile() {
     audioFile = nil
-    if let audioURL {
-      try? FileManager.default.removeItem(at: audioURL)
-    }
     audioURL = nil
   }
 

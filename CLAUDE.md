@@ -1099,9 +1099,71 @@ in the background. A baked snapshot ships in-repo as the fallback. To see the
 current catalog: `nota models list`. To force a refresh: `nota models refresh`.
 The cache feeds cost computation for usage tracking.
 
+## Record Lifecycle
+
+A history record is created at **sample zero**, not built at the end (XIA-430).
+`LiveSessionPersistence.beginRecording` writes `~/.nota/history/<id>.json` with
+`status: recording` and makes `<id>.assets/` **before the microphone opens**;
+the session records straight into `<id>.assets/recording.caf`, so there is no
+move-the-audio step after Stop and nothing to lose if the process never reaches
+the end. `sealTranscript` then fills that same record in — same id, same file.
+
+The status is one persisted string, and its vocabulary is the **contract**
+between `src/pipeline/history-status.ts` and `macos/Nota/App/HistoryStatus.swift`
+— same raw strings, same legacy mapping, same legal transitions, so
+`nota history show <id>` reports what the app is displaying:
+
+```
+recording → transcribing → transcribed → summarizing → done
+                ↓              ↓             ↓
+                       failed:<stage>
+```
+
+- **`transcribed` is a rest state, not a synonym for done.** It is where a
+  transcript-only live meeting comes to rest, and `nota history summarize`
+  refuses a `done` record without `--force` — calling a never-summarized
+  transcript finished would put every live meeting behind that flag.
+- **A record fails only in the stage it is in.** `canAdvance` refuses anything
+  else, and `updateStatus` refuses to write an illegal move rather than
+  recording a session nobody ran. `transcribed` fails as the summary it was
+  waiting for.
+- **Legacy records load, and never as live.** `"completed"` → `done`,
+  `"transcribed"` keeps its name, and an absent/unknown value resolves by what
+  the record HAS (a summary → `done`, none → `transcribed`). Resolving a legacy
+  record into a live stage would get it swept up as "Interrupted" at the next
+  launch, on every machine, forever. Tolerant per field, like
+  `DictationSettings.init(from:)` and `sanitizeCatalog`.
+- **Interrupted recovery runs once at launch**, before the first
+  `refreshHistory()`: nothing of ours is running, so anything still claiming a
+  live stage belongs to a process that went away. Those become
+  `failed(stage:)` + `interrupted: true`, which presents as **"Interrupted"**
+  rather than naming a stage that never got the chance to fail on its own.
+- **`audioPath` is relative to the record's own assets folder** (normally just
+  `recording.caf`), so the whole store can be relocated without rewriting a
+  single record (XIA-428). `audioBytes` is its size at seal time. `sourcePath`
+  stays absolute for the consumers that read it, and is the *fallback* for
+  records that predate `audioPath` — never the authority when both exist.
+- **Nothing deletes audio.** `deleteAudioFile()` and every call to it are gone;
+  `LiveMeetingSession.closeAudioFile()` closes the handle and touches the file.
+  A failed transcription leaves the audio; a failed summary leaves the audio
+  **and** the transcript. Audio is the one artifact that cannot be regenerated,
+  and the failures are exactly when it is wanted. Deletion is an explicit user
+  verb, not a failure path.
+
 ## Key Design Decisions
 
 - Nota is the primary name; MeetingSum references exist only for backward compatibility.
+- The record comes before the audio, and the audio is never taken away
+  (XIA-430). Building the record at the end meant every failure before the end
+  — a crash, a dead socket, a process killed mid-sentence — left the recording
+  in a temp file with nothing pointing at it, and the cancel/failure paths then
+  deleted it outright. Now `beginRecording` writes the record and its assets
+  folder first, the session records into that folder, and every later step
+  edits the record in place. What falls out is worth stating: a record can
+  exist with nothing in it (so the launch sweep has to resolve interrupted
+  ones), the status has to be a typed machine rather than an ad-hoc string (so
+  a record cannot claim to have skipped a stage), and no failure path may
+  remove a file. See Record Lifecycle.
 - Model registry (`src/registry.ts`) is the single source of truth: model id → task, provider, required API key env, base URL. Transcription models are statically curated; summary models are sourced dynamically from the auto-refreshed catalog (`src/catalog.ts` + `~/.nota/models-catalog.json`) with a baked in-repo fallback. Only the API keys the resolved models actually need are required.
 - Summary model ids are auto-admitted weekly: mainline chat models (gpt-5.x, gemini flash/pro, deepseek v4+) matching allowlist predicates. Run `nota models list` for the current set.
 - Summary default is key-aware: `deepseek-v4-flash` > `gpt-5.4-mini` > `gemini-3.6-flash` based on which API key is set. A hint is printed when DeepSeek is skipped despite being the cheapest option. CLI engines never join that chain (ADR 0003).

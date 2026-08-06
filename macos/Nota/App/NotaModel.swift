@@ -222,6 +222,15 @@ final class NotaModel: ObservableObject {
     enrichment.onRecordUpdated = { [weak self] record, kind in
       self?.handleEnrichmentUpdate(record, kind: kind)
     }
+    // Nothing of ours is running yet, so a record still claiming a live stage
+    // belongs to a process that went away — a crash, a force quit, a logout
+    // mid-sentence. Resolve those to `failed(stage:)` + `interrupted` BEFORE
+    // the first `refreshHistory()`, so the dashboard never shows a session as
+    // recording when nothing is. Their audio is untouched and playable; that
+    // is the entire point of having written the record first (XIA-430).
+    LiveSessionPersistence.resolveInterruptedRecords(
+      historyDirectory: notaHistoryDirectory()
+    )
     refreshHistory()
     // Run the readiness check on launch so the home shows health immediately.
     runPreflight()
@@ -252,9 +261,11 @@ final class NotaModel: ObservableObject {
     return usageStatsStale
   }
 
-  /// History-record status ("transcribed"/"completed") for a dashboard entry,
-  /// nil when no record matches (e.g. imported markdown).
-  func recordStatus(for entry: HistoryEntry) -> String? {
+  /// Typed lifecycle status for a dashboard entry, nil when no record matches
+  /// (e.g. imported markdown). Every record that exists has a status — legacy
+  /// spellings are normalized on the way in — so nil means "no record", never
+  /// "status unknown".
+  func recordStatus(for entry: HistoryEntry) -> HistoryStatus? {
     historyDetails[entry.url.standardizedFileURL.path]?.status
   }
 
@@ -558,6 +569,12 @@ final class NotaModel: ObservableObject {
     activeSessionKind == .memo && NotaSettingsStore.memoDiarizationEnabled
   }
 
+  /// The record the in-flight live session is recording INTO. Created at
+  /// sample zero by `performStartLiveSession` and cleared when the session
+  /// reaches a terminal status. Non-nil is exactly "a live session owns a
+  /// record on disk right now".
+  private var activeRecord: LiveSessionPersistence.StartedRecord?
+
   /// Backend for a live session: memos fall back to the on-device Apple
   /// engine when no AssemblyAI key exists (the memo card stays alive with
   /// only the Apple engine); meetings always use AssemblyAI. Pure — testable
@@ -589,11 +606,44 @@ final class NotaModel: ObservableObject {
       for: kind,
       hasAssemblyAIKey: ApiKeyStore.value(for: "ASSEMBLYAI_API_KEY") != nil
     )
-    status = "Recording…"
+
+    // The record comes FIRST (XIA-430): before the microphone opens, before a
+    // single buffer is written, `~/.nota/history/<id>.json` exists saying
+    // `recording` and its assets folder is the thing the session records into.
+    // Synchronously, so no audio can reach disk ahead of the record that
+    // claims it. A store that cannot be written to is a hard stop: recording
+    // into nowhere is the failure this whole inversion exists to remove.
+    let started: LiveSessionPersistence.StartedRecord
+    do {
+      started = try LiveSessionPersistence.beginRecording(
+        kind: kind,
+        diarize: activeSessionDiarize,
+        identify: activeSessionDiarize,
+        historyDirectory: notaHistoryDirectory()
+      )
+    } catch {
+      status = "Could not start recording: \(error.localizedDescription)"
+      return
+    }
+    activeRecord = started
+
+    status = HistoryStatus.recording.presentation()
     Task {
       do {
-        try await liveSession.start(diarize: activeSessionDiarize, engine: engine)
+        try await liveSession.start(
+          diarize: activeSessionDiarize,
+          engine: engine,
+          audioDestination: started.audioURL
+        )
       } catch {
+        // The record and whatever audio was captured stay exactly where they
+        // are; only the lifecycle moves.
+        LiveSessionPersistence.updateStatus(
+          id: started.historyID,
+          to: .failed(stage: .recording),
+          historyDirectory: notaHistoryDirectory()
+        )
+        activeRecord = nil
         status = "Live session failed: \(error.localizedDescription)"
       }
     }
@@ -622,25 +672,32 @@ final class NotaModel: ObservableObject {
     guard liveSession.state == .recording || liveSession.state == .stopping else {
       return
     }
-    status = "Saving live session…"
+    guard let started = activeRecord else { return }
+    let historyDirectory = notaHistoryDirectory()
+    status = HistoryStatus.transcribing.presentation()
     Task {
       let result: LiveMeetingSession.LiveMeetingResult
       do {
         result = try await liveSession.stop()
       } catch {
+        LiveSessionPersistence.updateStatus(
+          id: started.historyID,
+          to: .failed(stage: .transcribing),
+          historyDirectory: historyDirectory
+        )
+        activeRecord = nil
         status = "Live session failed: \(error.localizedDescription)"
         return
       }
 
       do {
-        let saved = try LiveSessionPersistence.persist(
+        let saved = try LiveSessionPersistence.sealTranscript(
+          started: started,
           result: result,
-          kind: activeSessionKind,
-          diarize: activeSessionDiarize,
-          identify: activeSessionDiarize,
           outputDirectory: outputDirectory,
-          historyDirectory: notaHistoryDirectory()
+          historyDirectory: historyDirectory
         )
+        activeRecord = nil
         lastOutputURL = saved.outputURL
 
         // Memo sessions summarize automatically with the memo template
@@ -649,6 +706,11 @@ final class NotaModel: ObservableObject {
         var displayedMarkdown = saved.markdown
         var summarySucceeded = true
         if activeSessionKind == .memo {
+          LiveSessionPersistence.updateStatus(
+            id: saved.historyID,
+            to: .summarizing,
+            historyDirectory: historyDirectory
+          )
           summarySucceeded = await runMemoSummary(
             historyID: saved.historyID,
             outputURL: saved.outputURL
@@ -657,10 +719,26 @@ final class NotaModel: ObservableObject {
              let content = try? String(contentsOf: saved.outputURL, encoding: .utf8) {
             displayedMarkdown = content
           }
+          // A failed summary is a `failed(summarizing)` record that still holds
+          // its audio AND its transcript — the summary is the only thing
+          // missing, and it is the only thing that can be regenerated.
+          // (A summary that succeeded has already written `done` through the
+          // CLI's own setRecordSummary.)
+          if !summarySucceeded {
+            LiveSessionPersistence.updateStatus(
+              id: saved.historyID,
+              to: .failed(stage: .summarizing),
+              historyDirectory: historyDirectory
+            )
+          }
         }
 
         markdown = displayedMarkdown
-        status = summarySucceeded ? "Complete" : "Saved — summary failed"
+        status = summarySucceeded
+          ? (activeSessionKind == .memo
+              ? HistoryStatus.done.presentation()
+              : HistoryStatus.transcribed.presentation())
+          : HistoryStatus.failed(stage: .summarizing).presentation()
         refreshHistory()
         if let entry = history.first(where: {
           $0.url.standardizedFileURL == saved.outputURL.standardizedFileURL
@@ -674,11 +752,19 @@ final class NotaModel: ObservableObject {
         // Resets the enrichment record/speaker chips for the new document;
         // the async lookup finds the fresh record (no summary → placeholder).
         loadChips(for: saved.outputURL)
-      } catch LiveSessionPersistenceError.emptyTranscript {
-        status = LiveSessionPersistenceError.emptyTranscript.errorDescription ?? "No speech was captured"
-      } catch LiveSessionPersistenceError.missingAudio {
-        status = LiveSessionPersistenceError.missingAudio.errorDescription ?? "Recording failed"
+      } catch let error as LiveSessionPersistenceError {
+        // `sealTranscript` has already marked the record failed in the right
+        // stage, and has deleted nothing: the recording is still in the
+        // record's assets folder either way.
+        activeRecord = nil
+        status = error.errorDescription ?? "Live session failed"
       } catch {
+        LiveSessionPersistence.updateStatus(
+          id: started.historyID,
+          to: .failed(stage: .transcribing),
+          historyDirectory: historyDirectory
+        )
+        activeRecord = nil
         status = "Could not save live session"
       }
     }
@@ -1461,7 +1547,7 @@ struct HistoryRecordInfo {
   /// outputPath (standardized) → `status` for every history record. Feeds the
   /// dashboard's "transcript" pill; records without an `outputPath` are
   /// skipped (they have no row to badge).
-  static func statusesByOutputPath(historyDir: URL) -> [String: String] {
+  static func statusesByOutputPath(historyDir: URL) -> [String: HistoryStatus] {
     kindsAndStatusesByOutputPath(historyDir: historyDir).statuses
   }
 
@@ -1474,8 +1560,8 @@ struct HistoryRecordInfo {
   /// those read as `.meeting`; everything else legacy reads as `.file`.
   static func kindsAndStatusesByOutputPath(
     historyDir: URL
-  ) -> (statuses: [String: String], kinds: [String: HistoryKind]) {
-    var statuses: [String: String] = [:]
+  ) -> (statuses: [String: HistoryStatus], kinds: [String: HistoryKind]) {
+    var statuses: [String: HistoryStatus] = [:]
     var kinds: [String: HistoryKind] = [:]
     for (key, detail) in detailsByOutputPath(historyDir: historyDir) {
       if let status = detail.status { statuses[key] = status }
@@ -1488,7 +1574,13 @@ struct HistoryRecordInfo {
   /// a single scan (status, kind incl. legacy inference, duration, unique
   /// speaker count from the segments, pinned flag).
   struct HistoryDetail: Equatable {
-    var status: String?
+    /// Lifecycle status, normalized from whatever vocabulary the record was
+    /// written in. Nil only for a record with no `outputPath` (never scanned)
+    /// — every scanned record resolves to something.
+    var status: HistoryStatus?
+    /// True when the launch sweep resolved this record's failure: it presents
+    /// as "Interrupted" rather than as a stage that failed on its own.
+    var interrupted: Bool = false
     var kind: HistoryKind
     var durationMinutes: Int?
     var speakerCount: Int?
@@ -1526,7 +1618,8 @@ struct HistoryRecordInfo {
         }
       }
       details[key] = HistoryDetail(
-        status: json["status"] as? String,
+        status: HistoryStatus.normalized(fromRecord: json),
+        interrupted: json["interrupted"] as? Bool ?? false,
         kind: kind(from: json),
         durationMinutes: json["durationMinutes"] as? Int,
         speakerCount: speakers.isEmpty ? nil : speakers.count,

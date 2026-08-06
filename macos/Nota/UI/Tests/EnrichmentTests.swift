@@ -245,8 +245,8 @@ final class EnrichmentConfirmTests: XCTestCase {
 
 final class TranscriptPillTests: XCTestCase {
   func testPillOnlyForTranscribedStatus() {
-    XCTAssertTrue(showsTranscriptPill(recordStatus: "transcribed"))
-    XCTAssertFalse(showsTranscriptPill(recordStatus: "completed"))
+    XCTAssertTrue(showsTranscriptPill(recordStatus: .transcribed))
+    XCTAssertFalse(showsTranscriptPill(recordStatus: .done))
     XCTAssertFalse(showsTranscriptPill(recordStatus: nil))
   }
 }

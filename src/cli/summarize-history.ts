@@ -37,7 +37,7 @@ export async function summarizeHistory(
   const historyDir = options?.historyDir ?? DEFAULT_HISTORY_DIR;
   const record = await loadHistoryRecord(idOrPrefix, historyDir);
 
-  if (record.status === "completed" && !options?.force) {
+  if (record.status === "done" && !options?.force) {
     const existing = record.outputPath ?? "";
     process.stderr.write(
       `Record ${record.id} already summarized → ${existing}. ` +
