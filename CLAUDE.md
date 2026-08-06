@@ -114,6 +114,72 @@ verbs under `nota history` in the CLI section:
 Commands exit non-zero if a referenced profile is missing. Confirmation lines
 are written to stderr so stdout stays scriptable.
 
+## Recording Storage & Deletion
+
+XIA-436. **Nota never deletes a recording on its own.** There is no sweep, no
+scheduled cleanup, no "reclaim space" path and no deletion on failure —
+`grep` should keep finding none. The owner is asked to accept unbounded audio
+growth, and the deal is that the figure is always visible and always
+actionable by hand. The visible figure *is* the retention policy, which is why
+the storage surfaces and the deletion verbs shipped together.
+
+**The containment rule, one direction only:** deleting the transcript deletes
+the audio; deleting the audio never touches the transcript. Forbidden by
+construction — a cascade upward, a partial delete that leaves an assets folder
+behind (the folder goes wholesale, never file by file), and any "clean up"
+that removes a transcript to reclaim space.
+
+**The exported `.md` is never deleted by Nota.** It lives outside `~/.nota`,
+often beside the owner's own source audio. `nota history delete` reports its
+path so the owner is told where their notes still are; the app's **Delete
+record…** leaves it too, which is why the drawer row *survives* that verb —
+the row is built from that file.
+
+- `nota history storage [--json]` — per-record and total sizes, oldest first.
+  Read-only, with no flag that could delete. `--json` emits the whole
+  `StorageSummary`, which is what the macOS Usage sheet decodes: **one
+  computation**, so the sheet and the terminal cannot disagree about the
+  figure.
+- `nota history delete-audio <id> | --older-than <age>` — removes
+  `recording.caf` and clears `audioPath`/`audioBytes`. The record survives in
+  full and still reads in both the app and the CLI.
+- `nota history delete <id> | --older-than <age>` — removes the record JSON and
+  its whole `<id>.assets/` folder.
+- `--older-than 90d` (also `w`/`m`/`y`; 1m = 30d, 1y = 365d) **prints every id
+  and the total, then asks.** No scheduled or automatic form exists. A record
+  whose timestamp cannot be parsed is never selected.
+- `--yes` skips the prompt and is **required** non-interactively: a run that
+  cannot be asked is refused, never assumed to consent. Both verbs preview and
+  confirm even for a single id.
+
+Storage and deletion deliberately do **not** use `recordAudioPath` (TS) or
+`LiveSessionPersistence.resolvedAudioURL` (Swift). Those fall back to the
+absolute `sourcePath` so a legacy record can still be *played*, and that path
+is the owner's own file outside the store: counting it would inflate the
+store's size with bytes it does not hold, and deleting it would hand an unlink
+the owner's original recording. `keptAudioPath` / `RecordingStore.keptAudioURL`
+see only inside the record's assets folder, and **refuse a value that climbs
+out of it** — the string is read off a JSON file and handed to an unlink, so a
+record must not be able to aim the one irreversible thing this app does.
+A record with no stored audio reads **"audio not kept"**, in words rather than
+as `0 B` (which would mean a recording that exists and is empty) — once,
+quietly, never as an error. Legacy records simply have none.
+
+**Discard deletes the whole record, audio included** (changed by XIA-436; it
+settled-and-kept under XIA-430). That does not bend the standing rule, which
+is about the *automatic* paths: Discard is an explicit press on a session the
+owner is saying they do not want, and a button labelled Discard that leaves
+the recording on disk is the one that lies. The other half is pinned by test —
+a session that *fails* still settles and keeps everything, because nobody
+chose that outcome.
+
+TypeScript: `src/pipeline/storage.ts` (computation + the two primitives) +
+`src/cli/storage.ts` (verbs, injectable `ask`/`write`/`out`).
+Swift: `macos/Nota/App/RecordingStorage.swift` (locate, delete, confirmation
+copy, byte formatting), `macos/Nota/UI/RecordingDeletionMenu.swift` (the row's
+context menu, attached with one modifier call),
+`macos/Nota/UI/StorageSummaryView.swift` (the Usage sheet section).
+
 ## Custom Dictionary
 
 Shared custom-vocabulary store at `~/.nota/dictionary.json` (schema v1), read
