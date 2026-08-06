@@ -92,6 +92,17 @@ final class LiveMeetingSession: ObservableObject {
   @Published private(set) var partialText: String? = nil
   @Published private(set) var elapsed: TimeInterval = 0
 
+  /// The microphone's 0…1 meter level, republished from `MicCapture` so a
+  /// recording surface can draw the one thing that proves the microphone is
+  /// open. Republished rather than exposing `capture` itself: a view that holds
+  /// the capture engine holds its `start()` and `stop()` too, and this session
+  /// is the only thing entitled to call those.
+  ///
+  /// It goes to **zero** when capture ends (`stopCapture`), because a meter
+  /// frozen at the last thing it heard is a meter claiming a live session — the
+  /// exact failure the meter exists to make impossible.
+  @Published private(set) var micLevel: Float = 0
+
   // MARK: - Lifecycle
 
   /// Start a live meeting: mic permission, capture engine, and the chosen
@@ -202,7 +213,9 @@ final class LiveMeetingSession: ObservableObject {
     capture.onPCMBuffer = { [weak self] buffer in
       // MicCapture delivers converted 16 kHz mono Float32 buffers on main.
       Task { @MainActor in
-        self?.handlePCMBuffer(buffer)
+        guard let self else { return }
+        self.micLevel = self.capture.rmsLevel
+        self.handlePCMBuffer(buffer)
       }
     }
     do {
@@ -236,8 +249,7 @@ final class LiveMeetingSession: ObservableObject {
       state = .stopping
       elapsedTask?.cancel()
       elapsedTask = nil
-      capture.onPCMBuffer = nil
-      capture.stop()
+      stopCapture()
       if let speech = appleSpeech {
         let finalText = try? await speech.finish()
         // A session that never produced a final delta still delivers its text
@@ -277,8 +289,7 @@ final class LiveMeetingSession: ObservableObject {
     // Stop capture and close the connection.
     elapsedTask?.cancel()
     elapsedTask = nil
-    capture.onPCMBuffer = nil
-    capture.stop()
+    stopCapture()
     receiveTask?.cancel()
     receiveTask = nil
     webSocketTask?.cancel(with: .normalClosure, reason: nil)
@@ -317,8 +328,7 @@ final class LiveMeetingSession: ObservableObject {
     elapsedTask = nil
     receiveTask?.cancel()
     receiveTask = nil
-    capture.onPCMBuffer = nil
-    capture.stop()
+    stopCapture()
     didSendTerminate = false
     webSocketTask?.cancel(with: .normalClosure, reason: nil)
     teardownWS()
@@ -517,7 +527,9 @@ final class LiveMeetingSession: ObservableObject {
     prepareAudioFile()
     capture.onPCMBuffer = { [weak self] buffer in
       Task { @MainActor in
-        try? self?.appleSpeech?.feed(buffer)
+        guard let self else { return }
+        self.micLevel = self.capture.rmsLevel
+        try? self.appleSpeech?.feed(buffer)
       }
     }
     do {
@@ -637,8 +649,7 @@ final class LiveMeetingSession: ObservableObject {
     state = .failed(message)
     elapsedTask?.cancel()
     elapsedTask = nil
-    capture.onPCMBuffer = nil
-    capture.stop()
+    stopCapture()
     receiveTask?.cancel()
     receiveTask = nil
     teardownWS()
@@ -649,8 +660,7 @@ final class LiveMeetingSession: ObservableObject {
     guard state != .idle else { return }
     elapsedTask?.cancel()
     elapsedTask = nil
-    capture.onPCMBuffer = nil
-    capture.stop()
+    stopCapture()
     receiveTask?.cancel()
     receiveTask = nil
     webSocketTask?.cancel(with: .normalClosure, reason: nil)
@@ -674,6 +684,18 @@ final class LiveMeetingSession: ObservableObject {
   }
 
   // MARK: - Audio
+
+  /// Detach the tap, stop the engine, and drop the meter to silence.
+  ///
+  /// One call rather than three lines at each of the five exits, because the
+  /// third was the one that kept getting forgotten: the level is published
+  /// state and nothing else clears it, so a session that ended with the room
+  /// loud left a full meter on screen for the next surface to draw.
+  private func stopCapture() {
+    capture.onPCMBuffer = nil
+    capture.stop()
+    micLevel = 0
+  }
 
   private func handlePCMBuffer(_ buffer: AVAudioPCMBuffer) {
     guard state == .recording else { return }
