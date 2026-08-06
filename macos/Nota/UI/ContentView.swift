@@ -39,6 +39,11 @@ struct ContentView: View {
   private var phase: Phase {
     // A live session pins the pane until it settles (idle); failed keeps the
     // error banner on screen instead of silently dropping back to home.
+    // An accepted Start press pins it too, from the press itself: the session
+    // stays `.idle` through the mic prompt and the realtime handshake, and a
+    // pane that showed no change for those seconds invited a second press
+    // (XIA-430).
+    if model.isStartingLiveSession { return .liveMeeting }
     if liveSession.state != .idle { return .liveMeeting }
     if model.hasContent { return .document }
     if model.isRunning { return .running }

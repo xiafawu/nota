@@ -37,8 +37,10 @@ struct MainPaneView: View {
         LiveMeetingView(
           session: model.liveSession,
           kind: model.activeSessionKind,
+          isStarting: model.isStartingLiveSession,
           onStart: { model.startLiveSession() },
-          onStop: { model.stopLiveSession() }
+          onStop: { model.stopLiveSession() },
+          onDiscard: { model.discardLiveSession() }
         )
       }
 

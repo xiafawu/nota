@@ -427,7 +427,136 @@ final class LiveSessionPersistenceTests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: saved.outputURL.path))
   }
 
+  // MARK: - A failed write is never reported as success
+
+  func testAWriteThatCannotLandIsThrownRatherThanReportedAsSaved() throws {
+    let started = try beginRecording()
+    try writeAudio(started, bytes: 64)
+    // The record is gone — the store was pruned, or the disk is refusing
+    // writes. `mutateRecord`/`updateStatus` both return false here.
+    try FileManager.default.removeItem(at: started.recordURL)
+
+    XCTAssertThrowsError(
+      try LiveSessionPersistence.sealTranscript(
+        started: started,
+        result: makeResult(
+          segments: [LiveMeetingSession.LiveSegment(id: UUID(), text: "Hi", endTime: 1)],
+          transcript: "Hi",
+          duration: 1,
+          audioURL: started.audioURL
+        ),
+        outputDirectory: outputDirectory,
+        historyDirectory: historyDirectory
+      )
+    ) { error in
+      // NOT a SavedSession. Returning one would have the UI report
+      // "Transcribed" for a record that says nothing of the sort — and would
+      // hand an empty transcript to whoever summarizes it next.
+      XCTAssertEqual(error as? LiveSessionPersistenceError, .recordUnwritable)
+    }
+  }
+
+  func testSealWritesTheContentBeforeItClaimsTheStatus() throws {
+    let started = try beginRecording()
+    try writeAudio(started, bytes: 64)
+    let saved = try LiveSessionPersistence.sealTranscript(
+      started: started,
+      result: makeResult(
+        segments: [LiveMeetingSession.LiveSegment(id: UUID(), text: "Hi", endTime: 1)],
+        transcript: "Hi",
+        duration: 1,
+        audioURL: started.audioURL
+      ),
+      outputDirectory: outputDirectory,
+      historyDirectory: historyDirectory
+    )
+
+    // Both writes landed, and the record says `transcribed` only because the
+    // content is already in it.
+    let json = try recordJSON(started.historyID)
+    XCTAssertEqual(json["transcriptText"] as? String, "Hi")
+    XCTAssertEqual(json["outputPath"] as? String, saved.outputURL.path)
+    XCTAssertEqual(try status(started.historyID), .transcribed)
+
+    // This is WHY that order: a crash between the two atomic writes leaves the
+    // earlier status, and only one of the two candidates is rescuable. If the
+    // status were flipped first, a crash would leave `transcribed` — no
+    // transcript, no outputPath, and nothing that will ever resolve it.
+    XCTAssertNotNil(
+      HistoryStatus.transcribing.interruptedResolution,
+      "a crash mid-seal must leave a status the launch sweep can resolve"
+    )
+    XCTAssertNil(
+      HistoryStatus.transcribed.interruptedResolution,
+      "`transcribed` is a rest state — the sweep will never revisit it"
+    )
+  }
+
   // MARK: - Status transitions on disk
+
+  func testSettleAsFailedUsesTheStageTheRecordIsIn() throws {
+    let started = try beginRecording()
+    let dir = historyDirectory!
+
+    // A caller naming the stage itself gets this wrong: `failed(transcribing)`
+    // on a record still at `recording` is an illegal transition, so nothing is
+    // written at all and the record stays live forever.
+    XCTAssertFalse(LiveSessionPersistence.updateStatus(
+      id: started.historyID,
+      to: .failed(stage: .transcribing),
+      historyDirectory: dir
+    ))
+    XCTAssertEqual(try status(started.historyID), .recording)
+
+    XCTAssertTrue(LiveSessionPersistence.settleAsFailed(id: started.historyID, historyDirectory: dir))
+    XCTAssertEqual(try status(started.historyID), .failed(stage: .recording))
+  }
+
+  func testSettleAsFailedLeavesRestedAndTerminalRecordsAlone() throws {
+    let started = try beginRecording()
+    let dir = historyDirectory!
+    XCTAssertTrue(LiveSessionPersistence.updateStatus(id: started.historyID, to: .transcribing, historyDirectory: dir))
+    XCTAssertTrue(LiveSessionPersistence.updateStatus(id: started.historyID, to: .transcribed, historyDirectory: dir))
+
+    // Nothing is owed by a record at rest, so this reports settled and writes
+    // nothing — a live session's cleanup may not undo a seal that landed.
+    XCTAssertTrue(LiveSessionPersistence.settleAsFailed(id: started.historyID, historyDirectory: dir))
+    XCTAssertEqual(try status(started.historyID), .transcribed)
+  }
+
+  func testAnInterruptedRecordReportsTheAudioItActuallyHas() throws {
+    let started = try beginRecording()
+    try writeAudio(started, bytes: 4096)
+    // Sample zero's zero is still on the record: only a seal ever corrected it.
+    XCTAssertEqual(try recordJSON(started.historyID)["audioBytes"] as? Int, 0)
+
+    XCTAssertEqual(
+      LiveSessionPersistence.resolveInterruptedRecords(historyDirectory: historyDirectory),
+      [started.historyID]
+    )
+
+    // Interrupted, and its recording is 4096 playable bytes — not the empty
+    // file the record used to claim.
+    XCTAssertEqual(try status(started.historyID), .failed(stage: .recording))
+    XCTAssertEqual(try recordJSON(started.historyID)["audioBytes"] as? Int, 4096)
+  }
+
+  func testSettlingAFailedSessionAlsoRecordsWhatItCaptured() throws {
+    let started = try beginRecording()
+    try writeAudio(started, bytes: 128)
+    XCTAssertTrue(LiveSessionPersistence.settleAsFailed(
+      id: started.historyID,
+      historyDirectory: historyDirectory
+    ))
+    XCTAssertEqual(try recordJSON(started.historyID)["audioBytes"] as? Int, 128)
+  }
+
+  func testSettleAsFailedReportsAMissingRecord() {
+    XCTAssertFalse(LiveSessionPersistence.settleAsFailed(
+      id: "20260101-000000Z-nosuch",
+      historyDirectory: historyDirectory
+    ))
+  }
 
   func testUpdateStatusWalksTheLifecycleAndRefusesToSkipIt() throws {
     let started = try beginRecording()

@@ -75,4 +75,64 @@ final class LiveMeetingViewTests: XCTestCase {
   func testSessionState_recordingMatchesItself() {
     XCTAssertEqual(LiveMeetingSession.SessionState.recording, .recording)
   }
+
+  // MARK: - The starting window (XIA-430)
+
+  /// The session is `.idle` for the whole of the mic prompt and the realtime
+  /// open + Begin round trip. Saying "Ready" through those seconds told the
+  /// user their press had not registered — and the second press is what lost a
+  /// meeting's transcript.
+  func testStateLabel_startingOverridesIdle() {
+    XCTAssertEqual(LiveMeetingFormat.stateLabel(.idle, isStarting: true), "Starting…")
+    XCTAssertEqual(LiveMeetingFormat.stateLabel(.idle, isStarting: false), "Ready")
+  }
+
+  /// A live session's own state always wins: a stale starting flag may not
+  /// relabel a session that is already recording.
+  func testStateLabel_startingNeverOverridesALiveSession() {
+    XCTAssertEqual(LiveMeetingFormat.stateLabel(.recording, isStarting: true), "Recording")
+    XCTAssertEqual(LiveMeetingFormat.stateLabel(.stopping, isStarting: true), "Finalizing…")
+  }
+
+  // MARK: - LiveMeetingControls
+
+  func testControls_idleOffersStartUntilAPressIsAccepted() {
+    XCTAssertEqual(
+      LiveMeetingControls.make(state: .idle, isStarting: false, hasTranscript: false),
+      .start
+    )
+    XCTAssertEqual(
+      LiveMeetingControls.make(state: .idle, isStarting: true, hasTranscript: false),
+      .starting,
+      "the Start button is withdrawn the moment a press is accepted"
+    )
+  }
+
+  func testControls_recordingAndStopping() {
+    XCTAssertEqual(
+      LiveMeetingControls.make(state: .recording, isStarting: false, hasTranscript: true),
+      .stop
+    )
+    XCTAssertEqual(
+      LiveMeetingControls.make(state: .stopping, isStarting: false, hasTranscript: true),
+      .finalizing
+    )
+  }
+
+  /// The dead end this closes: a session that dropped ten minutes in showed an
+  /// error banner with no route to the seal at all, so the transcript it had
+  /// already heard could not be saved and the record stayed `recording`.
+  func testControls_aFailedSessionWithATranscriptCanStillSaveIt() {
+    XCTAssertEqual(
+      LiveMeetingControls.make(state: .failed("socket closed"), isStarting: false, hasTranscript: true),
+      .saveOrDiscard
+    )
+  }
+
+  func testControls_aFailedSessionWithNothingHeardOffersNoSave() {
+    XCTAssertEqual(
+      LiveMeetingControls.make(state: .failed("mic permission denied"), isStarting: false, hasTranscript: false),
+      .retryOrDiscard
+    )
+  }
 }

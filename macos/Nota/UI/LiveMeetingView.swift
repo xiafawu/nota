@@ -21,12 +21,57 @@ enum LiveMeetingFormat {
 
   /// Short state label for the pane header. `.failed` carries its own message
   /// (rendered by the error banner), so the label stays generic here.
-  static func stateLabel(_ state: LiveMeetingSession.SessionState) -> String {
+  ///
+  /// `isStarting` wins over `.idle`, and that is the point: the session stays
+  /// `.idle` across the microphone prompt and the whole realtime open + Begin
+  /// round trip, so a pane that showed "Ready" for those seconds was telling
+  /// the user their press had not registered — and a second press is what lost
+  /// a meeting's transcript (XIA-430).
+  static func stateLabel(
+    _ state: LiveMeetingSession.SessionState,
+    isStarting: Bool = false
+  ) -> String {
+    if isStarting, state == .idle { return "Starting…" }
     switch state {
     case .idle: return "Ready"
     case .recording: return "Recording"
     case .stopping: return "Finalizing…"
     case .failed: return "Recording failed"
+    }
+  }
+}
+
+/// Which affordances the live pane offers, as a pure decision.
+///
+/// The rule that matters is the failed one: a session that dropped mid-meeting
+/// keeps everything it heard, and `LiveMeetingSession.stop()` accepts a failed
+/// session precisely so that transcript can still be sealed. A pane that
+/// offered only Try Again and Discard there was a dead end with no route to
+/// the seal at all, and the record stayed `recording` for the rest of the run.
+enum LiveMeetingControls: Equatable {
+  /// Nothing is running: the big Start button.
+  case start
+  /// A press has been accepted but the session is not live yet.
+  case starting
+  /// Recording: Stop, enabled.
+  case stop
+  /// Stopping: Stop, disabled.
+  case finalizing
+  /// Failed with something to keep: Save Transcript, Try Again, Discard.
+  case saveOrDiscard
+  /// Failed with nothing to keep: Try Again, Discard.
+  case retryOrDiscard
+
+  static func make(
+    state: LiveMeetingSession.SessionState,
+    isStarting: Bool,
+    hasTranscript: Bool
+  ) -> LiveMeetingControls {
+    switch state {
+    case .recording: return .stop
+    case .stopping: return .finalizing
+    case .failed: return hasTranscript ? .saveOrDiscard : .retryOrDiscard
+    case .idle: return isStarting ? .starting : .start
     }
   }
 }
@@ -39,8 +84,17 @@ struct LiveMeetingView: View {
   @ObservedObject var session: LiveMeetingSession
   /// Session kind drives the pane's own title: memo sessions say "Memo".
   var kind: HistoryKind = .meeting
+  /// A Start press has been accepted but the session has not gone live yet
+  /// (mic permission, then the realtime open + Begin round trip). The pane
+  /// says so and withdraws the Start button — the seconds when nothing on
+  /// screen changed are the seconds a second press arrived in.
+  var isStarting: Bool = false
   let onStart: () -> Void
   let onStop: () -> Void
+  /// Throw a failed session away. Not `session.cancel()` from the view: the
+  /// record on disk has to be settled to a terminal status, and only the model
+  /// owns it.
+  var onDiscard: () -> Void = {}
 
   /// Stable id for the volatile partial-text tail, so the scroll reader can
   /// chase it as it rewrites on every interim recognition update.
@@ -56,9 +110,19 @@ struct LiveMeetingView: View {
       : "Record from your microphone and transcribe in real time."
   }
 
+  /// What the pane offers right now. One decision, read by the header, the
+  /// body and the banner, so they cannot disagree about which state this is.
+  private var controls: LiveMeetingControls {
+    LiveMeetingControls.make(
+      state: session.state,
+      isStarting: isStarting,
+      hasTranscript: !session.segments.isEmpty
+    )
+  }
+
   var body: some View {
     VStack(spacing: 0) {
-      if session.state != .idle {
+      if controls != .start {
         header
         Divider()
       }
@@ -67,14 +131,18 @@ struct LiveMeetingView: View {
         errorBanner(message: message)
       }
 
-      if session.state == .idle {
+      switch controls {
+      case .start:
         idleView
-      } else {
+      case .starting:
+        startingView
+      case .stop, .finalizing, .saveOrDiscard, .retryOrDiscard:
         transcriptView
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .animation(Tokens.animFast, value: session.state)
+    .animation(Tokens.animFast, value: isStarting)
   }
 
   // MARK: - Header (recording / stopping / failed)
@@ -83,7 +151,7 @@ struct LiveMeetingView: View {
     HStack(spacing: Metrics.liveMeetingHeaderSpacing) {
       HStack(spacing: Metrics.liveMeetingRowSpacing) {
         stateIndicator
-        Text(LiveMeetingFormat.stateLabel(session.state))
+        Text(LiveMeetingFormat.stateLabel(session.state, isStarting: isStarting))
           .font(Tokens.liveMeetingStateFont)
           .foregroundStyle(.secondary)
       }
@@ -106,6 +174,9 @@ struct LiveMeetingView: View {
   @ViewBuilder
   private var stateIndicator: some View {
     switch session.state {
+    case .idle where isStarting:
+      ProgressView()
+        .controlSize(.small)
     case .recording:
       Image(systemName: "record.circle.fill")
         .font(.system(size: 16))
@@ -125,8 +196,8 @@ struct LiveMeetingView: View {
 
   @ViewBuilder
   private var stopControl: some View {
-    switch session.state {
-    case .recording:
+    switch controls {
+    case .stop:
       Button {
         onStop()
       } label: {
@@ -134,17 +205,34 @@ struct LiveMeetingView: View {
           .foregroundStyle(.red)
       }
       .liquidGlassButton()
-    case .stopping:
+    case .starting, .finalizing:
       Button {} label: {
         Label("Stop", systemImage: "stop.fill")
           .foregroundStyle(.red)
       }
       .disabled(true)
       .liquidGlassButton()
-    case .idle, .failed:
-      // Failed sessions get their retry/discard affordances from the banner.
+    case .start, .saveOrDiscard, .retryOrDiscard:
+      // A failed session's affordances live in the banner, next to the reason
+      // they are being offered.
       EmptyView()
     }
+  }
+
+  // MARK: - Starting (press accepted, session not live yet)
+
+  private var startingView: some View {
+    VStack(spacing: Metrics.emptyMainSpacing) {
+      Spacer()
+      ProgressView()
+        .controlSize(.large)
+      Text("Starting…")
+        .font(Tokens.liveMeetingCaptionFont)
+        .foregroundStyle(.secondary)
+      Spacer()
+    }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
+    .padding(Metrics.emptyMainOuterPadding)
   }
 
   // MARK: - Idle (disabled / empty state)
@@ -278,6 +366,18 @@ struct LiveMeetingView: View {
       Spacer(minLength: Metrics.liveMeetingBannerSpacing)
 
       HStack(spacing: Metrics.liveMeetingBannerSpacing) {
+        if controls == .saveOrDiscard {
+          // The session heard something before it dropped, and `stop()`
+          // accepts a failed session so that transcript can still be sealed.
+          // Without this the pane was a dead end: no Stop in the header, no
+          // route to the seal, and a record left saying `recording`.
+          Button {
+            onStop()
+          } label: {
+            Text("Save Transcript")
+          }
+          .liquidGlassButton()
+        }
         Button {
           onStart()
         } label: {
@@ -285,9 +385,9 @@ struct LiveMeetingView: View {
         }
         .liquidGlassButton()
         Button {
-          // Not start/stop: the model's two lifecycle verbs keep ownership of
-          // live sessions; cancel is the session's own reset for a failed run.
-          session.cancel()
+          // Not `session.cancel()`: the record on disk has to come to rest at
+          // a terminal status (keeping its audio), and only the model owns it.
+          onDiscard()
         } label: {
           Text("Discard")
         }

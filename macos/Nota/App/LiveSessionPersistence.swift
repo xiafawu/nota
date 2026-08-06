@@ -1,19 +1,27 @@
 import Foundation
+import os
 
 /// Reasons a live session's result cannot be sealed as a finished record.
-/// Only the two semantic cases are distinct; every other failure is an
-/// underlying file-system error and propagates as-is.
+/// Only the semantic cases are distinct; every other failure is an underlying
+/// file-system error and propagates as-is.
 ///
-/// Neither of these throws anything away any more. Since XIA-430 the record
-/// and its audio exist from sample zero, so a session that cannot be sealed
-/// leaves a `failed(stage:)` record with the audio still in it — the audio is
-/// the one artifact that cannot be regenerated, and these are exactly the
-/// failures where somebody wants it.
+/// None of these throws anything away. Since XIA-430 the record and its audio
+/// exist from sample zero, so a session that cannot be sealed leaves a
+/// `failed(stage:)` record with the audio still in it — the audio is the one
+/// artifact that cannot be regenerated, and these are exactly the failures
+/// where somebody wants it.
 enum LiveSessionPersistenceError: LocalizedError, Equatable {
   /// Nothing was recognized (whitespace-only transcript).
   case emptyTranscript
   /// The session produced text but no audio file was ever created.
   case missingAudio
+  /// A write the seal depends on did not land — the record was deleted under
+  /// us, or the disk filled up right after a long recording. It is its own
+  /// case because the alternative is the one thing a seal may never do:
+  /// return a `SavedSession` for content that is not on disk, leaving a
+  /// record that says Transcribed, has no `outputPath`, and hands an empty
+  /// transcript to whoever summarizes it next.
+  case recordUnwritable
 
   var errorDescription: String? {
     switch self {
@@ -21,16 +29,17 @@ enum LiveSessionPersistenceError: LocalizedError, Equatable {
       return "No speech was captured"
     case .missingAudio:
       return "Recording failed"
+    case .recordUnwritable:
+      return "Could not save this session's record"
     }
   }
 
-  /// The stage the record failed in, so the caller does not have to map it.
-  var stage: HistoryStage {
-    switch self {
-    case .emptyTranscript: return .transcribing
-    case .missingAudio: return .recording
-    }
-  }
+  // There is deliberately no `stage` on this error any more. An error that
+  // names the stage it failed in is a call site deciding what the record's
+  // status may become, and it is wrong exactly when it matters: a caller that
+  // names the wrong stage writes NOTHING, because `canAdvance` refuses it, and
+  // the record is left claiming a live stage forever. `settleAsFailed` reads
+  // the stage off the record instead.
 }
 
 /// The record-first lifecycle of a live dictation/transcription session
@@ -64,6 +73,11 @@ enum LiveSessionPersistence {
   /// The audio file inside a record's assets folder. One name for every
   /// record: `audioPath` is relative, so the name is the whole value.
   static let audioFileName = "recording.caf"
+
+  /// Every refused or failed write says so here. The record store is the one
+  /// place a live session's work becomes durable, so a write that did not land
+  /// may never be silent even when its caller has nowhere to show it.
+  static let logger = Logger(subsystem: "com.xiafawu.nota", category: "history.record")
 
   /// A record that exists on disk with `status: recording`, before a single
   /// audio buffer has been written.
@@ -170,6 +184,10 @@ enum LiveSessionPersistence {
       "sourcePath": audioURL.path,
       "sourceName": audioFileName,
       "audioPath": audioFileName,
+      // True at sample zero, and corrected at every exit: `sealTranscript`
+      // stamps the final size, and `settleAsFailed` / the launch sweep stamp
+      // whatever was captured before things went wrong. The field is never
+      // absent, so no consumer has to distinguish "zero" from "not written".
       "audioBytes": 0,
       "provider": "assemblyai",
       "kind": kind.rawValue,
@@ -216,13 +234,20 @@ enum LiveSessionPersistence {
   /// Apply `changes` to a record and rewrite it atomically. Every key not
   /// named survives — this is a merge, never a rebuild, because the CLI writes
   /// fields (usage, suggestions, speakerClips) this app does not model.
-  @discardableResult
+  ///
+  /// Returns whether the write landed, and it is deliberately NOT
+  /// `@discardableResult`: a false here is a record that does not say what
+  /// the caller believes it says, and every one of the failures it reports
+  /// (record deleted, disk full, encoder refusal) is one a caller must either
+  /// surface or log. Ignoring it is how a full disk became a "Transcribed"
+  /// record with no transcript in it.
   static func mutateRecord(
     id: String,
     historyDirectory: URL,
     _ changes: [String: Any]
   ) -> Bool {
     guard var record = loadRecord(id: id, historyDirectory: historyDirectory) else {
+      logger.error("record \(id, privacy: .public) could not be read for update")
       return false
     }
     for (key, value) in changes { record[key] = value }
@@ -230,17 +255,30 @@ enum LiveSessionPersistence {
     guard
       let data = try? JSONSerialization.data(withJSONObject: record, options: [.prettyPrinted])
     else {
+      logger.error("record \(id, privacy: .public) could not be encoded")
       return false
     }
     let url = historyDirectory.appendingPathComponent("\(id).json")
-    return (try? data.write(to: url, options: .atomic)) != nil
+    do {
+      try data.write(to: url, options: .atomic)
+      return true
+    } catch {
+      logger.error(
+        "record \(id, privacy: .public) write failed: \(error.localizedDescription, privacy: .public)"
+      )
+      return false
+    }
   }
 
   /// Move a record to `status`. Refuses an illegal transition rather than
   /// writing it: the machine in `HistoryStatus` is the whole point of typing
   /// this field, and a record that jumped from `recording` to `done` would
   /// describe a session nobody ran.
-  @discardableResult
+  ///
+  /// Returns whether the record now says `status`. Not `@discardableResult`
+  /// for the reason `mutateRecord` is not: a refused transition writes
+  /// NOTHING, so a discarded false is a record left claiming the stage it was
+  /// already in. Callers that cannot act on it must at least say so.
   static func updateStatus(
     id: String,
     to status: HistoryStatus,
@@ -248,13 +286,71 @@ enum LiveSessionPersistence {
     historyDirectory: URL
   ) -> Bool {
     guard let record = loadRecord(id: id, historyDirectory: historyDirectory) else {
+      logger.error("record \(id, privacy: .public) could not be read for a status change")
       return false
     }
     let current = HistoryStatus.normalized(fromRecord: record)
-    guard current.canAdvance(to: status) else { return false }
+    guard current.canAdvance(to: status) else {
+      logger.error(
+        """
+        record \(id, privacy: .public) refused \
+        \(current.rawValue, privacy: .public) → \(status.rawValue, privacy: .public)
+        """
+      )
+      return false
+    }
     var changes: [String: Any] = ["status": status.rawValue]
     if interrupted { changes["interrupted"] = true }
     return mutateRecord(id: id, historyDirectory: historyDirectory, changes)
+  }
+
+  /// Take a record out of the in-flight zone by failing it in the stage it is
+  /// actually IN.
+  ///
+  /// The stage is read off the record instead of being named by the caller,
+  /// and that is the whole point: `canAdvance` refuses a failure in any other
+  /// stage, `updateStatus` then writes nothing, and a discarded false leaves
+  /// the record claiming a live stage forever. That is exactly what the stop
+  /// path used to do — it asked for `failed(stage: .transcribing)` on a record
+  /// still at `recording`, which is illegal, so a failed live session stayed
+  /// `recording` until the next launch swept it up as "Interrupted", a
+  /// different fact from "the socket dropped".
+  ///
+  /// A record already at rest (`transcribed`) or already terminal is left
+  /// exactly as it is and reported as settled: nothing is owed there.
+  /// Returns whether the record is now out of the in-flight zone.
+  static func settleAsFailed(id: String, historyDirectory: URL) -> Bool {
+    guard let record = loadRecord(id: id, historyDirectory: historyDirectory) else {
+      logger.error("record \(id, privacy: .public) could not be read to settle it")
+      return false
+    }
+    let current = HistoryStatus.normalized(fromRecord: record)
+    guard let resolution = current.interruptedResolution else { return true }
+    stampAudioBytes(record: record, historyDirectory: historyDirectory)
+    return updateStatus(id: id, to: resolution, historyDirectory: historyDirectory)
+  }
+
+  /// Write the audio's real size onto a record that is leaving the in-flight
+  /// zone without a seal.
+  ///
+  /// `beginRecording` writes `audioBytes: 0`, which is true at sample zero and
+  /// a lie from the first buffer onward — only `sealTranscript` used to
+  /// correct it, so every interrupted record described a playable recording as
+  /// empty. Nothing was misled by it yet, and that is exactly why it is
+  /// stamped here rather than left to the first consumer that starts trusting
+  /// the field. Best effort: a record whose audio cannot be measured keeps
+  /// whatever it had, because the status change matters more than the size.
+  private static func stampAudioBytes(record: [String: Any], historyDirectory: URL) {
+    guard
+      let id = record["id"] as? String,
+      let audio = resolvedAudioURL(record: record, historyDirectory: historyDirectory),
+      let attributes = try? FileManager.default.attributesOfItem(atPath: audio.path),
+      let size = (attributes[.size] as? NSNumber)?.intValue
+    else {
+      return
+    }
+    if (record["audioBytes"] as? NSNumber)?.intValue == size { return }
+    _ = mutateRecord(id: id, historyDirectory: historyDirectory, ["audioBytes": size])
   }
 
   // MARK: - Interrupted recovery
@@ -287,6 +383,9 @@ enum LiveSessionPersistence {
       }
       let status = HistoryStatus.normalized(fromRecord: record)
       guard let resolution = status.interruptedResolution else { continue }
+      // An interrupted record's audio is playable, so it may not go on
+      // reporting the zero bytes `beginRecording` wrote at sample zero.
+      stampAudioBytes(record: record, historyDirectory: historyDirectory)
       if updateStatus(
         id: id,
         to: resolution,
@@ -318,11 +417,11 @@ enum LiveSessionPersistence {
     historyDirectory: URL
   ) throws -> SavedSession {
     func fail(_ error: LiveSessionPersistenceError) -> LiveSessionPersistenceError {
-      updateStatus(
-        id: started.historyID,
-        to: .failed(stage: error.stage),
-        historyDirectory: historyDirectory
-      )
+      // The stage comes off the record, not off the error: a failure may only
+      // be written in the stage the record is in, and the record has moved by
+      // the time some of these are raised. `settleAsFailed` is the one that
+      // knows, and its own false is already logged.
+      _ = settleAsFailed(id: started.historyID, historyDirectory: historyDirectory)
       return error
     }
 
@@ -336,7 +435,13 @@ enum LiveSessionPersistence {
     guard fileManager.fileExists(atPath: started.audioURL.path) else {
       throw fail(.missingAudio)
     }
-    updateStatus(id: started.historyID, to: .transcribing, historyDirectory: historyDirectory)
+    guard updateStatus(
+      id: started.historyID,
+      to: .transcribing,
+      historyDirectory: historyDirectory
+    ) else {
+      throw fail(.recordUnwritable)
+    }
     guard !transcript.isEmpty else { throw fail(.emptyTranscript) }
 
     try fileManager.createDirectory(at: outputDirectory, withIntermediateDirectories: true)
@@ -362,14 +467,32 @@ enum LiveSessionPersistence {
 
     let attributes = try? fileManager.attributesOfItem(atPath: started.audioURL.path)
     let audioBytes = (attributes?[.size] as? NSNumber)?.intValue ?? 0
-    updateStatus(id: started.historyID, to: .transcribed, historyDirectory: historyDirectory)
-    mutateRecord(id: started.historyID, historyDirectory: historyDirectory, [
+
+    // CONTENT FIRST, STATUS LAST — and both writes are checked.
+    //
+    // These are two atomic writes and a crash can land between them, so the
+    // order decides what the launch sweep finds. Flipping the status first
+    // leaves `transcribed`, which is neither in flight nor terminal: the sweep
+    // will NEVER resolve it, and it reads as a finished transcript with no
+    // transcript and no `outputPath` in it. Writing the content first leaves
+    // `transcribing`, which the sweep does rescue. The worst case is a record
+    // that says less than it holds, never one that says more.
+    guard mutateRecord(id: started.historyID, historyDirectory: historyDirectory, [
       "durationMinutes": durationMinutes,
       "transcriptText": transcript,
       "segments": Self.segmentDictionaries(result.segments),
       "outputPath": outputURL.path,
       "audioBytes": audioBytes
-    ])
+    ]) else {
+      throw fail(.recordUnwritable)
+    }
+    guard updateStatus(
+      id: started.historyID,
+      to: .transcribed,
+      historyDirectory: historyDirectory
+    ) else {
+      throw fail(.recordUnwritable)
+    }
 
     return SavedSession(
       historyID: started.historyID,
