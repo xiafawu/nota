@@ -1,0 +1,457 @@
+import AppKit
+import SwiftUI
+
+// MARK: - Motion
+
+/// What Reduce Motion means on a recording surface, written down once.
+///
+/// The two components answer it **differently**, and the asymmetry is the whole
+/// point rather than an oversight:
+///
+/// - The **meter** is information. It is the only proof on screen that the
+///   microphone is actually open and hearing something, so it keeps moving
+///   under Reduce Motion — with a plainer curve (no spring overshoot), but it
+///   moves. Freezing it would not calm the interface; it would make a live
+///   session and a wedged one look identical.
+/// - The **ring** is decoration. It breathes because a live session should feel
+///   alive, and nothing is lost by holding it still — the meter is already
+///   saying the thing the ring is only dressing up.
+///
+/// Both live here so a future component has to pick a side deliberately.
+enum RecordingMotion {
+  /// Never nil, at either setting: the meter always animates.
+  static func meterAnimation(reduceMotion: Bool) -> Animation? {
+    reduceMotion
+      ? .linear(duration: 0.10)
+      : .spring(response: 0.28, dampingFraction: 0.55)
+  }
+
+  /// Nil under Reduce Motion: the ring holds at a steady scale and opacity.
+  static func ringAnimation(reduceMotion: Bool) -> Animation? {
+    guard !reduceMotion else { return nil }
+    return .easeInOut(duration: SessionRingMetrics.cycle / 2).repeatForever(autoreverses: true)
+  }
+}
+
+// MARK: - Session meter
+
+/// Sizing for `SessionMeter`, kept out of the view for the reason
+/// `HUDPillMetrics` and `HUDPrompterMetrics` are: the arithmetic is then
+/// asserted without a window server, a hosting view, or a microphone.
+enum SessionMeterMetrics {
+  /// Two sizes, not a free `height` parameter. The in-window recording column
+  /// and the mini-recorder/menu-bar island are the only two places this appears,
+  /// and a meter whose bar count varies continuously has no baseline to pin.
+  enum Variant: CaseIterable {
+    /// Beside the big timer in the recording column.
+    case tall
+    /// Beside a timer in the floating island or the menu bar.
+    case compact
+
+    var barCount: Int {
+      switch self {
+      case .tall: return 9
+      case .compact: return 5
+      }
+    }
+
+    var barWidth: CGFloat {
+      switch self {
+      case .tall: return 3
+      case .compact: return 2
+      }
+    }
+
+    var barSpacing: CGFloat {
+      switch self {
+      case .tall: return 3
+      case .compact: return 2
+      }
+    }
+
+    /// The floor a silent room draws — the meter is never blank, because a
+    /// blank meter and an absent meter look the same.
+    var minBarHeight: CGFloat {
+      switch self {
+      case .tall: return 4
+      case .compact: return 3
+      }
+    }
+
+    var maxBarHeight: CGFloat {
+      switch self {
+      case .tall: return 48
+      case .compact: return 16
+      }
+    }
+
+    /// Fixed overall width, so the meter cannot resize the row it sits in when
+    /// a bar happens to round differently.
+    var width: CGFloat {
+      let n = CGFloat(barCount)
+      return n * barWidth + (n - 1) * barSpacing
+    }
+  }
+
+  /// Every bar's height for one RMS reading.
+  ///
+  /// `reduceMotion` is deliberately **not** a parameter: the heights are what
+  /// the microphone is doing, and that is not a motion preference. Only the
+  /// curve between two readings is (`RecordingMotion.meterAnimation`).
+  static func barHeights(level: Float, variant: Variant) -> [CGFloat] {
+    (0..<variant.barCount).map { barHeight(level: level, index: $0, variant: variant) }
+  }
+
+  static func barHeight(level: Float, index: Int, variant: Variant) -> CGFloat {
+    let clamped = CGFloat(min(max(level, 0), 1))
+    let shape = profile(index: index, count: variant.barCount)
+    // A touch of per-bar wobble driven by the level itself, so the silhouette
+    // is a voice and not a symmetric hill. Deterministic: the same level always
+    // draws the same meter.
+    let wobble = 0.75 + 0.25 * sin(Double(index) * 1.7 + Double(clamped) * 21)
+    let drive = clamped * shape * CGFloat(wobble)
+    let span = variant.maxBarHeight - variant.minBarHeight
+    return min(variant.maxBarHeight, variant.minBarHeight + span * drive)
+  }
+
+  /// Center-weighted silhouette, same family as the HUD's compact meter but
+  /// generated for any bar count.
+  private static func profile(index: Int, count: Int) -> CGFloat {
+    guard count > 1 else { return 1 }
+    let t = (Double(index) + 0.5) / Double(count)
+    return CGFloat(0.42 + 0.58 * sin(.pi * t))
+  }
+}
+
+/// The live level meter: proof the microphone is open, in ember.
+struct SessionMeter: View {
+  let level: Float
+  var variant: SessionMeterMetrics.Variant = .tall
+
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.colorScheme) private var colorScheme
+
+  var body: some View {
+    HStack(spacing: variant.barSpacing) {
+      ForEach(Array(heights.enumerated()), id: \.offset) { _, height in
+        Capsule(style: .continuous)
+          .fill(CraftTokens.ember(colorScheme))
+          .frame(width: variant.barWidth, height: height)
+      }
+    }
+    // Fixed frame: nothing the level does may change the size of the row this
+    // sits in — the same rule the HUD's meter follows.
+    .frame(width: variant.width, height: variant.maxBarHeight)
+    .animation(RecordingMotion.meterAnimation(reduceMotion: reduceMotion), value: level)
+    .accessibilityLabel("Microphone level")
+  }
+
+  private var heights: [CGFloat] {
+    SessionMeterMetrics.barHeights(level: level, variant: variant)
+  }
+}
+
+// MARK: - Session ring
+
+/// The breathing ring's numbers. Pure, so "how far it breathes and how long it
+/// takes" is asserted without waiting 2.6 seconds for a render.
+enum SessionRingMetrics {
+  /// One full inhale-exhale. Slow enough to read as breathing rather than as a
+  /// pulse — a pulse is an alert, and nothing is wrong.
+  static let cycle: TimeInterval = 2.6
+  /// ~3.5%. Large enough to notice in peripheral vision, small enough that the
+  /// ring never collides with what it encircles.
+  static let scaleAmplitude: CGFloat = 0.035
+
+  static let restOpacity: Double = 0.55
+  static let peakOpacity: Double = 0.90
+
+  /// `atPeak` is the *animated* end of the cycle; the view drives it to true on
+  /// appear and lets `RecordingMotion.ringAnimation` autoreverse it forever.
+  /// Under Reduce Motion the view never asks for the peak, so both values below
+  /// collapse to their resting halves and the ring simply holds.
+  static func scale(atPeak: Bool) -> CGFloat {
+    atPeak ? 1 + scaleAmplitude : 1
+  }
+
+  static func opacity(atPeak: Bool) -> Double {
+    atPeak ? peakOpacity : restOpacity
+  }
+
+  /// What the ring is doing at a given Reduce Motion setting, as one value —
+  /// this is the pair the asymmetry test reads.
+  static func breathes(reduceMotion: Bool) -> Bool { !reduceMotion }
+}
+
+/// The ember ring that says a session is running. Decoration, by construction:
+/// it carries no state the owner needs and holds perfectly still under Reduce
+/// Motion.
+struct SessionRing: View {
+  var diameter: CGFloat = 96
+  var lineWidth: CGFloat = 2
+
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @Environment(\.colorScheme) private var colorScheme
+  @State private var atPeak = false
+
+  var body: some View {
+    Circle()
+      .fill(CraftTokens.emberWash(colorScheme))
+      .overlay(
+        Circle().strokeBorder(
+          CraftTokens.ember(colorScheme).opacity(SessionRingMetrics.opacity(atPeak: atPeak)),
+          lineWidth: lineWidth
+        )
+      )
+      .frame(width: diameter, height: diameter)
+      .scaleEffect(SessionRingMetrics.scale(atPeak: atPeak))
+      .onAppear(perform: startBreathing)
+      .accessibilityHidden(true)
+  }
+
+  private func startBreathing() {
+    guard SessionRingMetrics.breathes(reduceMotion: reduceMotion) else { return }
+    guard let animation = RecordingMotion.ringAnimation(reduceMotion: reduceMotion) else { return }
+    withAnimation(animation) { atPeak = true }
+  }
+}
+
+// MARK: - Session timer
+
+/// The elapsed clock's type decisions, all of them arithmetic.
+///
+/// The one that needs writing down is the **step**: `mm:ss` is drawn at the
+/// caller's size and `h:mm:ss` at 72% of it, and the change happens exactly
+/// once, at the hour. It is deliberately not a fitted or auto-shrinking font —
+/// those re-measure on every tick and the digits would breathe with the seconds.
+/// The plate reserves the wider of the two forms up front, so the step costs no
+/// reflow: the glyphs get smaller inside a box that never moves.
+enum SessionTimerMetrics {
+  /// 58 → 42 in the recording column.
+  static let hourFontScale: CGFloat = 0.72
+
+  enum Form: Equatable, CaseIterable {
+    case minutesSeconds
+    case hoursMinutesSeconds
+
+    /// What the plate has to be able to hold for this form. `hh:mm:ss` rather
+    /// than `h:mm:ss`: the step may happen only once, so a tenth hour must not
+    /// be able to ask for a second one.
+    var reservedCharacters: Int {
+      switch self {
+      case .minutesSeconds: return 5
+      case .hoursMinutesSeconds: return 8
+      }
+    }
+  }
+
+  static func form(elapsed: TimeInterval) -> Form {
+    wholeSeconds(elapsed) >= 3600 ? .hoursMinutesSeconds : .minutesSeconds
+  }
+
+  /// `59:59`, then `1:00:00`.
+  static func text(elapsed: TimeInterval) -> String {
+    let total = wholeSeconds(elapsed)
+    let seconds = total % 60
+    let minutes = (total / 60) % 60
+    let hours = total / 3600
+    switch form(elapsed: elapsed) {
+    case .minutesSeconds:
+      return String(format: "%02d:%02d", minutes, seconds)
+    case .hoursMinutesSeconds:
+      return String(format: "%d:%02d:%02d", hours, minutes, seconds)
+    }
+  }
+
+  /// The step function itself. Rounded, so the two sizes are whole points and
+  /// the same at every call site.
+  static func fontSize(base: CGFloat, elapsed: TimeInterval) -> CGFloat {
+    fontSize(base: base, form: form(elapsed: elapsed))
+  }
+
+  static func fontSize(base: CGFloat, form: Form) -> CGFloat {
+    switch form {
+    case .minutesSeconds: return base
+    case .hoursMinutesSeconds: return (base * hourFontScale).rounded()
+    }
+  }
+
+  /// The width the timer reserves — the widest either form can ever need, and
+  /// therefore **independent of `elapsed` by construction**. That is what makes
+  /// "the plate keeps its width" a fact about the code rather than a hope about
+  /// the metrics.
+  static func plateWidth(base: CGFloat) -> CGFloat {
+    Form.allCases
+      .map { width(characters: $0.reservedCharacters, atSize: fontSize(base: base, form: $0)) }
+      .reduce(0, max)
+      .rounded(.up)
+  }
+
+  static let weight: Font.Weight = .medium
+
+  static func font(base: CGFloat, elapsed: TimeInterval) -> Font {
+    .system(size: fontSize(base: base, elapsed: elapsed), weight: weight, design: .monospaced)
+  }
+
+  private static func wholeSeconds(_ elapsed: TimeInterval) -> Int {
+    guard elapsed.isFinite, elapsed > 0 else { return 0 }
+    return Int(elapsed)
+  }
+
+  /// SF Mono advances every glyph identically — the colon included — so one
+  /// measurement times the character count is the exact string width.
+  private static func width(characters: Int, atSize size: CGFloat) -> CGFloat {
+    let font = NSFont.monospacedSystemFont(ofSize: size, weight: .medium)
+    let advance = ("0" as NSString).size(withAttributes: [.font: font]).width
+    return advance * CGFloat(characters) + 2
+  }
+}
+
+/// The elapsed clock: mono, tabular, and the single most legible thing on a
+/// recording surface.
+struct SessionTimer: View {
+  let elapsed: TimeInterval
+  /// The `mm:ss` size. The hour form derives from it — callers never pass two.
+  var base: CGFloat = 58
+
+  var body: some View {
+    Text(SessionTimerMetrics.text(elapsed: elapsed))
+      .font(SessionTimerMetrics.font(base: base, elapsed: elapsed))
+      .monospacedDigit()
+      .foregroundStyle(.primary)
+      .lineLimit(1)
+      .fixedSize(horizontal: true, vertical: false)
+      // Reserved once for the widest form, so crossing the hour re-sizes the
+      // glyphs and moves nothing around them.
+      .frame(width: SessionTimerMetrics.plateWidth(base: base))
+      .accessibilityLabel("Elapsed time")
+  }
+}
+
+// MARK: - Previews
+
+#if DEBUG
+private struct RecordingAccentGallery: View {
+  var body: some View {
+    CraftWashBackground()
+      .overlay(
+        VStack(spacing: CraftTokens.spacing32) {
+          HStack(spacing: CraftTokens.spacing24) {
+            SessionRing()
+              .overlay(SessionMeter(level: 0.7, variant: .tall))
+            VStack(alignment: .leading, spacing: CraftTokens.spacing8) {
+              SessionTimer(elapsed: 3599)
+              SessionTimer(elapsed: 3600)
+            }
+          }
+          HStack(spacing: CraftTokens.spacing12) {
+            SessionRing(diameter: 20, lineWidth: 1.5)
+            SessionMeter(level: 0.5, variant: .compact)
+            SessionTimer(elapsed: 754, base: 15)
+          }
+          .padding(.horizontal, CraftTokens.spacing16)
+          .padding(.vertical, CraftTokens.spacing8)
+          .craftGlassPanel(in: Capsule())
+        }
+        .padding(CraftTokens.spacing32)
+      )
+      .frame(width: 640, height: 460)
+  }
+}
+
+#Preview("recording accent – light") {
+  RecordingAccentGallery().preferredColorScheme(.light)
+}
+
+#Preview("recording accent – dark") {
+  RecordingAccentGallery().preferredColorScheme(.dark)
+}
+
+#Preview("meter – light") {
+  CraftWashBackground()
+    .overlay(
+      HStack(spacing: CraftTokens.spacing32) {
+        ForEach([0.0, 0.25, 0.6, 1.0], id: \.self) { level in
+          SessionMeter(level: Float(level), variant: .tall)
+        }
+        SessionMeter(level: 0.6, variant: .compact)
+      }
+      .padding(CraftTokens.spacing32)
+    )
+    .frame(width: 640, height: 240)
+    .preferredColorScheme(.light)
+}
+
+#Preview("meter – dark") {
+  CraftWashBackground()
+    .overlay(
+      HStack(spacing: CraftTokens.spacing32) {
+        ForEach([0.0, 0.25, 0.6, 1.0], id: \.self) { level in
+          SessionMeter(level: Float(level), variant: .tall)
+        }
+        SessionMeter(level: 0.6, variant: .compact)
+      }
+      .padding(CraftTokens.spacing32)
+    )
+    .frame(width: 640, height: 240)
+    .preferredColorScheme(.dark)
+}
+
+#Preview("ring – light") {
+  CraftWashBackground()
+    .overlay(
+      HStack(spacing: CraftTokens.spacing24) {
+        SessionRing()
+        SessionRing(diameter: 44)
+        SessionRing(diameter: 20, lineWidth: 1.5)
+      }
+      .padding(CraftTokens.spacing32)
+    )
+    .frame(width: 640, height: 240)
+    .preferredColorScheme(.light)
+}
+
+#Preview("ring – dark") {
+  CraftWashBackground()
+    .overlay(
+      HStack(spacing: CraftTokens.spacing24) {
+        SessionRing()
+        SessionRing(diameter: 44)
+        SessionRing(diameter: 20, lineWidth: 1.5)
+      }
+      .padding(CraftTokens.spacing32)
+    )
+    .frame(width: 640, height: 240)
+    .preferredColorScheme(.dark)
+}
+
+#Preview("timer – light") {
+  CraftWashBackground()
+    .overlay(
+      VStack(alignment: .leading, spacing: CraftTokens.spacing8) {
+        SessionTimer(elapsed: 7)
+        SessionTimer(elapsed: 3599)
+        SessionTimer(elapsed: 3600)
+        SessionTimer(elapsed: 45_296)
+      }
+      .padding(CraftTokens.spacing32)
+    )
+    .frame(width: 640, height: 420)
+    .preferredColorScheme(.light)
+}
+
+#Preview("timer – dark") {
+  CraftWashBackground()
+    .overlay(
+      VStack(alignment: .leading, spacing: CraftTokens.spacing8) {
+        SessionTimer(elapsed: 7)
+        SessionTimer(elapsed: 3599)
+        SessionTimer(elapsed: 3600)
+        SessionTimer(elapsed: 45_296)
+      }
+      .padding(CraftTokens.spacing32)
+    )
+    .frame(width: 640, height: 420)
+    .preferredColorScheme(.dark)
+}
+#endif
