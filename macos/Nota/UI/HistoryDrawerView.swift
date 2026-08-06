@@ -400,6 +400,9 @@ struct HistoryDrawerView: View {
         if model.history.isEmpty { onClose() }
       }
     )
+    // XIA-435: the row IS the progress UI. One call — the accessory observes
+    // the ledger itself (see ProcessingRowAccessory.swift).
+    .processingStatus(model.processingSource(for: entry))
     .disabled(model.isRunning)
   }
 

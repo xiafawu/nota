@@ -43,8 +43,19 @@ struct ContentView: View {
     // stays `.idle` through the mic prompt and the realtime handshake, and a
     // pane that showed no change for those seconds invited a second press
     // (XIA-430).
-    if model.isStartingLiveSession { return .liveMeeting }
-    if liveSession.state != .idle { return .liveMeeting }
+    //
+    // And Stop unpins it IMMEDIATELY (XIA-435): `isLiveSessionHandedOff` is
+    // set on the press, before the stream is finalized and before the seal, so
+    // the window comes home in the same runloop turn whatever the transcript's
+    // length. The work that is left says where it got to in the drawer row and
+    // the menu bar, not in this pane.
+    if LivePhaseGate.showsLiveSession(
+      isStarting: model.isStartingLiveSession,
+      sessionIsIdle: liveSession.state == .idle,
+      handedOff: model.isLiveSessionHandedOff
+    ) {
+      return .liveMeeting
+    }
     if model.hasContent { return .document }
     if model.isRunning { return .running }
     return .home

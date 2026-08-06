@@ -611,6 +611,10 @@ final class NotaModel: ObservableObject {
 
   private func performStartLiveSession(kind: HistoryKind = .meeting) {
     activeSessionKind = kind
+    // A new session takes the window back. Whatever the last one handed off is
+    // still processing in the background — independently, keyed by its own
+    // record id — and cannot follow it here.
+    isLiveSessionHandedOff = false
     let engine = Self.engine(
       for: kind,
       hasAssemblyAIKey: ApiKeyStore.value(for: "ASSEMBLYAI_API_KEY") != nil
@@ -702,9 +706,36 @@ final class NotaModel: ObservableObject {
 
   private func performStopLiveSession() {
     guard let started = liveRecords.beginStop() else { return }
+    let kind = activeSessionKind
     syncLiveSessionFlags()
+
+    // STOP RETURNS HOME, NOW (XIA-435).
+    //
+    // This flag is set before a single `await`, so the window leaves the live
+    // pane on the press itself — before the realtime stream finishes
+    // finalizing, before the transcript is sealed, and long before any summary.
+    // There is no length test anywhere on this path: a 20-minute meeting and a
+    // 20-second memo hand off at exactly the same moment, because handing off
+    // is what the press means and not something the work earns.
+    //
+    // What replaced "Saving live session…" is the drawer row and the menu
+    // bar's warm slot. The record's own status is the progress, so the window
+    // has nothing left to wait for.
+    isLiveSessionHandedOff = true
     let historyDirectory = notaHistoryDirectory()
+
+    // The job enters the ledger keyed by THIS record's id and nothing else.
+    // That is the whole guard against a late result landing on the wrong
+    // record: `ProcessingLedger` has no "current job" to write, and a task
+    // carries the id it was started for from here to the end.
+    backgroundJobs.begin(
+      recordID: started.historyID,
+      kind: kind,
+      outputPath: nil,
+      status: .transcribing
+    )
     status = HistoryStatus.transcribing.presentation()
+
     Task {
       defer {
         liveRecords.finishedStopping()
@@ -721,96 +752,311 @@ final class NotaModel: ObservableObject {
         // transition, so it wrote nothing at all and left the record live.
         liveRecords.settle(started)
         status = "Live session failed: \(error.localizedDescription)"
+        finishBackgroundJob(recordID: started.historyID, historyDirectory: historyDirectory)
         return
       }
 
+      let saved: LiveSessionPersistence.SavedSession
       do {
-        let saved = try LiveSessionPersistence.sealTranscript(
+        saved = try LiveSessionPersistence.sealTranscript(
           started: started,
           result: result,
+          // The title arrives LAST. Until a summary names the record it is
+          // "Untitled meeting"/"Untitled memo", and the row's identity
+          // changing is the completion signal when Nota is frontmost — which
+          // a fixed "Live Meeting" could never be.
+          displayName: ProvisionalTitle.forKind(kind),
+          title: ProvisionalTitle.forKind(kind),
           outputDirectory: outputDirectory,
           historyDirectory: historyDirectory
         )
-        // Sealed: the record is at `transcribed` with its transcript and its
-        // markdown in it. Ownership ends here — what the memo path does next
-        // is a summary on a record that is already at rest.
-        liveRecords.release(started)
-        lastOutputURL = saved.outputURL
-
-        // Memo sessions summarize automatically with the memo template
-        // (cleaned note, model-generated title — XIA-391); meetings keep the
-        // transcript-only output.
-        var displayedMarkdown = saved.markdown
-        var summarySucceeded = true
-        if activeSessionKind == .memo {
-          if !LiveSessionPersistence.updateStatus(
-            id: saved.historyID,
-            to: .summarizing,
-            historyDirectory: historyDirectory
-          ) {
-            // Logged by `updateStatus`. The summary still runs: the record is
-            // at rest with its transcript, and refusing to summarize because
-            // a status line would not move helps nobody.
-            LiveSessionPersistence.logger.error(
-              "memo summary starting on a record that would not move to summarizing"
-            )
-          }
-          summarySucceeded = await runMemoSummary(
-            historyID: saved.historyID,
-            outputURL: saved.outputURL
-          )
-          if summarySucceeded,
-             let content = try? String(contentsOf: saved.outputURL, encoding: .utf8) {
-            displayedMarkdown = content
-          }
-          // A failed summary is a `failed(summarizing)` record that still holds
-          // its audio AND its transcript — the summary is the only thing
-          // missing, and it is the only thing that can be regenerated.
-          // (A summary that succeeded has already written `done` through the
-          // CLI's own setRecordSummary.)
-          if !summarySucceeded {
-            _ = LiveSessionPersistence.settleAsFailed(
-              id: saved.historyID,
-              historyDirectory: historyDirectory
-            )
-          }
-        }
-
-        markdown = displayedMarkdown
-        status = summarySucceeded
-          ? (activeSessionKind == .memo
-              ? HistoryStatus.done.presentation()
-              : HistoryStatus.transcribed.presentation())
-          : HistoryStatus.failed(stage: .summarizing).presentation()
-        refreshHistory()
-        if let entry = history.first(where: {
-          $0.url.standardizedFileURL == saved.outputURL.standardizedFileURL
-        }) {
-          selectedHistoryID = entry.id
-          // Mirror openHistory: keep the header coherent with the new doc
-          // (post-summary, the memo title is model-generated).
-          displayName = entry.title
-          displayPath = entry.url.path
-        }
-        // Resets the enrichment record/speaker chips for the new document;
-        // the async lookup finds the fresh record (no summary → placeholder).
-        loadChips(for: saved.outputURL)
-      } catch let error as LiveSessionPersistenceError {
+      } catch {
         // `sealTranscript` has already failed the record in the stage it was
         // in, and has deleted nothing: the recording is still in the record's
-        // assets folder either way. Release rather than settle, so a record
-        // that reported `recordUnwritable` is not asked to take a second
-        // write it has already refused.
-        liveRecords.release(started)
-        status = error.errorDescription ?? "Live session failed"
-      } catch {
-        // Anything else (the markdown could not be written, the output
-        // directory could not be made) leaves the record wherever it got to,
-        // failed in that stage.
-        liveRecords.settle(started)
-        status = "Could not save live session"
+        // assets folder either way. A `LiveSessionPersistenceError` is
+        // released rather than settled, so a record that reported
+        // `recordUnwritable` is not asked to take a second write it has
+        // already refused; anything else (markdown unwritable, output
+        // directory unmakeable) leaves the record failed where it got to.
+        if let persistence = error as? LiveSessionPersistenceError {
+          liveRecords.release(started)
+          status = persistence.errorDescription ?? "Live session failed"
+        } else {
+          liveRecords.settle(started)
+          status = "Could not save live session"
+        }
+        finishBackgroundJob(recordID: started.historyID, historyDirectory: historyDirectory)
+        return
+      }
+
+      // Sealed: the record is at `transcribed` with its transcript and its
+      // markdown in it, and the live session's ownership ends HERE. Everything
+      // below is work on a record already at rest, which is exactly why it can
+      // outlive the session.
+      liveRecords.release(started)
+      backgroundJobs.attachOutput(
+        recordID: saved.historyID,
+        outputPath: saved.outputURL.path
+      )
+      backgroundJobs.advance(recordID: saved.historyID, to: .transcribed)
+      refreshHistory()
+
+      // The stop path ENDS HERE, and the summary is a separate task on
+      // purpose. `LiveSessionOwner.isStopping` refuses a Start press while it
+      // is set — correctly, since one microphone cannot serve two sessions —
+      // so keeping it set across a summary would make "stop and leave" mean
+      // "wait minutes before you may record again", which is the wait this
+      // ticket exists to remove.
+      liveRecords.finishedStopping()
+      syncLiveSessionFlags()
+
+      Task {
+        await runRecordSummary(
+          recordID: saved.historyID,
+          outputURL: saved.outputURL,
+          historyDirectory: historyDirectory
+        )
       }
     }
+  }
+
+  // MARK: - Background processing (XIA-435)
+
+  /// Records still being worked on after their session ended. The app-wide
+  /// ledger, because `AppDelegate` has to be able to ask it what is in flight
+  /// when ⌘Q arrives and has no route to this model.
+  var backgroundJobs: ProcessingLedger { ProcessingLedger.shared }
+
+  /// Where completion notices go. Injectable so the decision path can be
+  /// driven without a notification centre.
+  var completionNotifier: CompletionNotifying = CompletionNotifier.shared
+
+  /// True from the moment Stop is accepted until the next session starts.
+  /// The one thing that brings the window home immediately — see
+  /// `LivePhaseGate`.
+  @Published private(set) var isLiveSessionHandedOff = false
+
+  /// Run the record's summary in the background and land it.
+  ///
+  /// Both live kinds go through here, and through the *same* kind-aware CLI
+  /// verb (`nota history summarize <id>` threads the record's `kind`, so a memo
+  /// gets the memo template and a meeting the meeting one). "A 20-minute
+  /// meeting and a 20-second memo behave identically" is a statement about this
+  /// function having no branch on kind and no branch on length.
+  ///
+  /// `skipSummary` is honoured: an owner who has turned summaries off is not
+  /// charged for one because the work moved to the background.
+  private func runRecordSummary(
+    recordID: String,
+    outputURL: URL,
+    historyDirectory: URL
+  ) async {
+    guard !skipSummary else {
+      finishBackgroundJob(
+        recordID: recordID,
+        historyDirectory: historyDirectory,
+        outputURL: outputURL
+      )
+      return
+    }
+    if !LiveSessionPersistence.updateStatus(
+      id: recordID,
+      to: .summarizing,
+      historyDirectory: historyDirectory
+    ) {
+      // Logged by `updateStatus`. The summary still runs: the record is at
+      // rest with its transcript, and refusing to summarize because a status
+      // line would not move helps nobody.
+      LiveSessionPersistence.logger.error(
+        "summary starting on a record that would not move to summarizing"
+      )
+    }
+    backgroundJobs.advance(recordID: recordID, to: .summarizing)
+
+    let succeeded = await runSummaryProcess(historyID: recordID)
+
+    // A failed summary is a `failed(summarizing)` record that still holds its
+    // audio AND its transcript — the summary is the only thing missing, and it
+    // is the only thing that can be regenerated. A summary that succeeded has
+    // already written `done` through the CLI's own setRecordSummary.
+    if !succeeded {
+      _ = LiveSessionPersistence.settleAsFailed(
+        id: recordID,
+        historyDirectory: historyDirectory
+      )
+    }
+    finishBackgroundJob(
+      recordID: recordID,
+      historyDirectory: historyDirectory,
+      outputURL: outputURL
+    )
+  }
+
+  /// Land a record: read back what it actually says, refresh the list, tell
+  /// the owner if they are not looking, and let the job go.
+  ///
+  /// The status is re-read from the record rather than assumed, because the
+  /// record is the authority (the CLI writes `done` itself) and a ledger that
+  /// disagreed with disk would be a second source of truth — which is the
+  /// reason a job-queue library was rejected for this in the first place.
+  private func finishBackgroundJob(
+    recordID: String,
+    historyDirectory: URL,
+    outputURL: URL? = nil
+  ) {
+    let record = LiveSessionPersistence.loadRecord(id: recordID, historyDirectory: historyDirectory)
+    let resolved = record.map { HistoryStatus.normalized(fromRecord: $0) } ?? .failed(stage: .transcribing)
+    let interrupted = record?["interrupted"] as? Bool ?? false
+    backgroundJobs.advance(recordID: recordID, to: resolved, interrupted: interrupted)
+    refreshHistory()
+
+    if let outputURL {
+      // A completion may update the list it belongs to; it may rewrite the
+      // pane only when the pane IS this record and no session is live. The
+      // rule the dictation code learned as a session epoch, restated for
+      // records: a summary that returns after the owner started a new
+      // recording must never touch the live one.
+      let effect = CompletionEffect.decide(
+        jobOutputPath: outputURL.path,
+        openOutputPath: lastOutputURL?.path,
+        isLiveSessionActive: liveRecords.isOwning || liveSession.state != .idle
+      )
+      if effect == .reloadOpenDocument,
+         let content = try? String(contentsOf: outputURL, encoding: .utf8) {
+        markdown = content
+        if let entry = history.first(where: {
+          $0.url.standardizedFileURL == outputURL.standardizedFileURL
+        }) {
+          displayName = entry.title
+          displayPath = entry.url.path
+          selectedHistoryID = entry.id
+        }
+        loadChips(for: outputURL)
+      }
+    }
+
+    announceCompletion(recordID: recordID, record: record, outputURL: outputURL)
+    backgroundJobs.forget(recordID: recordID)
+  }
+
+  /// Post the record's one notification, if the policy says one is owed.
+  private func announceCompletion(
+    recordID: String,
+    record: [String: Any]?,
+    outputURL: URL?
+  ) {
+    guard let job = backgroundJobs.job(recordID: recordID) else { return }
+    let title = outputURL
+      .flatMap { url in
+        history.first { $0.url.standardizedFileURL == url.standardizedFileURL }?.title
+      }
+      ?? ProvisionalTitle.forKind(job.kind)
+    let segments = record?["segments"] as? [[String: Any]] ?? []
+    var speakers = Set<String>()
+    for segment in segments {
+      if let speaker = segment["speaker"] as? String, !speaker.isEmpty { speakers.insert(speaker) }
+    }
+    let facts = CompletionFacts.line(
+      durationMinutes: record?["durationMinutes"] as? Int,
+      speakerCount: speakers.isEmpty ? nil : speakers.count,
+      markerCount: (record?["markers"] as? [Any])?.count
+    )
+    guard let notice = CompletionNotifierPolicy.decide(
+      job: job,
+      title: title,
+      facts: facts,
+      appIsFrontmost: completionNotifier.appIsFrontmost
+    ) else {
+      return
+    }
+    guard backgroundJobs.markNotified(recordID: recordID) else { return }
+    completionNotifier.post(notice)
+  }
+
+  /// Everything a drawer row needs to draw its own progress, in one value.
+  func processingSource(for entry: HistoryEntry) -> ProcessingRowSource {
+    let detail = recordDetail(for: entry)
+    return ProcessingRowSource(
+      outputPath: entry.url.path,
+      persistedStatus: detail?.status,
+      persistedInterrupted: detail?.interrupted ?? false,
+      onRetrySummary: { [weak self] in self?.retrySummary(for: entry) }
+    )
+  }
+
+  /// Re-run the summary for a record whose summary failed — **the failed stage
+  /// only**. Nothing re-transcribes, nothing re-records, and nothing here ever
+  /// runs without a press: an automatic retry silently spends the owner's money
+  /// twice.
+  func retrySummary(for entry: HistoryEntry) {
+    guard let recordID = recordDetail(for: entry)?.recordID, !recordID.isEmpty else { return }
+    retrySummary(recordID: recordID, outputURL: entry.url)
+  }
+
+  func retrySummary(recordID: String, outputURL: URL) {
+    let historyDirectory = notaHistoryDirectory()
+    guard backgroundJobs.job(recordID: recordID) == nil else { return }
+    guard let record = LiveSessionPersistence.loadRecord(
+      id: recordID,
+      historyDirectory: historyDirectory
+    ) else {
+      return
+    }
+    // Only a record that stopped at the summary may be retried this way: the
+    // stage that is re-run has to be the stage that failed.
+    let current = HistoryStatus.normalized(fromRecord: record)
+    guard current == .transcribed || current.failureStage == .summarizing else { return }
+    // A `failed(summarizing)` record is terminal, and `canAdvance` refuses
+    // everything from a terminal state — so the retry reopens it at the rest
+    // state it fell out of before asking for `summarizing` again.
+    if current.failureStage == .summarizing {
+      guard LiveSessionPersistence.mutateRecord(
+        id: recordID,
+        historyDirectory: historyDirectory,
+        ["status": HistoryStatus.transcribed.rawValue, "interrupted": false]
+      ) else {
+        return
+      }
+    }
+    backgroundJobs.begin(
+      recordID: recordID,
+      kind: HistoryRecordInfo.kind(from: record),
+      outputPath: outputURL.path,
+      status: .transcribed
+    )
+    Task {
+      await runRecordSummary(
+        recordID: recordID,
+        outputURL: outputURL,
+        historyDirectory: historyDirectory
+      )
+    }
+  }
+
+  /// Open a record by id (a completion notification was clicked).
+  func openRecord(id recordID: String) {
+    let historyDirectory = notaHistoryDirectory()
+    guard
+      let record = LiveSessionPersistence.loadRecord(id: recordID, historyDirectory: historyDirectory),
+      let outputPath = record["outputPath"] as? String
+    else {
+      return
+    }
+    let url = URL(fileURLWithPath: outputPath).standardizedFileURL
+    guard let entry = history.first(where: { $0.url.standardizedFileURL == url }) else { return }
+    openHistory(entry)
+  }
+
+  /// Retry a record's summary by id (a failure notification's Retry).
+  func retrySummary(recordID: String) {
+    let historyDirectory = notaHistoryDirectory()
+    guard
+      let record = LiveSessionPersistence.loadRecord(id: recordID, historyDirectory: historyDirectory),
+      let outputPath = record["outputPath"] as? String
+    else {
+      return
+    }
+    retrySummary(recordID: recordID, outputURL: URL(fileURLWithPath: outputPath))
   }
 
   /// Throw a live session away without sealing it (the failure banner's
@@ -820,6 +1066,8 @@ final class NotaModel: ObservableObject {
   /// Settling BEFORE `cancel()` is what makes this deterministic rather than
   /// leaving it to the state observer below.
   func discardLiveSession() {
+    // Discard is also a way out of the live pane, and it hands nothing off.
+    isLiveSessionHandedOff = true
     if let started = liveRecords.beginStop() {
       liveRecords.settle(started)
       liveRecords.finishedStopping()
@@ -1185,13 +1433,17 @@ final class NotaModel: ObservableObject {
     }
   }
 
-  /// Run the kind-aware CLI summary over a fresh memo record:
-  /// `nota history summarize-history <id>` (threads the record's `kind`, so
-  /// the memo template + memo-length title apply). Environment mirrors
+  /// Run the kind-aware CLI summary over a record: `nota history summarize
+  /// <id>` (threads the record's `kind`, so a memo gets the memo template and
+  /// its memo-length title, a meeting the meeting one). Environment mirrors
   /// `scripts/nota-app-run.sh`: the user's shell exports + `~/.secrets`, so
   /// provider keys resolve exactly as a CLI run would. Returns success; a
-  /// failure keeps the transcript-only memo (the recording is never lost).
-  private func runMemoSummary(historyID: String, outputURL: URL) async -> Bool {
+  /// failure keeps the transcript-only output (the recording is never lost).
+  ///
+  /// Named for what it is rather than for the one kind that used to reach it:
+  /// since XIA-435 both live kinds summarize in the background through this
+  /// one call, with no branch on kind and none on length.
+  private func runSummaryProcess(historyID: String) async -> Bool {
     let shell = Process()
     shell.executableURL = URL(fileURLWithPath: "/bin/bash")
     shell.currentDirectoryURL = projectDirectory
@@ -1241,7 +1493,7 @@ final class NotaModel: ObservableObject {
     do {
       try shell.run()
     } catch {
-      NSLog("Nota memo summary could not start: \(error.localizedDescription)")
+      NSLog("Nota background summary could not start: \(error.localizedDescription)")
       return false
     }
     outputPipe.fileHandleForReading.readDataToEndOfFile()
@@ -1249,7 +1501,7 @@ final class NotaModel: ObservableObject {
     shell.waitUntilExit()
 
     guard shell.terminationStatus == 0 else {
-      NSLog("Nota memo summary failed: \(stderr.prefix(500))")
+      NSLog("Nota background summary failed: \(stderr.prefix(500))")
       return false
     }
     return true
@@ -1688,6 +1940,10 @@ struct HistoryRecordInfo {
     var durationMinutes: Int?
     var speakerCount: Int?
     var pinned: Bool = false
+    /// The record's own id. Carried so a row can name the record a manual
+    /// retry has to re-run (XIA-435); the drawer only ever holds the output
+    /// path, and `nota history summarize` wants the id.
+    var recordID: String = ""
   }
 
   /// outputPath (standardized) → `HistoryDetail` for every history record.
@@ -1726,7 +1982,8 @@ struct HistoryRecordInfo {
         kind: kind(from: json),
         durationMinutes: json["durationMinutes"] as? Int,
         speakerCount: speakers.isEmpty ? nil : speakers.count,
-        pinned: json["pinned"] as? Bool ?? false
+        pinned: json["pinned"] as? Bool ?? false,
+        recordID: json["id"] as? String ?? ""
       )
     }
     return details
