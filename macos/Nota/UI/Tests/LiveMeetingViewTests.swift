@@ -44,6 +44,19 @@ final class LiveMeetingViewTests: XCTestCase {
     XCTAssertEqual(LiveMeetingFormat.duration(-5), "00:00")
   }
 
+  /// There is one clock, not two that happen to agree. The pane's gutter
+  /// timestamps, its marker rows and the big column timer all read the same
+  /// arithmetic, so a rounding change lands in one place (XIA-432).
+  func testDuration_isTheTimersOwnArithmetic() {
+    for elapsed in [TimeInterval(0), 0.9, 59, 60, 3599, 3600, 3661, 36_000, 86_399] {
+      XCTAssertEqual(
+        LiveMeetingFormat.duration(elapsed),
+        SessionTimerMetrics.text(elapsed: elapsed),
+        "the pane's clock and the session timer's disagreed at \(elapsed)"
+      )
+    }
+  }
+
   // MARK: - LiveMeetingFormat.stateLabel
 
   func testStateLabel_idle() {
@@ -134,5 +147,21 @@ final class LiveMeetingViewTests: XCTestCase {
       LiveMeetingControls.make(state: .failed("mic permission denied"), isStarting: false, hasTranscript: false),
       .retryOrDiscard
     )
+  }
+
+  // MARK: - Which states wear the two-column pane (XIA-432)
+
+  /// The session column is the indicator that a session is *flowing*. A failed
+  /// session is not flowing, so it does not get one — a breathing ring and a
+  /// live meter over a dead microphone would be the exact lie the meter exists
+  /// to make impossible. What that state needs is the transcript it heard and
+  /// one decision about it, which is the banner.
+  func testOnlyALiveSessionWearsTheRecordingPane() {
+    XCTAssertTrue(LiveMeetingControls.stop.showsRecordingPane)
+    XCTAssertTrue(LiveMeetingControls.finalizing.showsRecordingPane)
+    XCTAssertFalse(LiveMeetingControls.start.showsRecordingPane)
+    XCTAssertFalse(LiveMeetingControls.starting.showsRecordingPane)
+    XCTAssertFalse(LiveMeetingControls.saveOrDiscard.showsRecordingPane)
+    XCTAssertFalse(LiveMeetingControls.retryOrDiscard.showsRecordingPane)
   }
 }
