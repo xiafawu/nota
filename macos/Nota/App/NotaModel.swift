@@ -672,7 +672,14 @@ final class NotaModel: ObservableObject {
     guard liveSession.state == .recording || liveSession.state == .stopping else {
       return
     }
-    guard let started = activeRecord else { return }
+    guard let started = activeRecord else {
+      // Unreachable by construction — a session only reaches `.recording`
+      // after its record exists — but Stop may never be the button that does
+      // nothing. Stop the microphone; there is simply no record to fill in.
+      Task { _ = try? await liveSession.stop() }
+      status = "Live session ended without a record"
+      return
+    }
     let historyDirectory = notaHistoryDirectory()
     status = HistoryStatus.transcribing.presentation()
     Task {
