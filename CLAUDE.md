@@ -135,14 +135,52 @@ path so the owner is told where their notes still are; the app's **Delete
 record…** leaves it too, which is why the drawer row *survives* that verb —
 the row is built from that file.
 
+That sentence was **false in-tree** when it was written, and the fix is worth
+recording because it was the older code that was wrong, not the rule. The
+drawer row's hover **trash button** (`NotaModel.deleteHistory`, pre-XIA-436)
+removed `entry.url` — the exported `.md` — on one click with no confirmation,
+and then removed `<md-basename>.summary.assets` *next to the markdown*, a path
+that has never existed (real assets are at `~/.nota/history/<id>.assets`). So
+it destroyed the file this rule protects and left `<id>.json` +
+`<id>.assets/recording.caf` behind with the row that named them gone:
+unreachable from the app *and* from `nota history delete <id>`, while
+`nota history storage` went on counting bytes nobody could find a handle for.
+The button and the function are **gone**. Routing it through
+`RecordingStore.deleteRecord` was the alternative and was rejected — that verb
+keeps the `.md`, and the row *is* the `.md`, so the button would have read as
+doing nothing while being the app's one unconfirmed destructive control. The
+row's context menu is now the app's **only** deletion surface, and it gained
+**Reveal in Finder**: removing their own exported file stays the owner's to do,
+in the app that owns files.
+
 - `nota history storage [--json]` — per-record and total sizes, oldest first.
   Read-only, with no flag that could delete. `--json` emits the whole
   `StorageSummary`, which is what the macOS Usage sheet decodes: **one
   computation**, so the sheet and the terminal cannot disagree about the
-  figure.
+  figure. It walks the history directory itself rather than through
+  `listHistoryRecords`, and both reasons are about a verb whose job is to
+  *find* things: one unparseable `<id>.json` used to reject the whole
+  `Promise.all` and take the verb down — **and both delete verbs with it**,
+  since `resolveTargets` computes the store even for a single named id — and a
+  record-driven walk cannot see an `<id>.assets/` folder no record names.
+  Those **orphans are counted, named on stdout, and included in the total**;
+  nothing removes them, because nothing may. A store's invisible bytes are the
+  one thing a figure that *is* the retention policy may not have.
 - `nota history delete-audio <id> | --older-than <age>` — removes
   `recording.caf` and clears `audioPath`/`audioBytes`. The record survives in
-  full and still reads in both the app and the CLI.
+  full and still reads in both the app and the CLI. Three things it owes:
+  the write is **atomic** (temp + rename — `writeFile` truncates before it
+  writes, and a kill in between would strand the transcript this verb exists
+  to preserve); it is built from the record's **raw bytes**, not from the
+  object `loadHistoryRecord` normalizes, so a `status` it recomputed is never
+  persisted; and it **blanks `sourcePath` when that field named the file it
+  just deleted**, since `recordAudioPath` and `resolvedAudioURL` both fall
+  back to it and would otherwise report a path to a file that is gone (both
+  already read empty as "no audio"). A legacy record's `sourcePath` — the
+  owner's own file elsewhere — is never touched. The confirmation names the
+  **per-speaker voice clips that stay**: they are audio of the same people,
+  this verb deliberately keeps them, and "only the recording goes" misleads
+  precisely the owner deleting audio for privacy.
 - `nota history delete <id> | --older-than <age>` — removes the record JSON and
   its whole `<id>.assets/` folder.
 - `--older-than 90d` (also `w`/`m`/`y`; 1m = 30d, 1y = 365d) **prints every id
@@ -161,9 +199,25 @@ the owner's original recording. `keptAudioPath` / `RecordingStore.keptAudioURL`
 see only inside the record's assets folder, and **refuse a value that climbs
 out of it** — the string is read off a JSON file and handed to an unlink, so a
 record must not be able to aim the one irreversible thing this app does.
-A record with no stored audio reads **"audio not kept"**, in words rather than
-as `0 B` (which would mean a recording that exists and is empty) — once,
-quietly, never as an error. Legacy records simply have none.
+In the CLI a record with no stored audio reads **"audio not kept"**, in words
+rather than as `0 B` (which would mean a recording that exists and is empty) —
+once, quietly, never as an error. Legacy records simply have none. The app has
+no per-record audio *column* to render, so it says the same thing in the
+sentence an owner actually reads (`RecordingDeletionCopy.audioMessage` → "This
+record keeps no audio"); `StorageFormat.audio` is gone, because a helper whose
+only caller was its own test reads as coverage of a surface that does not
+exist.
+
+**A delete that only half happened is a failure, and is reported as one.**
+`RecordingStore.deleteRecord` removes the assets folder **first**, **checks
+the result**, and keeps the record JSON when it could not (an immutable flag,
+a read-only parent, a file owned by another uid after a Migration Assistant
+restore). A swallowed `try?` there was the forbidden partial delete happening
+by construction: the record JSON went, the recording stayed, and nothing in
+the store named it any more. Failing before the JSON is removed is the
+recoverable order — the owner still has a row and can try again. The TS twin
+gets this free (`rm(dir, {recursive: true, force: true})` throws on a real
+error; `force` only suppresses ENOENT), which is why the two sides now agree.
 
 **Discard deletes the whole record, audio included** (changed by XIA-436; it
 settled-and-kept under XIA-430). That does not bend the standing rule, which
@@ -171,14 +225,48 @@ is about the *automatic* paths: Discard is an explicit press on a session the
 owner is saying they do not want, and a button labelled Discard that leaves
 the recording on disk is the one that lies. The other half is pinned by test —
 a session that *fails* still settles and keeps everything, because nobody
-chose that outcome.
+chose that outcome. Two things it owes:
+
+- **It confirms, naming the length, the bytes and the way out.** It is the
+  most destructive verb in the app — a whole session's un-recreatable audio —
+  and it sits between **Save Transcript** and **Try Again**, both harmless, on
+  a banner it reads as dismissing. The drawer's verbs all name what goes, what
+  stays and that it cannot be undone; the one that destroys the most may not
+  say less. The message points at whichever alternative applies (Save
+  Transcript when something was heard, Try Again when not) — which is also how
+  the owner reaches the "a failed session keeps everything" path the rules
+  promise. `RecordingDeletionCopy.discardMessage`, a pure string.
+- **A discard whose delete did not land settles the record instead of walking
+  away from it.** `LiveSessionOwner.discard` is one function for that reason:
+  dropping the result and calling `release` regardless clears ownership of a
+  record still saying `recording`, so `settle` can never run for it,
+  `observeLiveSessionState` cannot rescue it (`isOwning` is false), the owner
+  is told "Recording discarded" — and the next launch's sweep stamps it
+  `failed(recording) + interrupted`, presenting as **"Interrupted"**: a fact
+  that never happened, with the audio they believed they discarded still on
+  disk. That is XIA-430's rule 3, and this is the one path that could break it.
+
+**The TS↔Swift JSON contract is pinned by the CLI's own output.**
+`macos/Nota/UI/Tests/Fixtures/storage-summary.json` is generated by
+`scripts/storage-summary-fixture.ts` (`npx tsx scripts/storage-summary-fixture.ts
+macos/Nota/UI/Tests/Fixtures/storage-summary.json`), decoded by the Swift
+`StoredStorageSummary` test, and rebuilt-and-compared by a vitest — so a shape
+change on either side goes red with an instruction to regenerate. The
+hand-written fixture it replaced *claimed* to be field-for-field what
+`--json` writes and was not: it was missing the `status` key every real row
+carries.
 
 TypeScript: `src/pipeline/storage.ts` (computation + the two primitives) +
-`src/cli/storage.ts` (verbs, injectable `ask`/`write`/`out`).
-Swift: `macos/Nota/App/RecordingStorage.swift` (locate, delete, confirmation
-copy, byte formatting), `macos/Nota/UI/RecordingDeletionMenu.swift` (the row's
-context menu, attached with one modifier call),
-`macos/Nota/UI/StorageSummaryView.swift` (the Usage sheet section).
+`src/cli/storage.ts` (verbs, injectable `ask`/`write`/`out`; the real
+`readline` prompt is driven by a test through a fake `process.stdin`).
+Swift: `macos/Nota/App/RecordingStorage.swift` (locate, delete, discard
+disposition, confirmation copy, byte formatting),
+`macos/Nota/UI/RecordingDeletionMenu.swift` (the row's context menu — reveal
+plus the two verbs — attached with one modifier call),
+`macos/Nota/UI/StorageSummaryView.swift` (the Usage sheet section, shown
+**even for an empty store**: the section carries "Nota never deletes
+recordings on its own.", and hiding it until there is something to delete
+shows it only to owners who have already found out).
 
 ## Custom Dictionary
 
