@@ -15,19 +15,31 @@ final class BackgroundProcessingTests: XCTestCase {
 
   // MARK: - Stop lands home, whatever the length
 
-  func testStopReturnsHomeImmediately_regardlessOfSession() {
-    // The handoff flag alone decides, so the pane leaves the live phase on the
-    // press — with the session still `.stopping` and even still `.recording`.
-    XCTAssertFalse(LivePhaseGate.showsLiveSession(
-      isStarting: false,
-      sessionIsIdle: false,
-      handedOff: true
-    ))
-    XCTAssertFalse(LivePhaseGate.showsLiveSession(
-      isStarting: true,
-      sessionIsIdle: false,
-      handedOff: true
-    ))
+  /// Renamed from `testStopReturnsHomeImmediately_regardlessOfSession`, which
+  /// was offered as the evidence for the ticket's headline acceptance item and
+  /// observed neither the stop path nor elapsed time. What a test in this
+  /// harness *can* pin is the gate: `handedOff` beats every other input, and
+  /// the decision takes no other input — so there is nowhere for a duration
+  /// threshold to live. Exhaustive over the other two, because "for every other
+  /// state" is the claim; a `handedOff` check placed after either of the other
+  /// two branches turns this red.
+  ///
+  /// What it does NOT cover, and nothing here can: that the flag is assigned
+  /// before the first `await` in `performStopLiveSession`. That is a source
+  /// order fact about a method on a model no test may construct.
+  func testHandedOff_leavesTheLivePhaseForEveryOtherState() {
+    for isStarting in [true, false] {
+      for sessionIsIdle in [true, false] {
+        XCTAssertFalse(
+          LivePhaseGate.showsLiveSession(
+            isStarting: isStarting,
+            sessionIsIdle: sessionIsIdle,
+            handedOff: true
+          ),
+          "handed off but still live for isStarting=\(isStarting) idle=\(sessionIsIdle)"
+        )
+      }
+    }
   }
 
   func testLivePhase_pinsForStartAndForALiveSession() {
@@ -75,16 +87,26 @@ final class BackgroundProcessingTests: XCTestCase {
     XCTAssertEqual(ProcessingFreshness.stamp(since: start, now: start - 30), "updated just now")
   }
 
-  /// The stamp is the progress indicator precisely because there is no
-  /// percentage: a stalled stamp is the only thing that reveals a stuck
-  /// pipeline, and a bar over a model call would hide it. Pinned as a fact
-  /// about the wording — no digit may appear except the age itself.
-  func testProgressLine_carriesNoPercentage() {
+  // `testProgressLine_carriesNoPercentage` was deleted rather than repaired.
+  // It asserted that a string built as "\(stage) · \(stamp)" contains no "%",
+  // which no code path could have produced — a test that cannot fail, reading
+  // as coverage. The no-percentage rule is enforced by the shape of the API
+  // instead: `ProcessingFreshness` and `ProcessingRowStatus` take no numeric
+  // argument anywhere, so a fraction cannot be passed in to be drawn. That is a
+  // property of the declarations, not of a run, and it is stated where it is
+  // enforced rather than pretended at here.
+
+  /// The stamp is the progress indicator, so it has to keep moving while a
+  /// record is worked on — a stalled stamp is the only signal a stuck pipeline
+  /// gives. This is that fact, rather than the tautology it replaced: the line
+  /// changes as the clock advances, for every in-flight stage.
+  func testProgressLine_advancesWithTheClock() {
     let start = Date(timeIntervalSince1970: 0)
     for status in [HistoryStatus.recording, .transcribing, .summarizing] {
-      let line = ProcessingFreshness.line(status: status, updatedAt: start, now: start + 8)
-      XCTAssertNotNil(line)
-      XCTAssertFalse(line!.contains("%"), "\(status.rawValue) drew a percentage")
+      let early = ProcessingFreshness.line(status: status, updatedAt: start, now: start + 3)
+      let later = ProcessingFreshness.line(status: status, updatedAt: start, now: start + 47)
+      XCTAssertEqual(early, "\(ProcessingFreshness.stageLabel(status)!) · updated 3s ago")
+      XCTAssertNotEqual(early, later, "\(status.rawValue)'s stamp froze")
     }
   }
 
@@ -151,8 +173,11 @@ final class BackgroundProcessingTests: XCTestCase {
     XCTAssertEqual(ledger.job(recordID: "b")?.status, .transcribing)
     XCTAssertEqual(ledger.inFlight.count, 2)
 
-    // Landing one leaves the other exactly where it was.
+    // Landing one leaves the other exactly where it was. Landing is `forget`:
+    // the ledger holds a record while there is work to do and lets it go when
+    // there is not (see `inFlight`).
     ledger.advance(recordID: "a", to: .done, at: t0 + 20)
+    ledger.forget(recordID: "a")
     XCTAssertEqual(ledger.job(recordID: "b")?.status, .transcribing)
     XCTAssertEqual(ledger.inFlight.map(\.recordID), ["b"])
   }
@@ -226,12 +251,15 @@ final class BackgroundProcessingTests: XCTestCase {
 
   // MARK: - The title arrives last
 
-  func testProvisionalTitles_areWhatARecordIsCalledUntilSummarized() {
-    XCTAssertEqual(ProvisionalTitle.forKind(.meeting), "Untitled meeting")
-    XCTAssertEqual(ProvisionalTitle.forKind(.memo), "Untitled memo")
-    XCTAssertTrue(ProvisionalTitle.isProvisional("Untitled meeting"))
-    XCTAssertFalse(ProvisionalTitle.isProvisional("Q3 planning with Kenny"))
-  }
+  // `testProvisionalTitles_areWhatARecordIsCalledUntilSummarized` was deleted.
+  // Half of it restated two string literals back at a lookup table, and the
+  // other half exercised `ProvisionalTitle.isProvisional` / `.all`, which no
+  // production code ever called — so the predicate has been removed too
+  // (nothing asks "has the title arrived?"; the row re-reading the `.md` IS
+  // the signal). What is left, `forKind`, is a three-case constant table used
+  // by the seal and by the notification's fallback title, and it is stated
+  // plainly that no test covers it: a test of a constant table can only agree
+  // with whatever the table currently says.
 
   // MARK: - The notification
 
@@ -358,14 +386,32 @@ final class BackgroundProcessingTests: XCTestCase {
     XCTAssertEqual(two?.messageText, "2 recordings are still processing.")
   }
 
-  /// The ledger's own `inFlight` is what ⌘Q asks, so a landed record must not
-  /// be able to raise the prompt.
-  func testQuitPrompt_ignoresLandedRecords() {
+  /// The ledger's own `inFlight` is what ⌘Q asks, so a record it has let go
+  /// must not be able to raise the prompt.
+  func testQuitPrompt_ignoresRecordsTheLedgerHasLetGo() {
     let ledger = ProcessingLedger()
     ledger.begin(recordID: "a", kind: .meeting, outputPath: nil, status: .summarizing)
     XCTAssertNotNil(QuitPrompt.decide(inFlight: ledger.inFlight))
     ledger.advance(recordID: "a", to: .done)
+    ledger.forget(recordID: "a")
     XCTAssertNil(QuitPrompt.decide(inFlight: ledger.inFlight))
+  }
+
+  /// ⌘Q's blind window, closed.
+  ///
+  /// Between the seal (which puts the job at `transcribed`, a **rest** state)
+  /// and the summary claiming it (`summarizing`) there is a Task hop and a file
+  /// write. Asking the *status* whether work was in flight answered no for that
+  /// whole window, so a ⌘Q landing in it terminated with no prompt while a
+  /// summary was about to start. The ledger holding the record is what "there
+  /// is still work" means — only the ledger can know about work that has not
+  /// begun.
+  func testQuitPrompt_asksDuringTheGapBetweenTheSealAndTheSummary() {
+    let ledger = ProcessingLedger()
+    ledger.begin(recordID: "a", kind: .meeting, outputPath: nil, status: .transcribing)
+    ledger.advance(recordID: "a", to: .transcribed)
+    XCTAssertFalse(HistoryStatus.transcribed.isInFlight, "the premise: this is a rest state")
+    XCTAssertNotNil(QuitPrompt.decide(inFlight: ledger.inFlight))
   }
 
   // MARK: - The join between rows and records
@@ -377,5 +423,202 @@ final class BackgroundProcessingTests: XCTestCase {
 
     ledger.attachOutput(recordID: "a", outputPath: "/out/./a.summary.md")
     XCTAssertEqual(ledger.job(outputPath: "/out/a.summary.md")?.recordID, "a")
+  }
+
+  // MARK: - Skip summary is about work Nota starts by itself
+
+  /// The MAJOR defect, at the level it is decided.
+  ///
+  /// A record interrupted mid-summary reads "Interrupted · transcript saved"
+  /// with a Retry. Pressing it with Skip summary on used to rewrite the record
+  /// to `transcribed`, clear `interrupted`, and then run nothing — and
+  /// `transcribed` offers no Retry, so the record's only recovery path was gone
+  /// for good. A press is not automatic work.
+  func testSkipSummary_stopsTheAutomaticRun_neverAPress() {
+    XCTAssertFalse(SummaryTrigger.automatic.shouldRun(skipSummary: true))
+    XCTAssertTrue(SummaryTrigger.automatic.shouldRun(skipSummary: false))
+    XCTAssertTrue(SummaryTrigger.manualRetry.shouldRun(skipSummary: true))
+    XCTAssertTrue(SummaryTrigger.manualRetry.shouldRun(skipSummary: false))
+  }
+
+  /// The other half of the same defect: the status is not touched until the
+  /// work is going to happen, so a refused press leaves the failure — and its
+  /// Retry — exactly where it was.
+  func testRetryPlan_writesNothingUnlessTheSummaryWillRun() {
+    XCTAssertEqual(
+      RetrySummaryPlan.make(current: .failed(stage: .summarizing), isInLedger: false),
+      .reopenThenRun
+    )
+    XCTAssertEqual(RetrySummaryPlan.make(current: .transcribed, isInLedger: false), .run)
+    // Nothing else may be reopened by a summary retry: the stage that is re-run
+    // has to be the stage that failed.
+    XCTAssertEqual(RetrySummaryPlan.make(current: .done, isInLedger: false), .refuse)
+    XCTAssertEqual(
+      RetrySummaryPlan.make(current: .failed(stage: .transcribing), isInLedger: false),
+      .refuse
+    )
+    XCTAssertEqual(RetrySummaryPlan.make(current: .recording, isInLedger: false), .refuse)
+    // A record already being worked on is not started twice, whatever it says.
+    XCTAssertEqual(
+      RetrySummaryPlan.make(current: .failed(stage: .summarizing), isInLedger: true),
+      .alreadyRunning
+    )
+  }
+
+  /// A refused plan is a plan with no write in it. Pinned as an exhaustive
+  /// fact over the enum so a fourth case cannot quietly acquire one.
+  func testOnlyARunningPlanEverReopensTheRecord() {
+    for status in HistoryStatus.allCases {
+      let plan = RetrySummaryPlan.make(current: status, isInLedger: false)
+      if plan == .reopenThenRun {
+        XCTAssertEqual(status, .failed(stage: .summarizing))
+      }
+    }
+  }
+
+  // MARK: - A failure that fails before it has a row
+
+  /// The MINOR silent-disappearance defect. Record 20 seconds muted, press
+  /// Stop: the seal throws `.emptyTranscript`, the record settles at
+  /// `failed:transcribing` with no `outputPath`, and rows are built from the
+  /// output directory — so there is no row, no title to change, and (since Stop
+  /// leaves the live pane on the press) no pane either. The frontmost
+  /// suppression exists because the row's identity changing is already the
+  /// signal; with no row there is no signal, so it does not apply.
+  func testFailureWithNoRow_isAnnouncedEvenWhenNotaIsFrontmost() {
+    let rowless = ProcessingJob(
+      recordID: "r1",
+      kind: .meeting,
+      outputPath: nil,
+      status: .failed(stage: .transcribing),
+      interrupted: false,
+      updatedAt: Date()
+    )
+    let notice = CompletionNotifierPolicy.decide(
+      job: rowless,
+      title: "Untitled meeting",
+      facts: "",
+      appIsFrontmost: true
+    )
+    XCTAssertEqual(notice?.body, "Transcription failed. The audio is saved.")
+    XCTAssertNil(notice?.retry)
+
+    // A record that DID write markdown keeps the old rule: its row says it.
+    XCTAssertNil(CompletionNotifierPolicy.decide(
+      job: job(status: .failed(stage: .summarizing)),
+      title: "Q3 planning",
+      facts: "",
+      appIsFrontmost: true
+    ))
+  }
+
+  /// And the window says it too, because a notification can be denied and
+  /// because the owner is looking at the app.
+  func testHandoffFailureMessage_onlyForAFailureWithNowhereElseToGo() {
+    XCTAssertEqual(
+      HandoffFailureNotice.message(status: .failed(stage: .transcribing), hasRow: false),
+      "Transcription failed — the audio is saved."
+    )
+    XCTAssertEqual(
+      HandoffFailureNotice.message(status: .failed(stage: .recording), hasRow: false),
+      "Recording failed — the audio is saved."
+    )
+    // A row carries its own failure and its Retry; two surfaces for one failure
+    // is the doubling this lane's notification policy already refuses.
+    XCTAssertNil(HandoffFailureNotice.message(status: .failed(stage: .summarizing), hasRow: true))
+    // Nothing to say about a record that landed.
+    XCTAssertNil(HandoffFailureNotice.message(status: .done, hasRow: true))
+    XCTAssertNil(HandoffFailureNotice.message(status: .transcribed, hasRow: false))
+  }
+
+  /// A transcription failure is not a recording failure. Saying it is sends the
+  /// owner looking for audio that is exactly where it should be.
+  func testTranscriptionAndRecordingFailuresAreNamedApart() {
+    XCTAssertEqual(
+      CompletionNotifierPolicy.failureBody(.transcribing),
+      "Transcription failed. The audio is saved."
+    )
+    XCTAssertEqual(
+      CompletionNotifierPolicy.failureBody(.recording),
+      "Recording failed. The audio is saved."
+    )
+    let now = Date()
+    XCTAssertEqual(
+      ProcessingRowStatus.make(
+        status: .failed(stage: .transcribing),
+        interrupted: false,
+        updatedAt: now,
+        now: now
+      )?.text,
+      "Transcription failed · audio saved"
+    )
+  }
+
+  // MARK: - Where a record got to when the work stopped
+
+  func testLanding_readsTheRecordRatherThanAssuming() {
+    XCTAssertEqual(
+      ProcessingLanding.resolve(record: ["status": "done"]).status,
+      .done
+    )
+    XCTAssertEqual(
+      ProcessingLanding.resolve(record: ["status": "failed:summarizing", "interrupted": true])
+        .interrupted,
+      true
+    )
+    // A legacy record with no status resolves by what it HAS, never as live.
+    XCTAssertEqual(ProcessingLanding.resolve(record: ["summary": "x"]).status, .done)
+    // No record to consult: never `done`, and never a stage whose artifacts may
+    // not exist.
+    XCTAssertEqual(ProcessingLanding.resolve(record: nil).status, .failed(stage: .transcribing))
+    XCTAssertFalse(ProcessingLanding.resolve(record: nil).interrupted)
+  }
+
+  func testCompletionFacts_countDistinctSpeakersOffTheSegments() {
+    let record: [String: Any] = [
+      "durationMinutes": 41,
+      "segments": [
+        ["speaker": "Kenny"],
+        ["speaker": "Kenny"],
+        ["speaker": "Rex"],
+        ["speaker": ""],
+        ["text": "no speaker at all"]
+      ],
+      "markers": [["at": 1], ["at": 2], ["at": 3]]
+    ]
+    XCTAssertEqual(CompletionFacts.line(fromRecord: record), "41 min · 2 speakers · 3 markers")
+    XCTAssertEqual(CompletionFacts.line(fromRecord: ["durationMinutes": 12]), "12 min")
+    XCTAssertEqual(CompletionFacts.line(fromRecord: nil), "")
+  }
+
+  // MARK: - The menu bar names the stage
+
+  /// Acceptance item 4: the menu-bar item shows the stage. The wording is a
+  /// pure function so it can be asserted without a status item; the view draws
+  /// exactly this string next to its glyph.
+  func testMenuBarNamesTheStage_andTheEarliestOneWhenSeveralRun() {
+    let ledger = ProcessingLedger()
+    XCTAssertNil(ProcessingMenuBar.stageText(inFlight: ledger.inFlight))
+
+    ledger.begin(recordID: "a", kind: .meeting, outputPath: nil, status: .transcribing)
+    XCTAssertEqual(ProcessingMenuBar.stageText(inFlight: ledger.inFlight), "Transcribing…")
+
+    ledger.advance(recordID: "a", to: .summarizing)
+    XCTAssertEqual(ProcessingMenuBar.stageText(inFlight: ledger.inFlight), "Summarizing…")
+
+    // Two at once: the earliest stage wins — it is the work with the furthest
+    // still to go — and the count says how many.
+    ledger.begin(recordID: "b", kind: .memo, outputPath: nil, status: .transcribing)
+    XCTAssertEqual(ProcessingMenuBar.stageText(inFlight: ledger.inFlight), "Transcribing… (2)")
+  }
+
+  /// The window between the seal and the summary is the one stretch with no
+  /// drawer row (there is no `.md` before the seal) and no stage name. The slot
+  /// still has to be warm, which is what the count is for.
+  func testMenuBar_saysNothingForAJobBetweenStages() {
+    let ledger = ProcessingLedger()
+    ledger.begin(recordID: "a", kind: .meeting, outputPath: nil, status: .transcribed)
+    XCTAssertNil(ProcessingMenuBar.stageText(inFlight: ledger.inFlight))
+    XCTAssertFalse(ledger.inFlight.isEmpty, "still work, even with no stage to name")
   }
 }

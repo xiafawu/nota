@@ -95,7 +95,18 @@ final class ProcessingLedger: ObservableObject {
 
   deinit { ticker?.invalidate() }
 
-  var inFlight: [ProcessingJob] { jobs.filter { $0.status.isInFlight } }
+  /// Every job the ledger is holding — all of them, and that is the point.
+  ///
+  /// "Still in the ledger" and "still being worked on" are the same fact:
+  /// `begin` takes a record in when Stop is pressed or Retry is pressed, and
+  /// `forget` lets it go once its landing has been shown. Deriving this from
+  /// the *status* instead left a blind window between the seal (which puts the
+  /// job at `transcribed`, a rest state) and the summary claiming it — a Task
+  /// hop and a file write later. A ⌘Q arriving in that window found nothing in
+  /// flight, terminated with no prompt, and the summary that was about to start
+  /// never did. The status says which stage; the ledger says whether there is
+  /// still work, and only the ledger can know about work that has not started.
+  var inFlight: [ProcessingJob] { jobs }
 
   var isBusy: Bool { !inFlight.isEmpty }
 
@@ -309,8 +320,14 @@ struct ProcessingRowStatus: Equatable {
         // single stage to re-run. The audio is still in the record's assets
         // folder — nothing here ever deletes it — and it can be transcribed as
         // a file whenever the owner chooses.
+        //
+        // The two stages are named apart: a session that recorded fine and
+        // then could not be turned into a transcript (a dead realtime socket,
+        // an empty result) did not fail to *record*, and telling the owner it
+        // did sends them looking for audio that is exactly where it should be.
+        let what = stage == .recording ? "Recording" : "Transcription"
         return ProcessingRowStatus(
-          text: interrupted ? "Interrupted · audio saved" : "Recording failed · audio saved",
+          text: interrupted ? "Interrupted · audio saved" : "\(what) failed · audio saved",
           tone: .failure,
           retry: nil
         )
@@ -338,6 +355,17 @@ struct ProcessingRowStatus: Equatable {
 /// announcement than any badge. Which is also why nothing else may claim to be
 /// the title in the meantime — "Live Meeting" was a name, and a name that never
 /// changes announces nothing.
+///
+/// This names the record (the markdown's `# title`, which the drawer row reads)
+/// and **not** the file. The output file keeps the durable base name
+/// `sealTranscript` has always given it: a filename is never rewritten when the
+/// summary lands, so "Untitled meeting-<ts>.summary.md" would still be sitting
+/// in the owner's Finder a year after the record was titled.
+///
+/// An `isProvisional`/`all` pair used to live here for asking "has the title
+/// arrived?". Nothing ever asked — the completion signal is the row re-reading
+/// the `.md`, which needs no predicate — so it is gone rather than kept as
+/// coverage for a question no caller has.
 enum ProvisionalTitle {
   static func forKind(_ kind: HistoryKind) -> String {
     switch kind {
@@ -346,17 +374,103 @@ enum ProvisionalTitle {
     case .file: return "Untitled transcript"
     }
   }
+}
 
-  /// Every placeholder, so "has the title arrived?" is one lookup.
-  static let all: Set<String> = [
-    forKind(.meeting),
-    forKind(.memo),
-    forKind(.file)
-  ]
+// MARK: - Asking for a summary
 
-  /// True when a title is still the placeholder — i.e. the completion signal
-  /// has not fired yet.
-  static func isProvisional(_ title: String) -> Bool { all.contains(title) }
+/// Why a summary is being asked for.
+///
+/// The distinction exists because **Skip summary is a standing preference about
+/// work Nota starts on its own**, and a press on one record's "Retry summary"
+/// is not that. Reading the setting for both is what erased a failure: the
+/// retry rewrote `failed:summarizing` to `transcribed`, then the setting sent
+/// it home without running anything — and `transcribed` offers no Retry, so the
+/// only recovery path the record had disappeared for good.
+enum SummaryTrigger: Equatable {
+  /// The stop path, following a live session. Honours Skip summary.
+  case automatic
+  /// The owner pressed Retry on this record (in the drawer row, or on a failure
+  /// notification). An explicit press for one named record overrides a standing
+  /// "don't summarize by yourself" — it is still manual, which is the rule that
+  /// matters (nothing here ever runs without a press).
+  case manualRetry
+
+  func shouldRun(skipSummary: Bool) -> Bool {
+    switch self {
+    case .automatic: return !skipSummary
+    case .manualRetry: return true
+    }
+  }
+}
+
+/// What a Retry press must do — decided **before** anything is written.
+///
+/// The order is the fix: the old path rewrote the record's status first and
+/// asked whether the work would run afterwards, so a refusal left a record that
+/// had lost its failure, its Retry and its only recovery path. Nothing is
+/// mutated until this says `run` or `reopenThenRun`.
+enum RetrySummaryPlan: Equatable {
+  /// The ledger already holds this record: the work is under way.
+  case alreadyRunning
+  /// Not a record a summary retry can re-run. The stage that is re-run has to
+  /// be the stage that failed.
+  case refuse
+  /// A `transcribed` record: ask for the summary as it stands.
+  case run
+  /// A `failed:summarizing` record. It is terminal, and `canAdvance` refuses
+  /// everything from a terminal state, so it is reopened at the rest state it
+  /// fell out of first.
+  case reopenThenRun
+
+  static func make(current: HistoryStatus, isInLedger: Bool) -> RetrySummaryPlan {
+    if isInLedger { return .alreadyRunning }
+    if current == .transcribed { return .run }
+    if current.failureStage == .summarizing { return .reopenThenRun }
+    return .refuse
+  }
+}
+
+// MARK: - Where a record got to when the work stopped
+
+/// The status a landed job settles at, read back off the record on disk.
+///
+/// The record is the authority — the CLI writes `done` itself — so the ledger
+/// is updated *from* it rather than from what the app thinks happened. A record
+/// that cannot be read at all is the one case with no authority to consult:
+/// the audio is on disk (nothing ever deletes it) and the transcript may or may
+/// not be, so it resolves to the failure of the earliest stage that could still
+/// be true. It is deliberately not `done`.
+enum ProcessingLanding {
+  static func resolve(record: [String: Any]?) -> (status: HistoryStatus, interrupted: Bool) {
+    guard let record else { return (.failed(stage: .transcribing), false) }
+    return (
+      HistoryStatus.normalized(fromRecord: record),
+      record["interrupted"] as? Bool ?? false
+    )
+  }
+}
+
+// MARK: - The menu bar's warm slot
+
+/// What the status item says while records are processing.
+///
+/// A pure function rather than a computed property on the view, because the
+/// ticket's acceptance item is about the words: the menu bar names the *stage*,
+/// so the stage has to be assertable without a status item.
+enum ProcessingMenuBar {
+  /// The stage to show, with a count when more than one record is in flight.
+  ///
+  /// More than one: the **earliest** stage wins, because it is the work with
+  /// the furthest still to go. A job between stages (the ledger holds it but
+  /// its status names no stage) contributes nothing to the wording and still
+  /// keeps the slot warm through the count.
+  static func stageText(inFlight: [ProcessingJob]) -> String? {
+    guard !inFlight.isEmpty else { return nil }
+    let order: [HistoryStatus] = [.recording, .transcribing, .summarizing]
+    let earliest = order.first { status in inFlight.contains { $0.status == status } }
+    guard let earliest, let label = ProcessingFreshness.stageLabel(earliest) else { return nil }
+    return inFlight.count > 1 ? "\(label) (\(inFlight.count))" : label
+  }
 }
 
 // MARK: - The completion notice
@@ -375,6 +489,25 @@ enum CompletionFacts {
       parts.append("\(markers) marker\(markers == 1 ? "" : "s")")
     }
     return parts.joined(separator: " · ")
+  }
+
+  /// The same line, read straight off a decoded record.
+  ///
+  /// Speakers are **counted from the segments**, not taken from a field: the
+  /// record carries no speaker count of its own, and a name that appears in
+  /// twenty segments is one speaker. Blank labels are not people.
+  static func line(fromRecord record: [String: Any]?) -> String {
+    guard let record else { return "" }
+    let segments = record["segments"] as? [[String: Any]] ?? []
+    var speakers = Set<String>()
+    for segment in segments {
+      if let speaker = segment["speaker"] as? String, !speaker.isEmpty { speakers.insert(speaker) }
+    }
+    return line(
+      durationMinutes: record["durationMinutes"] as? Int,
+      speakerCount: speakers.isEmpty ? nil : speakers.count,
+      markerCount: (record["markers"] as? [Any])?.count
+    )
   }
 }
 
@@ -396,30 +529,79 @@ struct CompletionNotice: Equatable {
 ///
 /// Two rules, and they are the whole policy:
 ///
-/// 1. **Only when Nota is not frontmost.** With the window in front, the row's
-///    identity changing from "Untitled meeting" to its real title is already
-///    the signal; a banner on top of it is the same news twice.
+/// 1. **Only when Nota is not frontmost — unless the record has no row.** With
+///    the window in front, the row's identity changing from "Untitled meeting"
+///    to its real title is already the signal; a banner on top of it is the
+///    same news twice. That reasoning rests entirely on a row *existing*, and
+///    a record that failed before its markdown was written has none: rows are
+///    built from the output directory, so a live session that ends at
+///    `failed:transcribing` leaves nothing on screen at all. Suppressing there
+///    made a whole meeting disappear in silence, so the suppression is
+///    conditional on `outputPath` rather than unconditional.
 /// 2. **One per record, never per stage.** A record moving `transcribing →
 ///    summarizing → done` is one piece of news, not three.
 enum CompletionNotifierPolicy {
+  /// What a failure says, named by the stage it actually failed in.
+  ///
+  /// `recording` and `transcribing` are deliberately not one sentence: a
+  /// session whose audio is on disk and whose realtime stream then died did not
+  /// fail to record, and saying it did sends the owner looking for audio that
+  /// is exactly where it should be.
+  static func failureBody(_ stage: HistoryStage) -> String {
+    switch stage {
+    case .recording: return "Recording failed. The audio is saved."
+    case .transcribing: return "Transcription failed. The audio is saved."
+    case .summarizing: return "Summary failed. The transcript is saved."
+    }
+  }
+
   static func decide(
     job: ProcessingJob,
     title: String,
     facts: String,
     appIsFrontmost: Bool
   ) -> CompletionNotice? {
-    guard !appIsFrontmost else { return nil }
     guard !job.notified else { return nil }
     guard job.status.isTerminal || job.status == .transcribed else { return nil }
+    // A row exists exactly when the record wrote its markdown. With one on
+    // screen the app has already said this; without one it has said nothing.
+    if appIsFrontmost && job.outputPath != nil { return nil }
 
     if let stage = job.status.failureStage {
       let retry: ProcessingRowStatus.Retry? = stage == .summarizing ? .summary : nil
-      let body = stage == .summarizing
-        ? "Summary failed. The transcript is saved."
-        : "Recording failed. The audio is saved."
-      return CompletionNotice(title: title, body: body, recordID: job.recordID, retry: retry)
+      return CompletionNotice(
+        title: title,
+        body: failureBody(stage),
+        recordID: job.recordID,
+        retry: retry
+      )
     }
     return CompletionNotice(title: title, body: facts, recordID: job.recordID, retry: nil)
+  }
+}
+
+// MARK: - A failure with nowhere to appear
+
+/// What the *window* says when a handed-off record ends without a row.
+///
+/// Stop leaves the live pane on the press, which is the whole point of this
+/// lane — and it took with it the last surface that acknowledged a session that
+/// then failed. A record that never wrote markdown has no drawer row (rows come
+/// from the output directory), no title to change, and its `status` string is
+/// rendered nowhere once the live pane is gone. So the toolbar says it, in the
+/// same pill a file run uses.
+///
+/// A record that DID write its markdown says nothing here: its row carries the
+/// failure and its Retry, and two surfaces for one failure is the doubling this
+/// lane's notification policy already refuses.
+enum HandoffFailureNotice {
+  static func message(status: HistoryStatus, hasRow: Bool) -> String? {
+    guard let stage = status.failureStage, !hasRow else { return nil }
+    switch stage {
+    case .recording: return "Recording failed — the audio is saved."
+    case .transcribing: return "Transcription failed — the audio is saved."
+    case .summarizing: return "Summary failed — the transcript is saved."
+    }
   }
 }
 
@@ -468,6 +650,15 @@ enum QuitPrompt {
 /// has moved on may update the list it belongs to and nothing else. It may
 /// never rewrite the pane, because the pane may be a *different* record — or a
 /// live session that is recording right now.
+///
+/// Which record is "open" is `NotaModel.lastOutputURL`, and only
+/// `performOpenHistory` sets it. So `.reloadOpenDocument` is reached by the
+/// **retry** path — the owner opens a record whose summary failed, presses
+/// Retry, and the summary lands in the pane they are reading — and never by the
+/// live-stop path. That is the design, not an oversight: the stop path used to
+/// end with `lastOutputURL = saved.outputURL`, i.e. Stop opened the transcript
+/// it had just sealed. A lane whose whole claim is that Stop gives the window
+/// back may not then take it for a document the owner did not ask for.
 enum CompletionEffect: Equatable {
   /// Refresh the drawer. The record is not what the window is showing.
   case listOnly
