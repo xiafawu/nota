@@ -1,0 +1,41 @@
+{
+  "records": [
+    {
+      "id": "legacy-no-audio",
+      "createdAt": "2026-01-05T10:00:00.000Z",
+      "sourceName": "recording.caf",
+      "status": "done",
+      "audioBytes": null,
+      "assetsBytes": 0,
+      "speakerClipCount": 0,
+      "speakerClipBytes": 0,
+      "recordBytes": 450,
+      "totalBytes": 450
+    },
+    {
+      "id": "with-audio",
+      "createdAt": "2026-02-01T09:30:00.000Z",
+      "sourceName": "recording.caf",
+      "status": "done",
+      "audioBytes": 2048,
+      "assetsBytes": 2560,
+      "speakerClipCount": 1,
+      "speakerClipBytes": 512,
+      "recordBytes": 525,
+      "totalBytes": 3085
+    }
+  ],
+  "count": 2,
+  "totalBytes": 7631,
+  "audioBytes": 2048,
+  "oldestCreatedAt": "2026-01-05T10:00:00.000Z",
+  "thisMonthBytes": 3085,
+  "orphans": [
+    {
+      "id": "orphaned",
+      "reason": "no-record",
+      "bytes": 4096
+    }
+  ],
+  "orphanBytes": 4096
+}

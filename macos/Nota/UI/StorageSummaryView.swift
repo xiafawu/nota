@@ -42,6 +42,20 @@ struct StorageSummaryView: View {
         }
       }
 
+      // Bytes no record names are part of the total, so the total has to
+      // explain itself — otherwise the figure and the rows disagree and the
+      // owner has no idea where the difference is. `nota history storage`
+      // names each one; nothing removes them.
+      if let orphanBytes = summary.orphanBytes, orphanBytes > 0 {
+        Text(
+          "\(StorageFormat.bytes(orphanBytes)) of that is not named by any record — "
+            + "run `nota history storage` to see where."
+        )
+        .font(.caption)
+        .foregroundStyle(.secondary)
+        .fixedSize(horizontal: false, vertical: true)
+      }
+
       Text(RecordingDeletionCopy.neverDeletesOnItsOwn)
         .font(.caption)
         .foregroundStyle(.secondary)
@@ -68,7 +82,9 @@ struct StorageSummaryView: View {
       totalBytes: 3_221_225_472,
       audioBytes: 3_100_000_000,
       oldestCreatedAt: "2025-01-05T10:00:00.000Z",
-      thisMonthBytes: 402_653_184
+      thisMonthBytes: 402_653_184,
+      orphans: nil,
+      orphanBytes: nil
     )
   )
   .padding()

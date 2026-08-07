@@ -36,6 +36,14 @@ struct RecordingDeletionMenu: ViewModifier {
   func body(content: Content) -> some View {
     content
       .contextMenu {
+        // Reveal is here because the row's trash button is not (XIA-436): that
+        // button deleted the exported `.md`, which Nota never does. Removing
+        // the owner's own file stays the owner's own business, and this is the
+        // route to it — non-destructive, and it opens on the file itself.
+        Button("Reveal in Finder") {
+          NSWorkspace.shared.activateFileViewerSelecting([entry.url])
+        }
+        Divider()
         Button("Delete recording audio…") {
           if let record = locate() { pendingAudio = record } else { unresolved = true }
         }
@@ -66,7 +74,8 @@ struct RecordingDeletionMenu: ViewModifier {
         Text(
           RecordingDeletionCopy.audioMessage(
             bytes: record.audioBytes,
-            hasTranscript: record.hasTranscript
+            hasTranscript: record.hasTranscript,
+            speakerClipCount: record.speakerClipCount
           )
         )
       }
