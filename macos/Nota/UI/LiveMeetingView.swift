@@ -121,6 +121,12 @@ struct LiveMeetingView: View {
   /// slot is this ticket's, the plumbing is XIA-433's. See `SessionMarkerLog`.
   @StateObject private var markerLog = SessionMarkerLog()
 
+  /// The transcript's row model, memoized. It maps every segment of the
+  /// session, so it may not be rebuilt by a render the transcript did not
+  /// cause. Deliberately a plain `@State` reference and not a `@StateObject`:
+  /// it publishes nothing, it only remembers.
+  @State private var rowCache = LiveTranscriptRowCache()
+
   /// What the pane offers right now. One decision, read by the column, the
   /// transcript and the banner, so they cannot disagree about which state
   /// this is.
@@ -132,13 +138,11 @@ struct LiveMeetingView: View {
     )
   }
 
-  private var blocks: [LiveTranscriptBlock] {
-    LiveTranscript.blocks(
-      LiveTranscript.lines(
-        segments: session.segments,
-        partial: session.partialText,
-        elapsed: session.elapsed
-      )
+  private var rows: [LiveTranscriptRow] {
+    rowCache.rows(
+      segments: session.segments,
+      partial: session.partialText,
+      elapsed: session.elapsed
     )
   }
 
@@ -183,7 +187,7 @@ struct LiveMeetingView: View {
         Divider()
         SessionColumnView(
           elapsed: session.elapsed,
-          level: session.micLevel,
+          level: session.level,
           kind: kind,
           controls: controls,
           markers: markerLog.markers,
@@ -195,7 +199,7 @@ struct LiveMeetingView: View {
       VStack(spacing: 0) {
         SessionStripView(
           elapsed: session.elapsed,
-          level: session.micLevel,
+          level: session.level,
           kind: kind,
           controls: controls,
           onMark: mark,
@@ -208,7 +212,7 @@ struct LiveMeetingView: View {
   }
 
   private var transcript: some View {
-    LiveTranscriptView(blocks: blocks, volatileID: volatileID)
+    LiveTranscriptView(rows: rows, volatileID: volatileID)
       .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
 
@@ -229,12 +233,19 @@ struct LiveMeetingView: View {
 
   // MARK: - Idle (nothing running)
 
+  /// **No ember here, and no ring.** `CraftTokens.ember(_:)` means exactly one
+  /// thing — the microphone is open — and idle is the state every owner sees
+  /// before every recording, so it is the state that teaches them what the
+  /// colour means. A breathing ember ring over a closed microphone would be the
+  /// same lie `showsRecordingPane` withholds the column from a failed session
+  /// to avoid, told to more people more often.
+  ///
+  /// The buttons here and on the failed banner keep `.liquidGlassButton()`
+  /// deliberately: the ghost/solid-ember pair is the *recording pane's*
+  /// vocabulary, and these are not recording surfaces. "All of it goes" was
+  /// only ever true of the pane.
   private var idleView: some View {
     centeredState {
-      SessionRing(
-        diameter: RecordingPaneMetrics.stripRingDiameter,
-        lineWidth: RecordingPaneMetrics.stripRingLineWidth
-      )
       Text(RecordingPaneCopy.kindLine(kind: kind, controls: .start))
         .font(RecordingPaneMetrics.kindLineFont)
         .foregroundStyle(.secondary)

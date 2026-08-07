@@ -98,10 +98,17 @@ final class LiveMeetingSession: ObservableObject {
   /// the capture engine holds its `start()` and `stop()` too, and this session
   /// is the only thing entitled to call those.
   ///
-  /// It goes to **zero** when capture ends (`stopCapture`), because a meter
-  /// frozen at the last thing it heard is a meter claiming a live session — the
-  /// exact failure the meter exists to make impossible.
-  @Published private(set) var micLevel: Float = 0
+  /// A plain `let` holding its **own** observable object, deliberately, and not
+  /// a `@Published Float` on this one. The tap delivers ~45 buffers a second
+  /// and this session is observed by `ContentView` and `LiveMeetingView`, so a
+  /// level on it invalidated the whole window body — toolbar, drawer overlay
+  /// and the entire transcript — 45 times a second. `MeterPublishGate` throttles
+  /// the writes on top of that; see it for the arithmetic.
+  ///
+  /// It goes to **zero** when capture ends (`stopCapture`) and while a session
+  /// is finalizing, because a meter that answers a voice whose audio is being
+  /// discarded is a meter claiming that voice was captured.
+  let level = MicLevelFeed()
 
   // MARK: - Lifecycle
 
@@ -214,7 +221,7 @@ final class LiveMeetingSession: ObservableObject {
       // MicCapture delivers converted 16 kHz mono Float32 buffers on main.
       Task { @MainActor in
         guard let self else { return }
-        self.micLevel = self.capture.rmsLevel
+        self.publishLevel()
         self.handlePCMBuffer(buffer)
       }
     }
@@ -528,7 +535,7 @@ final class LiveMeetingSession: ObservableObject {
     capture.onPCMBuffer = { [weak self] buffer in
       Task { @MainActor in
         guard let self else { return }
-        self.micLevel = self.capture.rmsLevel
+        self.publishLevel()
         try? self.appleSpeech?.feed(buffer)
       }
     }
@@ -694,7 +701,30 @@ final class LiveMeetingSession: ObservableObject {
   private func stopCapture() {
     capture.onPCMBuffer = nil
     capture.stop()
-    micLevel = 0
+    level.silence()
+  }
+
+  /// Whether the meter may answer the microphone right now.
+  ///
+  /// **Only while the audio is being kept.** On the AssemblyAI path `stop()`
+  /// sets `.stopping`, sends Terminate and then awaits the final transcript —
+  /// up to the 5 s watchdog — with the tap still installed, while
+  /// `handlePCMBuffer` drops every buffer at its own `state == .recording`
+  /// guard. So the owner pressed Stop, kept talking, watched the ember meter
+  /// answer their voice, and reasonably concluded those words were captured.
+  /// They reached neither `recording.caf` nor the socket. A meter that moves is
+  /// a claim that something is being recorded, and it may only be made when
+  /// something is.
+  static func meterFollowsMicrophone(_ state: SessionState) -> Bool {
+    state == .recording
+  }
+
+  private func publishLevel() {
+    if LiveMeetingSession.meterFollowsMicrophone(state) {
+      level.publish(capture.rmsLevel)
+    } else {
+      level.silence()
+    }
   }
 
   private func handlePCMBuffer(_ buffer: AVAudioPCMBuffer) {

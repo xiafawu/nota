@@ -21,16 +21,40 @@ enum RecordingPaneForm: Equatable, CaseIterable {
 enum RecordingPaneMetrics {
   // MARK: The column
 
-  /// The trailing session column. **Trailing** rather than leading because ⌘L
-  /// (the history drawer) owns the left edge of this window, and two surfaces
-  /// competing for one edge is a surface the owner has to think about.
+  /// The trailing session column.
+  ///
+  /// **Trailing** is XIA-423's locked visual direction, and it is worth being
+  /// precise about what does *not* justify it: the original rationale said ⌘L
+  /// owns this window's left edge, and it does not — `ContentView
+  /// .historyDrawerLayer` is a `ZStack(alignment: .topTrailing)`, so the drawer
+  /// opens on the **right**, exactly over this column. See "the drawer and the
+  /// column share an edge" in CLAUDE.md for the options and the call.
   static let columnWidth: CGFloat = 288
   static let columnPadding: CGFloat = CraftTokens.spacing24
 
-  /// The width below which the column stops being worth its 288pt. Under it the
-  /// transcript is paying for the session indicator, and the transcript is what
-  /// the owner is reading.
-  static let foldWidth: CGFloat = 720
+  /// The hairline between the two panes. Named because the fold arithmetic
+  /// spends it.
+  static let dividerWidth: CGFloat = 1
+
+  /// What the transcript needs to still be a transcript.
+  ///
+  /// 520 leaves 408pt of text once the gutter (52), its gap (12) and the two
+  /// 24pt margins are paid — about 56 characters at 14pt, the low end of a
+  /// readable measure. Under it the transcript is a column of fragments, and a
+  /// column of fragments is worse than no session column.
+  static let transcriptMinWidth: CGFloat = 520
+
+  /// The pane width below which the column folds. **Derived** from what the
+  /// transcript needs rather than typed in, and that is the whole correction:
+  /// the previous hand-picked 720 was measured against the *pane*, and since
+  /// `Metrics.windowMinWidth` is 780 and the ⌘L drawer is an overlay that
+  /// consumes no width, no window this app allows could ever reach it — the
+  /// fold was unreachable code with a test that said otherwise.
+  ///
+  /// 288 + 1 + 520 = 809, so the fold is what happens at the narrowest window
+  /// the app permits, which is precisely the case it exists for: at 780 the
+  /// column would leave the transcript 491pt.
+  static var foldWidth: CGFloat { columnWidth + dividerWidth + transcriptMinWidth }
 
   /// The timer's `mm:ss` size in each form. 58 is the column's headline — the
   /// timer is the session's *object*, not a caption on it. `SessionTimerMetrics`
@@ -118,10 +142,20 @@ enum RecordingPaneMetrics {
 /// The pure half of "what shape is the pane in". A `GeometryReader` supplies
 /// the width and nothing else decides anything.
 enum RecordingPaneLayout {
-  static func form(width: CGFloat) -> RecordingPaneForm {
-    width < RecordingPaneMetrics.foldWidth ? .strip : .column
+  /// What the transcript is left with once the column and the divider are paid.
+  static func transcriptWidth(paneWidth: CGFloat) -> CGFloat {
+    paneWidth - RecordingPaneMetrics.columnWidth - RecordingPaneMetrics.dividerWidth
   }
 
+  /// The fold, stated as the thing it is protecting: the column folds exactly
+  /// when keeping it would starve the transcript.
+  static func form(width: CGFloat) -> RecordingPaneForm {
+    transcriptWidth(paneWidth: width) < RecordingPaneMetrics.transcriptMinWidth ? .strip : .column
+  }
+
+  /// The timer's `mm:ss` size in this form. Read by the views — a metric only a
+  /// test consults is a metric the views are free to disagree with, which is
+  /// what these three were.
   static func timerBase(_ form: RecordingPaneForm) -> CGFloat {
     switch form {
     case .column: return RecordingPaneMetrics.columnTimerBase
@@ -135,12 +169,109 @@ enum RecordingPaneLayout {
     case .strip: return .compact
     }
   }
+}
 
-  /// The one thing the fold gives up. Everything else — timer, ring, meter,
-  /// kind line, Mark, Stop — survives it, which is why this is a single
-  /// predicate rather than a per-element table.
-  static func showsMarkerList(_ form: RecordingPaneForm) -> Bool {
-    form == .column
+// MARK: - The meter's feed
+
+/// When the microphone's level may be republished.
+///
+/// `MicCapture` installs its tap with a 1024-frame buffer at the source rate —
+/// a delivery roughly every 21 ms, ~45 a second. An unconditional assignment to
+/// a `@Published` property fires `objectWillChange` on every one of them, and
+/// the meter's first home was `LiveMeetingSession`, which `ContentView` and
+/// `LiveMeetingView` both observe: each tick invalidated the whole window body,
+/// toolbar and transcript included. CLAUDE.md already records this trap for the
+/// HUD prompter ("re-rendered on every 66 ms RMS tick … an unbounded main-actor
+/// cost on a feed that ticks 15 times a second"); this was three times that
+/// rate against a much larger hierarchy.
+///
+/// So the level lives on its own object (`MicLevelFeed`) that only the meter
+/// observes, **and** the writes are gated. Two gates, because either alone
+/// leaves a hole:
+///
+/// - **Time.** Never faster than `minInterval` — the HUD's own tick, and more
+///   than a bar can visibly move between.
+/// - **Movement.** A change smaller than `minDelta` is a change nobody can see;
+///   spending a render on it is spending it on nothing.
+///
+/// And one escape, because the movement gate alone can wedge: a level that
+/// decays toward silence in steps below the threshold would never publish
+/// again, leaving a full meter over a quiet room — which is the exact lie the
+/// meter exists to make impossible. After `maxHold` any difference at all
+/// publishes.
+enum MeterPublishGate {
+  /// 66 ms — the HUD's RMS tick, i.e. ~15 Hz.
+  static let minInterval: TimeInterval = 0.066
+  /// Below this the tallest bar moves under a point.
+  static let minDelta: Float = 0.02
+  /// Past this, any difference publishes: convergence beats economy.
+  static let maxHold: TimeInterval = 0.5
+
+  static func shouldPublish(
+    new: Float,
+    last: Float,
+    now: TimeInterval,
+    lastPublishedAt: TimeInterval
+  ) -> Bool {
+    guard new != last else { return false }
+    let since = now - lastPublishedAt
+    guard since >= minInterval else { return false }
+    return abs(new - last) >= minDelta || since >= maxHold
+  }
+}
+
+/// The microphone level, published on an object **only the meter observes**.
+///
+/// It is deliberately not a `@Published` property of `LiveMeetingSession`: that
+/// object is observed by `ContentView` and `LiveMeetingView`, and a 45 Hz feed
+/// on it re-renders the window. Held by the session as a plain `let`, so
+/// mutating it never touches the session's own `objectWillChange`.
+@MainActor
+final class MicLevelFeed: ObservableObject {
+  @Published private(set) var level: Float
+
+  private var lastPublishedAt: TimeInterval = -.greatestFiniteMagnitude
+
+  init(level: Float = 0) {
+    self.level = level
+  }
+
+  /// Publish if `MeterPublishGate` allows it. `now` is injected so the gate is
+  /// testable without waiting out a real 66 ms.
+  func publish(_ level: Float, now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+    guard
+      MeterPublishGate.shouldPublish(
+        new: level,
+        last: self.level,
+        now: now,
+        lastPublishedAt: lastPublishedAt
+      )
+    else { return }
+    self.level = level
+    lastPublishedAt = now
+  }
+
+  /// Silence, immediately and ungated. Capture ending is the one level change
+  /// that may not wait for a tick: a meter frozen at the last thing it heard is
+  /// a meter claiming a live session.
+  func silence(now: TimeInterval = ProcessInfo.processInfo.systemUptime) {
+    guard level != 0 else { return }
+    level = 0
+    lastPublishedAt = now
+  }
+}
+
+/// `SessionMeter` bound to the live feed.
+///
+/// This wrapper is the entire point of the split: `@ObservedObject` **here**
+/// means a level tick re-runs *this* body and nothing above it — not the
+/// column, not the transcript, not the window.
+struct SessionMeterFeedView: View {
+  @ObservedObject var feed: MicLevelFeed
+  var variant: SessionMeterMetrics.Variant
+
+  var body: some View {
+    SessionMeter(level: feed.level, variant: variant)
   }
 }
 
@@ -174,6 +305,15 @@ enum RecordingPaneCopy {
   /// The kind line: "Meeting · listening".
   static func kindLine(kind: HistoryKind, controls: LiveMeetingControls) -> String {
     "\(noun(kind)) · \(activity(controls))"
+  }
+
+  /// What a marker row says beside its timestamp — **nothing**, until XIA-433
+  /// gives markers a meaning to say. It used to fall back to the section
+  /// heading, so every row under a heading reading MOMENTS read `12:04 Moments`:
+  /// drawn, and evidently never looked at. A timestamp alone is the honest row,
+  /// and it is the row the auto-titled label will land in.
+  static func markerLabel(_ marker: SessionMarker) -> String? {
+    marker.label
   }
 
   static let markTitle = "Mark"
@@ -282,6 +422,47 @@ struct LiveTranscriptBlock: Equatable, Identifiable {
   var lines: [LiveTranscriptLine]
 }
 
+/// One **drawn** row of the live transcript.
+///
+/// Rows are flat on purpose, and that is a correction rather than a style. A
+/// `LazyVStack` defers only its **direct** children; the first cut put each
+/// block in the stack and each block's lines in an inner `VStack`, and since
+/// `speaker` is nil for every line the pipeline produces today, the entire
+/// session was one block — one child — so every `Text` the meeting had ever
+/// drawn was built and measured on every render pass, on screen or not. Master
+/// put each segment directly in the stack and only built what was visible.
+///
+/// Flattening keeps that laziness and keeps the grouping: the speaker name a
+/// block used to draw above its lines is emitted as its own row where the
+/// speaker changes, which is the same picture with one less level of nesting.
+struct LiveTranscriptRow: Equatable, Identifiable {
+  enum Content: Equatable {
+    /// A turn's speaker name. Emitted only where the speaker changes, so it is
+    /// absent entirely until the realtime pipeline fills the labels in.
+    case speaker(String)
+    case line(LiveTranscriptLine)
+  }
+
+  /// Typed, because a speaker row and its turn's first line would otherwise
+  /// share an id — a block anchors on its first line.
+  enum ID: Hashable {
+    case speaker(UUID)
+    case line(UUID)
+  }
+
+  let id: ID
+  /// The gutter timestamp, present only on the row that **starts** a turn. A
+  /// continuation row still reserves the cell and draws nothing in it, or its
+  /// text would step left under the line above it.
+  let gutter: TimeInterval?
+  let content: Content
+
+  /// Rows that start a turn take the larger inter-block gap. That difference is
+  /// what makes a turn read as a turn once a flat stack has no blocks left to
+  /// space apart.
+  var startsTurn: Bool { gutter != nil }
+}
+
 enum LiveTranscript {
   /// One stable id for the volatile tail, so the scroll reader can chase a run
   /// that is rewritten on every interim result.
@@ -338,6 +519,28 @@ enum LiveTranscript {
     return blocks
   }
 
+  /// The blocks, flattened into the rows the `LazyVStack` actually gets.
+  ///
+  /// One row per line, always — that is the invariant the laziness rests on —
+  /// plus one header row per turn that has a speaker.
+  static func rows(_ blocks: [LiveTranscriptBlock]) -> [LiveTranscriptRow] {
+    var rows: [LiveTranscriptRow] = []
+    for block in blocks {
+      // The gutter belongs to whichever row opens the turn: the speaker header
+      // if there is one, otherwise the turn's first line.
+      var gutter: TimeInterval? = block.startedAt
+      if let speaker = block.speaker {
+        rows.append(LiveTranscriptRow(id: .speaker(block.id), gutter: gutter, content: .speaker(speaker)))
+        gutter = nil
+      }
+      for line in block.lines {
+        rows.append(LiveTranscriptRow(id: .line(line.id), gutter: gutter, content: .line(line)))
+        gutter = nil
+      }
+    }
+    return rows
+  }
+
   /// "mm:ss" / "h:mm:ss" for the gutter — the same clock the timer runs, so a
   /// marker at 12:04 and a transcript line at 12:04 name the same instant.
   static func timestamp(_ interval: TimeInterval) -> String {
@@ -345,10 +548,63 @@ enum LiveTranscript {
   }
 }
 
+/// Memoizes the transcript's row model against the inputs that can change it.
+///
+/// `lines` → `blocks` → `rows` maps **every** segment of the session, so it is
+/// O(all segments) — nothing when it runs on new text, ruinous when it runs on
+/// a render the transcript did not cause. The pane's other publishers (the
+/// elapsed ticker, and anything else that invalidates the window) would
+/// otherwise rebuild 400 line structs to redraw a clock.
+///
+/// The key is cheap on purpose: a segment list is append-only, so its count and
+/// its last id say everything about it, and `elapsed` reaches the model only as
+/// the volatile line's gutter timestamp — which is drawn to the second.
+@MainActor
+final class LiveTranscriptRowCache {
+  struct Key: Equatable {
+    let segmentCount: Int
+    let lastSegmentID: UUID?
+    let partial: String?
+    let elapsedSeconds: Int
+  }
+
+  /// How many times the model was really rebuilt. Exposed so a test can prove
+  /// the cache is a cache rather than a wrapper around a recomputation.
+  private(set) var recomputeCount = 0
+
+  private var key: Key?
+  private var rows: [LiveTranscriptRow] = []
+
+  func rows(
+    segments: [LiveMeetingSession.LiveSegment],
+    partial: String?,
+    elapsed: TimeInterval
+  ) -> [LiveTranscriptRow] {
+    let next = Key(
+      segmentCount: segments.count,
+      lastSegmentID: segments.last?.id,
+      partial: partial,
+      elapsedSeconds: elapsed.isFinite && elapsed > 0 ? Int(elapsed) : 0
+    )
+    if next == key { return rows }
+    key = next
+    rows = LiveTranscript.rows(
+      LiveTranscript.blocks(
+        LiveTranscript.lines(segments: segments, partial: partial, elapsed: elapsed)
+      )
+    )
+    recomputeCount += 1
+    return rows
+  }
+}
+
 // MARK: - Controls
 
 /// Ghost control: the recording surface's default. Glass, a hairline, no fill.
-private struct RecordingGhostButtonStyle: ButtonStyle {
+///
+/// Internal for the same reason `RecordingStopButtonStyle` is: it is the
+/// control in the test that distinguishes a material from a fill.
+struct RecordingGhostButtonStyle: ButtonStyle {
   @Environment(\.colorScheme) private var colorScheme
 
   func makeBody(configuration: Configuration) -> some View {
@@ -367,7 +623,10 @@ private struct RecordingGhostButtonStyle: ButtonStyle {
 /// #8/#10: the one thing you will definitely do is the one thing you cannot
 /// miss). Solid ember, so it reads identically under Reduce Transparency — a
 /// glass Stop would go quiet exactly where the material degrades.
-private struct RecordingStopButtonStyle: ButtonStyle {
+/// Internal rather than private so a test can render it under both settings of
+/// `accessibilityReduceTransparency` — the claim "Stop survives the material
+/// degrading" is about pixels and cannot be asserted about a constant.
+struct RecordingStopButtonStyle: ButtonStyle {
   @Environment(\.colorScheme) private var colorScheme
 
   func makeBody(configuration: Configuration) -> some View {
@@ -442,10 +701,12 @@ struct SessionMarkerList: View {
               Text(LiveTranscript.timestamp(marker.at))
                 .font(RecordingPaneMetrics.markerTimeFont)
                 .foregroundStyle(.secondary)
-              Text(marker.label ?? RecordingPaneCopy.markersHeading)
-                .font(RecordingPaneMetrics.markerLabelFont)
-                .foregroundStyle(.primary)
-                .lineLimit(1)
+              if let label = RecordingPaneCopy.markerLabel(marker) {
+                Text(label)
+                  .font(RecordingPaneMetrics.markerLabelFont)
+                  .foregroundStyle(.primary)
+                  .lineLimit(1)
+              }
               Spacer(minLength: 0)
             }
           }
@@ -470,7 +731,9 @@ struct SessionMarkerList: View {
 /// list that grows must not push the fixed things around.
 struct SessionColumnView: View {
   let elapsed: TimeInterval
-  let level: Float
+  /// The meter's own object. Passed rather than a `Float` so the level's ~15 Hz
+  /// feed is observed by `SessionMeterFeedView` alone — see `MeterPublishGate`.
+  let level: MicLevelFeed
   let kind: HistoryKind
   let controls: LiveMeetingControls
   let markers: [SessionMarker]
@@ -515,8 +778,15 @@ struct SessionColumnView: View {
 /// The column's contents, un-scrolled. Separate so its natural height is a
 /// thing a test can measure — that measurement is what justifies the wrapper.
 struct SessionColumnContent: View {
+  /// This view's form, so every per-form number comes from
+  /// `RecordingPaneLayout` rather than being restated here. The two used to be
+  /// independent — the layout knew the timer base and the meter variant, and
+  /// the views hardcoded them, so the helpers were true only for the tests that
+  /// read them.
+  private let form: RecordingPaneForm = .column
+
   let elapsed: TimeInterval
-  let level: Float
+  let level: MicLevelFeed
   let kind: HistoryKind
   let controls: LiveMeetingControls
   let markers: [SessionMarker]
@@ -529,9 +799,9 @@ struct SessionColumnContent: View {
         diameter: RecordingPaneMetrics.ringDiameter,
         lineWidth: RecordingPaneMetrics.ringLineWidth
       )
-      .overlay(SessionTimer(elapsed: elapsed, base: RecordingPaneMetrics.columnTimerBase))
+      .overlay(SessionTimer(elapsed: elapsed, base: RecordingPaneLayout.timerBase(form)))
 
-      SessionMeter(level: level, variant: .tall)
+      SessionMeterFeedView(feed: level, variant: RecordingPaneLayout.meterVariant(form))
 
       Text(RecordingPaneCopy.kindLine(kind: kind, controls: controls))
         .font(RecordingPaneMetrics.kindLineFont)
@@ -557,9 +827,16 @@ struct SessionColumnContent: View {
 // MARK: - Session strip (the folded form)
 
 /// The folded form: one row, everything the column had except the marker list.
+///
+/// It has **no `markers` parameter**, and that is the fold's one loss written
+/// where the compiler enforces it. A `showsMarkerList(_:)` predicate used to
+/// say the same thing in a place only a test read, which made it a claim rather
+/// than a constraint.
 struct SessionStripView: View {
+  private let form: RecordingPaneForm = .strip
+
   let elapsed: TimeInterval
-  let level: Float
+  let level: MicLevelFeed
   let kind: HistoryKind
   let controls: LiveMeetingControls
   let onMark: () -> Void
@@ -571,8 +848,8 @@ struct SessionStripView: View {
         diameter: RecordingPaneMetrics.stripRingDiameter,
         lineWidth: RecordingPaneMetrics.stripRingLineWidth
       )
-      SessionMeter(level: level, variant: .compact)
-      SessionTimer(elapsed: elapsed, base: RecordingPaneMetrics.stripTimerBase)
+      SessionMeterFeedView(feed: level, variant: RecordingPaneLayout.meterVariant(form))
+      SessionTimer(elapsed: elapsed, base: RecordingPaneLayout.timerBase(form))
 
       Text(RecordingPaneCopy.kindLine(kind: kind, controls: controls))
         .font(RecordingPaneMetrics.kindLineFont)
@@ -601,30 +878,32 @@ struct SessionStripView: View {
 /// The live transcript: gutter timestamps, a speaker slot above each turn, the
 /// volatile tail dimmed, newest text always in view.
 struct LiveTranscriptView: View {
-  let blocks: [LiveTranscriptBlock]
-  /// Chased separately from the block ids: the tail is rewritten on every
-  /// interim result and its block's id does not change when it does.
+  /// Flat: every row here is a **direct** child of the `LazyVStack` below, which
+  /// is the only arrangement in which the stack's laziness is worth anything.
+  let rows: [LiveTranscriptRow]
+  /// Chased separately from the row ids: the tail is rewritten on every interim
+  /// result and the row's identity does not change when it does.
   let volatileID: UUID?
 
   var body: some View {
     ScrollViewReader { proxy in
       ScrollView {
-        LazyVStack(alignment: .leading, spacing: RecordingPaneMetrics.blockSpacing) {
-          if blocks.isEmpty {
+        LazyVStack(alignment: .leading, spacing: RecordingPaneMetrics.lineSpacing) {
+          if rows.isEmpty {
             listeningPlaceholder
           }
-          ForEach(blocks) { block in
-            blockView(block).id(block.id)
+          ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+            rowView(row, isFirst: index == 0).id(row.id)
           }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal, RecordingPaneMetrics.transcriptPaddingH)
         .padding(.vertical, RecordingPaneMetrics.transcriptPaddingV)
       }
-      .onChange(of: blocks.last?.lines.count) { _, _ in
+      .onChange(of: rows.count) { _, _ in
         scrollToNewest(proxy)
       }
-      .onChange(of: blocks.last?.lines.last?.text) { _, _ in
+      .onChange(of: rows.last) { _, _ in
         scrollToNewest(proxy)
       }
     }
@@ -632,8 +911,8 @@ struct LiveTranscriptView: View {
 
   private func scrollToNewest(_ proxy: ScrollViewProxy) {
     if let volatileID {
-      proxy.scrollTo(volatileID, anchor: .bottom)
-    } else if let last = blocks.last {
+      proxy.scrollTo(LiveTranscriptRow.ID.line(volatileID), anchor: .bottom)
+    } else if let last = rows.last {
       proxy.scrollTo(last.id, anchor: .bottom)
     }
   }
@@ -649,42 +928,51 @@ struct LiveTranscriptView: View {
     }
   }
 
-  /// A turn: gutter timestamp, then the speaker name over the text.
+  /// One row: the gutter cell, then either a speaker name or a line of text.
   ///
-  /// The speaker slot is a real row in this hierarchy rather than a comment
-  /// about a future one. Today `block.speaker` is always nil and the row is
-  /// simply absent; the day the pipeline fills it, names appear and not one
-  /// number in `RecordingPaneMetrics` moves.
-  private func blockView(_ block: LiveTranscriptBlock) -> some View {
+  /// The speaker slot is a real row rather than a comment about a future one.
+  /// Today no line carries a speaker and no such row is ever emitted; the day
+  /// the pipeline fills the labels in, names appear and not one number in
+  /// `RecordingPaneMetrics` moves.
+  private func rowView(_ row: LiveTranscriptRow, isFirst: Bool) -> some View {
     HStack(alignment: .firstTextBaseline, spacing: RecordingPaneMetrics.gutterGap) {
-      Text(LiveTranscript.timestamp(block.startedAt))
+      // The cell is reserved on every row and filled only where a turn starts,
+      // so a continuation never steps left under the line above it.
+      Text(row.gutter.map(LiveTranscript.timestamp) ?? "")
         .font(RecordingPaneMetrics.gutterFont)
         .foregroundStyle(.tertiary)
         .frame(width: RecordingPaneMetrics.gutterWidth, alignment: .trailing)
 
-      VStack(alignment: .leading, spacing: RecordingPaneMetrics.lineSpacing) {
-        if let speaker = block.speaker {
-          Text(speaker)
-            .font(RecordingPaneMetrics.speakerFont)
-            .foregroundStyle(.secondary)
-        }
-        ForEach(block.lines) { line in
-          Text(line.text)
-            .font(RecordingPaneMetrics.transcriptFont)
-            .foregroundStyle(.primary)
-            .opacity(line.isVolatile ? RecordingPaneMetrics.volatileOpacity : 1)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .id(line.id)
-        }
+      switch row.content {
+      case .speaker(let name):
+        Text(name)
+          .font(RecordingPaneMetrics.speakerFont)
+          .foregroundStyle(.secondary)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      case .line(let line):
+        Text(line.text)
+          .font(RecordingPaneMetrics.transcriptFont)
+          .foregroundStyle(.primary)
+          .opacity(line.isVolatile ? RecordingPaneMetrics.volatileOpacity : 1)
+          .fixedSize(horizontal: false, vertical: true)
+          .frame(maxWidth: .infinity, alignment: .leading)
       }
     }
+    // A flat stack has no blocks left to space apart, so the gap between turns
+    // is paid by the row that opens one.
+    .padding(.top, row.startsTurn && !isFirst
+      ? RecordingPaneMetrics.blockSpacing - RecordingPaneMetrics.lineSpacing
+      : 0)
   }
 }
 
 // MARK: - Previews
 
 #if DEBUG
+private func previewRows() -> [LiveTranscriptRow] {
+  LiveTranscript.rows(previewBlocks())
+}
+
 private func previewBlocks() -> [LiveTranscriptBlock] {
   LiveTranscript.blocks([
     LiveTranscriptLine(id: UUID(), text: "Right, so the migration lands next Tuesday.", endTime: 12, speaker: "Amara"),
@@ -707,12 +995,12 @@ private struct RecordingPaneGallery: View {
     switch form {
     case .column:
       HStack(spacing: 0) {
-        LiveTranscriptView(blocks: previewBlocks(), volatileID: LiveTranscript.volatileLineID)
+        LiveTranscriptView(rows: previewRows(), volatileID: LiveTranscript.volatileLineID)
           .frame(maxWidth: .infinity, maxHeight: .infinity)
         Divider()
         SessionColumnView(
           elapsed: 754,
-          level: 0.6,
+          level: MicLevelFeed(level: 0.6),
           kind: .meeting,
           controls: .stop,
           markers: [SessionMarker(at: 612), SessionMarker(at: 208)],
@@ -724,14 +1012,14 @@ private struct RecordingPaneGallery: View {
       VStack(spacing: 0) {
         SessionStripView(
           elapsed: 754,
-          level: 0.6,
+          level: MicLevelFeed(level: 0.6),
           kind: .memo,
           controls: .stop,
           onMark: {},
           onStop: {}
         )
         Divider()
-        LiveTranscriptView(blocks: previewBlocks(), volatileID: LiveTranscript.volatileLineID)
+        LiveTranscriptView(rows: previewRows(), volatileID: LiveTranscript.volatileLineID)
           .frame(maxWidth: .infinity, maxHeight: .infinity)
       }
     }
