@@ -1179,10 +1179,30 @@ Stop is the one control that may never be hard to find.
 ### The pane (B2, `macos/Nota/UI/RecordingPane.swift`)
 
 A ~288pt session column on the **trailing** edge, with the transcript taking
-the rest at full height. Trailing rather than leading because ⌘L — the history
-drawer — owns this window's left edge, and two surfaces competing for one edge
-is a surface the owner has to think about. A column rather than a band across
-the top because the transcript should not pay height for the indicator.
+the rest at full height. A column rather than a band across the top because the
+transcript should not pay height for the indicator.
+
+**The drawer and the column share an edge, and the stated reason they did not
+was false.** The ticket justified trailing with "⌘L owns this window's left
+edge"; it does not. `ContentView.historyDrawerLayer` is a
+`ZStack(alignment: .topTrailing)` holding a 380pt `HistoryDrawerView`, so ⌘L
+opens on the **right** — directly over the 288pt session column, and wider than
+it. Three options, and the third is what is implemented:
+
+1. Move the column to the leading edge. Cheapest to reason about, and it
+   reverses XIA-423's locked visual direction on an implementer's say-so.
+2. Push the pane aside while the drawer is open. The drawer is an overlay
+   precisely so it costs the content no layout; making it cost layout on one
+   pane only would be a second, contradictory drawer behaviour.
+3. **Accept the overlap** (current). The drawer is a transient, dismiss-on-
+   click-outside surface; the column is a persistent indicator. Covering an
+   indicator for as long as the owner is reading a list is what an overlay is
+   for, and it is what already happens to the transcript.
+
+This is a design call and the owner's to make — it is written down here rather
+than silently reversed. If it goes to (1), `RecordingPaneMetrics.columnWidth`
+and the `HStack` order in `LiveMeetingView.recordingPane` are the whole change;
+no arithmetic depends on the side.
 
 Top to bottom: the 58pt timer inside the ring, the tall meter, the kind line,
 `Mark ⌘K` (ghost) and `Stop` (solid ember, **the only filled control on the
@@ -1206,14 +1226,28 @@ things around.
   keeps the ordinary case identical to the design, `Spacer` and all. The marker
   list is deliberately **not** its own scroll view: two nested on one axis fight
   over every wheel event.
-- **Below ~720pt the column folds into a one-row strip** (`RecordingPaneLayout`,
-  which decides from the width and nothing else). The timer steps to 26pt, the
-  meter to `.compact`, the ring to a breathing **dot** — a ring containing a
-  26pt clock would be ~114pt tall and a strip is not. The marker list is the
-  only thing the fold gives up, which is why that is one predicate and not a
-  per-element table. The window minimum is 780pt wide, so the fold is what
-  happens when ⌘L takes the width, which is exactly when the transcript needs
-  it back.
+- **The fold is measured on the transcript, not on the pane, and that is what
+  makes it reachable.** The first cut folded below 720pt of *pane* and explained
+  it as "what happens when ⌘L takes the width" — but ⌘L is a `ZStack` overlay
+  that consumes **zero** width and `Metrics.windowMinWidth` is 780, so no window
+  this app allows could ever produce a strip: `SessionStripView` had no
+  production caller and a test asserted a threshold nothing could cross.
+  `RecordingPaneMetrics.foldWidth` is now *derived* —
+  `columnWidth + dividerWidth + transcriptMinWidth` = 288 + 1 + 520 = 809 — and
+  `RecordingPaneLayout.form` folds exactly when keeping the column would leave
+  the transcript under its floor. That also settles the second thing nobody had
+  reconciled: at the narrowest permitted window the column would leave 491pt of
+  transcript, which is why 780 now folds. `transcriptMinWidth` is 520 because it
+  leaves 408pt of text once the gutter, its gap and the two margins are paid —
+  about 56 characters at 14pt, the low end of a readable measure.
+  In the strip the timer steps to 26pt, the meter to `.compact`, the ring to a
+  breathing **dot** — a ring containing a 26pt clock would be ~114pt tall and a
+  strip is not. The marker list is the fold's one loss, and it is the compiler
+  that enforces it: `SessionStripView` has no `markers` parameter. (A
+  `showsMarkerList(_:)` predicate said the same thing in a place only a test
+  read, which made it a claim rather than a constraint; the two per-form numbers
+  that *are* worth centralizing — `timerBase` and `meterVariant` — are now read
+  by the views, which is what a layout helper is for.)
 - **The kind reaches the surface as one word.** No mode chrome, no toggle, no
   segmented control, and above all no change to the accent: a kind is
   relabelable after the fact, and a colour that moved with it would be lying
@@ -1223,13 +1257,31 @@ things around.
   a second string ever differs.
 - **The transcript lays out a speaker column the pipeline does not fill yet.**
   `LiveTranscriptLine.speaker` is nil today, `LiveTranscript.blocks` already
-  groups consecutive lines by it, and the block draws the name above its text
-  when there is one. Realtime speaker labels are a known unresolved follow-up;
-  the grouping is not waiting to be written, it is waiting to be fed, and the
-  day it is the transcript gains names and not one number in
-  `RecordingPaneMetrics` moves. The volatile tail is a line like any other —
-  it continues the turn it belongs to and differs only in being drawn at 55%,
-  the same opacity the HUD prompter dims its in-flight run to.
+  groups consecutive lines by it, and a turn draws the name above its text when
+  there is one. Realtime speaker labels are a known unresolved follow-up; the
+  grouping is not waiting to be written, it is waiting to be fed, and the day it
+  is the transcript gains names and not one number in `RecordingPaneMetrics`
+  moves. The volatile tail is a line like any other — it continues the turn it
+  belongs to and differs only in being drawn at 55%, the same opacity the HUD
+  prompter dims its in-flight run to.
+- **…but the grouping may not cost the laziness, so the drawn model is flat.**
+  `LiveTranscript.rows` turns the blocks into one row per line plus a header row
+  where the speaker changes, and `LiveTranscriptView` puts those rows **directly**
+  in its `LazyVStack`. A `LazyVStack` defers only its direct children: nesting a
+  block's lines in an inner `VStack` made the whole session **one** child —
+  because every line's speaker is nil today, there is exactly one block — so a
+  90-minute meeting built and measured 800 `Text` views with
+  `.fixedSize(vertical:)` on every render pass, on screen or off. Master had put
+  each segment straight in the stack. The gutter timestamp belongs to whichever
+  row opens a turn and the rest reserve the cell and draw nothing in it, so
+  nothing steps left; the inter-turn gap is paid by the row that opens one,
+  since a flat stack has no blocks left to space apart.
+- **The row model is memoized against the transcript** (`LiveTranscriptRowCache`).
+  Building it is O(all segments), and a render the transcript did not cause —
+  a clock tick, anything that invalidates the window — must not pay for it. The
+  key is the segment count, the last segment's id, the partial, and the whole
+  seconds of `elapsed` (all `elapsed` reaches is the volatile line's gutter
+  timestamp, which is drawn to the second).
 - **There is one clock.** `LiveMeetingFormat.duration` delegates to
   `SessionTimerMetrics.text`. The gutter timestamp beside a transcript line,
   the time on a marker row and the big clock in the column name the same
@@ -1239,12 +1291,43 @@ things around.
   .showsRecordingPane`). A failed session gets the banner over whatever it
   heard: the column is the indicator that a session is *flowing*, and a
   breathing ring with a live meter over a dead microphone is the exact lie the
-  meter exists to make impossible.
-- **`LiveMeetingSession.micLevel`** republishes `MicCapture.rmsLevel` rather
-  than exposing the capture engine, which would hand a view `start()` and
-  `stop()` as well. It goes to **zero** when capture ends (`stopCapture`, the
-  one call all five exits share), because a meter frozen at the last thing it
-  heard is a meter claiming a live session.
+  meter exists to make impossible. **The idle state owes the same rule and did
+  not keep it**: it drew a breathing ember ring above the Start button, over a
+  closed microphone, in the state every owner sees before every recording — the
+  state that teaches them what the colour means. It draws none now, and
+  `testTheIdlePaneDrawsNoEmber` renders the pane and scans the pixels, because
+  "there is no ember on screen" is not a claim a constant can carry.
+  The idle and failed states keep `.liquidGlassButton()` deliberately: the
+  ghost/solid-ember pair is the *recording pane's* vocabulary and those are not
+  recording surfaces. "All of it goes" was only ever true of the pane.
+- **`LiveMeetingSession.level`** republishes `MicCapture.rmsLevel` rather than
+  exposing the capture engine, which would hand a view `start()` and `stop()`
+  as well. Two things about it are load-bearing:
+  - **It is its own object** (`MicLevelFeed`, held as a plain `let`), not a
+    `@Published Float` on the session. The tap delivers ~45 buffers a second and
+    the session is observed by `ContentView` *and* `LiveMeetingView`, so a level
+    on it invalidated the entire window body — toolbar, drawer overlay,
+    transcript — 45 times a second, which is three times the rate CLAUDE.md
+    already flags as an unbounded main-actor cost for the HUD prompter, against
+    a much larger hierarchy. Only `SessionMeterFeedView` observes the feed.
+    `MeterPublishGate` throttles the writes on top of that: never faster than
+    66 ms (the HUD's own tick), never for a move too small to see, and — the
+    escape the movement gate needs — any difference at all after 500 ms, or a
+    level decaying toward silence in sub-threshold steps would wedge the meter
+    at the last loud reading.
+  - **It answers the microphone only while the audio is being kept**
+    (`LiveMeetingSession.meterFollowsMicrophone`). On the AssemblyAI path
+    `stop()` sits in `.stopping` for up to the 5s watchdog with the tap still
+    installed, while `handlePCMBuffer` drops every buffer at its own guard. So
+    the owner pressed Stop, kept talking, watched the ember meter answer their
+    voice, and reasonably concluded those words were captured; they reached
+    neither `recording.caf` nor the socket. The meter falls to its floor the
+    moment audio stops being kept, and to zero when capture ends
+    (`stopCapture`, the one call all five exits share).
+- **A marker row is its timestamp, and its label when it has one.** It used to
+  fall back to the section heading, so every row under a heading reading MOMENTS
+  read `12:04  Moments` — rendered, and never looked at. `label` stays nil until
+  XIA-433 gives markers a meaning to say.
 
 ## Record Lifecycle
 
@@ -1656,6 +1739,19 @@ site, not the machine.
   it to six lines" is an unbounded cost on the main actor. The window is wide
   enough that the clamped line count — the only thing the card's height depends
   on — is the one the full text would have produced.
+- **A feed that ticks does not belong on an object a window observes**, and
+  what a `LazyVStack` defers is only its **direct** children. The two together
+  are how the recording pane came to rebuild a whole meeting 45 times a second
+  (XIA-432): the microphone level was a `@Published` property of
+  `LiveMeetingSession` — observed by `ContentView` and `LiveMeetingView` — and
+  the transcript was one `LazyVStack` child, because grouping by a speaker label
+  the pipeline never fills produces exactly one block. So the level lives on its
+  own `MicLevelFeed` that only the meter observes and is gated to ~15 Hz, the
+  transcript is a flat list of rows, and the row model is memoized against the
+  transcript rather than recomputed per render. The same trap is already written
+  down for the HUD prompter one section up; the general rule is that the *rate*
+  of a publisher and the *breadth* of its observers multiply, and neither is
+  visible from the line that assigns the value.
 - The HUD draft feed is split at the source (`finalizedDraft` + `roughDraft` →
   `HUDDraft`), not merged and re-split downstream: a 120-character tail cannot be
   un-merged, and the prompter needs the finalized and volatile halves at full
