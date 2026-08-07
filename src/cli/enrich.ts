@@ -15,7 +15,7 @@ import {
   summarizeOnly,
   summarizeTranscript,
 } from "../pipeline/summarize.js";
-import { defaultOutputPath, writeOutputFromRecord } from "../pipeline/write.js";
+import { recordOutputPath, writeOutputFromRecord } from "../pipeline/write.js";
 import { cliEngineFor } from "../pipeline/cli-engine.js";
 import {
   DEFAULT_SUMMARY_MODEL,
@@ -134,7 +134,7 @@ export async function summarizeRecord(
       // their flag so they stay protected.
       ...(preserveTags ? {} : { tagsEdited: false }),
       usage: [usage],
-      outputPath: record.outputPath ?? defaultOutputPath(record.sourcePath),
+      outputPath: recordOutputPath(record),
     },
     historyDir,
   );

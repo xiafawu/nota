@@ -82,7 +82,7 @@ export async function storageCommand(
   }
 
   write("Created\tID\tAudio\tTotal\tSource");
-  if (summary.count === 0) {
+  if (summary.count === 0 && summary.orphans.length === 0) {
     write("No Nota history records found.");
     return summary;
   }
@@ -99,10 +99,32 @@ export async function storageCommand(
       ].join("\t"),
     );
   }
+  // Bytes no readable record names are still bytes the owner is paying for,
+  // and this is the one verb that can show them. They go on stdout with the
+  // rows because their NAME is the only handle anyone has on them: no verb
+  // resolves an id to them, so the owner is told what is there and where.
+  for (const orphan of summary.orphans) {
+    out(
+      [
+        "",
+        orphan.id,
+        orphan.reason === "no-record" ? "no record" : "record unreadable",
+        formatBytes(orphan.bytes),
+        orphan.reason === "no-record" ? `${orphan.id}.assets` : `${orphan.id}.json`,
+      ].join("\t"),
+    );
+  }
   write(
     `${summary.count} record(s), ${formatBytes(summary.totalBytes)} total ` +
       `(${formatBytes(summary.audioBytes)} of it audio).`,
   );
+  if (summary.orphans.length > 0) {
+    write(
+      `${summary.orphans.length} leftover(s) totalling ${formatBytes(summary.orphanBytes)} ` +
+        `in ${historyDir} that no readable record names — counted in the total above. ` +
+        "Nota does not remove them; remove them by hand if you want the space.",
+    );
+  }
   write("Nota never deletes recordings on its own.");
   return summary;
 }
@@ -214,6 +236,27 @@ async function confirm(
   }
 }
 
+/**
+ * What survives `delete-audio`, named in full.
+ *
+ * The per-speaker voice clips are the part an owner would not guess: they are
+ * raw audio of the same people in the same room, they live in the same assets
+ * folder as the recording, and this verb deliberately KEEPS them (a
+ * voiceprint enrolled later is made from them). Someone deleting recording
+ * audio for **privacy** who is told only "the transcript stays" has been told
+ * the wrong thing — so when there are clips, they are counted and named.
+ */
+export function audioStaysLine(rows: RecordStorage[]): string {
+  const clips = rows.reduce((sum, row) => sum + row.speakerClipCount, 0);
+  const clipBytes = rows.reduce((sum, row) => sum + row.speakerClipBytes, 0);
+  const base = "The transcript, summary and markers stay.";
+  if (clips === 0) return base;
+  return (
+    `${base} So do ${clips} per-speaker voice clip(s) (${formatBytes(clipBytes)}) — ` +
+    "they are audio too, and `nota history delete` is what removes them."
+  );
+}
+
 // MARK: - delete-audio
 
 /**
@@ -252,7 +295,7 @@ export async function deleteAudioCommand(
     withAudio,
     bytes,
     "audio",
-    "The transcript, summary and markers stay.",
+    audioStaysLine(withAudio),
     request,
     options,
   );

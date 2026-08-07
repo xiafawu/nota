@@ -5,7 +5,7 @@
  * pinned by what it did NOT delete as much as by what it did.
  */
 
-import { access, mkdir, mkdtemp, rm, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, rm, readFile, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -19,7 +19,11 @@ import {
   selectOlderThan,
   recordAssetsDir,
 } from "../../src/pipeline/storage.js";
-import { listHistoryRecords, loadHistoryRecord } from "../../src/pipeline/history.js";
+import {
+  listHistoryRecords,
+  loadHistoryRecord,
+  recordAudioPath,
+} from "../../src/pipeline/history.js";
 
 const exists = (file: string) => access(file).then(() => true, () => false);
 
@@ -158,6 +162,65 @@ describe("storage", () => {
       const summary = await computeStorage(path.join(historyDir, "nope"));
       expect(summary).toMatchObject({ count: 0, totalBytes: 0, oldestCreatedAt: null });
     });
+
+    it("counts the per-speaker voice clips separately from the recording", async () => {
+      await seedRecord("clips", { audioBytes: 1000, clipBytes: 400 });
+
+      const [row] = (await computeStorage(historyDir)).records;
+
+      // What `delete-audio` keeps, so a confirmation can name it.
+      expect(row.speakerClipCount).toBe(1);
+      expect(row.speakerClipBytes).toBe(400);
+      expect(row.audioBytes).toBe(1000);
+    });
+
+    it("survives one unreadable record and still counts its bytes", async () => {
+      // The one verb that exists to make a damaged store legible may not be
+      // the verb a damaged store takes down.
+      await seedRecord("good", { audioBytes: 1000 });
+      await mkdir(recordAssetsDir("broken", historyDir), { recursive: true });
+      await writeFile(
+        path.join(recordAssetsDir("broken", historyDir), "recording.caf"),
+        Buffer.alloc(2000),
+      );
+      await writeFile(path.join(historyDir, "broken.json"), "{ not json at all", "utf-8");
+
+      const summary = await computeStorage(historyDir);
+
+      expect(summary.count).toBe(1);
+      expect(summary.records[0].id).toBe("good");
+      expect(summary.orphans).toEqual([
+        { id: "broken", reason: "unreadable-record", bytes: expect.any(Number) },
+      ]);
+      expect(summary.orphans[0].bytes).toBeGreaterThanOrEqual(2000);
+      expect(summary.totalBytes).toBeGreaterThanOrEqual(3000);
+    });
+
+    it("counts an assets folder no record names, and names it", async () => {
+      // Bytes nothing can find are the one thing the figure may not hide.
+      await seedRecord("kept", { audioBytes: 1000 });
+      const orphan = recordAssetsDir("nobody", historyDir);
+      await mkdir(orphan, { recursive: true });
+      await writeFile(path.join(orphan, "recording.caf"), Buffer.alloc(1_000_000));
+
+      const summary = await computeStorage(historyDir);
+
+      expect(summary.count).toBe(1);
+      expect(summary.orphans).toEqual([
+        { id: "nobody", reason: "no-record", bytes: 1_000_000 },
+      ]);
+      expect(summary.orphanBytes).toBe(1_000_000);
+      expect(summary.totalBytes).toBeGreaterThan(1_000_000);
+    });
+
+    it("never counts a live record's assets folder twice", async () => {
+      await seedRecord("solo", { audioBytes: 4096 });
+
+      const summary = await computeStorage(historyDir);
+
+      expect(summary.orphans).toEqual([]);
+      expect(summary.totalBytes).toBe(summary.records[0].totalBytes);
+    });
   });
 
   describe("keptAudioPath", () => {
@@ -169,8 +232,20 @@ describe("storage", () => {
       ).toBeNull();
     });
 
-    it("never resolves to a legacy record's sourcePath", () => {
-      expect(keptAudioPath({ id: "legacy", audioPath: undefined }, historyDir)).toBeNull();
+    it("never resolves to a legacy record's sourcePath", async () => {
+      // Driven through the accounting rather than asserted on the signature:
+      // `keptAudioPath({audioPath: undefined})` only restates its own first
+      // line. What has to hold is that a legacy record — a real file on disk,
+      // named by `sourcePath` — is neither counted nor reachable, which is the
+      // difference between this and `recordAudioPath`.
+      const ownersFile = path.join(historyDir, "owners-own.m4a");
+      await writeFile(ownersFile, Buffer.alloc(5000));
+      await seedRecord("legacy", { withAudio: false, sourcePath: ownersFile });
+
+      const record = await loadHistoryRecord("legacy", historyDir);
+      expect(record.sourcePath).toBe(ownersFile);
+      expect(keptAudioPath(record, historyDir)).toBeNull();
+      expect((await computeStorage(historyDir)).records[0].audioBytes).toBeNull();
     });
   });
 
@@ -232,6 +307,77 @@ describe("storage", () => {
       await expect(deleteRecordAudio("nope", historyDir)).rejects.toThrow(
         /History record not found/,
       );
+    });
+
+    it("clears the sourcePath that named the file it just deleted", async () => {
+      // For a record-first record `sourcePath` IS the recording, and both
+      // resolvers (`recordAudioPath`, `resolvedAudioURL`) fall back to it — so
+      // leaving it would have every reader report a path to a file that is
+      // gone. Both resolvers already read empty as "no audio".
+      const audio = path.join(recordAssetsDir("live", historyDir), "recording.caf");
+      await seedRecord("live", { audioBytes: 512, sourcePath: audio });
+
+      await deleteRecordAudio("live", historyDir);
+
+      const record = await loadHistoryRecord("live", historyDir);
+      expect(record.sourcePath).toBe("");
+      expect(recordAudioPath(record, historyDir)).toBeNull();
+      // The display name is not the path and survives.
+      expect(record.sourceName).toBe("recording.caf");
+    });
+
+    it("leaves a sourcePath that names some other file alone", async () => {
+      const ownersFile = path.join(historyDir, "owners-own.m4a");
+      await writeFile(ownersFile, Buffer.alloc(64));
+      await seedRecord("imported", { audioBytes: 512, sourcePath: ownersFile });
+
+      await deleteRecordAudio("imported", historyDir);
+
+      expect((await loadHistoryRecord("imported", historyDir)).sourcePath).toBe(ownersFile);
+      expect(await exists(ownersFile)).toBe(true);
+    });
+
+    it("rewrites every other byte verbatim, including a status it did not resolve", async () => {
+      // `loadHistoryRecord` normalizes `status` on read; this verb clears two
+      // fields and owns nothing else, so a legacy value stays a legacy value.
+      const file = path.join(historyDir, "legacy-status.json");
+      await seedRecord("legacy-status", { audioBytes: 256 });
+      const onDisk = JSON.parse(await readFile(file, "utf-8"));
+      onDisk.status = "completed";
+      onDisk.someFieldThisBuildDoesNotModel = { keep: "me" };
+      await writeFile(file, JSON.stringify(onDisk, null, 2), "utf-8");
+
+      await deleteRecordAudio("legacy-status", historyDir);
+
+      const raw = JSON.parse(await readFile(file, "utf-8"));
+      expect(raw.status).toBe("completed");
+      expect(raw.someFieldThisBuildDoesNotModel).toEqual({ keep: "me" });
+      expect(raw.audioPath).toBeUndefined();
+      expect(raw.audioBytes).toBeUndefined();
+    });
+
+    it("replaces the record by rename rather than writing over it in place", async () => {
+      // `writeFile` opens with 'w', which TRUNCATES before it writes: killed
+      // (or out of disk) between the two, the record is left empty while the
+      // audio is already gone, and the transcript this verb exists to preserve
+      // is what is lost. Temp-file + rename cannot be interrupted that way.
+      //
+      // The inode is what tells the two apart: a rename puts a NEW file at the
+      // path, an in-place write keeps the old one. It is the only observable
+      // difference from outside the process, and it is exact.
+      const file = path.join(historyDir, "atomic.json");
+      await seedRecord("atomic", { audioBytes: 128 });
+      const before = await stat(file);
+
+      await deleteRecordAudio("atomic", historyDir);
+
+      const after = await stat(file);
+      expect(after.ino).not.toBe(before.ino);
+      // And the temp file is not left in the store.
+      expect((await readdir(historyDir)).filter((name) => name.includes(".tmp"))).toEqual([]);
+      expect(
+        JSON.parse(await readFile(file, "utf-8")).transcriptText,
+      ).toBe("the transcript survives");
     });
   });
 

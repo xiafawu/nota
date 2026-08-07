@@ -22,11 +22,11 @@
  * reports its path rather than removing it.
  */
 
-import { readdir, rm, stat, unlink, writeFile } from "node:fs/promises";
+import { readFile, readdir, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import path from "node:path";
 import {
   DEFAULT_HISTORY_DIR,
-  listHistoryRecords,
   loadHistoryRecord,
   type HistoryRecord,
 } from "./history.js";
@@ -50,10 +50,37 @@ export interface RecordStorage {
   audioBytes: number | null;
   /** The whole `<id>.assets/` folder: the recording plus any speaker clips. */
   assetsBytes: number;
+  /**
+   * The per-speaker voice clips (`<label>.pcm`) inside that folder. They are
+   * raw audio of the same people and `delete-audio` deliberately KEEPS them,
+   * so both confirmations have to be able to say so — an owner deleting
+   * recording audio for privacy is entitled to know what stays.
+   */
+  speakerClipCount: number;
+  speakerClipBytes: number;
   /** The record JSON itself. */
   recordBytes: number;
   /** What deleting this record would reclaim: `assetsBytes + recordBytes`. */
   totalBytes: number;
+}
+
+/**
+ * Bytes inside the store that no readable record names.
+ *
+ * Counted, named and never touched. The figure IS the retention policy, so it
+ * has to be the whole figure: an `<id>.assets/` folder whose record JSON is
+ * gone (a partial delete by an older build, a half-finished restore) holds
+ * real recordings that `nota history delete` can no longer target, and a
+ * summary that walked records alone would report the store as smaller than it
+ * is by exactly the amount the owner cannot find. Naming them is the fix;
+ * removing them automatically is forbidden — deletion is only ever a verb the
+ * owner invokes.
+ */
+export interface OrphanStorage {
+  /** The `<id>` the leftover is named for. */
+  id: string;
+  reason: "no-record" | "unreadable-record";
+  bytes: number;
 }
 
 /**
@@ -66,12 +93,17 @@ export interface StorageSummary {
   /** Oldest first. */
   records: RecordStorage[];
   count: number;
+  /** Every byte the store holds: the records AND the orphans. */
   totalBytes: number;
   /** Σ of the audio alone: what `delete-audio` on everything would reclaim. */
   audioBytes: number;
   oldestCreatedAt: string | null;
   /** Σ over records created in the calendar month of `now`. */
   thisMonthBytes: number;
+  /** Leftovers no record names, oldest-known-first by id. */
+  orphans: OrphanStorage[];
+  /** Σ of `orphans`, included in `totalBytes`. */
+  orphanBytes: number;
 }
 
 /** A record's own assets folder: `<historyDir>/<id>.assets`. */
@@ -98,6 +130,30 @@ async function directoryBytes(dir: string): Promise<number> {
     }
   }
   return total;
+}
+
+/**
+ * The per-speaker voice clips in a record's assets folder: how many, and how
+ * big. `<label>.pcm` is what `speakers.ts` writes and what `delete-audio`
+ * keeps; anything else in the folder is not a voice clip and is not counted
+ * here.
+ */
+async function speakerClipBytes(dir: string): Promise<{ count: number; bytes: number }> {
+  let entries;
+  try {
+    entries = await readdir(dir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { count: 0, bytes: 0 };
+    throw error;
+  }
+  let count = 0;
+  let bytes = 0;
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".pcm")) continue;
+    count += 1;
+    bytes += await fileBytes(path.join(dir, entry.name));
+  }
+  return { count, bytes };
 }
 
 /** Size of one file; 0 when it is missing. */
@@ -141,8 +197,10 @@ export async function recordStorage(
   record: HistoryRecord,
   historyDir = DEFAULT_HISTORY_DIR,
 ): Promise<RecordStorage> {
+  const assets = recordAssetsDir(record.id, historyDir);
   const recordBytes = await fileBytes(path.join(historyDir, `${record.id}.json`));
-  const assetsBytes = await directoryBytes(recordAssetsDir(record.id, historyDir));
+  const assetsBytes = await directoryBytes(assets);
+  const clips = await speakerClipBytes(assets);
   const audio = keptAudioPath(record, historyDir);
   // The file on disk is the authority, not the stored `audioBytes` — an
   // interrupted record's field can lag what was actually captured. A record
@@ -159,23 +217,85 @@ export async function recordStorage(
     status: record.status,
     audioBytes,
     assetsBytes,
+    speakerClipCount: clips.count,
+    speakerClipBytes: clips.bytes,
     recordBytes,
     totalBytes: assetsBytes + recordBytes,
   };
 }
 
-/** Every record's footprint plus the totals, oldest first. */
+/**
+ * Every record's footprint plus the totals, oldest first — and every byte the
+ * store holds that no record names.
+ *
+ * The history directory is walked here rather than through
+ * `listHistoryRecords` for two reasons, and both are about a verb whose whole
+ * job is to FIND things:
+ *
+ * 1. **One bad file may not take the verb down.** `listHistoryRecords` reads
+ *    every record through one `Promise.all`, so a single unparseable
+ *    `<id>.json` rejects the lot — and with it `nota history storage` *and*
+ *    both delete verbs, which resolve their targets through this function.
+ *    The one command that exists to make a damaged store legible must survive
+ *    a damaged store. Tolerance is per entry, exactly as `sanitizeCatalog`
+ *    and the dictionary store are tolerant per entry.
+ * 2. **An orphan is still bytes.** An `<id>.assets/` folder with no record is
+ *    invisible to a record-driven walk, and invisible bytes are the one thing
+ *    the figure may not have: they cannot be found, cannot be targeted by
+ *    `nota history delete`, and would make the total quietly understate the
+ *    store. They are counted and named. Nothing here removes them.
+ */
 export async function computeStorage(
   historyDir = DEFAULT_HISTORY_DIR,
   now = new Date(),
 ): Promise<StorageSummary> {
-  const records = await listHistoryRecords(historyDir);
-  const rows = await Promise.all(
-    records.map((record) => recordStorage(record, historyDir)),
-  );
-  // listHistoryRecords is newest-first; storage reads oldest-first because the
-  // oldest records are the ones an owner is deciding about.
+  let entries: Dirent[] = [];
+  try {
+    entries = await readdir(historyDir, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+  }
+
+  const rows: RecordStorage[] = [];
+  const orphans: OrphanStorage[] = [];
+  /** Assets folders a record accounted for, so they are not counted twice. */
+  const claimed = new Set<string>();
+
+  for (const entry of entries) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue;
+    const id = entry.name.slice(0, -".json".length);
+    const record = await readRecordTolerantly(path.join(historyDir, entry.name));
+    if (!record) {
+      // Unreadable, so it cannot be described — but its bytes are real and its
+      // assets folder is now unreachable by every verb that resolves an id.
+      claimed.add(`${id}.assets`);
+      orphans.push({
+        id,
+        reason: "unreadable-record",
+        bytes:
+          (await fileBytes(path.join(historyDir, entry.name))) +
+          (await directoryBytes(recordAssetsDir(id, historyDir))),
+      });
+      continue;
+    }
+    claimed.add(`${id}.assets`);
+    claimed.add(`${record.id}.assets`);
+    rows.push(await recordStorage(record, historyDir));
+  }
+
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !entry.name.endsWith(".assets")) continue;
+    if (claimed.has(entry.name)) continue;
+    orphans.push({
+      id: entry.name.slice(0, -".assets".length),
+      reason: "no-record",
+      bytes: await directoryBytes(path.join(historyDir, entry.name)),
+    });
+  }
+
+  // Oldest-first: the oldest records are the ones an owner is deciding about.
   rows.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  orphans.sort((a, b) => a.id.localeCompare(b.id));
 
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
   let totalBytes = 0;
@@ -189,15 +309,39 @@ export async function computeStorage(
       thisMonthBytes += row.totalBytes;
     }
   }
+  // Orphans have no date, so they join the total and not the month.
+  const orphanBytes = orphans.reduce((sum, orphan) => sum + orphan.bytes, 0);
 
   return {
     records: rows,
     count: rows.length,
-    totalBytes,
+    totalBytes: totalBytes + orphanBytes,
     audioBytes,
     oldestCreatedAt: rows[0]?.createdAt ?? null,
     thisMonthBytes,
+    orphans,
+    orphanBytes,
   };
+}
+
+/**
+ * Read one record for accounting, or null when it cannot be read.
+ *
+ * Never throws for a bad file: this is the read side of a read-only verb, and
+ * one hand-edited typo may not blank the whole store. It is deliberately not
+ * used by anything that WRITES — `deleteRecordAudio` and `deleteRecord` both
+ * still go through `loadHistoryRecord`, so a delete verb aimed at a record
+ * nobody can parse fails instead of guessing.
+ */
+async function readRecordTolerantly(file: string): Promise<HistoryRecord | null> {
+  try {
+    const record = JSON.parse(await readFile(file, "utf-8")) as HistoryRecord;
+    if (!record || typeof record !== "object") return null;
+    if (typeof record.id !== "string" || typeof record.createdAt !== "string") return null;
+    return record;
+  } catch {
+    return null;
+  }
 }
 
 // MARK: - Deletion
@@ -222,6 +366,20 @@ export interface DeleteAudioResult {
  * rather than failing, and a legacy record's `sourcePath` — the owner's own
  * file, outside the store — is never touched. `keptAudioPath` is what makes
  * that structural rather than a convention.
+ *
+ * Two things about the write, both about the promise this verb exists to
+ * keep — that the transcript survives:
+ *
+ *   - It is **atomic** (temp file + rename). `writeFile` opens with `'w'`,
+ *     which truncates before it writes; killed or out of disk between the two,
+ *     the record is left empty or half-written while the audio is already
+ *     gone, and the transcript this verb promised to preserve is what is lost.
+ *   - It is built from the record's **raw bytes on disk**, not from the
+ *     normalized object `loadHistoryRecord` returns. That loader resolves
+ *     `status` on read (a legacy or absent value becomes a real one), and a
+ *     delete-audio verb has no business persisting a status it recomputed:
+ *     it clears two fields and rewrites every other byte exactly as it found
+ *     them.
  */
 export async function deleteRecordAudio(
   idOrPrefix: string,
@@ -233,6 +391,12 @@ export async function deleteRecordAudio(
     return { id: record.id, deleted: false, freedBytes: 0 };
   }
 
+  const file = path.join(historyDir, `${record.id}.json`);
+  // Read the raw record BEFORE unlinking: a record that cannot be re-read is a
+  // record whose transcript would be stranded next to deleted audio, so the
+  // delete does not happen at all.
+  const raw = JSON.parse(await readFile(file, "utf-8")) as Record<string, unknown>;
+
   const freedBytes = await fileBytes(audio);
   try {
     await unlink(audio);
@@ -242,16 +406,40 @@ export async function deleteRecordAudio(
 
   // Spread-and-delete, never a rebuild: the CLI and the app both write fields
   // this function does not model, and a delete verb may not drop them.
-  const updated: HistoryRecord = { ...record, updatedAt: new Date().toISOString() };
+  const updated: Record<string, unknown> = { ...raw, updatedAt: new Date().toISOString() };
   delete updated.audioPath;
   delete updated.audioBytes;
-  await writeFile(
-    path.join(historyDir, `${record.id}.json`),
-    JSON.stringify(updated, null, 2),
-    "utf-8",
-  );
+  // `sourcePath` is the record's other name for its audio, and for every
+  // record-first record it names the file we just unlinked — `recordAudioPath`
+  // and `LiveSessionPersistence.resolvedAudioURL` both fall back to it, so
+  // leaving it would have every reader report a path to a file that is gone.
+  // Only when it IS that file: a legacy record's `sourcePath` is the owner's
+  // own audio somewhere else, and this verb never touches that.
+  if (
+    typeof updated.sourcePath === "string" &&
+    path.resolve(updated.sourcePath) === path.resolve(audio)
+  ) {
+    updated.sourcePath = "";
+  }
+  await writeRecordAtomically(file, updated);
 
   return { id: record.id, deleted: true, freedBytes };
+}
+
+/**
+ * Write a record so that a reader never sees a partial one: a sibling temp
+ * file, then a rename (atomic within a filesystem). The temp file is cleaned
+ * up on failure so a crashed write leaves no `.tmp` in the store.
+ */
+async function writeRecordAtomically(file: string, record: unknown): Promise<void> {
+  const temp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    await writeFile(temp, JSON.stringify(record, null, 2), "utf-8");
+    await rename(temp, file);
+  } catch (error) {
+    await rm(temp, { force: true });
+    throw error;
+  }
 }
 
 export interface DeleteRecordResult {

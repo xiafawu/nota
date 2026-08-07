@@ -6,7 +6,7 @@ import {
 } from "../pipeline/history.js";
 import { makeSummaryUsage } from "../pricing.js";
 import { summarizeTranscript } from "../pipeline/summarize.js";
-import { defaultOutputPath, writeOutput } from "../pipeline/write.js";
+import { recordOutputPath, writeOutput } from "../pipeline/write.js";
 import { cliEngineFor } from "../pipeline/cli-engine.js";
 import {
   DEFAULT_SUMMARY_MODEL,
@@ -93,10 +93,7 @@ export async function summarizeHistory(
   const capturedDate = record.capturedAt
     ? record.capturedAt.split("T")[0]
     : null;
-  const outputPath =
-    options?.output ??
-    record.outputPath ??
-    defaultOutputPath(record.sourcePath);
+  const outputPath = options?.output ?? recordOutputPath(record);
 
   await writeOutput(
     {
