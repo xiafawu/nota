@@ -128,23 +128,22 @@ struct ProcessingMenuBarLabel: View {
   @ObservedObject var ledger: ProcessingLedger
 
   var body: some View {
-    if let stage = warmestStage {
-      Image(systemName: "arrow.triangle.2.circlepath")
-        .accessibilityLabel("Nota: \(stage)")
-        .help(stage)
+    if let stage = ProcessingMenuBar.stageText(inFlight: ledger.inFlight) {
+      // The stage is SHOWN, not just described. It sat in `.help()` and the
+      // accessibility label alone, which meant the acceptance item — "the menu
+      // bar item shows the stage" — was met only for a pointer that hovered
+      // and a screen reader. The glyph says something is happening; the word
+      // says what, which is the whole reason the slot stays warm.
+      HStack(spacing: 3) {
+        Image(systemName: "arrow.triangle.2.circlepath")
+        Text(stage)
+          .font(.caption)
+          .lineLimit(1)
+      }
+      .accessibilityElement(children: .combine)
+      .accessibilityLabel("Nota: \(stage)")
+      .help(stage)
     }
-  }
-
-  /// The stage to show when more than one record is in flight: the *earliest*
-  /// one, because it is the work with the furthest still to go. Two records
-  /// processing at once is normal, and the slot has room for one word.
-  private var warmestStage: String? {
-    let inFlight = ledger.inFlight
-    guard !inFlight.isEmpty else { return nil }
-    let order: [HistoryStatus] = [.recording, .transcribing, .summarizing]
-    let earliest = order.first { status in inFlight.contains { $0.status == status } }
-    guard let earliest, let label = ProcessingFreshness.stageLabel(earliest) else { return nil }
-    return inFlight.count > 1 ? "\(label) (\(inFlight.count))" : label
   }
 }
 

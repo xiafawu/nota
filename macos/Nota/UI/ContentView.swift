@@ -72,9 +72,19 @@ struct ContentView: View {
   /// Transient run status only: the pill never persists into the completed
   /// document view (the header carries the title there).
   private var toolbarStatusPillState: ToolbarStatusPillState? {
-    guard model.isRunning else { return nil }
-    let text = model.phase.isEmpty ? model.status : model.phase
-    return ToolbarStatusPillState(isRunning: true, text: text)
+    if model.isRunning {
+      let text = model.phase.isEmpty ? model.status : model.phase
+      return ToolbarStatusPillState(isRunning: true, text: text)
+    }
+    // XIA-435: a handed-off record that failed before it wrote any markdown has
+    // no drawer row to appear in, and Stop took away the live pane that used to
+    // be the last surface acknowledging it. This is the one place left that can
+    // say so with the window in front. Only failures with nowhere else to go
+    // reach here — see `HandoffFailureNotice`.
+    if let failure = model.backgroundFailure {
+      return ToolbarStatusPillState(isRunning: false, text: failure)
+    }
+    return nil
   }
 
   /// Home/document swap matches the HUD show motion: fade + 8pt rise in,

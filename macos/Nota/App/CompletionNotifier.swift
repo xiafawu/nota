@@ -93,6 +93,23 @@ final class CompletionNotifier: NSObject, CompletionNotifying {
 }
 
 extension CompletionNotifier: UNUserNotificationCenterDelegate {
+  /// Show the banner even when Nota is frontmost.
+  ///
+  /// Without this, macOS routes a foreground app's notification silently to
+  /// Notification Center — so the one case the policy now deliberately admits
+  /// while frontmost (a record that failed before it wrote any markdown, and
+  /// therefore has no drawer row to appear in) would have been posted and never
+  /// seen. Everything else is still suppressed by
+  /// `CompletionNotifierPolicy.decide` before it ever reaches here; this method
+  /// grants no permission the policy has not already given.
+  nonisolated func userNotificationCenter(
+    _ center: UNUserNotificationCenter,
+    willPresent notification: UNNotification,
+    withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
+  ) {
+    completionHandler([.banner, .list, .sound])
+  }
+
   /// A click opens the record; the retry action re-runs the summary and only
   /// the summary. Both leave through a `Notification` so the delegate stays
   /// free of any reference to the model.
