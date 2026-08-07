@@ -44,17 +44,28 @@ final class LiveMeetingViewTests: XCTestCase {
     XCTAssertEqual(LiveMeetingFormat.duration(-5), "00:00")
   }
 
-  /// There is one clock, not two that happen to agree. The pane's gutter
-  /// timestamps, its marker rows and the big column timer all read the same
-  /// arithmetic, so a rounding change lands in one place (XIA-432).
-  func testDuration_isTheTimersOwnArithmetic() {
+  /// A **re-fork guard**, and nothing more than that — which is a correction to
+  /// how it was presented. `LiveMeetingFormat.duration` *is* one line calling
+  /// `SessionTimerMetrics.text`, so comparing the two is comparing a delegation
+  /// against its own callee: it can only fail if someone re-implements the
+  /// body, which is exactly the day it should fail. It is not evidence that two
+  /// clocks agree, because there are not two clocks.
+  ///
+  /// So the values are pinned against literals as well. That half fails if both
+  /// sides drift together, which the comparison alone never could.
+  func testDuration_stillDelegatesAndStillReadsTheSame() {
     for elapsed in [TimeInterval(0), 0.9, 59, 60, 3599, 3600, 3661, 36_000, 86_399] {
       XCTAssertEqual(
         LiveMeetingFormat.duration(elapsed),
         SessionTimerMetrics.text(elapsed: elapsed),
-        "the pane's clock and the session timer's disagreed at \(elapsed)"
+        "the pane's clock was re-implemented instead of delegating, at \(elapsed)"
       )
     }
+    XCTAssertEqual(LiveMeetingFormat.duration(0), "00:00")
+    XCTAssertEqual(LiveMeetingFormat.duration(59), "00:59")
+    XCTAssertEqual(LiveMeetingFormat.duration(3599), "59:59")
+    XCTAssertEqual(LiveMeetingFormat.duration(3600), "1:00:00")
+    XCTAssertEqual(LiveMeetingFormat.duration(86_399), "23:59:59")
   }
 
   // MARK: - LiveMeetingFormat.stateLabel
