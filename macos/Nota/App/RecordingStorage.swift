@@ -150,9 +150,26 @@ enum RecordingStore {
   ///
   /// The record survives in full — transcript, segments, summary, speaker
   /// clips and the exported markdown are all untouched, and it goes on reading
-  /// exactly as it did in both the app and the CLI. Only `audioPath` and
+  /// exactly as it did in both the app and the CLI. `audioPath` and
   /// `audioBytes` are cleared, which is how every reader learns the audio is
-  /// no longer kept.
+  /// no longer kept, and `sourcePath` is blanked when — and only when — it is
+  /// the file that was just unlinked.
+  ///
+  /// That last clause is `deleteRecordAudio`'s rule in src/pipeline/storage.ts,
+  /// verbatim, and this function did not keep it until XIA-436's follow-up.
+  /// The header above promises the two implementations mirror each other
+  /// exactly, and they did not: the same verb through the app and through the
+  /// CLI left records that differed by one field. `sourcePath` is the record's
+  /// *other* name for its audio — `LiveSessionPersistence.resolvedAudioURL`
+  /// and `recordAudioPath` both fall back to it — so leaving it behind has
+  /// every reader resolve a path to a file that is gone, which is a worse
+  /// answer than "this record keeps no audio". It is blanked rather than
+  /// removed because the TS `HistoryRecord` requires the key.
+  ///
+  /// The equality test is what keeps a legacy record safe: there, `sourcePath`
+  /// is the owner's OWN file somewhere outside `~/.nota`, `keptAudioURL`
+  /// refuses to resolve it, and nothing is unlinked — so nothing matches and
+  /// nothing is blanked.
   ///
   /// Returns whether the record now keeps no audio. Idempotent: a record that
   /// already keeps none is a success, not a failure.
@@ -189,6 +206,11 @@ enum RecordingStore {
     }
     json.removeValue(forKey: "audioPath")
     json.removeValue(forKey: "audioBytes")
+    if let source = json["sourcePath"] as? String,
+       URL(fileURLWithPath: source).standardizedFileURL.path
+         == audio.standardizedFileURL.path {
+      json["sourcePath"] = ""
+    }
     json["updatedAt"] = ISO8601DateFormatter.notaRecord.string(from: Date())
     guard
       let data = try? JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted]),
@@ -467,6 +489,7 @@ enum RecordingDeletionCopy {
   /// The line the Usage sheet carries under the figure. The retention policy
   /// in one sentence.
   static let neverDeletesOnItsOwn = "Nota never deletes recordings on its own."
+
 
   // MARK: - Discard
 

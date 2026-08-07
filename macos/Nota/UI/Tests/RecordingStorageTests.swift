@@ -510,6 +510,131 @@ final class RecordingStorageTests: XCTestCase {
     XCTAssertNil(summary.orphanBytes)
   }
 
+  // MARK: - The record survives its audio (XIA-436 follow-up)
+
+  func testARecordTheAppDeletedTheAudioOfIsStillFound() throws {
+    // The blocker. `HistoryRecordInfo.find` gated its whole result on the
+    // audio resolving, and `delete-audio` clears both names for the file it
+    // unlinked — so the app lost the record entirely: blank summary slot and
+    // tag chips, every speaker chip stuck amber, enrollment a no-op. Which is
+    // the one thing this verb may not break, since its own confirmation
+    // promises the speaker clips are kept SO THAT enrollment still works.
+    let output = historyDir.appendingPathComponent("notes.summary.md")
+    try "# notes".write(to: output, atomically: true, encoding: .utf8)
+    let assets = historyDir.appendingPathComponent("rec.assets", isDirectory: true)
+    try seedRecord(
+      id: "rec",
+      audioBytes: 2048,
+      clipBytes: 300,
+      outputPath: output.path,
+      sourcePath: assets.appendingPathComponent("recording.caf").path
+    )
+    let located = try XCTUnwrap(
+      RecordingStore.locate(outputPath: output, historyDirectory: historyDir)
+    )
+    XCTAssertTrue(RecordingStore.deleteAudio(located, historyDirectory: historyDir))
+
+    let info = try XCTUnwrap(
+      HistoryRecordInfo.find(outputPath: output.path, historyDir: historyDir)
+    )
+
+    XCTAssertEqual(info.historyID, "rec")
+    // The audio really is gone — that is the verb working, not a lookup
+    // failure — and the record is still there to enroll from.
+    XCTAssertNil(info.audioURL)
+    XCTAssertTrue(fileManager.fileExists(atPath: assets.appendingPathComponent("Speaker 1.pcm").path))
+  }
+
+  func testARecordTheCLIDeletedTheAudioOfIsStillFound() throws {
+    // The same record shape `nota history delete-audio` leaves: no
+    // `audioPath`, and a `sourcePath` blanked because it named the file that
+    // went. The app must read the CLI's output the same way it reads its own.
+    let output = historyDir.appendingPathComponent("cli.summary.md")
+    try "# cli".write(to: output, atomically: true, encoding: .utf8)
+    try seedRecord(id: "cli", audioBytes: nil, outputPath: output.path, sourcePath: "")
+
+    let info = try XCTUnwrap(
+      HistoryRecordInfo.find(outputPath: output.path, historyDir: historyDir)
+    )
+
+    XCTAssertEqual(info.historyID, "cli")
+    XCTAssertNil(info.audioURL)
+  }
+
+  func testPinningStillLandsOnARecordThatKeepsNoAudio() throws {
+    // `setPinned` goes through `find`, so the pin button was one of the
+    // silent no-ops. Nothing about a pin is about audio.
+    let output = historyDir.appendingPathComponent("pin.summary.md")
+    try "# pin".write(to: output, atomically: true, encoding: .utf8)
+    try seedRecord(id: "pin", audioBytes: nil, outputPath: output.path, sourcePath: "")
+
+    HistoryRecordInfo.setPinned(true, outputPath: output.path, historyDir: historyDir)
+
+    XCTAssertEqual(try loadJSON("pin")["pinned"] as? Bool, true)
+  }
+
+  func testFindStillReturnsNilForAPathNoRecordNames() throws {
+    // The guard that was removed was the wrong one, not the only one: an
+    // imported `.md` still has no record, and `find` still says so.
+    try seedRecord(id: "rec", outputPath: "/tmp/somewhere-else.md")
+
+    XCTAssertNil(
+      HistoryRecordInfo.find(outputPath: "/tmp/unrelated.md", historyDir: historyDir)
+    )
+  }
+
+  // MARK: - The app and the CLI leave the same record behind
+
+  func testDeleteAudioBlanksTheSourcePathThatNamedTheDeletedFile() throws {
+    // `deleteRecordAudio` in src/pipeline/storage.ts has always done this and
+    // the app did not, so the same verb through the two front doors left
+    // records that differed by one field — under a header claiming they mirror
+    // each other exactly. A `sourcePath` naming a file that is gone is worse
+    // than none: every reader that falls back to it resolves a dead path.
+    let output = historyDir.appendingPathComponent("notes.summary.md")
+    try "# n".write(to: output, atomically: true, encoding: .utf8)
+    let assets = historyDir.appendingPathComponent("rec.assets", isDirectory: true)
+    try seedRecord(
+      id: "rec",
+      audioBytes: 2048,
+      outputPath: output.path,
+      sourcePath: assets.appendingPathComponent("recording.caf").path
+    )
+    let located = try XCTUnwrap(
+      RecordingStore.locate(outputPath: output, historyDirectory: historyDir)
+    )
+
+    XCTAssertTrue(RecordingStore.deleteAudio(located, historyDirectory: historyDir))
+
+    let json = try loadJSON("rec")
+    XCTAssertEqual(json["sourcePath"] as? String, "")
+    // Blanked, not removed: the TS record type requires the key.
+    XCTAssertNotNil(json["sourcePath"])
+    XCTAssertNil(
+      LiveSessionPersistence.resolvedAudioURL(record: json, historyDirectory: historyDir)
+    )
+  }
+
+  func testDeleteAudioNeverBlanksALegacySourcePath() throws {
+    // On a legacy record `sourcePath` is the owner's OWN file outside the
+    // store. Nothing was unlinked, so nothing may be rewritten — the record
+    // goes on naming the audio it always named.
+    let ownersFile = historyDir.appendingPathComponent("owners-own.m4a")
+    try Data(count: 4096).write(to: ownersFile)
+    let output = historyDir.appendingPathComponent("legacy.summary.md")
+    try "# legacy".write(to: output, atomically: true, encoding: .utf8)
+    try seedRecord(id: "legacy", audioBytes: nil, outputPath: output.path,
+                   sourcePath: ownersFile.path)
+    let located = try XCTUnwrap(
+      RecordingStore.locate(outputPath: output, historyDirectory: historyDir)
+    )
+
+    XCTAssertTrue(RecordingStore.deleteAudio(located, historyDirectory: historyDir))
+
+    XCTAssertTrue(fileManager.fileExists(atPath: ownersFile.path))
+    XCTAssertEqual(try loadJSON("legacy")["sourcePath"] as? String, ownersFile.path)
+  }
+
   /// The committed CLI output, found relative to this source file. Deliberately
   /// not a bundle resource: the test target copies no resources, and a fixture
   /// that silently resolved to nil would be a test that cannot fail.

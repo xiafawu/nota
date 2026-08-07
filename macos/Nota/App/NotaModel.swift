@@ -2038,8 +2038,8 @@ struct NotaResult {
 // MARK: - History record info (cached per-document)
 
 /// Lightweight cache of the history record matching the current document.
-/// We only need `historyID` and `sourcePath` for the enroll flow, so we
-/// avoid holding the full (potentially large) segments array in memory.
+/// We only need the `historyID` and the record's own URL for the enroll flow,
+/// so we avoid holding the full (potentially large) segments array in memory.
 struct HistoryRecordInfo {
   let historyID: String
   /// Where this record's audio actually is *now*, resolved through the
@@ -2047,13 +2047,34 @@ struct HistoryRecordInfo {
   /// back to the stored absolute `sourcePath` for records that predate it.
   /// The stored absolute path is a convenience copy and goes stale the moment
   /// `~/.nota` is moved; the relative one is the authority.
-  let sourcePath: String
+  ///
+  /// **Optional, and nothing on the enroll path reads it** (XIA-436). A record
+  /// whose audio was deleted by `nota history delete-audio` or the drawer's
+  /// "Delete recording audio…" keeps neither `audioPath` nor a `sourcePath`
+  /// naming the file that went, so this resolves to nil — and that is the
+  /// whole point of the verb, not a reason to stop finding the record.
+  let audioURL: URL?
   /// The `~/.nota/history/<id>.json` file the info was read from, so the
   /// enrichment record can be decoded without re-scanning the directory.
   let recordURL: URL
 
   /// Walk `~/.nota/history/*.json` and return the record whose `outputPath`
   /// matches `outputPath`. Returns nil when no match exists (imported .md).
+  ///
+  /// **An id is all a record needs to be found** (XIA-436). This used to gate
+  /// its whole result on the audio resolving, which was invisible for as long
+  /// as nothing could take a record's audio away: `sourcePath` was always
+  /// there, so the resolver always answered. `delete-audio` clears both names
+  /// for the file it unlinked, and the guard then turned "this recording's
+  /// audio is gone" into "this document has no history record at all" — the
+  /// summary slot and the tag chips blanked, every speaker chip stuck on amber
+  /// "no history record", typing a name into a chip enrolled nothing, and the
+  /// suggestion verbs and the pin button became silent no-ops. The verb's own
+  /// confirmation promises the per-speaker clips are kept *so that enrollment
+  /// still works*, so breaking enrollment is the one thing it may not do.
+  /// The audio comes back optional instead; the two callers that want a file
+  /// (playback, and the storage verbs, which use `RecordingStore.keptAudioURL`
+  /// rather than this) ask for it and handle its absence.
   static func find(outputPath: String, historyDir: URL) -> HistoryRecordInfo? {
     let fileManager = FileManager.default
     guard let entries = try? fileManager.contentsOfDirectory(
@@ -2070,15 +2091,18 @@ struct HistoryRecordInfo {
         let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
         let recordOutput = json["outputPath"] as? String,
         recordOutput == outputPath,
-        let id = json["id"] as? String,
-        let audio = LiveSessionPersistence.resolvedAudioURL(
-          record: json,
-          historyDirectory: historyDir
-        )
+        let id = json["id"] as? String
       else {
         continue
       }
-      return HistoryRecordInfo(historyID: id, sourcePath: audio.path, recordURL: entry)
+      return HistoryRecordInfo(
+        historyID: id,
+        audioURL: LiveSessionPersistence.resolvedAudioURL(
+          record: json,
+          historyDirectory: historyDir
+        ),
+        recordURL: entry
+      )
     }
     return nil
   }

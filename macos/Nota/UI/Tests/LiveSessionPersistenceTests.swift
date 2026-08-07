@@ -327,7 +327,7 @@ final class LiveSessionPersistenceTests: XCTestCase {
     )
     let found = try XCTUnwrap(info)
     XCTAssertEqual(found.historyID, saved.historyID)
-    XCTAssertEqual(found.sourcePath, saved.audioURL.path)
+    XCTAssertEqual(found.audioURL?.path, saved.audioURL.path)
     XCTAssertEqual(
       found.recordURL.resolvingSymlinksInPath(),
       saved.recordURL.resolvingSymlinksInPath()
