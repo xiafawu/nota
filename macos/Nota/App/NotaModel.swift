@@ -615,6 +615,9 @@ final class NotaModel: ObservableObject {
     // still processing in the background — independently, keyed by its own
     // record id — and cannot follow it here.
     isLiveSessionHandedOff = false
+    // The last handoff's failure, if it had one, has been read by now: it is
+    // about a record the owner has moved on from.
+    backgroundFailure = nil
     let engine = Self.engine(
       for: kind,
       hasAssemblyAIKey: ApiKeyStore.value(for: "ASSEMBLYAI_API_KEY") != nil
@@ -765,7 +768,13 @@ final class NotaModel: ObservableObject {
           // "Untitled meeting"/"Untitled memo", and the row's identity
           // changing is the completion signal when Nota is frontmost — which
           // a fixed "Live Meeting" could never be.
-          displayName: ProvisionalTitle.forKind(kind),
+          //
+          // `displayName` is deliberately NOT the provisional title, though it
+          // was briefly: it feeds `sanitizedBaseName` and so names the file on
+          // disk, and a file is never renamed when the summary lands. Every
+          // live output would have become `Untitled meeting-<ts>.summary.md`
+          // forever — a rename nobody asked for, in the owner's Finder. The
+          // record's title is provisional; its filename is durable.
           title: ProvisionalTitle.forKind(kind),
           outputDirectory: outputDirectory,
           historyDirectory: historyDirectory
@@ -798,6 +807,13 @@ final class NotaModel: ObservableObject {
         recordID: saved.historyID,
         outputPath: saved.outputURL.path
       )
+      // The job says `transcribed` — the truth, and a rest state. What it does
+      // NOT mean is "idle": the summary claims it a Task hop and a file write
+      // later, and a ⌘Q arriving in between must still prompt. That is why
+      // `ProcessingLedger.inFlight` is every job it holds rather than the ones
+      // whose *status* is in flight; being in the ledger is what "there is
+      // still work" means, and only the ledger can know about work that has
+      // not started yet.
       backgroundJobs.advance(recordID: saved.historyID, to: .transcribed)
       refreshHistory()
 
@@ -814,7 +830,8 @@ final class NotaModel: ObservableObject {
         await runRecordSummary(
           recordID: saved.historyID,
           outputURL: saved.outputURL,
-          historyDirectory: historyDirectory
+          historyDirectory: historyDirectory,
+          trigger: .automatic
         )
       }
     }
@@ -827,14 +844,23 @@ final class NotaModel: ObservableObject {
   /// when ⌘Q arrives and has no route to this model.
   var backgroundJobs: ProcessingLedger { ProcessingLedger.shared }
 
-  /// Where completion notices go. Injectable so the decision path can be
-  /// driven without a notification centre.
+  /// Where completion notices go. A stored property rather than a direct call
+  /// to `CompletionNotifier.shared` so the seam is *visible*; what a test
+  /// actually drives is `CompletionNotifierPolicy` and `CompletionFacts`, which
+  /// hold every decision this path makes, because `NotaModel.init` sweeps the
+  /// real `~/.nota` and no test can build one to inject into.
   var completionNotifier: CompletionNotifying = CompletionNotifier.shared
 
   /// True from the moment Stop is accepted until the next session starts.
   /// The one thing that brings the window home immediately — see
   /// `LivePhaseGate`.
   @Published private(set) var isLiveSessionHandedOff = false
+
+  /// A handed-off record that ended in failure with **no drawer row to say so**
+  /// — see `HandoffFailureNotice`. Shown in the toolbar pill, because leaving
+  /// the live pane on the press removed the last surface that acknowledged the
+  /// work. Nil whenever the last landing had somewhere else to be reported.
+  @Published private(set) var backgroundFailure: String?
 
   /// Run the record's summary in the background and land it.
   ///
@@ -844,14 +870,16 @@ final class NotaModel: ObservableObject {
   /// meeting and a 20-second memo behave identically" is a statement about this
   /// function having no branch on kind and no branch on length.
   ///
-  /// `skipSummary` is honoured: an owner who has turned summaries off is not
-  /// charged for one because the work moved to the background.
+  /// `skipSummary` is honoured for the work Nota starts by itself, and not for
+  /// a press — see `SummaryTrigger`. Either way the record's status is not
+  /// touched until the work is actually going to run.
   private func runRecordSummary(
     recordID: String,
     outputURL: URL,
-    historyDirectory: URL
+    historyDirectory: URL,
+    trigger: SummaryTrigger
   ) async {
-    guard !skipSummary else {
+    guard trigger.shouldRun(skipSummary: skipSummary) else {
       finishBackgroundJob(
         recordID: recordID,
         historyDirectory: historyDirectory,
@@ -905,10 +933,21 @@ final class NotaModel: ObservableObject {
     outputURL: URL? = nil
   ) {
     let record = LiveSessionPersistence.loadRecord(id: recordID, historyDirectory: historyDirectory)
-    let resolved = record.map { HistoryStatus.normalized(fromRecord: $0) } ?? .failed(stage: .transcribing)
-    let interrupted = record?["interrupted"] as? Bool ?? false
-    backgroundJobs.advance(recordID: recordID, to: resolved, interrupted: interrupted)
+    let landing = ProcessingLanding.resolve(record: record)
+    backgroundJobs.advance(
+      recordID: recordID,
+      to: landing.status,
+      interrupted: landing.interrupted
+    )
     refreshHistory()
+
+    // A failure that wrote no markdown has no row and no title to change — the
+    // two signals this lane relies on — so the window says it itself. Assigned
+    // unconditionally, so a healthy landing clears the last one.
+    backgroundFailure = HandoffFailureNotice.message(
+      status: landing.status,
+      hasRow: outputURL != nil
+    )
 
     if let outputURL {
       // A completion may update the list it belongs to; it may rewrite the
@@ -951,20 +990,10 @@ final class NotaModel: ObservableObject {
         history.first { $0.url.standardizedFileURL == url.standardizedFileURL }?.title
       }
       ?? ProvisionalTitle.forKind(job.kind)
-    let segments = record?["segments"] as? [[String: Any]] ?? []
-    var speakers = Set<String>()
-    for segment in segments {
-      if let speaker = segment["speaker"] as? String, !speaker.isEmpty { speakers.insert(speaker) }
-    }
-    let facts = CompletionFacts.line(
-      durationMinutes: record?["durationMinutes"] as? Int,
-      speakerCount: speakers.isEmpty ? nil : speakers.count,
-      markerCount: (record?["markers"] as? [Any])?.count
-    )
     guard let notice = CompletionNotifierPolicy.decide(
       job: job,
       title: title,
-      facts: facts,
+      facts: CompletionFacts.line(fromRecord: record),
       appIsFrontmost: completionNotifier.appIsFrontmost
     ) else {
       return
@@ -993,23 +1022,39 @@ final class NotaModel: ObservableObject {
     retrySummary(recordID: recordID, outputURL: entry.url)
   }
 
+  /// A press is a press: **nothing is written until the work is going to
+  /// happen.**
+  ///
+  /// The order used to be the other way round — rewrite `failed:summarizing` to
+  /// `transcribed`, clear `interrupted`, then spawn — and the spawn opened with
+  /// a `skipSummary` guard that could send it straight home. With the setting
+  /// on, one press silently turned a record with a Retry into a record without
+  /// one (`ProcessingRowStatus.make` offers `.summary` only for a summarizing
+  /// failure), and no summary could ever be asked for from the app again. The
+  /// same chain fired from the failure notification's Retry Summary action.
+  ///
+  /// So the plan is decided first (`RetrySummaryPlan`), and `SummaryTrigger`
+  /// says a press outranks the standing "don't summarize by yourself" setting.
   func retrySummary(recordID: String, outputURL: URL) {
     let historyDirectory = notaHistoryDirectory()
-    guard backgroundJobs.job(recordID: recordID) == nil else { return }
     guard let record = LiveSessionPersistence.loadRecord(
       id: recordID,
       historyDirectory: historyDirectory
     ) else {
       return
     }
-    // Only a record that stopped at the summary may be retried this way: the
-    // stage that is re-run has to be the stage that failed.
-    let current = HistoryStatus.normalized(fromRecord: record)
-    guard current == .transcribed || current.failureStage == .summarizing else { return }
-    // A `failed(summarizing)` record is terminal, and `canAdvance` refuses
-    // everything from a terminal state — so the retry reopens it at the rest
-    // state it fell out of before asking for `summarizing` again.
-    if current.failureStage == .summarizing {
+    let plan = RetrySummaryPlan.make(
+      current: HistoryStatus.normalized(fromRecord: record),
+      isInLedger: backgroundJobs.job(recordID: recordID) != nil
+    )
+    switch plan {
+    case .alreadyRunning, .refuse:
+      return
+    case .reopenThenRun:
+      // A `failed(summarizing)` record is terminal, and `canAdvance` refuses
+      // everything from a terminal state — so the retry reopens it at the rest
+      // state it fell out of before asking for `summarizing` again. This is the
+      // one write, and it happens only on a path that then runs the summary.
       guard LiveSessionPersistence.mutateRecord(
         id: recordID,
         historyDirectory: historyDirectory,
@@ -1017,6 +1062,8 @@ final class NotaModel: ObservableObject {
       ) else {
         return
       }
+    case .run:
+      break
     }
     backgroundJobs.begin(
       recordID: recordID,
@@ -1028,7 +1075,8 @@ final class NotaModel: ObservableObject {
       await runRecordSummary(
         recordID: recordID,
         outputURL: outputURL,
-        historyDirectory: historyDirectory
+        historyDirectory: historyDirectory,
+        trigger: .manualRetry
       )
     }
   }
@@ -1390,7 +1438,7 @@ final class NotaModel: ObservableObject {
   /// made live phase markers arrive only at the very end. `onLine` returns true
   /// to consume a line (kept out of the returned Data); the full text minus
   /// consumed lines is returned for the final error report.
-  private static func collect(
+  private nonisolated static func collect(
     _ handle: FileHandle,
     onLine: (@Sendable (String) -> Bool)? = nil
   ) async -> Data {
@@ -1444,10 +1492,33 @@ final class NotaModel: ObservableObject {
   /// since XIA-435 both live kinds summarize in the background through this
   /// one call, with no branch on kind and none on length.
   private func runSummaryProcess(historyID: String) async -> Bool {
-    let shell = Process()
-    shell.executableURL = URL(fileURLWithPath: "/bin/bash")
-    shell.currentDirectoryURL = projectDirectory
+    let outcome = await Self.runShellScript(
+      Self.summaryScript(historyID: historyID, projectDirectory: projectDirectory),
+      workingDirectory: projectDirectory,
+      environment: Self.summaryEnvironment(),
+      // The handle goes into the registry the instant it exists, and comes out
+      // when this call returns — so ⌘Q's "Quit Anyway" can make its own promise
+      // true (see `RunningSummaries`).
+      onLaunch: { process in
+        RunningSummaries.shared.register(recordID: historyID, process: process)
+      }
+    )
+    RunningSummaries.shared.unregister(recordID: historyID)
 
+    if let launchError = outcome.launchError {
+      NSLog("Nota background summary could not start: \(launchError)")
+      return false
+    }
+    guard outcome.status == 0 else {
+      NSLog("Nota background summary failed: \(outcome.stderr.prefix(500))")
+      return false
+    }
+    return true
+  }
+
+  /// The environment the summary child gets: the app's own, with the usual
+  /// GUI-launch `PATH` gaps filled in before the login shell re-derives them.
+  private nonisolated static func summaryEnvironment() -> [String: String] {
     var environment = ProcessInfo.processInfo.environment
     environment["PATH"] = [
       "/opt/homebrew/bin",
@@ -1458,53 +1529,105 @@ final class NotaModel: ObservableObject {
       "/sbin",
       environment["PATH"] ?? "",
     ].joined(separator: ":")
-    shell.environment = environment
+    return environment
+  }
 
-    shell.arguments = [
-      "-c",
-      #"""
-      cd "\#(projectDirectory.path)" || exit 1
-      if [ -x /bin/zsh ]; then
-        while IFS= read -r assignment; do
-          case "$assignment" in
-            *=*) export "$assignment" ;;
-          esac
-        done < <(/bin/zsh -lic 'for name in PATH OPENAI_API_KEY ASSEMBLYAI_API_KEY HUGGINGFACE_TOKEN; do value="${(P)name}"; if [[ -n "$value" ]]; then print -r -- "$name=$value"; fi; done' 2>/dev/null || true)
-      fi
-      if [ -f "$HOME/.secrets" ]; then
-        set +u; set -a
-        . "$HOME/.secrets" 2>/dev/null || true
-        set +a; set -u
-      fi
-      if [ ! -f "dist/index.js" ]; then
-        npm run build 2>/dev/null || exit 1
-      fi
-      exec node dist/index.js history summarize "\#(historyID)"
-      """#,
-    ]
+  /// The one-shot bash script that runs `nota history summarize <id>`.
+  private nonisolated static func summaryScript(
+    historyID: String,
+    projectDirectory: URL
+  ) -> String {
+    #"""
+    cd "\#(projectDirectory.path)" || exit 1
+    if [ -x /bin/zsh ]; then
+      while IFS= read -r assignment; do
+        case "$assignment" in
+          *=*) export "$assignment" ;;
+        esac
+      done < <(/bin/zsh -lic 'for name in PATH OPENAI_API_KEY ASSEMBLYAI_API_KEY HUGGINGFACE_TOKEN; do value="${(P)name}"; if [[ -n "$value" ]]; then print -r -- "$name=$value"; fi; done' 2>/dev/null || true)
+    fi
+    if [ -f "$HOME/.secrets" ]; then
+      set +u; set -a
+      . "$HOME/.secrets" 2>/dev/null || true
+      set +a; set -u
+    fi
+    if [ ! -f "dist/index.js" ]; then
+      npm run build 2>/dev/null || exit 1
+    fi
+    exec node dist/index.js history summarize "\#(historyID)"
+    """#
+  }
 
-    let outputPipe = Pipe()
-    let errorPipe = Pipe()
-    shell.standardOutput = outputPipe
-    shell.standardError = errorPipe
-    // Never inherit stdin (pty slave trap — see UsageStatsProvider).
-    shell.standardInput = FileHandle.nullDevice
+  struct ShellOutcome: Sendable {
+    var status: Int32
+    var stderr: String
+    /// Set when the process could not be launched at all; `status` is then
+    /// meaningless.
+    var launchError: String?
+  }
 
-    do {
-      try shell.run()
-    } catch {
-      NSLog("Nota background summary could not start: \(error.localizedDescription)")
-      return false
-    }
-    outputPipe.fileHandleForReading.readDataToEndOfFile()
-    let stderr = String(data: errorPipe.fileHandleForReading.readDataToEndOfFile(), encoding: .utf8) ?? ""
-    shell.waitUntilExit()
+  /// Run one `/bin/bash -c <script>` to completion — **never on the main
+  /// actor** (XIA-435).
+  ///
+  /// This is where the window was frozen. `NotaModel` is `@MainActor`, and the
+  /// old body was `try shell.run()`, two `readDataToEndOfFile()` calls and
+  /// `waitUntilExit()` — four synchronous blocking calls and not one suspension
+  /// point, so awaiting it from a main-actor `Task` executed the whole
+  /// subprocess *inline on the main thread*. For a 20-minute meeting that is
+  /// minutes of beachball; for a `claude-code/*` or `codex/*` summary model it
+  /// is up to the CLI-engine timeout of 30 minutes; and if `dist/index.js` is
+  /// missing it also includes an `npm run build`. Through all of it the
+  /// drawer's 1s freshness ticker could not fire (a frozen stamp is what this
+  /// lane *defines* as the signal for a stuck pipeline), a second Stop press
+  /// could not be delivered, and ⌘Q was never dispatched — so
+  /// `applicationShouldTerminate` and its prompt never ran and macOS offered
+  /// Force Quit instead. The claim "the window is free" was the one thing the
+  /// ticket is about.
+  ///
+  /// Two halves to the fix, both needed. `Task.detached(priority: .utility)`
+  /// puts the blocking calls on a thread of their own — the shape `runNota`
+  /// has always used. And the two pipes are drained **concurrently** through
+  /// `collect`, because reading stdout to EOF first blocks forever the moment
+  /// the child fills the stderr pipe's 64 KB buffer and stops writing stdout.
+  /// After both reach EOF, `waitUntilExit` returns without blocking.
+  ///
+  /// `nonisolated` is the part a test can see: this is callable, and runs, with
+  /// no main actor involved.
+  nonisolated static func runShellScript(
+    _ script: String,
+    workingDirectory: URL,
+    environment: [String: String],
+    onLaunch: (@Sendable (Process) -> Void)? = nil
+  ) async -> ShellOutcome {
+    await Task.detached(priority: .utility) {
+      let shell = Process()
+      shell.executableURL = URL(fileURLWithPath: "/bin/bash")
+      shell.currentDirectoryURL = workingDirectory
+      shell.environment = environment
+      shell.arguments = ["-c", script]
 
-    guard shell.terminationStatus == 0 else {
-      NSLog("Nota background summary failed: \(stderr.prefix(500))")
-      return false
-    }
-    return true
+      let outputPipe = Pipe()
+      let errorPipe = Pipe()
+      shell.standardOutput = outputPipe
+      shell.standardError = errorPipe
+      // Never inherit stdin (pty slave trap — see UsageStatsProvider).
+      shell.standardInput = FileHandle.nullDevice
+
+      do {
+        try shell.run()
+      } catch {
+        return ShellOutcome(status: -1, stderr: "", launchError: error.localizedDescription)
+      }
+      onLaunch?(shell)
+
+      async let stdoutData = collect(outputPipe.fileHandleForReading)
+      async let stderrData = collect(errorPipe.fileHandleForReading)
+      _ = await stdoutData
+      let stderr = String(data: await stderrData, encoding: .utf8) ?? ""
+
+      shell.waitUntilExit()
+      return ShellOutcome(status: shell.terminationStatus, stderr: stderr, launchError: nil)
+    }.value
   }
 
   /// Map an incoming open request to a file URL. Plain file URLs pass through;

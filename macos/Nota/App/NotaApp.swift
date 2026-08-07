@@ -199,8 +199,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   /// The decision and its wording are `QuitPrompt.decide`, which a test can
   /// reach; this is the alert that shows it. `ProcessingLedger.shared` is why
   /// it is a singleton — the delegate has no route to `NotaModel`.
+  /// Quitting also **kills the summary child**, so the prompt's promise is
+  /// true. A Foundation child survives its parent: left alone the orphan either
+  /// finishes (and the record is not "unsummarized" as the alert said) or is
+  /// still running when the owner relaunches, at which point the launch sweep
+  /// offers a Retry that spawns a *second* `nota history summarize <id>` —
+  /// a second paid model call, and two uncoordinated writers on one record's
+  /// JSON. The in-memory ledger cannot see the orphan; the quit destroyed it.
+  /// See `RunningSummaries`.
   func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
     guard let ask = QuitPrompt.decide(inFlight: ProcessingLedger.shared.inFlight) else {
+      RunningSummaries.shared.terminateAll()
       return .terminateNow
     }
     let alert = NSAlert()
@@ -210,7 +219,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     alert.addButton(withTitle: ask.quitButtonTitle)
     alert.addButton(withTitle: ask.cancelButtonTitle)
     NSApp.activate(ignoringOtherApps: true)
-    return alert.runModal() == .alertFirstButtonReturn ? .terminateNow : .terminateCancel
+    guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
+    // "Quit Anyway" — leave the record exactly as the prompt describes:
+    // unsummarized, with its audio and transcript on disk, at `summarizing`,
+    // which is the state the next launch's sweep turns into
+    // "Interrupted · transcript saved" plus its Retry.
+    RunningSummaries.shared.terminateAll()
+    return .terminateNow
   }
 
   /// Dock-icon click with no visible windows must bring the main window back:
