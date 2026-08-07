@@ -58,7 +58,12 @@ enum LiveSessionPersistenceError: LocalizedError, Equatable {
 /// **Nothing here deletes audio.** Not a cancel, not an empty transcript, not
 /// a failed summary. Audio is the one artifact that cannot be regenerated;
 /// deleting it is an explicit user verb, not a failure path (owner's standing
-/// rule).
+/// rule). That is still true of every function in this file — and it is now a
+/// claim about *this file* rather than about the app: XIA-436 added the verbs,
+/// and they live in `RecordingStorage.swift`. The failure-path half is
+/// unchanged and pinned by test (`testAFailedSessionStillKeepsItsAudio`);
+/// a Discard press deletes, because nobody chose a failure and somebody did
+/// choose Discard.
 ///
 /// The record schema stays the one the CLI produces (`src/pipeline/history.ts`),
 /// plus `audioPath` / `audioBytes` / `interrupted`. `audioPath` is relative to

@@ -45,6 +45,12 @@ enum RecordingStore {
     /// True when the record carries transcript text — what "the transcript
     /// stays" is a promise about.
     let hasTranscript: Bool
+    /// Per-speaker voice clips (`<label>.pcm`) in the assets folder. They are
+    /// raw audio of the same people and `deleteAudio` deliberately keeps them,
+    /// so the confirmation has to be able to say so: an owner deleting
+    /// recording audio for PRIVACY who is told only "the recording goes" has
+    /// been told the wrong thing.
+    var speakerClipCount: Int = 0
   }
 
   /// Find the record behind a history row (rows are keyed by the exported
@@ -94,8 +100,21 @@ enum RecordingStore {
       audioURL: bytes == nil ? nil : audio,
       audioBytes: bytes,
       outputPath: json["outputPath"] as? String,
-      hasTranscript: !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+      hasTranscript: !transcript.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+      speakerClipCount: speakerClipCount(in: assets)
     )
+  }
+
+  /// How many per-speaker voice clips a record's assets folder holds. Best
+  /// effort: a folder that cannot be read reports none rather than blocking a
+  /// dialog.
+  static func speakerClipCount(in assets: URL) -> Int {
+    let contents = (try? FileManager.default.contentsOfDirectory(
+      at: assets,
+      includingPropertiesForKeys: nil,
+      options: []
+    )) ?? []
+    return contents.filter { $0.pathExtension == "pcm" }.count
   }
 
   /// Where a record's KEPT audio is, or nil when it keeps none.
@@ -192,14 +211,33 @@ enum RecordingStore {
   ///
   /// The exported `.md` is NEVER removed here. It lives outside `~/.nota` and
   /// Nota does not own it.
+  ///
+  /// **Assets first, and the result is checked.** A `try?` here was a silent
+  /// partial delete: an assets folder that cannot be removed (an immutable
+  /// flag, a read-only parent, a file owned by another uid after a Migration
+  /// Assistant restore) was swallowed, the record JSON was removed anyway, and
+  /// the function reported success. What is left is `<id>.assets/recording.caf`
+  /// with **no record naming it** — the forbidden partial delete, and invisible
+  /// to every verb, since the store's own accounting walks records. The order
+  /// matters for the same reason: failing after the JSON is gone cannot be
+  /// undone, while failing before it leaves a record pointing at an
+  /// empty-or-partial folder, which the owner can simply delete again.
   @discardableResult
   static func deleteRecord(_ record: LocatedRecord) -> Bool {
     let fileManager = FileManager.default
-    // Assets first: a crash between the two leaves a record pointing at an
-    // empty folder (recoverable) rather than an orphaned folder no record
-    // names (invisible, and exactly what "leaves no assets folder behind" is
-    // about).
-    try? fileManager.removeItem(at: record.assetsURL)
+    do {
+      try fileManager.removeItem(at: record.assetsURL)
+    } catch {
+      if (error as NSError).code != NSFileNoSuchFileError {
+        logger.error(
+          """
+          record \(record.id, privacy: .public) assets delete failed, \
+          record kept: \(error.localizedDescription, privacy: .public)
+          """
+        )
+        return false
+      }
+    }
     do {
       try fileManager.removeItem(at: record.recordURL)
     } catch {
@@ -249,21 +287,82 @@ enum RecordingStore {
       )
     )
   }
+
+  /// What a Discard press actually did, and therefore what the owner is told.
+  enum DiscardOutcome: Equatable {
+    /// The record and its audio are gone.
+    case deleted
+    /// The delete did not land. The record was settled to a terminal status
+    /// instead and everything it holds is still on disk.
+    case keptAfterFailure
+  }
+}
+
+extension LiveSessionOwner {
+  /// Discard the record a live session owns — and, when the delete does not
+  /// land, settle it rather than walking away from it.
+  ///
+  /// This exists as one function because the two halves cannot be separated
+  /// without breaking XIA-430's rule 3, *"nothing is abandoned in an in-flight
+  /// status"*. Dropping the delete's result and calling `release` regardless
+  /// clears ownership of a record that is still on disk saying `recording`:
+  /// `settle` can never run for it, `observeLiveSessionState` cannot rescue it
+  /// (`isOwning` is false), the owner is told "Recording discarded" — and at
+  /// the next launch the sweep stamps it `failed(recording) + interrupted`,
+  /// presenting as **"Interrupted"**, a session that never happened, with the
+  /// audio they believed they discarded still there.
+  ///
+  /// `delete` is injected so the failure branch is drivable without a
+  /// read-only filesystem.
+  @discardableResult
+  func discard(
+    _ started: LiveSessionPersistence.StartedRecord,
+    delete: (LiveSessionPersistence.StartedRecord) -> Bool = RecordingStore.discardLiveRecording
+  ) -> RecordingStore.DiscardOutcome {
+    if delete(started) {
+      release(started)
+      return .deleted
+    }
+    // The record is still there, so it must come to rest like every other way
+    // out of a session: a terminal status, and its audio kept.
+    settle(started)
+    return .keptAfterFailure
+  }
 }
 
 // MARK: - The storage summary the CLI computes
 
 /// One record's footprint. Decoded from `nota history storage --json`; the
 /// field names are the TS interface's, verbatim.
+///
+/// Pinned against the CLI's REAL output rather than a hand-written shape:
+/// `macos/Nota/UI/Tests/Fixtures/storage-summary.json` is generated by
+/// `scripts/storage-summary-fixture.ts` and rebuilt-and-compared by a TS test,
+/// so neither side can move without the other failing. The hand-copy that
+/// preceded it had already drifted — it was missing the `status` key every
+/// real row carries.
 struct StoredRecordRow: Codable, Equatable {
   let id: String
   let createdAt: String
   let sourceName: String
-  /// Null for a record that keeps no audio — rendered "audio not kept".
+  /// The record's lifecycle status, as `HistoryStatus` spells it.
+  let status: String
+  /// Null for a record that keeps no audio — rendered in words, never "0 B".
   let audioBytes: Int?
   let assetsBytes: Int
+  /// The per-speaker voice clips `delete-audio` keeps.
+  let speakerClipCount: Int
+  let speakerClipBytes: Int
   let recordBytes: Int
   let totalBytes: Int
+}
+
+/// Bytes in the store that no readable record names — counted, named, and
+/// never removed by Nota.
+struct StoredOrphanRow: Codable, Equatable {
+  let id: String
+  let reason: String
+  let bytes: Int
 }
 
 /// The store's totals, as the CLI computed them.
@@ -275,10 +374,15 @@ struct StoredRecordRow: Codable, Equatable {
 struct StoredStorageSummary: Codable, Equatable {
   let records: [StoredRecordRow]
   let count: Int
+  /// Every byte the store holds: the records AND the orphans.
   let totalBytes: Int
   let audioBytes: Int
   let oldestCreatedAt: String?
   let thisMonthBytes: Int
+  /// Optional so a summary written by a Nota that predates orphan accounting
+  /// still decodes — tolerance per field, as everywhere else in this app.
+  var orphans: [StoredOrphanRow]?
+  var orphanBytes: Int?
 }
 
 // MARK: - Formatting
@@ -298,14 +402,17 @@ enum StorageFormat {
     }
     return String(format: "%.1f %@", value, units[unit])
   }
-
-  /// What a record's audio column reads. A record keeping no audio says so in
-  /// words: "0 B" would read as a recording that exists and is empty.
-  static func audio(_ bytes: Int?) -> String {
-    guard let bytes else { return "audio not kept" }
-    return self.bytes(bytes)
-  }
 }
+
+// `StorageFormat.audio(_:)` used to live here, rendering "audio not kept" for
+// a nil. It is gone rather than kept for symmetry: the app has no per-record
+// audio COLUMN to render — the Usage sheet shows totals and the drawer row
+// shows a title — so nothing but its own test ever called it, and a function
+// with only a test for a caller reads as coverage of a surface that does not
+// exist. Where the app really has to tell an owner a record keeps no audio is
+// the delete-audio confirmation, and `RecordingDeletionCopy.audioMessage` says
+// it there in a sentence. The CLI keeps the column and the wording
+// (`row.audioBytes === null ? "audio not kept" : …` in src/cli/storage.ts).
 
 // MARK: - Confirmation copy
 
@@ -320,15 +427,28 @@ enum RecordingDeletionCopy {
     "Delete the audio for “\(title)”?"
   }
 
-  static func audioMessage(bytes: Int?, hasTranscript: Bool) -> String {
-    let size = bytes.map { StorageFormat.bytes($0) } ?? "The recording"
-    let goes = bytes == nil
-      ? "This record keeps no audio."
-      : "\(size) of audio will be deleted."
+  /// What `delete-audio` does and — the harder half — what it leaves.
+  ///
+  /// `speakerClipCount` is not decoration. The per-speaker voice clips are raw
+  /// audio of the same people, they live in the same folder as the recording,
+  /// and this verb deliberately keeps them. "Only the recording goes" is a
+  /// true sentence that misleads exactly the owner most likely to be reading
+  /// it: someone deleting audio because they do not want the audio kept.
+  static func audioMessage(
+    bytes: Int?,
+    hasTranscript: Bool,
+    speakerClipCount: Int = 0
+  ) -> String {
+    let goes = bytes.map { "\(StorageFormat.bytes($0)) of audio will be deleted." }
+      ?? "This record keeps no audio."
     let stays = hasTranscript
       ? "The transcript, summary and markers stay — only the recording goes."
       : "The record stays — only the recording goes."
-    return "\(goes) \(stays) This cannot be undone."
+    let clips = speakerClipCount > 0
+      ? " \(speakerClipCount) per-speaker voice clip\(speakerClipCount == 1 ? "" : "s") "
+        + "also stay — they are audio too, and “Delete record…” is what removes them."
+      : ""
+    return "\(goes) \(stays)\(clips) This cannot be undone."
   }
 
   static func recordTitle(_ title: String) -> String {
@@ -347,6 +467,43 @@ enum RecordingDeletionCopy {
   /// The line the Usage sheet carries under the figure. The retention policy
   /// in one sentence.
   static let neverDeletesOnItsOwn = "Nota never deletes recordings on its own."
+
+  // MARK: - Discard
+
+  /// Discard, on the failure banner, is the most destructive verb in the app
+  /// and the only one that used to confirm nothing.
+  ///
+  /// It sits between **Save Transcript** and **Try Again**, both harmless, and
+  /// it reads as "dismiss this banner". What it does is delete the record and
+  /// its recording: the 88 minutes of a 90-minute meeting whose socket dropped
+  /// at minute 88, with no undo. The drawer's own verbs name the bytes, what
+  /// stays, and that it cannot be undone; the one that destroys the most may
+  /// not say less. The message therefore names the length, the size, and the
+  /// alternative the banner is already offering.
+  static let discardTitle = "Discard this recording?"
+
+  static func discardMessage(
+    seconds: TimeInterval,
+    bytes: Int?,
+    hasTranscript: Bool
+  ) -> String {
+    let length = discardLength(seconds)
+    let size = bytes.map { " (\(StorageFormat.bytes($0)))" } ?? ""
+    let recorded = "\(length)\(size) of audio and this session's record will be deleted."
+    let alternative = hasTranscript
+      ? "Save Transcript keeps what was heard, and the recording with it."
+      : "Try Again keeps this recording and starts a new session."
+    return "\(recorded) Audio cannot be re-recorded. \(alternative) This cannot be undone."
+  }
+
+  /// `2745` → `"45 minutes"`. Minutes once there is a minute, because that is
+  /// how long an owner thinks a meeting was.
+  static func discardLength(_ seconds: TimeInterval) -> String {
+    let whole = max(0, Int(seconds.rounded()))
+    if whole < 60 { return "\(whole) second\(whole == 1 ? "" : "s")" }
+    let minutes = whole / 60
+    return "\(minutes) minute\(minutes == 1 ? "" : "s")"
+  }
 }
 
 extension ISO8601DateFormatter {

@@ -112,10 +112,17 @@ struct LiveMeetingView: View {
   var isStarting: Bool = false
   let onStart: () -> Void
   let onStop: () -> Void
-  /// Throw a failed session away. Not `session.cancel()` from the view: the
-  /// record on disk has to be settled to a terminal status, and only the model
-  /// owns it.
+  /// Throw a failed session away. Not `session.cancel()` from the view: only
+  /// the model owns the record on disk, and Discard now DELETES it — the
+  /// record, its assets folder and the recording (XIA-436). Asked for
+  /// confirmation first, by `discardConfirmation`.
   var onDiscard: () -> Void = {}
+  /// Bytes recorded so far, for that confirmation. A closure because the size
+  /// is a stat of a file the model owns, and it is read when the dialog opens
+  /// rather than on every render of a pane that redraws per transcript turn.
+  var discardAudioBytes: () -> Int? = { nil }
+
+  @State private var confirmingDiscard = false
 
   /// The session's flagged moments. Session-local and not persisted — the UI
   /// slot is this ticket's, the plumbing is XIA-433's. See `SessionMarkerLog`.
@@ -306,11 +313,36 @@ struct LiveMeetingView: View {
           Button("Save Transcript", action: onStop).liquidGlassButton()
         }
         Button("Try Again", action: onStart).liquidGlassButton()
-        // Not `session.cancel()`: the record on disk has to come to rest at a
-        // terminal status (keeping its audio), and only the model owns it.
-        Button("Discard", action: onDiscard).liquidGlassButton()
+        Button {
+          // Not `session.cancel()`: only the model owns the record on disk,
+          // and since XIA-436 Discard DELETES it — the record, the assets
+          // folder and the recording. Hence the confirmation below rather than
+          // a straight call: this is the most destructive verb in the app,
+          // it sits between two harmless ones, and it reads as "dismiss this
+          // banner". Audio is the one artifact that cannot be re-made.
+          confirmingDiscard = true
+        } label: {
+          Text("Discard")
+        }
+        .liquidGlassButton()
       }
       .fixedSize(horizontal: true, vertical: false)
+    }
+    .confirmationDialog(
+      RecordingDeletionCopy.discardTitle,
+      isPresented: $confirmingDiscard,
+      titleVisibility: .visible
+    ) {
+      Button("Discard Recording", role: .destructive) { onDiscard() }
+      Button("Cancel", role: .cancel) {}
+    } message: {
+      Text(
+        RecordingDeletionCopy.discardMessage(
+          seconds: session.elapsed,
+          bytes: discardAudioBytes(),
+          hasTranscript: !session.segments.isEmpty
+        )
+      )
     }
     .padding(CraftTokens.spacing16)
     .craftGlassPanel(

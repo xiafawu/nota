@@ -18,6 +18,16 @@ final class RecordingStorageTests: XCTestCase {
   }
 
   override func tearDownWithError() throws {
+    // A test that made a folder unremovable has to hand back the permission,
+    // or the temp directory outlives the run.
+    if let contents = try? fileManager.contentsOfDirectory(
+      at: historyDir,
+      includingPropertiesForKeys: nil
+    ) {
+      for url in contents where url.hasDirectoryPath {
+        try? fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: url.path)
+      }
+    }
     try? fileManager.removeItem(at: historyDir)
   }
 
@@ -118,7 +128,14 @@ final class RecordingStorageTests: XCTestCase {
 
     XCTAssertNil(located.audioURL)
     XCTAssertNil(located.audioBytes)
-    XCTAssertEqual(StorageFormat.audio(located.audioBytes), "audio not kept")
+    // And the app says so where an owner actually reads it — the confirmation.
+    // (`StorageFormat.audio` is gone: the app has no per-record audio column,
+    // so nothing but a test ever called it. The CLI keeps the column.)
+    XCTAssertTrue(
+      RecordingDeletionCopy
+        .audioMessage(bytes: located.audioBytes, hasTranscript: true)
+        .contains("keeps no audio")
+    )
   }
 
   func testAnAudioPathThatClimbsOutOfTheAssetsFolderIsRefused() {
@@ -231,6 +248,38 @@ final class RecordingStorageTests: XCTestCase {
     )
   }
 
+  func testAnAssetsFolderThatCannotBeRemovedKeepsTheRecordAndFails() throws {
+    // The forbidden partial delete: assets left behind with no record naming
+    // them is invisible to `nota history storage` (which walks records) and
+    // untargetable by `nota history delete`, so the bytes can never be found
+    // again. Assets first, checked — and the JSON stays put when it fails.
+    let output = historyDir.appendingPathComponent("stuck.summary.md")
+    try "# n".write(to: output, atomically: true, encoding: .utf8)
+    try seedRecord(id: "stuck", audioBytes: 1024, outputPath: output.path)
+    let located = try XCTUnwrap(
+      RecordingStore.locate(outputPath: output, historyDirectory: historyDir)
+    )
+    // r-x on the folder: its child cannot be unlinked, so the recursive remove
+    // fails — while the history dir itself stays writable, so removing the
+    // record JSON *would* have succeeded.
+    try fileManager.setAttributes(
+      [.posixPermissions: 0o500],
+      ofItemAtPath: located.assetsURL.path
+    )
+
+    XCTAssertFalse(RecordingStore.deleteRecord(located))
+
+    XCTAssertTrue(fileManager.fileExists(atPath: located.recordURL.path))
+    XCTAssertTrue(fileManager.fileExists(atPath: located.assetsURL.path))
+    // Still reachable: the row can be found and the verb tried again.
+    XCTAssertNotNil(RecordingStore.locate(outputPath: output, historyDirectory: historyDir))
+
+    try fileManager.setAttributes(
+      [.posixPermissions: 0o755],
+      ofItemAtPath: located.assetsURL.path
+    )
+  }
+
   // MARK: - Discard
 
   func testDiscardDeletesTheWholeRecordIncludingItsAudio() throws {
@@ -263,6 +312,87 @@ final class RecordingStorageTests: XCTestCase {
     XCTAssertTrue(fileManager.fileExists(atPath: started.recordURL.path))
   }
 
+  // MARK: - Discard's effect on ownership (XIA-430 rule 3)
+
+  @MainActor
+  func testASuccessfulDiscardReleasesTheRecord() throws {
+    let owner = LiveSessionOwner(historyDirectory: { self.historyDir })
+    let started = try XCTUnwrap(startedRecord(owner))
+
+    XCTAssertEqual(owner.discard(started), .deleted)
+
+    XCTAssertFalse(owner.isOwning)
+    XCTAssertFalse(fileManager.fileExists(atPath: started.recordURL.path))
+  }
+
+  @MainActor
+  func testADiscardThatDidNotDeleteSettlesTheRecordInsteadOfAbandoningIt() throws {
+    // Rule 3: nothing is abandoned in an in-flight status. Releasing on a
+    // failed delete leaves a record on disk saying `recording` that nobody
+    // owns — `settle` can never run for it, the state observer cannot rescue
+    // it, and the next launch's sweep presents it as "Interrupted": a session
+    // that never happened, with the audio the owner believed they discarded
+    // still on disk.
+    let owner = LiveSessionOwner(historyDirectory: { self.historyDir })
+    let started = try XCTUnwrap(startedRecord(owner))
+    try Data(count: 2048).write(to: started.audioURL)
+
+    XCTAssertEqual(owner.discard(started, delete: { _ in false }), .keptAfterFailure)
+
+    XCTAssertFalse(owner.isOwning)
+    let json = try XCTUnwrap(
+      LiveSessionPersistence.loadRecord(id: started.historyID, historyDirectory: historyDir)
+    )
+    // A terminal status, not an in-flight one — and the audio is kept.
+    XCTAssertEqual(json["status"] as? String, "failed:recording")
+    XCTAssertTrue(fileManager.fileExists(atPath: started.audioURL.path))
+  }
+
+  @MainActor
+  private func startedRecord(
+    _ owner: LiveSessionOwner
+  ) -> LiveSessionPersistence.StartedRecord? {
+    guard case .started(let started) = owner.start(
+      kind: .meeting,
+      diarize: false,
+      identify: false,
+      sessionIsLive: false
+    ) else {
+      return nil
+    }
+    return started
+  }
+
+  // MARK: - Discard's confirmation
+
+  func testDiscardConfirmationNamesTheLengthTheSizeAndTheWayOut() {
+    // The one verb that destroys the most used to confirm nothing.
+    let message = RecordingDeletionCopy.discardMessage(
+      seconds: 5_280,
+      bytes: 88 * 1024 * 1024,
+      hasTranscript: true
+    )
+
+    XCTAssertTrue(message.contains("88 minutes"))
+    XCTAssertTrue(message.contains("88.0 MB"))
+    XCTAssertTrue(message.contains("cannot be re-recorded"))
+    XCTAssertTrue(message.contains("Save Transcript"))
+    XCTAssertTrue(message.contains("cannot be undone"))
+  }
+
+  func testDiscardConfirmationOffersTryAgainWhenNothingWasHeard() {
+    let message = RecordingDeletionCopy.discardMessage(
+      seconds: 12,
+      bytes: nil,
+      hasTranscript: false
+    )
+
+    XCTAssertTrue(message.contains("12 seconds"))
+    XCTAssertTrue(message.contains("Try Again"))
+    // No size is invented when the file cannot be read.
+    XCTAssertFalse(message.contains("("))
+  }
+
   // MARK: - Formatting + copy
 
   func testByteFormattingMatchesTheCLIsSpelling() {
@@ -271,10 +401,36 @@ final class RecordingStorageTests: XCTestCase {
     XCTAssertEqual(StorageFormat.bytes(5 * 1024 * 1024), "5.0 MB")
   }
 
-  func testAudioColumnSaysNotKeptRatherThanZero() {
-    // "0 B" would read as a recording that exists and is empty.
-    XCTAssertEqual(StorageFormat.audio(nil), "audio not kept")
-    XCTAssertEqual(StorageFormat.audio(0), "0 B")
+  func testAudioConfirmationNamesTheVoiceClipsThatStay() {
+    // The clips are raw audio of the same people and this verb keeps them.
+    // "only the recording goes" is true and misleads exactly the owner who is
+    // deleting audio because they do not want audio kept.
+    let message = RecordingDeletionCopy.audioMessage(
+      bytes: 2048,
+      hasTranscript: true,
+      speakerClipCount: 2
+    )
+
+    XCTAssertTrue(message.contains("2 per-speaker voice clips"))
+    XCTAssertTrue(message.contains("Delete record…"))
+    // And nothing is claimed when there are none.
+    XCTAssertFalse(
+      RecordingDeletionCopy
+        .audioMessage(bytes: 2048, hasTranscript: true, speakerClipCount: 0)
+        .contains("voice clip")
+    )
+  }
+
+  func testALocatedRecordCountsItsVoiceClips() throws {
+    let output = historyDir.appendingPathComponent("notes.summary.md")
+    try "# n".write(to: output, atomically: true, encoding: .utf8)
+    try seedRecord(id: "rec", audioBytes: 1024, clipBytes: 200, outputPath: output.path)
+
+    let located = try XCTUnwrap(
+      RecordingStore.locate(outputPath: output, historyDirectory: historyDir)
+    )
+
+    XCTAssertEqual(located.speakerClipCount, 1)
   }
 
   func testAudioConfirmationNamesBytesWhatStaysAndThatItIsFinal() {
@@ -305,33 +461,61 @@ final class RecordingStorageTests: XCTestCase {
   // MARK: - The CLI's summary decodes
 
   func testStorageSummaryDecodesWhatTheCLIEmits() throws {
-    // Field-for-field the shape `nota history storage --json` writes. The app
-    // decodes this rather than recomputing it, so the sheet and the terminal
-    // cannot disagree about the figure.
+    // NOT a hand-written shape. `Fixtures/storage-summary.json` is the literal
+    // output of `nota history storage --json`, produced by
+    // `scripts/storage-summary-fixture.ts` and rebuilt-and-compared by a
+    // vitest, so neither side can move without the other going red. The
+    // hand-copy this replaced claimed to be "field-for-field" what the CLI
+    // writes and was not — it was missing the `status` key every real row
+    // carries, which is exactly the drift a fixture written by hand invites.
+    let summary = try JSONDecoder().decode(
+      StoredStorageSummary.self,
+      from: try Data(contentsOf: Self.fixtureURL)
+    )
+
+    XCTAssertEqual(summary.count, 2)
+    XCTAssertEqual(summary.oldestCreatedAt, "2026-01-05T10:00:00.000Z")
+    // A legacy record: no audio of ours, and the row still decodes.
+    XCTAssertEqual(summary.records[0].id, "legacy-no-audio")
+    XCTAssertNil(summary.records[0].audioBytes)
+    XCTAssertEqual(summary.records[0].status, "done")
+    // A record-first one, with a voice clip that `delete-audio` would keep.
+    XCTAssertEqual(summary.records[1].audioBytes, 2048)
+    XCTAssertEqual(summary.records[1].speakerClipCount, 1)
+    XCTAssertEqual(summary.records[1].speakerClipBytes, 512)
+    // Bytes no record names are counted, named, and part of the total.
+    XCTAssertEqual(summary.orphanBytes, 4096)
+    XCTAssertEqual(summary.orphans?.first?.id, "orphaned")
+    XCTAssertEqual(summary.orphans?.first?.reason, "no-record")
+    XCTAssertEqual(
+      summary.totalBytes,
+      summary.records.reduce(0) { $0 + $1.totalBytes } + 4096
+    )
+  }
+
+  func testStorageSummaryStillDecodesASummaryWithNoOrphanFields() throws {
+    // Tolerance per field: a payload written by a Nota that predates orphan
+    // accounting must not blank the whole sheet.
     let json = """
-    {
-      "records": [
-        {"id":"a","createdAt":"2026-01-01T00:00:00.000Z","sourceName":"recording.caf",
-         "audioBytes":null,"assetsBytes":0,"recordBytes":400,"totalBytes":400},
-        {"id":"b","createdAt":"2026-02-01T00:00:00.000Z","sourceName":"recording.caf",
-         "audioBytes":2048,"assetsBytes":2048,"recordBytes":400,"totalBytes":2448}
-      ],
-      "count": 2,
-      "totalBytes": 2848,
-      "audioBytes": 2048,
-      "oldestCreatedAt": "2026-01-01T00:00:00.000Z",
-      "thisMonthBytes": 2448
-    }
+    {"records":[],"count":0,"totalBytes":0,"audioBytes":0,
+     "oldestCreatedAt":null,"thisMonthBytes":0}
     """
+
     let summary = try JSONDecoder().decode(
       StoredStorageSummary.self,
       from: XCTUnwrap(json.data(using: .utf8))
     )
 
-    XCTAssertEqual(summary.count, 2)
-    XCTAssertEqual(summary.totalBytes, 2848)
-    XCTAssertNil(summary.records[0].audioBytes)
-    XCTAssertEqual(summary.records[1].audioBytes, 2048)
-    XCTAssertEqual(summary.oldestCreatedAt, "2026-01-01T00:00:00.000Z")
+    XCTAssertNil(summary.orphans)
+    XCTAssertNil(summary.orphanBytes)
+  }
+
+  /// The committed CLI output, found relative to this source file. Deliberately
+  /// not a bundle resource: the test target copies no resources, and a fixture
+  /// that silently resolved to nil would be a test that cannot fail.
+  private static var fixtureURL: URL {
+    URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .appendingPathComponent("Fixtures/storage-summary.json")
   }
 }

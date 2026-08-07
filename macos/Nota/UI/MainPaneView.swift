@@ -40,7 +40,8 @@ struct MainPaneView: View {
           isStarting: model.isStartingLiveSession,
           onStart: { model.startLiveSession() },
           onStop: { model.stopLiveSession() },
-          onDiscard: { model.discardLiveSession() }
+          onDiscard: { model.discardLiveSession() },
+          discardAudioBytes: { model.liveRecordingAudioBytes() }
         )
       }
 

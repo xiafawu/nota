@@ -1118,22 +1118,46 @@ final class NotaModel: ObservableObject {
   /// automatically" rule is about the automatic ones; a button labelled
   /// Discard that leaves the recording on disk is the one that lies.
   ///
-  /// `release`, not `settle`: the record is gone, and asking a deleted record
-  /// to take a status write would only log a failure. Deleting BEFORE
-  /// `cancel()` keeps this deterministic rather than leaving it to the state
-  /// observer below.
+  /// `release` when the delete LANDED, `settle` when it did not — the whole
+  /// decision is `LiveSessionOwner.discard`, so it is one testable rule rather
+  /// than a result this call site could drop. Dropping it is what would leave
+  /// a record on disk still saying `recording` with nobody owning it: settle
+  /// could never run for it, and the next launch's sweep would present it as
+  /// "Interrupted", a session that never happened, with the audio the owner
+  /// believed they discarded still there.
+  ///
+  /// Deleting BEFORE `cancel()` keeps this deterministic rather than leaving
+  /// it to the state observer below.
   func discardLiveSession() {
     // Discard is also a way out of the live pane, and it hands nothing off.
     isLiveSessionHandedOff = true
     if let started = liveRecords.beginStop() {
-      RecordingStore.discardLiveRecording(started)
-      liveRecords.release(started)
+      switch liveRecords.discard(started) {
+      case .deleted:
+        status = "Recording discarded"
+      case .keptAfterFailure:
+        status = "Could not discard — the recording was kept"
+      }
       liveRecords.finishedStopping()
-      status = "Recording discarded"
     }
     liveSession.cancel()
     syncLiveSessionFlags()
     refreshHistory()
+  }
+
+  /// Bytes the in-flight live session has recorded so far, for the Discard
+  /// confirmation. Nil when nothing is being recorded or the file cannot be
+  /// read — the dialog then names the length alone rather than a wrong figure.
+  func liveRecordingAudioBytes() -> Int? {
+    guard let started = liveRecords.record else { return nil }
+    guard
+      let attributes = try? FileManager.default.attributesOfItem(atPath: started.audioURL.path),
+      let size = (attributes[.size] as? NSNumber)?.intValue,
+      size > 0
+    else {
+      return nil
+    }
+    return size
   }
 
   /// Settle a record whose session ended without anyone pressing Stop.
@@ -1308,24 +1332,27 @@ final class NotaModel: ObservableObject {
     refreshHistory()
   }
 
-  func deleteHistory(_ entry: HistoryEntry) {
-    guard !isRunning else {
-      return
-    }
-    try? FileManager.default.removeItem(at: entry.url)
-    // Speaker clips live exactly as long as their history record (decision 2):
-    // the per-speaker PCM clips sit in `<id>.assets/` beside the record JSON
-    // and die with it. Deleting a record whose assets dir is already gone
-    // must not error, hence try?.
-    let assetsURL = entry.url
-      .deletingPathExtension()
-      .appendingPathExtension("assets")
-    try? FileManager.default.removeItem(at: assetsURL)
-    if selectedHistoryID == entry.id {
-      newTranscription()
-    }
-    refreshHistory()
-  }
+  // `deleteHistory(_:)` is gone (XIA-436), and with it the drawer row's trash
+  // button, which was its only caller.
+  //
+  // It deleted `entry.url` — the exported `.md` in ~/Documents/Nota, the one
+  // file the standing rules say Nota never deletes — and then removed
+  // `<md-basename>.summary.assets` NEXT TO THE MARKDOWN, a path that has never
+  // existed (real assets live at ~/.nota/history/<id>.assets). So one click,
+  // with no confirmation, destroyed the owner's notes and left `<id>.json` and
+  // `<id>.assets/recording.caf` behind with the row that referenced them gone:
+  // unreachable from the app AND from `nota history delete <id>` without
+  // reading raw JSON, while `nota history storage` went on counting bytes
+  // nobody could find a handle for. Both the forbidden partial delete and the
+  // one rule with no "automatic" qualifier on it.
+  //
+  // Routing it through `RecordingStore.deleteRecord` was the alternative and
+  // was rejected: that verb keeps the `.md`, and the row IS the `.md`, so a
+  // trash icon doing it would leave the row exactly where it was — a button
+  // that reads as doing nothing, and an unconfirmed destructive one at that.
+  // The context menu already offers both real verbs, with confirmations, and
+  // is now the app's only deletion surface. Removing the exported file itself
+  // is the owner's to do in Finder, which the menu's Reveal item opens on it.
 
   func copyMarkdown() {
     guard !markdown.isEmpty else {
