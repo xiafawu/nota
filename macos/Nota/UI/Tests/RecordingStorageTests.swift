@@ -510,6 +510,51 @@ final class RecordingStorageTests: XCTestCase {
     XCTAssertNil(summary.orphanBytes)
   }
 
+  func testAStorageRowFromACLIThatPredatesTheNewFieldsStillDecodes() throws {
+    // The app runs whatever `dist/index.js` is on disk, and
+    // `UsageStatsProvider.refreshStorage` turns any decode throw into NO
+    // Storage section — no figure, no error, no clue. One row from an older
+    // build may not cost the owner the number the whole retention deal is
+    // built on.
+    let json = """
+    {"records":[{"id":"old","createdAt":"2026-01-01T00:00:00.000Z",
+                 "sourceName":"recording.caf","audioBytes":2048,
+                 "assetsBytes":2048,"recordBytes":512,"totalBytes":2560}],
+     "count":1,"totalBytes":2560,"audioBytes":2048,
+     "oldestCreatedAt":null,"thisMonthBytes":0}
+    """
+
+    let summary = try JSONDecoder().decode(
+      StoredStorageSummary.self,
+      from: XCTUnwrap(json.data(using: .utf8))
+    )
+
+    let row = try XCTUnwrap(summary.records.first)
+    XCTAssertEqual(row.id, "old")
+    XCTAssertEqual(row.audioBytes, 2048)
+    // What that build did not know reads as what it knew: nothing.
+    XCTAssertEqual(row.status, "")
+    XCTAssertEqual(row.speakerClipCount, 0)
+    XCTAssertEqual(row.speakerClipBytes, 0)
+  }
+
+  func testAStorageRowWithNoIdIsStillRefused() throws {
+    // Tolerance is for an OLD row, not a corrupt one. A row that cannot name
+    // the record it is about has nothing to be tolerant of.
+    let json = """
+    {"records":[{"createdAt":"2026-01-01T00:00:00.000Z","totalBytes":1}],
+     "count":1,"totalBytes":1,"audioBytes":0,
+     "oldestCreatedAt":null,"thisMonthBytes":0}
+    """
+
+    XCTAssertThrowsError(
+      try JSONDecoder().decode(
+        StoredStorageSummary.self,
+        from: XCTUnwrap(json.data(using: .utf8))
+      )
+    )
+  }
+
   // MARK: - The record survives its audio (XIA-436 follow-up)
 
   func testARecordTheAppDeletedTheAudioOfIsStillFound() throws {
@@ -633,6 +678,22 @@ final class RecordingStorageTests: XCTestCase {
 
     XCTAssertTrue(fileManager.fileExists(atPath: ownersFile.path))
     XCTAssertEqual(try loadJSON("legacy")["sourcePath"] as? String, ownersFile.path)
+  }
+
+  // MARK: - What a rowless record tells the owner
+
+  func testTheUnresolvedRowMessageDoesNotAskForARetry() {
+    // The common way to see this alert is the instant AFTER a successful
+    // "Delete record…" — the row is still there because it is built from the
+    // exported `.md`, which Nota never deletes. "Try again" is advice that
+    // cannot work and reads as a bug.
+    let message = RecordingDeletionCopy.unresolvedMessage
+
+    XCTAssertFalse(message.lowercased().contains("try again"))
+    XCTAssertTrue(message.contains("nothing was deleted just now"))
+    XCTAssertTrue(message.contains("already been deleted"))
+    // And it names the only thing that removes the row.
+    XCTAssertTrue(message.contains("remove that file yourself"))
   }
 
   /// The committed CLI output, found relative to this source file. Deliberately

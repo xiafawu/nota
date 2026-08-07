@@ -363,11 +363,26 @@ extension LiveSessionOwner {
 /// so neither side can move without the other failing. The hand-copy that
 /// preceded it had already drifted — it was missing the `status` key every
 /// real row carries.
+///
+/// **Decoded field by field, and every field has a floor** (XIA-436
+/// follow-up). The app shells out to whatever `dist/index.js` is on disk, and
+/// `UsageStatsProvider.refreshStorage` decodes the result through a `try?`
+/// that renders a nil as *no Storage section at all*. With the synthesized
+/// `Decodable`, one row from an older build missing `status`,
+/// `speakerClipCount` or `speakerClipBytes` throws — and the figure the whole
+/// retention deal rests on ("the owner can always see the number") silently
+/// disappears, with a stale `dist/` and no error anywhere as the only clue.
+/// Tolerance per field, the same rule `DictationSettings.init(from:)`,
+/// `sanitizeCatalog` and the history-record loaders already keep: a missing
+/// count reads as zero and a missing status as the empty string, which is what
+/// those builds actually knew. A payload that is not a keyed container, or one
+/// with no `id`, still throws — that is a corrupt row, not an old one.
 struct StoredRecordRow: Codable, Equatable {
   let id: String
   let createdAt: String
   let sourceName: String
-  /// The record's lifecycle status, as `HistoryStatus` spells it.
+  /// The record's lifecycle status, as `HistoryStatus` spells it. Empty when
+  /// the CLI that produced the row predates the field.
   let status: String
   /// Null for a record that keeps no audio — rendered in words, never "0 B".
   let audioBytes: Int?
@@ -377,6 +392,44 @@ struct StoredRecordRow: Codable, Equatable {
   let speakerClipBytes: Int
   let recordBytes: Int
   let totalBytes: Int
+
+  init(
+    id: String,
+    createdAt: String,
+    sourceName: String,
+    status: String,
+    audioBytes: Int?,
+    assetsBytes: Int,
+    speakerClipCount: Int,
+    speakerClipBytes: Int,
+    recordBytes: Int,
+    totalBytes: Int
+  ) {
+    self.id = id
+    self.createdAt = createdAt
+    self.sourceName = sourceName
+    self.status = status
+    self.audioBytes = audioBytes
+    self.assetsBytes = assetsBytes
+    self.speakerClipCount = speakerClipCount
+    self.speakerClipBytes = speakerClipBytes
+    self.recordBytes = recordBytes
+    self.totalBytes = totalBytes
+  }
+
+  init(from decoder: Decoder) throws {
+    let container = try decoder.container(keyedBy: CodingKeys.self)
+    id = try container.decode(String.self, forKey: .id)
+    createdAt = (try? container.decode(String.self, forKey: .createdAt)) ?? ""
+    sourceName = (try? container.decode(String.self, forKey: .sourceName)) ?? ""
+    status = (try? container.decode(String.self, forKey: .status)) ?? ""
+    audioBytes = try? container.decodeIfPresent(Int.self, forKey: .audioBytes)
+    assetsBytes = (try? container.decode(Int.self, forKey: .assetsBytes)) ?? 0
+    speakerClipCount = (try? container.decode(Int.self, forKey: .speakerClipCount)) ?? 0
+    speakerClipBytes = (try? container.decode(Int.self, forKey: .speakerClipBytes)) ?? 0
+    recordBytes = (try? container.decode(Int.self, forKey: .recordBytes)) ?? 0
+    totalBytes = (try? container.decode(Int.self, forKey: .totalBytes)) ?? 0
+  }
 }
 
 /// Bytes in the store that no readable record names — counted, named, and
@@ -490,6 +543,19 @@ enum RecordingDeletionCopy {
   /// in one sentence.
   static let neverDeletesOnItsOwn = "Nota never deletes recordings on its own."
 
+  /// What a drawer row says when no history record stands behind it.
+  ///
+  /// The row is built from an exported `.md`, and Nota never deletes one — so
+  /// this is what the owner sees the moment AFTER a successful "Delete
+  /// record…", as well as on a `.md` that was imported and never had a record.
+  /// It may not describe either as an error or tell the owner to try again:
+  /// there is nothing to retry, and in the first case the thing they asked for
+  /// already happened. It names what is left instead, and where the row goes.
+  static let unresolvedMessage =
+    "The transcript file is still on disk and nothing was deleted just now. "
+      + "Either it was imported, or its record has already been deleted — "
+      + "Nota never deletes an exported .md file, so the row stays until you "
+      + "remove that file yourself."
 
   // MARK: - Discard
 

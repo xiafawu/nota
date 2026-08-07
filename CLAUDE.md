@@ -177,10 +177,47 @@ in the app that owns files.
   just deleted**, since `recordAudioPath` and `resolvedAudioURL` both fall
   back to it and would otherwise report a path to a file that is gone (both
   already read empty as "no audio"). A legacy record's `sourcePath` — the
-  owner's own file elsewhere — is never touched. The confirmation names the
+  owner's own file elsewhere — is never touched. **`RecordingStore.deleteAudio`
+  does all three too**, blanking included; it did not until the follow-up, so
+  the same verb through the app and through the CLI left records that differed
+  by one field under a header claiming they mirror each other exactly. The
+  confirmation names the
   **per-speaker voice clips that stay**: they are audio of the same people,
   this verb deliberately keeps them, and "only the recording goes" misleads
   precisely the owner deleting audio for privacy.
+
+  **A record without audio is still a record.** Deleting the audio is the one
+  thing in the store that makes `resolvedAudioURL` answer nothing for a
+  non-legacy record, and `HistoryRecordInfo.find` used to gate its *whole*
+  result on that resolver — invisible until something could take a recording
+  away, since `sourcePath` was always there to answer. So the first successful
+  `delete-audio` cost the open document its history record entirely: blank
+  summary slot and tag chips, every speaker chip stuck on amber "no history
+  record", a name typed into a chip enrolling nothing, and
+  `acceptSuggestion` / `dismissSuggestion` / `setPinned` all silent no-ops —
+  while the verb's own confirmation promised the voice clips were kept *so that
+  enrollment still works*. `find` needs an `id` and nothing else now, and
+  `HistoryRecordInfo.audioURL` is optional. Anything that genuinely needs a
+  file asks for one and handles its absence; the storage verbs never used that
+  resolver at all (`keptAudioURL`, above).
+
+  **The drawer row outlives the record it named.** Rows are built from exported
+  `.md` files, "Delete record…" never removes one, and nothing else in the app
+  does either — so the row is still there afterwards and its context menu can
+  no longer find a record. That alert says what is true of both ways to reach
+  it (deleted just now, or an imported `.md` that never had a record), names
+  what is left on disk, and offers **Reveal in Finder** — the only thing that
+  removes the row, and the owner's to do. It may not say "try again": there is
+  nothing to retry, and after a deliberate delete it reads as a bug report for
+  the thing that just worked.
+
+  `StoredRecordRow` decodes **field by field**, for the reason
+  `DictationSettings` does: the app shells out to whatever `dist/index.js` is
+  on disk, and `refreshStorage` turns any decode throw into *no Storage section
+  at all*. One row from a build predating `status` / `speakerClipCount` /
+  `speakerClipBytes` would silently remove the figure the whole retention deal
+  rests on, with a stale `dist/` as the only clue. A row with no `id` still
+  throws — that is corrupt, not old.
 - `nota history delete <id> | --older-than <age>` — removes the record JSON and
   its whole `<id>.assets/` folder.
 - `--older-than 90d` (also `w`/`m`/`y`; 1m = 30d, 1y = 365d) **prints every id
@@ -1529,7 +1566,9 @@ recording → transcribing → transcribed → summarizing → done
   the authority when both exist. `LiveSessionPersistence.resolvedAudioURL`
   (Swift) and `recordAudioPath` (TS) are the two halves of that rule;
   `HistoryRecordInfo.find` resolves through the Swift one, so a record whose
-  store moved still names audio that is really there. Nothing in the TS CLI
+  store moved still names audio that is really there — but it does **not
+  require an answer**: both names for the audio are cleared by `delete-audio`,
+  and a record without audio is still a record (XIA-436). Nothing in the TS CLI
   reads a record's audio yet — every verb takes its input path from argv — so
   `recordAudioPath` is exercised by tests alone, deliberately.
 - **`audioBytes` is corrected at every exit, never only at the seal.**

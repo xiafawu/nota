@@ -31,6 +31,13 @@ struct RecordingDeletionMenu: ViewModifier {
   @State private var pendingRecord: RecordingStore.LocatedRecord?
   /// Set when the menu was opened on a row whose record could not be found —
   /// a deletion that cannot name its target is refused rather than guessed at.
+  ///
+  /// The common way to reach it is not a failure at all: the owner just
+  /// deleted the record, and the row is still there because rows are built
+  /// from exported `.md` files and this verb never deletes one. So the alert
+  /// says what is true in both cases and offers the only thing that removes
+  /// the row — the owner's own Finder — rather than "try again", which is
+  /// advice that cannot work and reads as a bug after a deliberate delete.
   @State private var unresolved = false
 
   func body(content: Content) -> some View {
@@ -98,13 +105,13 @@ struct RecordingDeletionMenu: ViewModifier {
           )
         )
       }
-      .alert("Nota could not find this record", isPresented: $unresolved) {
+      .alert("Nota has no history record for this transcript", isPresented: $unresolved) {
+        Button("Reveal in Finder") {
+          NSWorkspace.shared.activateFileViewerSelecting([entry.url])
+        }
         Button("OK", role: .cancel) {}
       } message: {
-        Text(
-          "Its transcript file is still on disk and nothing was deleted. "
-            + "Reopen the drawer and try again."
-        )
+        Text(RecordingDeletionCopy.unresolvedMessage)
       }
   }
 
