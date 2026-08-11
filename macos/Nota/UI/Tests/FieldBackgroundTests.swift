@@ -204,6 +204,38 @@ final class FieldBackgroundTests: XCTestCase {
     engine.removeViewer()
   }
 
+  // MARK: - The layering
+
+  /// **One grain layer, and the floor is a gradient.**
+  ///
+  /// `CraftWashBackground` is `CraftTokens.washGradient` *plus its own*
+  /// `CraftNoiseLayer`, so using it as the floor and hanging the grain over the
+  /// field drew two full-window `Canvas` passes — ~952 seeded ellipse fills at
+  /// 1280×800 — on every body evaluation and every resize step, with the lower
+  /// one permanently occluded by the opaque field image. Exactly one could ever
+  /// be seen; both were always drawn.
+  ///
+  /// Asserted against the body's **static type**, which names every sibling in
+  /// the `ZStack` and is the only place a duplicated layer is visible without a
+  /// window server. A renderer closure is not comparable, so nothing about the
+  /// cost shows up in a bitmap: the second `Canvas` draws the same grain in the
+  /// same place, which is precisely why it survived review.
+  func testTheGroundDrawsExactlyOneGrainLayerOverAGradientFloor() {
+    let description = String(describing: type(of: FieldBackground(engine: makeEngine()).body))
+
+    let grainLayers = description.components(separatedBy: "CraftNoiseLayer").count - 1
+    XCTAssertEqual(
+      grainLayers, 1,
+      "the ground is drawing \(grainLayers) grain layers: \(description)")
+    XCTAssertFalse(
+      description.contains("CraftWashBackground"),
+      "the floor is CraftWashBackground, which carries a second CraftNoiseLayer "
+        + "of its own — it must be CraftTokens.washGradient: \(description)")
+    XCTAssertTrue(
+      description.contains("LinearGradient"),
+      "the wash floor is gone; the CoreGraphics-refusal case degrades to a hole")
+  }
+
   // MARK: - Reduce Motion
 
   /// Reduce Motion is implemented by not calling `step(dt:)`. The field is

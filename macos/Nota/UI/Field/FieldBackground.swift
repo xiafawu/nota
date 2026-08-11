@@ -28,6 +28,16 @@ import SwiftUI
 /// observers multiply, and the fix is always to narrow the observer rather than
 /// to slow the publisher.
 ///
+/// **The floor is the wash GRADIENT, not `CraftWashBackground`.** That view is
+/// the gradient *plus its own* `CraftNoiseLayer`, so putting it here drew the
+/// grain twice — two full-window `Canvas` passes, ~952 seeded ellipse fills at
+/// 1280×800, on every body evaluation and every resize, with the lower pair
+/// permanently occluded by the opaque field image. Exactly one of them could
+/// ever be seen and both were always drawn, which is the second answer to what
+/// the app's ground is made of that `CraftNoiseLayer`'s own note forbids. What
+/// the floor is *for* is the paragraph below, and a `LinearGradient` is all of
+/// it: the grain belongs on top of the field, not under it.
+///
 /// **The wash is underneath, always — it is not an `if`/`else`.** A branch meant
 /// the first body evaluation drew the cool periwinkle wash (`engine.image` is
 /// nil until `onAppear` runs, and `onAppear` runs *after* the evaluation that
@@ -62,7 +72,7 @@ struct FieldBackground: View {
 
   var body: some View {
     ZStack {
-      CraftWashBackground()
+      CraftTokens.washGradient(colorScheme)
       FieldImageLayer(engine: engine)
       CraftNoiseLayer(
         opacity: CraftTokens.noiseOpacity(colorScheme),
