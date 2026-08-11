@@ -167,7 +167,13 @@ private struct SplitMix64: RandomNumberGenerator {
 
 /// The "whisper of noise" layer: a seeded grid of tiny dots at very low
 /// opacity. Static (deterministic seed) so it never flickers.
-private struct CraftNoiseLayer: View {
+///
+/// Internal rather than private because `FieldBackground` draws the same grain
+/// over the animated ground (XIA-442). That is not a convenience: a smooth
+/// full-window gradient bands into visible contours at 8 bits, and the grain is
+/// what keeps the field reading as light rather than as a rendering. Two copies
+/// of it would be two answers to what the app's ground is made of.
+struct CraftNoiseLayer: View {
   let opacity: Double
   let color: Color
   private let seed: UInt64
