@@ -25,6 +25,13 @@ import SwiftUI
 /// Rail         1.2:1       10%            7%        12%
 /// ```
 ///
+/// A solved alpha is a bar, not a preference, and the two are not the same
+/// thing: `.primary`/`.secondary`/`.tertiary` used to hand macOS's Increase
+/// contrast setting to every label on the ground for free, and a constant
+/// cannot. `Tier.promoted` is where that setting lands now — each tier steps
+/// one up this table, so the raised draw is an alpha the same sweep measured
+/// against the raised bar.
+///
 /// What this does **not** fix is hue collision: flattening pins luminance, not
 /// hue, so two tinted speaker labels — or a label against a seed of the same
 /// family — still need a minimum hue separation enforced somewhere else. Not
@@ -58,6 +65,45 @@ enum GroundInk {
       case .timestamp: return 3.0
       case .rail: return 1.2
       }
+    }
+
+    /// The tier this one is drawn as when the owner has asked for more
+    /// contrast — **each tier is promoted one step up its own table.**
+    ///
+    /// Fixing the alphas took something away that nobody wrote down. `.primary`
+    /// / `.secondary` / `.tertiary` resolve through `NSColor.labelColor` and
+    /// friends, which macOS substitutes with higher-contrast variants under
+    /// System Settings → Accessibility → Display → **Increase contrast**; a
+    /// constant per (tier, scheme) cannot, so the gutter timestamps and the
+    /// volatile in-flight line would have stayed pinned at 3.0:1 — under
+    /// AA's 4.5:1 for body text — however loudly the owner asked. The solve was
+    /// for a bar, not for a preference, and this is where the preference lands.
+    ///
+    /// Promotion rather than a second table: every alpha it can reach is one
+    /// the sweep already measured on all sixteen grounds, so the raised draw
+    /// carries a *measured* bar too — timestamp promotes to speaker's 4.5:1,
+    /// speaker to body's 7.0:1, rail to timestamp's 3.0:1 — and
+    /// `testEveryTierClearsItsBarOnEveryGroundInBothThemes` sweeps both
+    /// settings against `minimumContrast(_:)`. Body is already the ink at
+    /// alpha 1: there is nothing above it, and it is the one tier that needed
+    /// nothing, having measured 9.96:1 / 9.72:1 at its worst.
+    var promoted: Tier {
+      switch self {
+      case .body: return .body
+      case .speaker: return .body
+      case .timestamp: return .speaker
+      case .rail: return .timestamp
+      }
+    }
+
+    /// What the tier is drawn at for a given contrast preference.
+    func alpha(_ contrast: ColorSchemeContrast) -> Double {
+      contrast == .increased ? promoted.alpha : alpha
+    }
+
+    /// The bar the tier has to clear for a given contrast preference.
+    func minimumContrast(_ contrast: ColorSchemeContrast) -> Double {
+      contrast == .increased ? promoted.minimumContrast : minimumContrast
     }
   }
 
@@ -110,14 +156,22 @@ enum GroundInk {
   /// and the tier and compares them. Had the compositor been working in linear
   /// light instead, every partial-alpha tier would land lighter than it was
   /// measured and the 3.0:1 timestamp would be the first through its floor.
-  static func color(_ tier: Tier, _ scheme: ColorScheme) -> Color {
+  /// The one thing it *does* answer is the owner's contrast preference, which
+  /// is a setting and not a sample of the ground: `.increased` promotes the
+  /// tier (see `Tier.promoted`) and changes nothing else. It is a parameter
+  /// rather than a read of the environment so the promotion is assertable
+  /// without a hosting view — `EnvironmentValues.colorSchemeContrast` is
+  /// get-only, so a test cannot ask for the increased case any other way.
+  static func color(
+    _ tier: Tier, _ scheme: ColorScheme, _ contrast: ColorSchemeContrast = .standard
+  ) -> Color {
     let rgb = ink(light: scheme == .light)
     return Color(
       .sRGB,
       red: rgb.x / 255,
       green: rgb.y / 255,
       blue: rgb.z / 255,
-      opacity: tier.alpha)
+      opacity: tier.alpha(contrast))
   }
 }
 
@@ -132,11 +186,18 @@ enum GroundInk {
 /// reach it. And it spares six views an `@Environment(\.colorScheme)` they would
 /// otherwise carry only to hand it straight back to this type; the environment
 /// is read at resolve time, where SwiftUI already has it.
+///
+/// It reads **two** values, and the second is the whole reason a `ShapeStyle`
+/// is the right shape for this: `colorSchemeContrast` is the Increase contrast
+/// setting, and it is only free here because SwiftUI already has it at resolve
+/// time. Fixed alphas took that setting away from every label on the ground
+/// (see `GroundInk.Tier.promoted`); this is the one place that could give it
+/// back, and every call site gets it without knowing it exists.
 struct GroundInkStyle: ShapeStyle {
   let tier: GroundInk.Tier
 
   func resolve(in environment: EnvironmentValues) -> Color {
-    GroundInk.color(tier, environment.colorScheme)
+    GroundInk.color(tier, environment.colorScheme, environment.colorSchemeContrast)
   }
 }
 

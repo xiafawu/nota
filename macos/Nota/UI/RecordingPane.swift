@@ -133,11 +133,14 @@ enum RecordingPaneMetrics {
   static let gutterFont: Font = .system(size: 11, weight: .regular, design: .monospaced)
 
   // There is no `volatileOpacity` here any more. The tail was dimmed to 55% to
-  // match the HUD prompter, and over the ground that is an unmeasured alpha one
-  // point under `GroundInk.Tier.timestamp` — so the transcript draws the tail at
-  // that tier instead, and every alpha the transcript spends is one the sweep
-  // solved. The HUD keeps its own 55%: that is white text on a dark glass plate,
-  // not ink on the field, and it was never in this measurement.
+  // match the HUD prompter — a number off the tier table, one point under
+  // `GroundInk.Tier.timestamp`'s 56%. It was **not** below the readability
+  // floor: the solve says 3.0:1 wants 54% light and 40% dark, so 55% cleared it
+  // on both themes. What it was, was unmeasured — an alpha nobody swept, sitting
+  // between two that were. So the transcript draws the tail at the tier instead,
+  // and every alpha the transcript spends is one the sweep solved. The HUD keeps
+  // its own 55%: that is white text on a dark glass plate, not ink on the field,
+  // and it was never in this measurement — nothing here is a finding against it.
 }
 
 // MARK: - Layout decisions
@@ -954,11 +957,11 @@ struct LiveTranscriptView: View {
           .frame(maxWidth: .infinity, alignment: .leading)
       case .line(let line):
         // The volatile tail is **a tier, not an `.opacity()` on the body tier**.
-        // It used to be body at 55%, which is a number nobody measured: against
-        // the solved table it lands a hair under the timestamp tier's 56% —
-        // i.e. just below the 3.0:1 bar the dimmest readable text is held to,
-        // on the one line that is being read while it is written. The tier is
-        // visually the same dimming and is on the measured side of it.
+        // It used to be body at 55%, which is a number nobody measured — a hair
+        // under the timestamp tier's 56% and off the table entirely. It cleared
+        // 3.0:1 (the solve needs 54% light, 40% dark); what it did not have was
+        // a measurement, on the one line that is being read while it is written.
+        // The tier is visually the same dimming and is on the swept side of it.
         Text(line.text)
           .font(RecordingPaneMetrics.transcriptFont)
           .foregroundStyle(.ground(line.isVolatile ? .timestamp : .body))

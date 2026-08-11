@@ -23,8 +23,20 @@ final class FieldEngineTests: XCTestCase {
 
   // MARK: - 1. Every tier clears its bar, on every ground, all the way through
 
+  /// **Both contrast settings are swept**, because both are drawn. Increase
+  /// contrast promotes each tier one step (`GroundInk.Tier.promoted`) and the
+  /// promoted tier answers to the promoted *bar*, so the raised draw is
+  /// measured on the same sixteen grounds rather than assumed safe for being
+  /// darker — darker is the direction, not the proof.
   func testEveryTierClearsItsBarOnEveryGroundInBothThemes() {
-    var worst: [GroundInk.Tier: (ratio: Double, palette: String, light: Bool)] = [:]
+    struct Case: Hashable {
+      let tier: GroundInk.Tier
+      let contrast: ColorSchemeContrast
+    }
+    let cases = GroundInk.Tier.allCases.flatMap { tier in
+      [ColorSchemeContrast.standard, .increased].map { Case(tier: tier, contrast: $0) }
+    }
+    var worst: [Case: (ratio: Double, palette: String, light: Bool)] = [:]
 
     for palette in GroundPalette.all {
       for light in [true, false] {
@@ -40,11 +52,11 @@ final class FieldEngineTests: XCTestCase {
           for y in 0..<sim.height {
             for x in 0..<sim.width {
               let ground = sim.color(x: x, y: y)
-              for tier in GroundInk.Tier.allCases {
-                let over = FieldColor.mix(ground, ink, tier.alpha)
+              for c in cases {
+                let over = FieldColor.mix(ground, ink, c.tier.alpha(c.contrast))
                 let ratio = GroundInk.contrast(over, ground)
-                if ratio < (worst[tier]?.ratio ?? .infinity) {
-                  worst[tier] = (ratio, palette.id, light)
+                if ratio < (worst[c]?.ratio ?? .infinity) {
+                  worst[c] = (ratio, palette.id, light)
                 }
               }
             }
@@ -53,16 +65,63 @@ final class FieldEngineTests: XCTestCase {
       }
     }
 
-    for tier in GroundInk.Tier.allCases {
-      guard let w = worst[tier] else { return XCTFail("no measurement for \(tier)") }
+    for c in cases {
+      guard let w = worst[c] else { return XCTFail("no measurement for \(c)") }
+      let bar = c.tier.minimumContrast(c.contrast)
       print(
-        "[field] \(tier.rawValue) worst \(String(format: "%.2f", w.ratio)):1 "
-          + "on \(w.palette) \(w.light ? "light" : "dark") (bar \(tier.minimumContrast))")
+        "[field] \(c.tier.rawValue) \(c.contrast) worst \(String(format: "%.2f", w.ratio)):1 "
+          + "on \(w.palette) \(w.light ? "light" : "dark") (bar \(bar))")
       XCTAssertGreaterThanOrEqual(
-        w.ratio, tier.minimumContrast,
-        "\(tier.rawValue) at alpha \(tier.alpha) fails on \(w.palette) "
-          + "\(w.light ? "light" : "dark")")
+        w.ratio, bar,
+        "\(c.tier.rawValue) at alpha \(c.tier.alpha(c.contrast)) (\(c.contrast)) "
+          + "fails on \(w.palette) \(w.light ? "light" : "dark")")
     }
+  }
+
+  /// **The 55% the volatile tail used to be drawn at was above the floor.**
+  ///
+  /// Pinned because the comment that replaced it said the opposite — that 55%
+  /// landed "just below the 3.0:1 bar" — and the tier table three lines away
+  /// says 3.0:1 needs 54% light and 40% dark. The reason to move the tail onto
+  /// `.timestamp` is that 55% is an alpha *nobody swept*, sitting between two
+  /// that were; it is not that it was unreadable. A reader who believes the
+  /// stronger claim goes and "fixes" the HUD prompter's own 55%, which is white
+  /// on a glass plate and was never in this measurement at all.
+  func testTheOldFiftyFivePercentTailClearedTheFloorItWasSaidToMiss() {
+    let legacyAlpha = 0.55
+    var worst = Double.infinity
+    var where_ = ""
+
+    for palette in GroundPalette.all {
+      for light in [true, false] {
+        let sim = FieldSimulation(palette: palette, light: light)
+        let ink = GroundInk.ink(light: light)
+        for frame in 0..<Self.frames {
+          sim.step(dt: Self.frameStep)
+          guard frame % 25 == 0 || frame == Self.frames - 1 else { continue }
+          for y in 0..<sim.height {
+            for x in 0..<sim.width {
+              let ground = sim.color(x: x, y: y)
+              let ratio = GroundInk.contrast(
+                FieldColor.mix(ground, ink, legacyAlpha), ground)
+              if ratio < worst {
+                worst = ratio
+                where_ = "\(palette.id) \(light ? "light" : "dark")"
+              }
+            }
+          }
+        }
+      }
+    }
+
+    print("[field] legacy 55% tail worst \(String(format: "%.2f", worst)):1 on \(where_)")
+    XCTAssertGreaterThanOrEqual(
+      worst, GroundInk.Tier.timestamp.minimumContrast,
+      "55% really is under the 3.0:1 floor on \(where_) — the tier table's "
+        + "'needs light 54%' is wrong and the sweep has to be redone")
+    XCTAssertLessThan(
+      legacyAlpha, GroundInk.Tier.timestamp.alpha,
+      "the tail's old alpha is no longer below the tier it was folded into")
   }
 
   // MARK: - 2. Flatten 0.40 leaves the field photographic
@@ -458,6 +517,46 @@ final class GroundInkTests: XCTestCase {
         XCTAssertEqual(
           Double(ns.alphaComponent), tier.alpha, accuracy: 1e-6,
           "\(tier) is drawn at an alpha the sweep never measured")
+      }
+    }
+  }
+
+  /// **Increase contrast reaches the ink.**
+  ///
+  /// Fixed alphas silently took a system setting away: `.secondary` and
+  /// `.tertiary` resolve through `NSColor`'s label colours, which macOS
+  /// substitutes with higher-contrast variants under System Settings →
+  /// Accessibility → Display → Increase contrast, and a constant cannot. So
+  /// every tier promotes (`Tier.promoted`) and the two dimmest — the gutter
+  /// timestamps and the volatile in-flight line, the ones that were pinned at
+  /// 3.0:1 while the owner asked for more — get strictly more ink.
+  ///
+  /// Asserted through `GroundInk.color(_:_:_:)` rather than through
+  /// `resolve(in:)`: `EnvironmentValues.colorSchemeContrast` is get-only, so
+  /// there is no way to hand the style the increased case. The style's own
+  /// wiring is one line and is covered by the standard-case test above.
+  func testIncreasedContrastPromotesEveryTierAndDarkensTheDimOnes() {
+    for scheme in [ColorScheme.light, .dark] {
+      for tier in GroundInk.Tier.allCases {
+        let standard = NSColor(GroundInk.color(tier, scheme, .standard))
+        let increased = NSColor(GroundInk.color(tier, scheme, .increased))
+        XCTAssertEqual(
+          Double(increased.alphaComponent), tier.promoted.alpha, accuracy: 1e-6,
+          "\(tier) does not draw at its promoted tier under increased contrast")
+        XCTAssertGreaterThanOrEqual(
+          Double(increased.alphaComponent), Double(standard.alphaComponent),
+          "\(tier) got *less* ink when the owner asked for more contrast")
+        XCTAssertGreaterThanOrEqual(
+          tier.minimumContrast(.increased), tier.minimumContrast,
+          "\(tier)'s increased bar is lower than its ordinary one")
+      }
+
+      // The two the finding was actually about: below AA's 4.5:1 for body text
+      // at the ordinary setting, and they may not stay there.
+      for tier in [GroundInk.Tier.timestamp, .rail] {
+        XCTAssertGreaterThan(
+          tier.alpha(.increased), tier.alpha,
+          "\(tier) is unchanged by increased contrast")
       }
     }
   }
