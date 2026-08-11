@@ -301,8 +301,14 @@ final class RecordingPaneTests: XCTestCase {
   /// between the two heights and neither of the heights.
   func testNoPaneGeometryMovesUnderAnAccessibilitySetting() {
     XCTAssertEqual(RecordingPaneMetrics.gutterWidth, 52)
-    XCTAssertEqual(RecordingPaneMetrics.barHeight(bloomed: false), 64)
     XCTAssertEqual(RecordingPaneMetrics.dotDiameter, 20)
+    // 65: the Stop capsule's 41pt row plus the bar's own 24 of padding. It is
+    // measured from the button style rather than typed there, so this pins the
+    // *answer* while `testTheRestingBarDrawsExactlyTheHeightItReserves` pins
+    // that the answer is the one the bar draws. It read 64 while the bar drew
+    // 65, which is how a whole file of geometry tests stayed green against a
+    // reservation that never bound.
+    XCTAssertEqual(RecordingPaneMetrics.barHeight(bloomed: false), 65)
 
     // The accent is untouched by either setting; only the scheme moves it.
     XCTAssertEqual(CraftTokens.ember(.light), CraftTokens.emberLight)
@@ -467,11 +473,12 @@ final class RecordingPaneTests: XCTestCase {
   /// that the bar reserves no width of its own at any window size.
   func testTheBarIsOneRowAndTakesNoneOfTheTranscriptsWidth() {
     let height = barHost().fittingSize.height
-    XCTAssertGreaterThanOrEqual(height, RecordingPaneMetrics.barHeight(bloomed: false))
-    XCTAssertLessThanOrEqual(
+    XCTAssertEqual(
       height,
-      RecordingPaneMetrics.barHeight(bloomed: true),
-      "the resting bar is \(height)pt — past even the bloom, so it wrapped"
+      RecordingPaneMetrics.barHeight(bloomed: false),
+      accuracy: 0.5,
+      "the resting bar draws \(height)pt against a reservation of "
+        + "\(RecordingPaneMetrics.barHeight(bloomed: false))pt"
     )
 
     // A bar has no intrinsic width to charge the transcript: at the narrowest
@@ -506,6 +513,141 @@ final class RecordingPaneTests: XCTestCase {
     let many = barHost(markers: (0..<40).map { SessionMarker(at: TimeInterval($0 * 7)) }).fittingSize
     XCTAssertEqual(none.height, many.height, accuracy: 0.5, "40 moments made the bar taller")
   }
+
+  /// The resting height is the **Stop capsule**, and the constant that says so
+  /// has to be measured from the style that draws it rather than typed beside
+  /// it. It was typed — 40 against a row that lays out at 41 — so
+  /// `barHeight(bloomed: false)` promised 64pt while the bar drew 65, the
+  /// `.frame(minHeight:)` never bound, and the resting height was whatever child
+  /// happened to be tallest: exactly what the constant exists to prevent, with
+  /// every geometry test in this file green through it.
+  ///
+  /// Both halves are asserted, because either alone leaves the hole open. The
+  /// **drawn Stop button** is the reservation (so the AppKit face the metric
+  /// measures and the SwiftUI face the button draws cannot drift apart), and it
+  /// is the tallest thing on the row (so it is really the floor).
+  func testTheRestingBarDrawsExactlyTheHeightItReserves() {
+    let stop = NSHostingView(
+      rootView: Button(RecordingPaneCopy.stopTitle) {}
+        .buttonStyle(RecordingStopButtonStyle())
+        .frame(width: 160)
+    )
+    stop.layoutSubtreeIfNeeded()
+    XCTAssertGreaterThan(stop.fittingSize.height, 0, "the hosting view produced no layout")
+    XCTAssertEqual(
+      stop.fittingSize.height,
+      RecordingPaneMetrics.controlRowHeight,
+      accuracy: 0.5,
+      "Stop draws \(stop.fittingSize.height)pt and the bar reserves "
+        + "\(RecordingPaneMetrics.controlRowHeight)pt for it"
+    )
+
+    // …and it is the floor, so the bar's content height is its height.
+    XCTAssertEqual(
+      RecordingPaneMetrics.barContentHeight(bloomed: false),
+      RecordingPaneMetrics.controlRowHeight
+    )
+    XCTAssertEqual(
+      barHost().fittingSize.height,
+      RecordingPaneMetrics.barHeight(bloomed: false),
+      accuracy: 0.5
+    )
+  }
+
+  /// The same claim from the other side: the reservation **follows** the style.
+  /// A padding change is supposed to move the bar's height with it, and the
+  /// derivation is the only thing that makes that true.
+  func testTheReservedRowIsDerivedFromTheStopStyleRatherThanTypedIn() {
+    let line = ("0" as NSString)
+      .size(withAttributes: [.font: RecordingStopButtonStyle.measuringFont])
+      .height
+    XCTAssertEqual(
+      RecordingPaneMetrics.controlRowHeight,
+      (line + 2 * RecordingStopButtonStyle.verticalPadding).rounded(.up)
+    )
+    XCTAssertEqual(RecordingStopButtonStyle.verticalPadding, CraftTokens.spacing12)
+    XCTAssertEqual(RecordingStopButtonStyle.fontSize, 14)
+  }
+
+  // MARK: - The bloom's trigger is the whole bar
+
+  /// The bar grows into a taller card "while the pointer is over it", and over
+  /// **it** has to mean the bar and not its glyphs. A root `HStack` with no fill
+  /// hit-tests to its children only, so `.onHover` on one reports the dot, the
+  /// clock, the kind line and the three buttons — and nothing in the several
+  /// hundred points of `Spacer` between them. Two opposite failures fall out: a
+  /// pointer parked in the gap never blooms the bar at all, and a pointer
+  /// travelling from the clock to Stop crosses the gap and fires `false` then
+  /// `true`, costing two full bloom animations and two transcript relayouts
+  /// inside one gesture.
+  ///
+  /// It is asserted here rather than left to `.contentShape(Rectangle())`
+  /// because SwiftUI resolves hover inside the hosting view: neither `hitTest`
+  /// nor the hosting view's tracking areas can tell a shaped bar from an
+  /// unshaped one (measured, both ways), which is how this shipped. The tracking
+  /// area is the same promise in something a test can read.
+  func testTheWholeBarIsTheBloomsTriggerIncludingTheGap() {
+    let hover = SessionHoverView()
+    hover.frame = CGRect(x: 0, y: 0, width: 980, height: RecordingPaneMetrics.barHeight(bloomed: false))
+    hover.updateTrackingAreas()
+
+    XCTAssertEqual(hover.trackingAreas.count, 1, "the bar has no hover surface, or has two")
+    XCTAssertEqual(
+      hover.trackingAreas.first?.rect,
+      hover.bounds,
+      "the hover surface does not cover the bar — the gap between the clock and Stop is not in it"
+    )
+    // Re-laid out (the bloom makes the bar taller), the surface follows.
+    hover.frame.size.height = RecordingPaneMetrics.barHeight(bloomed: true)
+    hover.updateTrackingAreas()
+    XCTAssertEqual(hover.trackingAreas.count, 1)
+    XCTAssertEqual(hover.trackingAreas.first?.rect, hover.bounds)
+
+    // And it reports both edges of the crossing.
+    var reported: [Bool] = []
+    hover.onHover = { reported.append($0) }
+    hover.mouseEntered(with: Self.mouseMoved)
+    hover.mouseExited(with: Self.mouseMoved)
+    XCTAssertEqual(reported, [true, false])
+
+    // It claims every point for hover and none for the mouse: Mark, Stop and
+    // the moments button sit above it and keep their clicks.
+    XCTAssertNil(hover.hitTest(CGPoint(x: 490, y: 20)))
+  }
+
+  /// …and the bar really installs one. The defect was the *absence* of a
+  /// surface, so the test that catches it has to look at the laid-out bar.
+  func testTheLaidOutBarCarriesThatHoverSurfaceAtItsFullWidth() {
+    let host = barHost(width: 980)
+    func find(_ view: NSView) -> SessionHoverView? {
+      if let hit = view as? SessionHoverView { return hit }
+      for sub in view.subviews {
+        if let hit = find(sub) { return hit }
+      }
+      return nil
+    }
+    guard let surface = find(host) else {
+      return XCTFail("the bar draws no hover surface, so most of it does not bloom")
+    }
+    XCTAssertEqual(surface.bounds.width, 980, accuracy: 1, "the surface is narrower than the bar")
+    XCTAssertEqual(
+      surface.bounds.height,
+      RecordingPaneMetrics.barHeight(bloomed: false),
+      accuracy: 1
+    )
+  }
+
+  private static let mouseMoved: NSEvent = NSEvent.mouseEvent(
+    with: .mouseMoved,
+    location: .zero,
+    modifierFlags: [],
+    timestamp: 0,
+    windowNumber: 0,
+    context: nil,
+    eventNumber: 0,
+    clickCount: 0,
+    pressure: 0
+  )!
 
   // MARK: - The meter's feed
 

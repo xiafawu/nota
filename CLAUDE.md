@@ -1313,9 +1313,9 @@ text keeps its contrast over it.
 
 - **`SessionMeter`** is the live level, and it is **information**. It is the
   only proof on screen that the microphone is actually open and hearing
-  something. Two variants (`.tall` in the column, `.compact` in a strip or
-  island) rather than a free `height`, because a meter whose bar count varies
-  continuously has no baseline to pin. It has a **floor**: a silent room draws
+  something. Two variants (`.tall` on the bloomed bar, `.compact` at rest and in
+  the island) rather than a free `height`, because a meter whose bar count
+  varies continuously has no baseline to pin. It has a **floor**: a silent room draws
   the minimum bar height, never nothing, since a blank meter and an absent
   meter look the same.
 - **`SessionRing`** is the breathing ember circle, and it is **decoration**. It
@@ -1361,84 +1361,103 @@ and that is not a motion preference; only the curve between two readings is.
 The panels degrade to opaque system materials through the existing
 `liquidGlass` branch, and the hairline and the shadow stay — they are constants
 on `CraftTokens`, not properties of the glass. Nothing moves: every number in
-`RecordingPaneMetrics` is a constant, so there is nothing for an accessibility
-setting to reach. And the ember is untouched — it is a function of the colour
+`RecordingPaneMetrics` is a constant or is measured once from a font, and
+neither kind reads an `@Environment` value, so there is nothing for an
+accessibility setting to reach. The bar's two heights are the same — the bloom
+is driven by the pointer, and Reduce Motion reaches the animation between them
+and neither of them. And the ember is untouched — it is a function of the colour
 scheme alone. Stop is a **solid** fill rather than glass for exactly this
 reason: a glass Stop would go quiet precisely where the material degrades, and
 Stop is the one control that may never be hard to find.
 
-### The pane (B2, `macos/Nota/UI/RecordingPane.swift`)
+### The bar (B2 as XIA-432 shipped it, rearranged by XIA-444; `macos/Nota/UI/RecordingPane.swift`)
 
-A ~288pt session column on the **trailing** edge, with the transcript taking
-the rest at full height. A column rather than a band across the top because the
-transcript should not pay height for the indicator.
+A full-width session **bar** above the transcript, and the transcript takes the
+whole width under it. It was a ~288pt trailing column until XIA-444, and what
+changed is which axis the indicator is charged to: the column's argument — in a
+conversation what matters is the indicator that things are flowing — is
+unchanged and is why the bar still carries the clock, the meter and the accent.
+What did not survive is charging the *text* a quarter of every window for an
+indicator that is a few glyphs, a meter and three buttons wide. Height is the
+axis a transcript has most of.
 
-**The drawer and the column share an edge, and the stated reason they did not
-was false.** The ticket justified trailing with "⌘L owns this window's left
-edge"; it does not. `ContentView.historyDrawerLayer` is a
-`ZStack(alignment: .topTrailing)` holding a 380pt `HistoryDrawerView`, so ⌘L
-opens on the **right** — directly over the 288pt session column, and wider than
-it. Three options, and the third is what is implemented:
+Three things went with the column, and each removed a whole class of
+arithmetic:
 
-1. Move the column to the leading edge. Cheapest to reason about, and it
-   reverses XIA-423's locked visual direction on an implementer's say-so.
-2. Push the pane aside while the drawer is open. The drawer is an overlay
-   precisely so it costs the content no layout; making it cost layout on one
-   pane only would be a second, contradictory drawer behaviour.
-3. **Accept the overlap** (current). The drawer is a transient, dismiss-on-
-   click-outside surface; the column is a persistent indicator. Covering an
-   indicator for as long as the owner is reading a list is what an overlay is
-   for, and it is what already happens to the transcript.
+- **The fold.** There were two forms (`RecordingPaneForm`, `foldWidth`,
+  `transcriptMinWidth`, `RecordingPaneLayout.form(width:)`, `SessionStripView`)
+  because a fixed-width column could starve the text at a narrow window. A bar
+  takes the width it is given at every window this app allows, so there is one
+  arrangement and no threshold to be wrong about. `LiveMeetingView` lost both
+  its `HStack` and the `GeometryReader` whose only reader was the fold.
+- **The overlap with ⌘L.** `ContentView.historyDrawerLayer` is a
+  `ZStack(alignment: .topTrailing)` holding a 380pt `HistoryDrawerView`, which
+  opened directly over the trailing column and wider than it. The three options
+  written down here (move the column to the leading edge / push the pane aside /
+  accept the overlap) are moot: the drawer now overlays the transcript, exactly
+  as it already did, and no arithmetic depends on a side.
+- **The ring around the clock.** `ringDiameterNeeded` / `ringGlyphHeightRatio`
+  are gone. A circle sized to contain the bloom's 58pt clock is ~225pt across —
+  taller than the transcript it would sit over. The ember is a breathing **dot**
+  (`dotDiameter`) in both of the bar's states.
 
-This is a design call and the owner's to make — it is written down here rather
-than silently reversed. If it goes to (1), `RecordingPaneMetrics.columnWidth`
-and the `HStack` order in `LiveMeetingView.recordingPane` are the whole change;
-no arithmetic depends on the side.
+Left to right: the dot, the meter, the clock, the kind line, then past the gap
+the moment count, `Mark ⌘K` (ghost) and `Stop` (solid ember, **the only filled
+control on the surface**). That is the column's top-to-bottom order laid on its
+side.
 
-Top to bottom: the 58pt timer inside the ring, the tall meter, the kind line,
-`Mark ⌘K` (ghost) and `Stop` (solid ember, **the only filled control on the
-surface**), then the marker list at the bottom, newest first. The markers are
-last because they accumulate, and a list that grows must not push the fixed
-things around.
-
-- **The ring is derived, not typed in.** `ringDiameterNeeded` circumscribes the
-  timer's reserved plate, so the step at the hour changes the glyphs inside a
-  circle that never moves and a future change to the base size cannot silently
-  clip the clock. It clears the **glyphs**, not the line box —
-  `ringGlyphHeightRatio` — because monospaced digits and a colon have neither
-  ascenders nor descenders, and a ring sized to the line box is a ring sized to
-  whitespace: 30pt larger than the thing it encircles, reading as a balloon
-  around a clock rather than a ring on one.
-- **The column scrolls, and that is a measured decision.** At full size it is
-  taller than `Metrics.windowMinHeight`. The alternative was shrinking the
-  timer, which is the one thing the column exists to make large — so the column
-  keeps its size and a window too short for it scrolls rather than clipping the
-  marker list to a half-drawn heading. A `minHeight` tied to the container
-  keeps the ordinary case identical to the design, `Spacer` and all. The marker
-  list is deliberately **not** its own scroll view: two nested on one axis fight
-  over every wheel event.
-- **The fold is measured on the transcript, not on the pane, and that is what
-  makes it reachable.** The first cut folded below 720pt of *pane* and explained
-  it as "what happens when ⌘L takes the width" — but ⌘L is a `ZStack` overlay
-  that consumes **zero** width and `Metrics.windowMinWidth` is 780, so no window
-  this app allows could ever produce a strip: `SessionStripView` had no
-  production caller and a test asserted a threshold nothing could cross.
-  `RecordingPaneMetrics.foldWidth` is now *derived* —
-  `columnWidth + dividerWidth + transcriptMinWidth` = 288 + 1 + 520 = 809 — and
-  `RecordingPaneLayout.form` folds exactly when keeping the column would leave
-  the transcript under its floor. That also settles the second thing nobody had
-  reconciled: at the narrowest permitted window the column would leave 491pt of
-  transcript, which is why 780 now folds. `transcriptMinWidth` is 520 because it
-  leaves 408pt of text once the gutter, its gap and the two margins are paid —
-  about 56 characters at 14pt, the low end of a readable measure.
-  In the strip the timer steps to 26pt, the meter to `.compact`, the ring to a
-  breathing **dot** — a ring containing a 26pt clock would be ~114pt tall and a
-  strip is not. The marker list is the fold's one loss, and it is the compiler
-  that enforces it: `SessionStripView` has no `markers` parameter. (A
-  `showsMarkerList(_:)` predicate said the same thing in a place only a test
-  read, which made it a claim rather than a constraint; the two per-form numbers
-  that *are* worth centralizing — `timerBase` and `meterVariant` — are now read
-  by the views, which is what a layout helper is for.)
+- **The moments are a count that opens a popover** (owner, 2026-08-10), not a
+  list the surface has to find room for and not hairlines down the transcript. A
+  bar has no bottom to accumulate at, and "a list that grows must not push the
+  fixed things around" was the column's own reason for putting its list last;
+  the popover is what the column's height was buying. A mark is a *time*, and a
+  hairline in a scrolling transcript is findable only if you already know where
+  it is. The bar shows the flag always and the tally past zero — never "0"
+  (`RecordingPaneCopy.markerCount`), because a control that appeared on the
+  first mark would move under the pointer. `SessionMarkerList` keeps its own
+  `ScrollView` now, which the column's version explicitly did not: a popover has
+  no outer scroll to fight with, and unbounded it would outgrow the screen.
+- **The clock blooms on hover** (owner, same day). 22pt at rest; with the
+  pointer over the bar the whole bar grows into a taller card carrying the 58pt
+  clock the column made the session's object. What animates is the **card** —
+  both states' plates are reserved up front by `SessionTimerMetrics` and are
+  each independent of `elapsed`, so nothing inside is re-measured while the
+  height is in flight — and it is a size step rather than a `scaleEffect`, which
+  would interpolate a rendered layer instead of typesetting one. Nothing is
+  *only* available bloomed, so a pointer that never arrives costs nothing.
+  Reduce Motion makes it **snap**, and that lives in
+  `RecordingMotion.bloomAnimation` beside the ring's and the meter's rather than
+  in an `if` in the view: nil is a snap and not a freeze, since
+  `withAnimation(nil)` still arrives at the state.
+- **The whole bar is the bloom's trigger, and `.onHover` alone could not say
+  so.** SwiftUI hover follows hit testing, and the bar's root `HStack` has no
+  fill: unshaped it reported hover over the dot, the clock, the kind line and
+  the buttons, and over none of the several hundred points of `Spacer` between
+  them. Both failures are real — a pointer parked in the gap never bloomed the
+  bar, and a pointer travelling from the clock to Stop crossed the gap and fired
+  `false` then `true`, costing two full 0.18s height animations and two
+  relayouts of the transcript inside one gesture. The surface is an AppKit
+  tracking area (`SessionHoverArea` / `SessionHoverView`) rather than
+  `.contentShape(Rectangle())`, which is what the app's five other `.onHover`
+  call sites use: SwiftUI resolves hover inside the hosting view, so neither
+  `hitTest` nor the hosting view's tracking areas can tell a shaped bar from an
+  unshaped one — measured, both ways — and a promise nothing can assert is how
+  this shipped. It takes no clicks (`hitTest` returns nil, as `GlassPlateView`
+  does); enter and exit reach a tracking area's owner regardless.
+- **The resting height is the Stop capsule, measured from the style that draws
+  it.** `RecordingPaneMetrics.controlRowHeight` is the floor —  the 22pt clock
+  and the compact meter are both shorter than the buttons beside them — and it
+  was *typed* as 40 against a row that lays out at 41 (a 14pt semibold label's
+  line box is 17, plus `spacing12` twice). So `barHeight(bloomed: false)`
+  promised 64 while the bar drew 65, the `.frame(minHeight:)` never bound, and
+  the resting height was decided by whichever child happened to be tallest —
+  precisely what the constant exists to prevent, with every geometry test in the
+  file green through it. It is now derived from
+  `RecordingStopButtonStyle.measuringFont` / `.verticalPadding`, in the same
+  measurement `SessionTimerMetrics.plateHeight` uses for the clock, and
+  `testTheRestingBarDrawsExactlyTheHeightItReserves` compares the reservation
+  against the laid-out bar — the check a number that calls itself a derivation
+  owes.
 - **The kind reaches the surface as one word.** No mode chrome, no toggle, no
   segmented control, and above all no change to the accent: a kind is
   relabelable after the fact, and a colour that moved with it would be lying
@@ -1475,12 +1494,12 @@ things around.
   timestamp, which is drawn to the second).
 - **There is one clock.** `LiveMeetingFormat.duration` delegates to
   `SessionTimerMetrics.text`. The gutter timestamp beside a transcript line,
-  the time on a marker row and the big clock in the column name the same
+  the time on a marker row and the clock on the bar name the same
   instant, and two implementations of "the same instant" is a disagreement
   waiting for a rounding change.
-- **Only a live session wears the column** (`LiveMeetingControls
+- **Only a live session wears the bar** (`LiveMeetingControls
   .showsRecordingPane`). A failed session gets the banner over whatever it
-  heard: the column is the indicator that a session is *flowing*, and a
+  heard: the bar is the indicator that a session is *flowing*, and a
   breathing ring with a live meter over a dead microphone is the exact lie the
   meter exists to make impossible. **The idle state owes the same rule and did
   not keep it**: it drew a breathing ember ring above the Start button, over a

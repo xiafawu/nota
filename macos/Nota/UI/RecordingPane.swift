@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // MARK: - Metrics
@@ -47,7 +48,25 @@ enum RecordingPaneMetrics {
   /// shorter than the buttons beside them — and because a bar whose height came
   /// from whichever child happened to be tallest would step whenever a control
   /// changed font.
-  static let controlRowHeight: CGFloat = 40
+  ///
+  /// **Measured from the style that draws it, not typed in.** It was written as
+  /// `40` against a row that lays out at 41 (a 14pt semibold label's line box is
+  /// 17, plus 24 of padding), so `barHeight(bloomed: false)` promised 64 while
+  /// the bar drew 65 — the `.frame(minHeight:)` never bound, and the resting
+  /// height was decided by whichever child happened to be tallest, which is
+  /// exactly what this constant exists to prevent. A number that claims to be a
+  /// derivation has to *be* one: change `RecordingStopButtonStyle`'s padding or
+  /// font and the reserved row follows it, in the same measurement
+  /// `SessionTimerMetrics.plateHeight` uses for the clock.
+  ///
+  /// `static let` for the reason the two content heights are: it builds an
+  /// `NSFont` and measures a string, and the bar's body re-runs on every tick.
+  static let controlRowHeight: CGFloat = {
+    let line = ("0" as NSString)
+      .size(withAttributes: [.font: RecordingStopButtonStyle.measuringFont])
+      .height
+    return (line + 2 * RecordingStopButtonStyle.verticalPadding).rounded(.up)
+  }()
 
   /// The tallest thing the bar has to hold in a given state. Derived from the
   /// clock's own reserved plate rather than typed in, so the bloom's height
@@ -603,14 +622,27 @@ struct RecordingGhostButtonStyle: ButtonStyle {
 /// `accessibilityReduceTransparency` — the claim "Stop survives the material
 /// degrading" is about pixels and cannot be asserted about a constant.
 struct RecordingStopButtonStyle: ButtonStyle {
+  /// The label's size and the padding around it, named because
+  /// `RecordingPaneMetrics.controlRowHeight` — the floor under the whole bar —
+  /// is *measured* from them. Typed as literals in both places is how the bar
+  /// came to reserve 64pt for a row that draws 65.
+  static let fontSize: CGFloat = 14
+  static let verticalPadding: CGFloat = CraftTokens.spacing12
+  /// The AppKit twin of the label's face, so the row the bar reserves is
+  /// measured from the font the button actually draws. The two weights are
+  /// spelled twice because SwiftUI and AppKit name them in different types;
+  /// `testTheRestingBarDrawsExactlyTheHeightItReserves` is what holds them
+  /// together, since it compares the reservation against the laid-out bar.
+  static var measuringFont: NSFont { .systemFont(ofSize: fontSize, weight: .semibold) }
+
   @Environment(\.colorScheme) private var colorScheme
 
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
-      .font(.system(size: 14, weight: .semibold))
+      .font(.system(size: Self.fontSize, weight: .semibold))
       .foregroundStyle(.white)
       .padding(.horizontal, CraftTokens.spacing24)
-      .padding(.vertical, CraftTokens.spacing12)
+      .padding(.vertical, Self.verticalPadding)
       .frame(maxWidth: .infinity)
       .background(CraftTokens.ember(colorScheme), in: Capsule(style: .continuous))
       .opacity(configuration.isPressed ? 0.85 : 1)
@@ -717,6 +749,72 @@ struct SessionMarkerList: View {
   }
 }
 
+// MARK: - The bar's hover surface
+
+/// Every point of the bar, reporting enter and exit — the bloom's trigger.
+///
+/// SwiftUI's `.onHover` follows **hit testing**, and the bar's root `HStack` has
+/// no fill and no `contentShape`: it is a dot, a meter, a clock, a kind line,
+/// three buttons and, at any real window size, several hundred points of
+/// transparent `Spacer` between them. Left on `.onHover` the bar therefore
+/// reported hover over a minority of its own area, and the two failures are
+/// opposite: a pointer parked in the gap never bloomed it at all, and a pointer
+/// travelling from the clock to Stop crossed the gap and fired `false` then
+/// `true` — two full 0.18s height animations, and two relayouts of the
+/// transcript beside them, inside one continuous gesture.
+///
+/// `.contentShape(Rectangle())` answers that, and it is what the app's five
+/// other `.onHover` call sites do. What it cannot do is be **asserted**:
+/// SwiftUI resolves hover inside the hosting view, so neither `hitTest` nor the
+/// hosting view's tracking areas can tell a shaped bar from an unshaped one —
+/// measured, both ways, which is precisely why this shipped. An `NSTrackingArea`
+/// is the same promise made out of something a test can hold: the rect it covers
+/// is readable, and `mouseEntered`/`mouseExited` can be delivered by hand.
+///
+/// It takes **no clicks** (`hitTest` returns nil, as `GlassPlateView` does), so
+/// Mark, Stop and the moments button are reached exactly as before; enter and
+/// exit go to a tracking area's owner regardless of hit testing.
+struct SessionHoverArea: NSViewRepresentable {
+  var onHover: (Bool) -> Void
+
+  func makeNSView(context: Context) -> SessionHoverView {
+    let view = SessionHoverView()
+    view.onHover = onHover
+    return view
+  }
+
+  func updateNSView(_ view: SessionHoverView, context: Context) {
+    view.onHover = onHover
+  }
+}
+
+/// The AppKit half. Internal so the test can install a tracking area on it,
+/// read the rect, and deliver an enter and an exit — the whole of the claim.
+final class SessionHoverView: NSView {
+  var onHover: ((Bool) -> Void)?
+
+  /// The surface claims every point for **hover** and none for the mouse: the
+  /// bar's own controls sit above it and must keep their clicks.
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    for area in trackingAreas { removeTrackingArea(area) }
+    addTrackingArea(
+      NSTrackingArea(
+        // `bounds`, not the visible rect: the whole bar blooms, gap included,
+        // and re-adding on every layout is what keeps that true as it grows.
+        rect: bounds,
+        options: [.mouseEnteredAndExited, .activeInActiveApp],
+        owner: self
+      )
+    )
+  }
+
+  override func mouseEntered(with event: NSEvent) { onHover?(true) }
+  override func mouseExited(with event: NSEvent) { onHover?(false) }
+}
+
 // MARK: - The session bar
 
 /// The recording bar: everything the session column held, in one full-width row
@@ -795,15 +893,19 @@ struct SessionBarView: View {
     // be, and a control that ever measured taller than that would be clipped by
     // a hard frame instead of being given its row.
     .frame(maxWidth: .infinity, minHeight: RecordingPaneMetrics.barHeight(bloomed: bloomed))
-    .onHover { inside in
-      // Reduce Motion is answered by `RecordingMotion`, which hands back nil —
-      // and `withAnimation(nil)` is a snap. The decision belongs there beside
-      // the ring's and the meter's, not in an `if` here, or the next surface
-      // that blooms would have to rediscover which way this one went.
-      withAnimation(RecordingMotion.bloomAnimation(reduceMotion: reduceMotion)) {
-        bloomed = inside
+    // The whole bar is the trigger, gap included — see `SessionHoverArea` for
+    // why that is an AppKit tracking area rather than `.onHover`.
+    .background(
+      SessionHoverArea { inside in
+        // Reduce Motion is answered by `RecordingMotion`, which hands back nil —
+        // and `withAnimation(nil)` is a snap. The decision belongs there beside
+        // the ring's and the meter's, not in an `if` here, or the next surface
+        // that blooms would have to rediscover which way this one went.
+        withAnimation(RecordingMotion.bloomAnimation(reduceMotion: reduceMotion)) {
+          bloomed = inside
+        }
       }
-    }
+    )
   }
 
   /// The flag, its count, and the popover the count opens. A ghost control like
