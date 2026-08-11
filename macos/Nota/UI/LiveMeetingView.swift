@@ -75,25 +75,28 @@ enum LiveMeetingControls: Equatable, CaseIterable {
     }
   }
 
-  /// Whether the two-column recording pane is what this state shows. A failed
-  /// session is deliberately **not** on it: the column is the indicator that a
-  /// session is flowing, and nothing is. What that state needs is the
-  /// transcript it heard and one decision about it, which is the banner.
+  /// Whether the recording bar is what this state shows. A failed session is
+  /// deliberately **not** on it: the bar is the indicator that a session is
+  /// flowing, and nothing is. What that state needs is the transcript it heard
+  /// and one decision about it, which is the banner.
   var showsRecordingPane: Bool {
     self == .stop || self == .finalizing
   }
 }
 
-/// Live dictation pane, in the locked B2 arrangement (XIA-423 / XIA-432): a
-/// trailing session column beside a full-height transcript.
+/// Live dictation pane (XIA-423 / XIA-432, rearranged by XIA-444): a session
+/// **bar** above a full-width transcript.
 ///
-/// **Trailing**, because ⌘L — the history drawer — owns this window's left
-/// edge. **A column** rather than a band across the top, because in a
-/// conversation what matters is the indicator that things are flowing, and a
-/// band takes that out of the transcript's height to say it. The timer inside
-/// the ring is the session's *object*, not a caption on it; the meter beside it
-/// is information rather than decoration, which is why Reduce Motion stops the
-/// ring breathing and never stops the meter (`RecordingMotion`).
+/// It was a 288pt trailing column until XIA-444, and what changed is which axis
+/// the indicator is charged to. The column's argument — that in a conversation
+/// what matters is the indicator that things are flowing — is unchanged and is
+/// why the bar still carries the clock, the meter and the accent; what did not
+/// survive is charging the text a quarter of the window's *width* for it, when
+/// the whole indicator is a few glyphs wide and the transcript is what the
+/// owner is reading. The clock the column made the session's object is one
+/// hover away (`SessionBarView`'s bloom). The meter is information rather than
+/// decoration, which is why Reduce Motion stops the ring breathing and never
+/// stops the meter (`RecordingMotion`).
 ///
 /// Owns no session state — it renders `session` and forwards the affordances
 /// through `onStart` / `onStop` / `onDiscard` so the model stays the single
@@ -158,24 +161,24 @@ struct LiveMeetingView: View {
   }
 
   var body: some View {
-    GeometryReader { geometry in
-      let form = RecordingPaneLayout.form(width: geometry.size.width)
-      Group {
-        // `showsRecordingPane` rather than a second list of cases here: which
-        // states wear the column is a decision a test can reach, and a switch
-        // that answered it again would be free to drift from the one that did.
-        if controls.showsRecordingPane {
-          recordingPane(form: form)
-        } else if controls == .start {
-          idleView
-        } else if controls == .starting {
-          startingView
-        } else {
-          failedView
-        }
+    // No `GeometryReader`: the only thing that ever read the pane's width was
+    // the fold, and a bar has no fold — it takes the width it is given at every
+    // window this app allows (XIA-444).
+    Group {
+      // `showsRecordingPane` rather than a second list of cases here: which
+      // states wear the bar is a decision a test can reach, and a switch that
+      // answered it again would be free to drift from the one that did.
+      if controls.showsRecordingPane {
+        recordingPane
+      } else if controls == .start {
+        idleView
+      } else if controls == .starting {
+        startingView
+      } else {
+        failedView
       }
-      .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
+    .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(FieldBackground())
     // A marker belongs to the session that flagged it; a new one starts empty.
     .onChange(of: session.state) { old, new in
@@ -183,54 +186,43 @@ struct LiveMeetingView: View {
     }
   }
 
-  // MARK: - The recording pane (B2)
+  // MARK: - The recording pane
 
-  /// The rule between the two panes.
+  /// The rule between the bar and the transcript.
   ///
   /// Not `Divider()`, which draws the system separator — a colour picked for
   /// opaque window chrome, not for a ground that moves under it. `.rail` is the
   /// tier the solve measured for exactly this: the one thing on the surface that
   /// is meant to be *barely* there (1.2:1) and must still be there on all
-  /// sixteen grounds. It is `dividerWidth` because the fold arithmetic already
-  /// spends that point.
-  private func rail(_ axis: Axis) -> some View {
+  /// sixteen grounds.
+  ///
+  /// XIA-443 wrote this against the two-pane layout and XIA-444 deleted that
+  /// layout, each unable to see the other. The rule survives the merge because
+  /// it is the ink argument and not the layout argument: a `Divider()` under the
+  /// bar would be a fresh unmeasured colour on the ground, introduced after the
+  /// sweep that exists to forbid exactly that. It takes no `axis` any more —
+  /// there is one rule now, and it is horizontal.
+  private var rail: some View {
     Rectangle()
       .fill(.ground(.rail))
-      .frame(
-        width: axis == .vertical ? RecordingPaneMetrics.dividerWidth : nil,
-        height: axis == .horizontal ? RecordingPaneMetrics.dividerWidth : nil)
+      .frame(height: RecordingPaneMetrics.railWidth)
   }
 
-  @ViewBuilder
-  private func recordingPane(form: RecordingPaneForm) -> some View {
-    switch form {
-    case .column:
-      HStack(spacing: 0) {
-        transcript
-        rail(.vertical)
-        SessionColumnView(
-          elapsed: session.elapsed,
-          level: session.level,
-          kind: kind,
-          controls: controls,
-          markers: markerLog.markers,
-          onMark: mark,
-          onStop: onStop
-        )
-      }
-    case .strip:
-      VStack(spacing: 0) {
-        SessionStripView(
-          elapsed: session.elapsed,
-          level: session.level,
-          kind: kind,
-          controls: controls,
-          onMark: mark,
-          onStop: onStop
-        )
-        rail(.horizontal)
-        transcript
-      }
+  /// The bar over the transcript, and no `HStack` left: the transcript takes
+  /// the whole width.
+  private var recordingPane: some View {
+    VStack(spacing: 0) {
+      SessionBarView(
+        elapsed: session.elapsed,
+        level: session.level,
+        kind: kind,
+        controls: controls,
+        markers: markerLog.markers,
+        onMark: mark,
+        onStop: onStop
+      )
+      rail
+      transcript
     }
   }
 
@@ -260,8 +252,8 @@ struct LiveMeetingView: View {
   /// thing — the microphone is open — and idle is the state every owner sees
   /// before every recording, so it is the state that teaches them what the
   /// colour means. A breathing ember ring over a closed microphone would be the
-  /// same lie `showsRecordingPane` withholds the column from a failed session
-  /// to avoid, told to more people more often.
+  /// same lie `showsRecordingPane` withholds the bar from a failed session to
+  /// avoid, told to more people more often.
   ///
   /// The buttons here and on the failed banner keep `.liquidGlassButton()`
   /// deliberately: the ghost/solid-ember pair is the *recording pane's*

@@ -16,8 +16,13 @@ import SwiftUI
 /// - The **ring** is decoration. It breathes because a live session should feel
 ///   alive, and nothing is lost by holding it still — the meter is already
 ///   saying the thing the ring is only dressing up.
+/// - The **bloom** — the recording bar growing into a taller card while the
+///   pointer is over it (XIA-444) — is a transition between two states the
+///   owner asked for, so it may not be dropped; what Reduce Motion takes is the
+///   travel between them. It **snaps**: both states are drawn exactly as they
+///   would have been, and the card simply arrives at the new one.
 ///
-/// Both live here so a future component has to pick a side deliberately.
+/// All three live here so a future component has to pick a side deliberately.
 enum RecordingMotion {
   /// Never nil, at either setting: the meter always animates.
   static func meterAnimation(reduceMotion: Bool) -> Animation? {
@@ -30,6 +35,19 @@ enum RecordingMotion {
   static func ringAnimation(reduceMotion: Bool) -> Animation? {
     guard !reduceMotion else { return nil }
     return .easeInOut(duration: SessionRingMetrics.cycle / 2).repeatForever(autoreverses: true)
+  }
+
+  /// The recording bar's hover bloom. Nil under Reduce Motion, which is a snap
+  /// rather than a freeze: `withAnimation(nil)` still assigns the new state, so
+  /// the bloomed card is drawn — it just does not travel there.
+  ///
+  /// Short and unsprung on purpose even at the ordinary setting. This one is
+  /// driven by the pointer rather than by the microphone, so it can be asked to
+  /// reverse mid-flight; a spring's overshoot on a card that big reads as the
+  /// bar wobbling under the cursor.
+  static func bloomAnimation(reduceMotion: Bool) -> Animation? {
+    guard !reduceMotion else { return nil }
+    return .easeOut(duration: 0.18)
   }
 }
 
@@ -287,6 +305,24 @@ enum SessionTimerMetrics {
       .rounded(.up)
   }
 
+  /// The height that same plate reserves — the widest form's line box, so it is
+  /// **independent of `elapsed`** by exactly the construction `plateWidth` uses.
+  ///
+  /// The bar's height is derived from this (XIA-444: the bloom is the clock
+  /// growing, so the card is as tall as the clock needs). It is the **line
+  /// box**, which is what a laid-out `Text` occupies — deliberately not the ink.
+  /// The session column measured the ink instead (`ringGlyphHeightRatio`, gone
+  /// with the column), because monospaced digits have neither ascenders nor
+  /// descenders and a *circle* drawn to the line box is a circle drawn around
+  /// whitespace. A row that has to contain the digits owes the opposite number:
+  /// clip the line box and the glyphs go with it.
+  static func plateHeight(base: CGFloat) -> CGFloat {
+    Form.allCases
+      .map { height(atSize: fontSize(base: base, form: $0)) }
+      .reduce(0, max)
+      .rounded(.up)
+  }
+
   static let weight: Font.Weight = .medium
 
   static func font(base: CGFloat, elapsed: TimeInterval) -> Font {
@@ -304,6 +340,13 @@ enum SessionTimerMetrics {
     let font = NSFont.monospacedSystemFont(ofSize: size, weight: .medium)
     let advance = ("0" as NSString).size(withAttributes: [.font: font]).width
     return advance * CGFloat(characters) + 2
+  }
+
+  /// One line of digits, measured the same way — every glyph in this face has
+  /// the same line box, so any of them answers for the string.
+  private static func height(atSize size: CGFloat) -> CGFloat {
+    let font = NSFont.monospacedSystemFont(ofSize: size, weight: .medium)
+    return ("0" as NSString).size(withAttributes: [.font: font]).height
   }
 }
 

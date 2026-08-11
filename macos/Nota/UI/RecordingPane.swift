@@ -1,114 +1,115 @@
+import AppKit
 import SwiftUI
-
-// MARK: - Form
-
-/// Which shape the session controls take. Two values, not a spectrum: the
-/// column and the strip are different arrangements of the *same* elements, and
-/// a continuously-resizing third thing would have no baseline to pin.
-enum RecordingPaneForm: Equatable, CaseIterable {
-  /// The trailing session column beside a full-height transcript.
-  case column
-  /// A one-row strip above the transcript, for a window too narrow to give the
-  /// column its width without starving the text.
-  case strip
-}
 
 // MARK: - Metrics
 
-/// Everything about the B2 recording pane that is arithmetic, kept out of the
-/// views for the reason `SessionTimerMetrics` and `HUDPrompterMetrics` are: a
-/// test can then answer "does the ring fit the column" without a window server.
+/// Everything about the recording bar that is arithmetic, kept out of the views
+/// for the reason `SessionTimerMetrics` and `HUDPrompterMetrics` are: a test can
+/// then answer "how much taller is the bloom" without a window server.
 enum RecordingPaneMetrics {
-  // MARK: The column
+  // MARK: The bar
 
-  /// The trailing session column.
+  /// The bar is a full-width row above the transcript (XIA-444). It replaced a
+  /// 288pt trailing column, and the reason is arithmetic rather than taste: the
+  /// column charged the transcript a quarter of every window for an indicator
+  /// that is three glyphs, a meter and two buttons wide. A band across the top
+  /// charges it height instead, and height is the axis a transcript has most of.
   ///
-  /// **Trailing** is XIA-423's locked visual direction, and it is worth being
-  /// precise about what does *not* justify it: the original rationale said ⌘L
-  /// owns this window's left edge, and it does not — `ContentView
-  /// .historyDrawerLayer` is a `ZStack(alignment: .topTrailing)`, so the drawer
-  /// opens on the **right**, exactly over this column. See "the drawer and the
-  /// column share an edge" in CLAUDE.md for the options and the call.
-  static let columnWidth: CGFloat = 288
-  static let columnPadding: CGFloat = CraftTokens.spacing24
+  /// What went with the column is the **fold**. There were two forms because a
+  /// fixed-width column could starve the text at a narrow window; a bar takes
+  /// the width it is given at every window this app allows, so there is one
+  /// arrangement and no threshold to be wrong about.
+  static let barPaddingH: CGFloat = CraftTokens.spacing24
+  static let barPaddingV: CGFloat = CraftTokens.spacing12
 
-  /// The hairline between the two panes. Named because the fold arithmetic
-  /// spends it.
-  static let dividerWidth: CGFloat = 1
-
-  /// What the transcript needs to still be a transcript.
+  /// The hairline between the bar and the transcript.
   ///
-  /// 520 leaves 408pt of text once the gutter (52), its gap (12) and the two
-  /// 24pt margins are paid — about 56 characters at 14pt, the low end of a
-  /// readable measure. Under it the transcript is a column of fragments, and a
-  /// column of fragments is worse than no session column.
-  static let transcriptMinWidth: CGFloat = 520
+  /// This is the column's `dividerWidth` under a name that still means
+  /// something: the two panes it used to separate are gone, the rule between
+  /// bar and transcript is not. It is deliberately **not** part of
+  /// `barHeight(bloomed:)` — the rule is the bar's sibling in the pane's
+  /// `VStack`, not a row inside it, and folding it into the bar's own height
+  /// would make the one number that must equal what the bar draws stop
+  /// equalling it (XIA-444's `controlRowHeight` defect, in a different costume).
+  static let railWidth: CGFloat = 1
 
-  /// The pane width below which the column folds. **Derived** from what the
-  /// transcript needs rather than typed in, and that is the whole correction:
-  /// the previous hand-picked 720 was measured against the *pane*, and since
-  /// `Metrics.windowMinWidth` is 780 and the ⌘L drawer is an overlay that
-  /// consumes no width, no window this app allows could ever reach it — the
-  /// fold was unreachable code with a test that said otherwise.
+  /// The clock's `mm:ss` size at rest and while the bar is bloomed.
   ///
-  /// 288 + 1 + 520 = 809, so the fold is what happens at the narrowest window
-  /// the app permits, which is precisely the case it exists for: at 780 the
-  /// column would leave the transcript 491pt.
-  static var foldWidth: CGFloat { columnWidth + dividerWidth + transcriptMinWidth }
+  /// 22 is a caption on a row; 58 is the session's *object*, which is what the
+  /// column made it and what the bloom gives back on demand. `SessionTimerMetrics`
+  /// derives the hour form from whichever of these is in force and reserves the
+  /// wider of the two, so crossing the hour costs no reflow in either state
+  /// (XIA-431); nothing here re-derives it.
+  static let restTimerBase: CGFloat = 22
+  static let bloomTimerBase: CGFloat = 58
 
-  /// The timer's `mm:ss` size in each form. 58 is the column's headline — the
-  /// timer is the session's *object*, not a caption on it. `SessionTimerMetrics`
-  /// derives the hour form from this and reserves the wider of the two, so the
-  /// step at the hour costs no reflow (XIA-431); nothing here re-derives it.
-  static let columnTimerBase: CGFloat = 58
-  static let stripTimerBase: CGFloat = 26
+  /// The ember ring is a breathing **dot** in both states, and it stays a dot
+  /// through the bloom deliberately. A circle sized to contain the 58pt clock —
+  /// the arithmetic the column used — is ~225pt across, which would make the
+  /// bloomed bar taller than the transcript under it: a balloon around a clock
+  /// rather than a ring on one, at pane scale. The folded strip this replaces
+  /// refused the same thing for a 26pt timer. What the bloom is *for* is the
+  /// clock, so the clock is what grows.
+  static let dotDiameter: CGFloat = 20
+  static let dotLineWidth: CGFloat = 1.5
 
-  /// Breathing room between the ring's stroke and the timer's reserved plate.
-  static let ringInset: CGFloat = 8
-
-  /// How much of the timer's point size the ring actually has to clear.
+  /// The floor under the bar's content height: the Stop capsule, which is a
+  /// 14pt label with `spacing12` above and below it. Named because it is what
+  /// sets the resting height — the 22pt clock and the compact meter are both
+  /// shorter than the buttons beside them — and because a bar whose height came
+  /// from whichever child happened to be tallest would step whenever a control
+  /// changed font.
   ///
-  /// Not 1.0 and not the line height: the timer draws **monospaced digits and
-  /// a colon**, which have neither ascenders nor descenders, so a ring sized to
-  /// the line box would be sized to whitespace. Measured against SF Mono's cap
-  /// height with room to spare — the consequence of getting it wrong is a ring
-  /// 30pt larger than the thing it encircles, which reads as a balloon around a
-  /// clock rather than a ring on one.
-  static let ringGlyphHeightRatio: CGFloat = 0.75
+  /// **Measured from the style that draws it, not typed in.** It was written as
+  /// `40` against a row that lays out at 41 (a 14pt semibold label's line box is
+  /// 17, plus 24 of padding), so `barHeight(bloomed: false)` promised 64 while
+  /// the bar drew 65 — the `.frame(minHeight:)` never bound, and the resting
+  /// height was decided by whichever child happened to be tallest, which is
+  /// exactly what this constant exists to prevent. A number that claims to be a
+  /// derivation has to *be* one: change `RecordingStopButtonStyle`'s padding or
+  /// font and the reserved row follows it, in the same measurement
+  /// `SessionTimerMetrics.plateHeight` uses for the clock.
+  ///
+  /// `static let` for the reason the two content heights are: it builds an
+  /// `NSFont` and measures a string, and the bar's body re-runs on every tick.
+  static let controlRowHeight: CGFloat = {
+    let line = ("0" as NSString)
+      .size(withAttributes: [.font: RecordingStopButtonStyle.measuringFont])
+      .height
+    return (line + 2 * RecordingStopButtonStyle.verticalPadding).rounded(.up)
+  }()
 
-  /// The ring is sized to **contain** the timer's reserved plate at its widest
-  /// form, so crossing the hour changes the glyphs and not the circle. Derived
-  /// rather than typed in: a hand-picked diameter goes stale the first time the
-  /// base size moves, and the failure mode is a clipped clock.
-  static var ringDiameter: CGFloat {
-    min(ringDiameterNeeded, columnWidth - 2 * columnPadding)
+  /// The tallest thing the bar has to hold in a given state. Derived from the
+  /// clock's own reserved plate rather than typed in, so the bloom's height
+  /// follows `bloomTimerBase` and a future change to it cannot silently clip
+  /// the digits.
+  ///
+  /// **Measured once each**, and that is not premature: `plateHeight` builds an
+  /// `NSFont` and measures a string, the bar's body re-runs on every tick of
+  /// the clock, and there are exactly two answers — a `static let` is computed
+  /// lazily and kept, so the derivation survives and the per-tick cost does not.
+  static func barContentHeight(bloomed: Bool) -> CGFloat {
+    bloomed ? bloomedContentHeight : restingContentHeight
   }
 
-  /// What a circle would have to be to hold the plate — before the column's own
-  /// width gets a say. `ringDiameter` clamps to the column; this is the number
-  /// the clamp is checked against.
-  static var ringDiameterNeeded: CGFloat {
-    // The reserved plate, at its widest form — never the current elapsed time,
-    // or crossing the hour would resize the circle.
-    let width = SessionTimerMetrics.plateWidth(base: columnTimerBase)
-    let height = (columnTimerBase * ringGlyphHeightRatio).rounded(.up)
-    // The diagonal *is* the diameter: the box's corner sits on the circle.
-    return ((width * width + height * height).squareRoot() + 2 * ringInset).rounded(.up)
+  private static let restingContentHeight: CGFloat = contentHeight(bloomed: false)
+  private static let bloomedContentHeight: CGFloat = contentHeight(bloomed: true)
+
+  private static func contentHeight(bloomed: Bool) -> CGFloat {
+    max(
+      controlRowHeight,
+      SessionTimerMetrics.plateHeight(base: RecordingPaneLayout.timerBase(bloomed: bloomed)),
+      RecordingPaneLayout.meterVariant(bloomed: bloomed).maxBarHeight
+    )
   }
 
-  static let ringLineWidth: CGFloat = 2
-
-  // MARK: The strip
-
-  /// The folded form's ring is a breathing **dot**, not a circle around the
-  /// clock: a ring that contained a 26pt timer would be ~114pt tall and a strip
-  /// is not. The element survives the fold — including its Reduce Motion rule —
-  /// at the size the compact recording composition already uses.
-  static let stripRingDiameter: CGFloat = 20
-  static let stripRingLineWidth: CGFloat = 1.5
-  static let stripMinHeight: CGFloat = 64
-  static let stripPaddingH: CGFloat = CraftTokens.spacing24
-  static let stripPaddingV: CGFloat = CraftTokens.spacing12
+  /// What the bar measures, at rest and bloomed. **This** is what the bloom
+  /// animates — the card — never the digits: the clock steps between two
+  /// reserved plates, each already independent of `elapsed`, so nothing inside
+  /// is re-measured while the height is in flight.
+  static func barHeight(bloomed: Bool) -> CGFloat {
+    barContentHeight(bloomed: bloomed) + 2 * barPaddingV
+  }
 
   // MARK: The transcript
 
@@ -145,35 +146,24 @@ enum RecordingPaneMetrics {
 
 // MARK: - Layout decisions
 
-/// The pure half of "what shape is the pane in". A `GeometryReader` supplies
-/// the width and nothing else decides anything.
+/// The pure half of "what the bar looks like right now". One input — whether
+/// the pointer is over it — and every per-state number comes from here rather
+/// than from the view, so a change reaches the screen instead of only the test
+/// that reads it.
 enum RecordingPaneLayout {
-  /// What the transcript is left with once the column and the divider are paid.
-  static func transcriptWidth(paneWidth: CGFloat) -> CGFloat {
-    paneWidth - RecordingPaneMetrics.columnWidth - RecordingPaneMetrics.dividerWidth
+  /// The timer's `mm:ss` size. The bloom is a **size step**, not a scale: a
+  /// `scaleEffect` interpolates a rendered layer instead of re-typesetting it,
+  /// so the clock would be a stretched image of itself for the length of the
+  /// animation. Two plates reserved up front are typeset at both ends, which is
+  /// also what keeps `SessionTimerMetrics`' hour step honest in either state.
+  static func timerBase(bloomed: Bool) -> CGFloat {
+    bloomed ? RecordingPaneMetrics.bloomTimerBase : RecordingPaneMetrics.restTimerBase
   }
 
-  /// The fold, stated as the thing it is protecting: the column folds exactly
-  /// when keeping it would starve the transcript.
-  static func form(width: CGFloat) -> RecordingPaneForm {
-    transcriptWidth(paneWidth: width) < RecordingPaneMetrics.transcriptMinWidth ? .strip : .column
-  }
-
-  /// The timer's `mm:ss` size in this form. Read by the views — a metric only a
-  /// test consults is a metric the views are free to disagree with, which is
-  /// what these three were.
-  static func timerBase(_ form: RecordingPaneForm) -> CGFloat {
-    switch form {
-    case .column: return RecordingPaneMetrics.columnTimerBase
-    case .strip: return RecordingPaneMetrics.stripTimerBase
-    }
-  }
-
-  static func meterVariant(_ form: RecordingPaneForm) -> SessionMeterMetrics.Variant {
-    switch form {
-    case .column: return .tall
-    case .strip: return .compact
-    }
+  /// The meter grows with the clock: the bloom is the state in which the bar is
+  /// being *read*, and the meter is the only thing on it that is information.
+  static func meterVariant(bloomed: Bool) -> SessionMeterMetrics.Variant {
+    bloomed ? .tall : .compact
   }
 }
 
@@ -328,6 +318,22 @@ enum RecordingPaneCopy {
   static let listening = "Listening…"
   static let markersHeading = "Moments"
   static let noMarkers = "No moments yet"
+
+  /// The count beside the flag in the bar — **nil at zero**, not "0".
+  ///
+  /// The button itself is always there: an affordance that appeared the moment
+  /// the first moment was flagged would be a control that moves under the
+  /// pointer, on the one surface whose whole job is to hold still. What it may
+  /// not do is report a tally nobody has started, so an empty log shows the
+  /// flag alone and the popover says `noMarkers` in words.
+  ///
+  /// Not part of `all(kind:controls:)` below, and that is deliberate: this is
+  /// the one string on the surface that is a function of the session rather
+  /// than of the (kind, controls) pair, so it cannot differ between a memo and
+  /// a meeting no matter what it says.
+  static func markerCount(_ markers: [SessionMarker]) -> String? {
+    markers.isEmpty ? nil : "\(markers.count)"
+  }
 
   /// Every string the pane can put on screen for one (kind, controls) pair.
   /// The test that diffs meeting against memo reads this, so a string added to
@@ -633,24 +639,38 @@ struct RecordingGhostButtonStyle: ButtonStyle {
 /// `accessibilityReduceTransparency` — the claim "Stop survives the material
 /// degrading" is about pixels and cannot be asserted about a constant.
 struct RecordingStopButtonStyle: ButtonStyle {
+  /// The label's size and the padding around it, named because
+  /// `RecordingPaneMetrics.controlRowHeight` — the floor under the whole bar —
+  /// is *measured* from them. Typed as literals in both places is how the bar
+  /// came to reserve 64pt for a row that draws 65.
+  static let fontSize: CGFloat = 14
+  static let verticalPadding: CGFloat = CraftTokens.spacing12
+  /// The AppKit twin of the label's face, so the row the bar reserves is
+  /// measured from the font the button actually draws. The two weights are
+  /// spelled twice because SwiftUI and AppKit name them in different types;
+  /// `testTheRestingBarDrawsExactlyTheHeightItReserves` is what holds them
+  /// together, since it compares the reservation against the laid-out bar.
+  static var measuringFont: NSFont { .systemFont(ofSize: fontSize, weight: .semibold) }
+
   @Environment(\.colorScheme) private var colorScheme
 
   func makeBody(configuration: Configuration) -> some View {
     configuration.label
-      .font(.system(size: 14, weight: .semibold))
+      .font(.system(size: Self.fontSize, weight: .semibold))
       .foregroundStyle(.white)
       .padding(.horizontal, CraftTokens.spacing24)
-      .padding(.vertical, CraftTokens.spacing12)
+      .padding(.vertical, Self.verticalPadding)
       .frame(maxWidth: .infinity)
       .background(CraftTokens.ember(colorScheme), in: Capsule(style: .continuous))
       .opacity(configuration.isPressed ? 0.85 : 1)
   }
 }
 
-// MARK: - Session controls (shared by both forms)
+// MARK: - Session controls
 
-/// Mark and Stop. One definition, both forms — the fold rearranges the pane, it
-/// does not give the owner a different set of buttons.
+/// Mark and Stop. One definition, both states of the bar — the bloom changes
+/// how much room the clock takes, it does not give the owner a different set of
+/// buttons.
 private struct SessionControls: View {
   let isStoppable: Bool
   let onMark: () -> Void
@@ -681,9 +701,30 @@ private struct SessionControls: View {
 
 // MARK: - Marker list
 
-/// The flagged moments, newest first, at the bottom of the column.
+/// The flagged moments, newest first — the contents of the bar's popover
+/// (owner's call, 2026-08-10: "markers are a count in the bar that opens a
+/// popover", not hairlines down the transcript).
+///
+/// The list used to sit at the bottom of the session column, and a bar has no
+/// bottom to put it at. The popover is what the column's height was buying:
+/// somewhere a list may accumulate without pushing the fixed things around.
+/// Hairlines in the transcript were the alternative and were refused — a mark
+/// is a *time*, and a mark in the middle of a scrolling transcript is only
+/// findable if you already know where it is.
+///
+/// It keeps its own `ScrollView` now, which the column's version explicitly did
+/// not: nesting two on one axis is what that comment was avoiding, and a
+/// popover has no outer scroll to fight with. Unbounded it would grow the
+/// popover past the screen on a long meeting.
 struct SessionMarkerList: View {
   let markers: [SessionMarker]
+
+  /// Wide enough for a timestamp and an auto-title (XIA-433) without the
+  /// popover resizing as one arrives.
+  static let width: CGFloat = 240
+  /// About nine rows. Past that the list scrolls rather than the popover
+  /// growing to whatever the session flagged.
+  static let maxListHeight: CGFloat = 220
 
   var body: some View {
     VStack(alignment: .leading, spacing: CraftTokens.spacing8) {
@@ -697,45 +738,129 @@ struct SessionMarkerList: View {
           .font(RecordingPaneMetrics.markerLabelFont)
           .foregroundStyle(.ground(.timestamp))
       } else {
-        // Deliberately not its own `ScrollView`: the column already scrolls
-        // (`SessionColumnView`), and two scroll views nested on the same axis
-        // fight over every wheel event. The list simply grows and the column
-        // carries it.
-        VStack(alignment: .leading, spacing: CraftTokens.spacing8) {
-          ForEach(markers) { marker in
-            HStack(spacing: CraftTokens.spacing8) {
-              Text(LiveTranscript.timestamp(marker.at))
-                .font(RecordingPaneMetrics.markerTimeFont)
-                .foregroundStyle(.ground(.timestamp))
-              if let label = RecordingPaneCopy.markerLabel(marker) {
-                Text(label)
-                  .font(RecordingPaneMetrics.markerLabelFont)
-                  .foregroundStyle(.ground(.body))
-                  .lineLimit(1)
+        // This list DOES get its own `ScrollView`, and the rule it used to break
+        // no longer applies. XIA-443 wrote it without one because the 288pt
+        // column already scrolled and two scroll views nested on one axis fight
+        // over every wheel event; XIA-444 deleted the column and put the markers
+        // in a popover, which scrolls nothing on its own. One scroll view on the
+        // axis, still — the reason survived, the containing surface changed.
+        ScrollView {
+          VStack(alignment: .leading, spacing: CraftTokens.spacing8) {
+            ForEach(markers) { marker in
+              HStack(spacing: CraftTokens.spacing8) {
+                Text(LiveTranscript.timestamp(marker.at))
+                  .font(RecordingPaneMetrics.markerTimeFont)
+                  .foregroundStyle(.ground(.timestamp))
+                if let label = RecordingPaneCopy.markerLabel(marker) {
+                  Text(label)
+                    .font(RecordingPaneMetrics.markerLabelFont)
+                    .foregroundStyle(.ground(.body))
+                    .lineLimit(1)
+                }
+                Spacer(minLength: 0)
               }
-              Spacer(minLength: 0)
             }
           }
+          .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .scrollBounceBehavior(.basedOnSize)
+        .frame(maxHeight: Self.maxListHeight)
       }
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
+    .frame(width: Self.width, alignment: .leading)
+    .padding(CraftTokens.spacing16)
   }
 }
 
-// MARK: - Session column (the unfolded form)
+// MARK: - The bar's hover surface
 
-/// The trailing session column: timer in the ring, meter, kind line, controls,
-/// markers.
+/// Every point of the bar, reporting enter and exit — the bloom's trigger.
 ///
-/// The order is the argument. The timer is at the top and it is the largest
-/// thing on the surface because it is the session's *object* — in a
-/// conversation what matters is the indicator that things are flowing, and the
-/// transcript should not have to pay for it. The meter under it is
-/// **information**, not decoration: it is the only proof the microphone is
-/// actually open. The markers are at the bottom because they accumulate, and a
-/// list that grows must not push the fixed things around.
-struct SessionColumnView: View {
+/// SwiftUI's `.onHover` follows **hit testing**, and the bar's root `HStack` has
+/// no fill and no `contentShape`: it is a dot, a meter, a clock, a kind line,
+/// three buttons and, at any real window size, several hundred points of
+/// transparent `Spacer` between them. Left on `.onHover` the bar therefore
+/// reported hover over a minority of its own area, and the two failures are
+/// opposite: a pointer parked in the gap never bloomed it at all, and a pointer
+/// travelling from the clock to Stop crossed the gap and fired `false` then
+/// `true` — two full 0.18s height animations, and two relayouts of the
+/// transcript beside them, inside one continuous gesture.
+///
+/// `.contentShape(Rectangle())` answers that, and it is what the app's five
+/// other `.onHover` call sites do. What it cannot do is be **asserted**:
+/// SwiftUI resolves hover inside the hosting view, so neither `hitTest` nor the
+/// hosting view's tracking areas can tell a shaped bar from an unshaped one —
+/// measured, both ways, which is precisely why this shipped. An `NSTrackingArea`
+/// is the same promise made out of something a test can hold: the rect it covers
+/// is readable, and `mouseEntered`/`mouseExited` can be delivered by hand.
+///
+/// It takes **no clicks** (`hitTest` returns nil, as `GlassPlateView` does), so
+/// Mark, Stop and the moments button are reached exactly as before; enter and
+/// exit go to a tracking area's owner regardless of hit testing.
+struct SessionHoverArea: NSViewRepresentable {
+  var onHover: (Bool) -> Void
+
+  func makeNSView(context: Context) -> SessionHoverView {
+    let view = SessionHoverView()
+    view.onHover = onHover
+    return view
+  }
+
+  func updateNSView(_ view: SessionHoverView, context: Context) {
+    view.onHover = onHover
+  }
+}
+
+/// The AppKit half. Internal so the test can install a tracking area on it,
+/// read the rect, and deliver an enter and an exit — the whole of the claim.
+final class SessionHoverView: NSView {
+  var onHover: ((Bool) -> Void)?
+
+  /// The surface claims every point for **hover** and none for the mouse: the
+  /// bar's own controls sit above it and must keep their clicks.
+  override func hitTest(_ point: NSPoint) -> NSView? { nil }
+
+  override func updateTrackingAreas() {
+    super.updateTrackingAreas()
+    for area in trackingAreas { removeTrackingArea(area) }
+    addTrackingArea(
+      NSTrackingArea(
+        // `bounds`, not the visible rect: the whole bar blooms, gap included,
+        // and re-adding on every layout is what keeps that true as it grows.
+        rect: bounds,
+        options: [.mouseEnteredAndExited, .activeInActiveApp],
+        owner: self
+      )
+    )
+  }
+
+  override func mouseEntered(with event: NSEvent) { onHover?(true) }
+  override func mouseExited(with event: NSEvent) { onHover?(false) }
+}
+
+// MARK: - The session bar
+
+/// The recording bar: everything the session column held, in one full-width row
+/// above the transcript (XIA-444).
+///
+/// Reading order left to right is the session, then what to do about it — the
+/// breathing dot, the meter, the clock, the kind line, then past the gap the
+/// moment count, `Mark ⌘K` and `Stop`. That is the column's own top-to-bottom
+/// order laid on its side, deliberately: the column was not wrong about what
+/// matters, it was wrong about spending a quarter of every window to say it.
+///
+/// Two things it does that the column did not:
+///
+/// - **The moments are a count that opens a popover**, not a list the surface
+///   has to find room for. A bar has no bottom to accumulate at, and "a list
+///   that grows must not push the fixed things around" was the column's own
+///   reason for putting the list last.
+/// - **The clock blooms on hover.** At rest it is a 22pt caption on a row; with
+///   the pointer over the bar the whole bar grows into a taller card carrying
+///   the 58pt clock the column made the session's object. Nothing is *only*
+///   available bloomed — the clock is legible in both states and every control
+///   keeps its place — so a pointer that never arrives costs the owner nothing.
+struct SessionBarView: View {
   let elapsed: TimeInterval
   /// The meter's own object. Passed rather than a `Float` so the level's ~15 Hz
   /// feed is observed by `SessionMeterFeedView` alone — see `MeterPublishGate`.
@@ -746,116 +871,26 @@ struct SessionColumnView: View {
   let onMark: () -> Void
   let onStop: () -> Void
 
-  /// The column is **taller than the smallest window this app allows**
-  /// (`SessionColumnContent`'s natural height against
-  /// `Metrics.windowMinHeight`), which is the arithmetic this wrapper exists
-  /// for and the reason it is not a plain `VStack`.
-  ///
-  /// Shrinking the design to fit 560pt was the alternative and it was worse:
-  /// the ring is sized from the timer's reserved plate, so the only way to buy
-  /// the height back is to make the timer smaller — and the timer being the
-  /// largest thing on the surface is the whole argument for the column. So the
-  /// column keeps its size and a window too short for it **scrolls**, rather
-  /// than clipping the marker list to a half-drawn heading. `minHeight` is what
-  /// keeps the ordinary case identical to the design: with room to spare the
-  /// content fills the container and the `Spacer` still pins the markers to the
-  /// bottom, exactly as if the scroll view were not there.
-  var body: some View {
-    GeometryReader { proxy in
-      ScrollView {
-        SessionColumnContent(
-          elapsed: elapsed,
-          level: level,
-          kind: kind,
-          controls: controls,
-          markers: markers,
-          onMark: onMark,
-          onStop: onStop
-        )
-        .frame(minHeight: proxy.size.height, alignment: .top)
-      }
-      .scrollIndicators(.never)
-      .scrollBounceBehavior(.basedOnSize)
-    }
-    .frame(width: RecordingPaneMetrics.columnWidth)
-  }
-}
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
-/// The column's contents, un-scrolled. Separate so its natural height is a
-/// thing a test can measure — that measurement is what justifies the wrapper.
-struct SessionColumnContent: View {
-  /// This view's form, so every per-form number comes from
-  /// `RecordingPaneLayout` rather than being restated here. The two used to be
-  /// independent — the layout knew the timer base and the meter variant, and
-  /// the views hardcoded them, so the helpers were true only for the tests that
-  /// read them.
-  private let form: RecordingPaneForm = .column
-
-  let elapsed: TimeInterval
-  let level: MicLevelFeed
-  let kind: HistoryKind
-  let controls: LiveMeetingControls
-  let markers: [SessionMarker]
-  let onMark: () -> Void
-  let onStop: () -> Void
-
-  var body: some View {
-    VStack(spacing: CraftTokens.spacing24) {
-      SessionRing(
-        diameter: RecordingPaneMetrics.ringDiameter,
-        lineWidth: RecordingPaneMetrics.ringLineWidth
-      )
-      .overlay(SessionTimer(elapsed: elapsed, base: RecordingPaneLayout.timerBase(form)))
-
-      SessionMeterFeedView(feed: level, variant: RecordingPaneLayout.meterVariant(form))
-
-      Text(RecordingPaneCopy.kindLine(kind: kind, controls: controls))
-        .font(RecordingPaneMetrics.kindLineFont)
-        .foregroundStyle(.ground(.speaker))
-
-      VStack(spacing: CraftTokens.spacing12) {
-        SessionControls(
-          isStoppable: controls == .stop,
-          onMark: onMark,
-          onStop: onStop
-        )
-      }
-
-      Spacer(minLength: CraftTokens.spacing16)
-
-      SessionMarkerList(markers: markers)
-    }
-    .padding(RecordingPaneMetrics.columnPadding)
-    .frame(width: RecordingPaneMetrics.columnWidth, alignment: .top)
-  }
-}
-
-// MARK: - Session strip (the folded form)
-
-/// The folded form: one row, everything the column had except the marker list.
-///
-/// It has **no `markers` parameter**, and that is the fold's one loss written
-/// where the compiler enforces it. A `showsMarkerList(_:)` predicate used to
-/// say the same thing in a place only a test read, which made it a claim rather
-/// than a constraint.
-struct SessionStripView: View {
-  private let form: RecordingPaneForm = .strip
-
-  let elapsed: TimeInterval
-  let level: MicLevelFeed
-  let kind: HistoryKind
-  let controls: LiveMeetingControls
-  let onMark: () -> Void
-  let onStop: () -> Void
+  /// The bloom, and the popover, are **this view's** state and not the pane's.
+  /// A pointer crossing the bar may not invalidate `LiveMeetingView`'s body:
+  /// that body draws the transcript, and XIA-432 is this file's whole account
+  /// of what a frequent change costs when a broad observer is watching.
+  @State private var bloomed = false
+  @State private var showingMoments = false
 
   var body: some View {
     HStack(spacing: CraftTokens.spacing16) {
       SessionRing(
-        diameter: RecordingPaneMetrics.stripRingDiameter,
-        lineWidth: RecordingPaneMetrics.stripRingLineWidth
+        diameter: RecordingPaneMetrics.dotDiameter,
+        lineWidth: RecordingPaneMetrics.dotLineWidth
       )
-      SessionMeterFeedView(feed: level, variant: RecordingPaneLayout.meterVariant(form))
-      SessionTimer(elapsed: elapsed, base: RecordingPaneLayout.timerBase(form))
+      SessionMeterFeedView(
+        feed: level,
+        variant: RecordingPaneLayout.meterVariant(bloomed: bloomed)
+      )
+      SessionTimer(elapsed: elapsed, base: RecordingPaneLayout.timerBase(bloomed: bloomed))
 
       Text(RecordingPaneCopy.kindLine(kind: kind, controls: controls))
         .font(RecordingPaneMetrics.kindLineFont)
@@ -863,6 +898,8 @@ struct SessionStripView: View {
         .lineLimit(1)
 
       Spacer(minLength: CraftTokens.spacing16)
+
+      momentsButton
 
       HStack(spacing: CraftTokens.spacing12) {
         SessionControls(
@@ -873,9 +910,46 @@ struct SessionStripView: View {
       }
       .fixedSize(horizontal: true, vertical: false)
     }
-    .padding(.horizontal, RecordingPaneMetrics.stripPaddingH)
-    .padding(.vertical, RecordingPaneMetrics.stripPaddingV)
-    .frame(maxWidth: .infinity, minHeight: RecordingPaneMetrics.stripMinHeight)
+    .padding(.horizontal, RecordingPaneMetrics.barPaddingH)
+    .padding(.vertical, RecordingPaneMetrics.barPaddingV)
+    // `minHeight`, not `height`: the arithmetic says how tall the bar means to
+    // be, and a control that ever measured taller than that would be clipped by
+    // a hard frame instead of being given its row.
+    .frame(maxWidth: .infinity, minHeight: RecordingPaneMetrics.barHeight(bloomed: bloomed))
+    // The whole bar is the trigger, gap included — see `SessionHoverArea` for
+    // why that is an AppKit tracking area rather than `.onHover`.
+    .background(
+      SessionHoverArea { inside in
+        // Reduce Motion is answered by `RecordingMotion`, which hands back nil —
+        // and `withAnimation(nil)` is a snap. The decision belongs there beside
+        // the ring's and the meter's, not in an `if` here, or the next surface
+        // that blooms would have to rediscover which way this one went.
+        withAnimation(RecordingMotion.bloomAnimation(reduceMotion: reduceMotion)) {
+          bloomed = inside
+        }
+      }
+    )
+  }
+
+  /// The flag, its count, and the popover the count opens. A ghost control like
+  /// Mark: Stop is still the only filled thing on the surface.
+  private var momentsButton: some View {
+    Button {
+      showingMoments.toggle()
+    } label: {
+      HStack(spacing: CraftTokens.spacing8) {
+        Image(systemName: "flag")
+        if let count = RecordingPaneCopy.markerCount(markers) {
+          Text(count).monospacedDigit()
+        }
+      }
+    }
+    .buttonStyle(RecordingGhostButtonStyle())
+    .fixedSize(horizontal: true, vertical: false)
+    .accessibilityLabel(RecordingPaneCopy.markersHeading)
+    .popover(isPresented: $showingMoments, arrowEdge: .bottom) {
+      SessionMarkerList(markers: markers)
+    }
   }
 }
 
@@ -994,64 +1068,63 @@ private func previewBlocks() -> [LiveTranscriptBlock] {
 }
 
 private struct RecordingPaneGallery: View {
-  let form: RecordingPaneForm
+  let kind: HistoryKind
 
   var body: some View {
     CraftWashBackground()
-      .overlay(content)
-  }
-
-  @ViewBuilder
-  private var content: some View {
-    switch form {
-    case .column:
-      HStack(spacing: 0) {
-        LiveTranscriptView(rows: previewRows(), volatileID: LiveTranscript.volatileLineID)
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-        Divider()
-        SessionColumnView(
-          elapsed: 754,
-          level: MicLevelFeed(level: 0.6),
-          kind: .meeting,
-          controls: .stop,
-          markers: [SessionMarker(at: 612), SessionMarker(at: 208)],
-          onMark: {},
-          onStop: {}
-        )
-      }
-    case .strip:
-      VStack(spacing: 0) {
-        SessionStripView(
-          elapsed: 754,
-          level: MicLevelFeed(level: 0.6),
-          kind: .memo,
-          controls: .stop,
-          onMark: {},
-          onStop: {}
-        )
-        Divider()
-        LiveTranscriptView(rows: previewRows(), volatileID: LiveTranscript.volatileLineID)
-          .frame(maxWidth: .infinity, maxHeight: .infinity)
-      }
-    }
+      .overlay(
+        VStack(spacing: 0) {
+          SessionBarView(
+            elapsed: 754,
+            level: MicLevelFeed(level: 0.6),
+            kind: kind,
+            controls: .stop,
+            markers: [SessionMarker(at: 612), SessionMarker(at: 208)],
+            onMark: {},
+            onStop: {}
+          )
+          Divider()
+          LiveTranscriptView(rows: previewRows(), volatileID: LiveTranscript.volatileLineID)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+      )
   }
 }
 
-#Preview("recording pane – column, light") {
-  RecordingPaneGallery(form: .column)
+#Preview("recording pane – light") {
+  RecordingPaneGallery(kind: .meeting)
     .frame(width: 980, height: 620)
     .preferredColorScheme(.light)
 }
 
-#Preview("recording pane – column, dark") {
-  RecordingPaneGallery(form: .column)
+#Preview("recording pane – dark") {
+  RecordingPaneGallery(kind: .meeting)
     .frame(width: 980, height: 620)
     .preferredColorScheme(.dark)
 }
 
-#Preview("recording pane – folded strip") {
-  RecordingPaneGallery(form: .strip)
-    .frame(width: 640, height: 520)
+/// The bloom is a hover state, so a preview cannot show it — this is the card
+/// it grows into, drawn at the size `barHeight(bloomed: true)` reserves.
+#Preview("recording bar – bloomed") {
+  CraftWashBackground()
+    .overlay(
+      VStack(spacing: 0) {
+        SessionBarView(
+          elapsed: 3754,
+          level: MicLevelFeed(level: 0.6),
+          kind: .memo,
+          controls: .stop,
+          markers: [],
+          onMark: {},
+          onStop: {}
+        )
+        .frame(height: RecordingPaneMetrics.barHeight(bloomed: true))
+        Divider()
+        LiveTranscriptView(rows: previewRows(), volatileID: LiveTranscript.volatileLineID)
+          .frame(maxWidth: .infinity, maxHeight: .infinity)
+      }
+    )
+    .frame(width: 980, height: 520)
     .preferredColorScheme(.dark)
 }
 #endif

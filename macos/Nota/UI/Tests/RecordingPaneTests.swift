@@ -4,87 +4,110 @@ import XCTest
 
 @testable import Nota
 
-/// The B2 recording pane's promises, asserted against the pure decisions the
-/// views read — the split `SessionTimerMetrics` and `HUDPrompterMetrics`
-/// already established. The two hosting-view cases at the end are here because
-/// "the column is 288pt and the transcript takes the rest" is a claim about
-/// layout, and only a layout can answer it.
+/// The recording bar's promises, asserted against the pure decisions the views
+/// read — the split `SessionTimerMetrics` and `HUDPrompterMetrics` already
+/// established. The hosting-view cases are here because "the bloom makes the
+/// bar taller and nothing else" is a claim about layout, and only a layout can
+/// answer it.
 @MainActor
 final class RecordingPaneTests: XCTestCase {
-  // MARK: - The fold
+  // MARK: - The bloom
 
-  func testTheColumnIsTwoHundredAndEightyEightPointsWide() {
-    XCTAssertEqual(RecordingPaneMetrics.columnWidth, 288)
-  }
+  /// The two states of the clock, and that they really are two sizes on screen
+  /// rather than two names for one number. The **views** read these: a metric
+  /// only a test consults is a metric the views are free to disagree with.
+  func testTheClockHasARestingSizeAndABloomedOne() {
+    XCTAssertEqual(RecordingPaneLayout.timerBase(bloomed: false), 22)
+    XCTAssertEqual(RecordingPaneLayout.timerBase(bloomed: true), 58)
+    XCTAssertEqual(RecordingPaneLayout.meterVariant(bloomed: false), .compact)
+    XCTAssertEqual(RecordingPaneLayout.meterVariant(bloomed: true), .tall)
 
-  func testTheColumnFoldsWhenItWouldStarveTheTranscript() {
-    let fold = RecordingPaneMetrics.foldWidth
-    XCTAssertEqual(RecordingPaneLayout.form(width: 1440), .column)
-    XCTAssertEqual(RecordingPaneLayout.form(width: fold), .column)
-    XCTAssertEqual(RecordingPaneLayout.form(width: fold - 1), .strip)
-    XCTAssertEqual(RecordingPaneLayout.form(width: 480), .strip)
-
-    // And the threshold is *derived* from what the transcript needs, not typed
-    // in: the column and the divider come out of the pane's width first.
-    XCTAssertEqual(
-      RecordingPaneLayout.transcriptWidth(paneWidth: fold),
-      RecordingPaneMetrics.transcriptMinWidth,
-      "the fold no longer happens exactly where the transcript hits its floor"
-    )
-    XCTAssertLessThan(
-      RecordingPaneLayout.transcriptWidth(paneWidth: fold - 1),
-      RecordingPaneMetrics.transcriptMinWidth
-    )
-  }
-
-  /// The fold has to be **reachable**, and the version this replaced was not:
-  /// it triggered below 720pt of pane, `Metrics.windowMinWidth` is 780, and the
-  /// ⌘L drawer is a `ZStack` overlay that consumes no width — so no window this
-  /// app allows could produce a strip and `SessionStripView` had no production
-  /// caller at all. This is the assertion that says so.
-  func testTheFoldIsReachableAtTheNarrowestWindowThisAppAllows() {
-    XCTAssertEqual(
-      RecordingPaneLayout.form(width: Metrics.windowMinWidth),
-      .strip,
-      "the smallest permitted window shows a column, so the fold is unreachable again"
-    )
-    XCTAssertLessThan(
-      RecordingPaneLayout.transcriptWidth(paneWidth: Metrics.windowMinWidth),
-      RecordingPaneMetrics.transcriptMinWidth,
-      "…and it is unreachable while leaving the transcript under its own floor"
-    )
-  }
-
-  /// Both forms survive the fold at their own sizes, and — the half that was
-  /// missing — the **views** are what read these. `SessionColumnContent` and
-  /// `SessionStripView` ask `RecordingPaneLayout` for the timer base and the
-  /// meter variant, so a change here reaches the screen; while they hardcoded
-  /// the numbers, this test asserted a table nothing consulted.
-  func testTheFoldKeepsTheTimerAndTheMeterAtTheirOwnSizes() {
-    XCTAssertEqual(RecordingPaneLayout.timerBase(.column), 58)
-    XCTAssertEqual(RecordingPaneLayout.timerBase(.strip), 26)
-    XCTAssertEqual(RecordingPaneLayout.meterVariant(.column), .tall)
-    XCTAssertEqual(RecordingPaneLayout.meterVariant(.strip), .compact)
-
-    // And the two answers are really different sizes on screen, not two names
-    // for one number: the reserved plates differ, which is the whole reason the
-    // column can hold a ring and the strip cannot.
     XCTAssertGreaterThan(
-      SessionTimerMetrics.plateWidth(base: RecordingPaneLayout.timerBase(.column)),
-      SessionTimerMetrics.plateWidth(base: RecordingPaneLayout.timerBase(.strip))
+      SessionTimerMetrics.plateWidth(base: RecordingPaneLayout.timerBase(bloomed: true)),
+      SessionTimerMetrics.plateWidth(base: RecordingPaneLayout.timerBase(bloomed: false))
     )
+    XCTAssertEqual(
+      RecordingPaneLayout.timerBase(bloomed: true),
+      58,
+      "the bloom no longer restores the size the session column made the clock"
+    )
+  }
 
-    // The marker list is the fold's one loss, and it is the **compiler** that
-    // says so: `SessionStripView` has no `markers` parameter to pass one to.
-    // A predicate saying the same thing in a place only this test read is what
-    // `showsMarkerList` was.
+  /// The bloom's geometry, which is the whole of what it does: the **card**
+  /// grows, and it grows by exactly what the bigger clock needs.
+  func testTheBloomGrowsTheCardAndDerivesItsHeightFromTheClock() {
+    let rest = RecordingPaneMetrics.barHeight(bloomed: false)
+    let bloom = RecordingPaneMetrics.barHeight(bloomed: true)
+    XCTAssertGreaterThan(bloom, rest, "the bloom does not make the bar any taller")
+
+    // Derived, not typed in: each height is its state's content plus the bar's
+    // own padding, and the bloomed content is the 58pt clock's reserved plate.
+    for bloomed in [false, true] {
+      XCTAssertEqual(
+        RecordingPaneMetrics.barHeight(bloomed: bloomed),
+        RecordingPaneMetrics.barContentHeight(bloomed: bloomed)
+          + 2 * RecordingPaneMetrics.barPaddingV
+      )
+    }
+    XCTAssertEqual(
+      RecordingPaneMetrics.barContentHeight(bloomed: true),
+      SessionTimerMetrics.plateHeight(base: RecordingPaneMetrics.bloomTimerBase),
+      "the bloomed bar is no longer as tall as the clock it exists to show"
+    )
+    // At rest the buttons are the tallest thing on the row, which is why the
+    // resting height does not move when the 22pt clock does.
+    XCTAssertEqual(
+      RecordingPaneMetrics.barContentHeight(bloomed: false),
+      RecordingPaneMetrics.controlRowHeight
+    )
+  }
+
+  /// The trap this ticket came with: the plate is reserved **per state** and is
+  /// independent of `elapsed` in both, so the animation has a fixed start and a
+  /// fixed end and the digits are never re-measured while it is in flight.
+  func testNeitherStateOfTheClockRemeasuresItselfAsTimePasses() {
+    for base in [RecordingPaneMetrics.restTimerBase, RecordingPaneMetrics.bloomTimerBase] {
+      // `plateWidth`/`plateHeight` take no `elapsed` at all — that is the
+      // construction — so what is asserted here is the *drawn* clock, which is
+      // where a dropped `.frame(width:)` would show up.
+      func drawn(_ elapsed: TimeInterval) -> CGSize {
+        let host = NSHostingView(rootView: SessionTimer(elapsed: elapsed, base: base))
+        host.layoutSubtreeIfNeeded()
+        return host.fittingSize
+      }
+      let sizes = [TimeInterval(0), 3599, 3600, 86_399].map(drawn)
+      XCTAssertGreaterThan(sizes[0].width, 0, "the hosting view produced no layout")
+      for size in sizes {
+        XCTAssertEqual(
+          size.width,
+          sizes[0].width,
+          accuracy: 0.5,
+          "the drawn clock changed width at base \(base) — the plate is not reserved"
+        )
+      }
+    }
+  }
+
+  /// Reduce Motion makes the bloom **snap**, and that decision lives in
+  /// `RecordingMotion` beside the other two rather than in an `if` in the view.
+  /// Nil is a snap and not a freeze: `withAnimation(nil)` still assigns the
+  /// state, so both cards are drawn — only the travel is gone.
+  func testUnderReduceMotionTheBloomSnapsRatherThanAnimating() {
+    XCTAssertNil(RecordingMotion.bloomAnimation(reduceMotion: true))
+    XCTAssertNotNil(RecordingMotion.bloomAnimation(reduceMotion: false))
+    // …and the two states are unchanged by the setting: what Reduce Motion
+    // takes is the animation, never the size the bar arrives at.
+    XCTAssertGreaterThan(
+      RecordingPaneMetrics.barHeight(bloomed: true),
+      RecordingPaneMetrics.barHeight(bloomed: false)
+    )
   }
 
   // MARK: - The timer steps at the hour without reflowing
 
-  /// The acceptance case, restated at *this* pane's base size and against
+  /// The acceptance case, restated at the bloomed base size and against
   /// `SessionTimerMetrics` rather than a second derivation of it: 58 → 42, and
-  /// the clock the column **draws** keeps one width across the step.
+  /// the clock the bar **draws** keeps one width across the step.
   ///
   /// The second half used to map five elapsed values through a closure that
   /// discarded its element (`.map { _ in plateWidth(base:) }`) and assert the
@@ -92,8 +115,8 @@ final class RecordingPaneTests: XCTestCase {
   /// takes no `elapsed`. It is now measured off the rendered `SessionTimer`, so
   /// it fails if the `.frame(width: plateWidth)` that reserves the plate is
   /// ever dropped.
-  func testTheColumnTimerStepsAtTheHourAndTheDrawnClockKeepsItsWidth() {
-    let base = RecordingPaneMetrics.columnTimerBase
+  func testTheBloomedTimerStepsAtTheHourAndTheDrawnClockKeepsItsWidth() {
+    let base = RecordingPaneMetrics.bloomTimerBase
     XCTAssertEqual(SessionTimerMetrics.fontSize(base: base, elapsed: 3599), 58)
     XCTAssertEqual(SessionTimerMetrics.fontSize(base: base, elapsed: 3600), 42)
 
@@ -118,24 +141,23 @@ final class RecordingPaneTests: XCTestCase {
     XCTAssertGreaterThan(widths[0], 0, "the hosting view produced no layout")
   }
 
-  /// The ring is derived from the plate it has to contain, not typed in — so
-  /// the step at the hour changes the glyphs inside a circle that never moves,
-  /// and a future change to the base size cannot silently clip the clock.
-  func testTheRingContainsTheWidestTimerFormAndStillFitsTheColumn() {
-    let available = RecordingPaneMetrics.columnWidth - 2 * RecordingPaneMetrics.columnPadding
-    XCTAssertLessThanOrEqual(
-      RecordingPaneMetrics.ringDiameterNeeded,
-      available,
-      "the ring needed to hold the timer no longer fits the 288pt column"
-    )
-    XCTAssertEqual(
-      RecordingPaneMetrics.ringDiameter,
-      RecordingPaneMetrics.ringDiameterNeeded,
-      "the ring is being clamped by the column, which means it is clipping the clock"
-    )
+  /// The plate reserves a **line box**, not the ink, which is what a row that
+  /// has to contain the digits needs — and it is the number the bar's height is
+  /// derived from. (The column's ring cleared the ink instead, deliberately,
+  /// and that ring is gone with the column: a circle around a 58pt clock is
+  /// ~225pt across, i.e. taller than the transcript it would sit over.)
+  func testThePlateReservesALineBoxTallerThanTheGlyphsAndDoesNotDependOnElapsed() {
+    let base = RecordingPaneMetrics.bloomTimerBase
+    XCTAssertGreaterThan(SessionTimerMetrics.plateHeight(base: base), base * 0.75)
     XCTAssertGreaterThan(
-      RecordingPaneMetrics.ringDiameter,
-      SessionTimerMetrics.plateWidth(base: RecordingPaneMetrics.columnTimerBase)
+      SessionTimerMetrics.plateHeight(base: base),
+      SessionTimerMetrics.plateHeight(base: RecordingPaneMetrics.restTimerBase)
+    )
+    // The widest form wins the reservation, so the step at the hour cannot ask
+    // for a taller row than the one already reserved.
+    XCTAssertGreaterThanOrEqual(
+      SessionTimerMetrics.plateHeight(base: base),
+      SessionTimerMetrics.plateHeight(base: SessionTimerMetrics.fontSize(base: base, elapsed: 3600))
     )
   }
 
@@ -274,17 +296,19 @@ final class RecordingPaneTests: XCTestCase {
 
   /// Nothing the pane lays out with can move under an accessibility setting:
   /// every number is a constant or derived from constants, so there is no
-  /// `@Environment` read for one to reach.
+  /// `@Environment` read for one to reach. The bloom is the one state the bar
+  /// has, and it is driven by the pointer — Reduce Motion reaches the animation
+  /// between the two heights and neither of the heights.
   func testNoPaneGeometryMovesUnderAnAccessibilitySetting() {
-    XCTAssertEqual(RecordingPaneMetrics.columnWidth, 288)
     XCTAssertEqual(RecordingPaneMetrics.gutterWidth, 52)
-    XCTAssertEqual(RecordingPaneMetrics.stripMinHeight, 64)
-    XCTAssertEqual(
-      RecordingPaneMetrics.foldWidth,
-      RecordingPaneMetrics.columnWidth
-        + RecordingPaneMetrics.dividerWidth
-        + RecordingPaneMetrics.transcriptMinWidth
-    )
+    XCTAssertEqual(RecordingPaneMetrics.dotDiameter, 20)
+    // 65: the Stop capsule's 41pt row plus the bar's own 24 of padding. It is
+    // measured from the button style rather than typed there, so this pins the
+    // *answer* while `testTheRestingBarDrawsExactlyTheHeightItReserves` pins
+    // that the answer is the one the bar draws. It read 64 while the bar drew
+    // 65, which is how a whole file of geometry tests stayed green against a
+    // reservation that never bound.
+    XCTAssertEqual(RecordingPaneMetrics.barHeight(bloomed: false), 65)
 
     // The accent is untouched by either setting; only the scheme moves it.
     XCTAssertEqual(CraftTokens.ember(.light), CraftTokens.emberLight)
@@ -313,6 +337,21 @@ final class RecordingPaneTests: XCTestCase {
     log.mark(at: 5)
     log.reset()
     XCTAssertTrue(log.markers.isEmpty)
+  }
+
+  /// The bar shows a **count**, and an empty log shows the flag alone rather
+  /// than a tally of nothing. The popover is where the words live — the heading
+  /// and `noMarkers` survived the column, which is what the owner's call asked
+  /// for (2026-08-10).
+  func testAnEmptyLogShowsNoCountAndTheWordsLiveInThePopover() {
+    XCTAssertNil(RecordingPaneCopy.markerCount([]))
+    XCTAssertEqual(RecordingPaneCopy.markerCount([SessionMarker(at: 3)]), "1")
+    XCTAssertEqual(
+      RecordingPaneCopy.markerCount((0..<12).map { SessionMarker(at: TimeInterval($0)) }),
+      "12"
+    )
+    XCTAssertEqual(RecordingPaneCopy.markersHeading, "Moments")
+    XCTAssertEqual(RecordingPaneCopy.noMarkers, "No moments yet")
   }
 
   /// A marker's timestamp is the same clock the timer runs, so "12:04" on the
@@ -406,138 +445,209 @@ final class RecordingPaneTests: XCTestCase {
 
   // MARK: - Laid out
 
-  /// The acceptance case: the column takes exactly 288pt and the transcript
-  /// takes the rest.
-  ///
-  /// The first half used to host the HStack inside `.frame(width: 1000)` and
-  /// assert its `fittingSize.width` was 1000 — the frame fixing the very number
-  /// under test. What is measurable without a window server is the column's own
-  /// width (a real measurement: it is a `.frame(width:)` the content has to
-  /// satisfy) and the arithmetic that hands the remainder over, so both are
-  /// asserted and the tautology is gone.
-  func testTheColumnTakesItsWidthAndTheTranscriptTakesTheRest() {
-    let column = NSHostingView(
-      rootView: SessionColumnContent(
-        elapsed: 61,
-        level: MicLevelFeed(level: 0.4),
-        kind: .meeting,
-        controls: .stop,
-        markers: [],
-        onMark: {},
-        onStop: {}
-      )
-    )
-    column.layoutSubtreeIfNeeded()
-    XCTAssertEqual(
-      column.fittingSize.width,
-      RecordingPaneMetrics.columnWidth,
-      accuracy: 0.5,
-      "the session column is not 288pt wide"
-    )
-
-    // "The rest", stated as the arithmetic the pane divides by: the column and
-    // its hairline come out of the pane's width, and nothing else does.
-    for pane in [CGFloat(900), 1000, 1440, 2560] {
-      XCTAssertEqual(
-        RecordingPaneLayout.transcriptWidth(paneWidth: pane)
-          + RecordingPaneMetrics.columnWidth
-          + RecordingPaneMetrics.dividerWidth,
-        pane,
-        accuracy: 0.001,
-        "the two panes do not add up to the window at \(pane)"
-      )
-      XCTAssertGreaterThanOrEqual(
-        RecordingPaneLayout.transcriptWidth(paneWidth: pane),
-        RecordingPaneMetrics.transcriptMinWidth,
-        "the column is drawn at \(pane) while starving the transcript"
-      )
-    }
-  }
-
-  /// Why `SessionColumnView` wraps its content in a scroll view rather than
-  /// being a plain stack: the column at full size is **taller than the smallest
-  /// window this app allows**, and the alternative to scrolling was shrinking
-  /// the timer — which is the one thing the column exists to make large.
-  ///
-  /// If a future change makes the content fit 560pt, this test is the one that
-  /// says the wrapper can go.
-  func testTheColumnIsTallerThanTheSmallestWindowWhichIsWhyItScrolls() {
+  private func barHost(
+    elapsed: TimeInterval = 61,
+    kind: HistoryKind = .meeting,
+    markers: [SessionMarker] = [],
+    width: CGFloat = 980
+  ) -> NSHostingView<some View> {
     let host = NSHostingView(
-      rootView: SessionColumnContent(
-        elapsed: 3600,
+      rootView: SessionBarView(
+        elapsed: elapsed,
         level: MicLevelFeed(level: 0.4),
-        kind: .meeting,
+        kind: kind,
         controls: .stop,
-        markers: [SessionMarker(at: 1), SessionMarker(at: 2)],
+        markers: markers,
         onMark: {},
         onStop: {}
       )
+      .frame(width: width)
     )
     host.layoutSubtreeIfNeeded()
-    XCTAssertGreaterThan(host.fittingSize.height, Metrics.windowMinHeight)
-    XCTAssertEqual(host.fittingSize.width, RecordingPaneMetrics.columnWidth, accuracy: 0.5)
+    return host
   }
 
-  /// The folded form really is a strip: **one** row tall.
-  ///
-  /// The bound used to be the column's ring diameter (~225pt), which a strip
-  /// that had wrapped to three 64pt rows would have passed while the failure
-  /// message read "it did not fold, it wrapped". The bound is now one row plus
-  /// its own vertical padding, so a second row fails it.
-  func testTheFoldedFormIsOneRowTall() {
-    let strip = NSHostingView(
-      rootView: SessionStripView(
-        elapsed: 61,
-        level: MicLevelFeed(level: 0.4),
-        kind: .memo,
-        controls: .stop,
-        onMark: {},
-        onStop: {}
-      )
-      .frame(width: 640)
-    )
-    strip.layoutSubtreeIfNeeded()
-    let height = strip.fittingSize.height
-    let oneRow = RecordingPaneMetrics.stripMinHeight + 2 * RecordingPaneMetrics.stripPaddingV
-    XCTAssertGreaterThanOrEqual(height, RecordingPaneMetrics.stripMinHeight)
-    XCTAssertLessThanOrEqual(
+  /// The acceptance case: the bar is **one row** and the transcript takes the
+  /// whole width. The row is what a test can measure; the width is the absence
+  /// of the thing that used to take some of it, which is why the assertion is
+  /// that the bar reserves no width of its own at any window size.
+  func testTheBarIsOneRowAndTakesNoneOfTheTranscriptsWidth() {
+    let height = barHost().fittingSize.height
+    XCTAssertEqual(
       height,
-      oneRow,
-      "the folded form is \(height)pt — taller than one padded row, so it wrapped"
+      RecordingPaneMetrics.barHeight(bloomed: false),
+      accuracy: 0.5,
+      "the resting bar draws \(height)pt against a reservation of "
+        + "\(RecordingPaneMetrics.barHeight(bloomed: false))pt"
+    )
+
+    // A bar has no intrinsic width to charge the transcript: at the narrowest
+    // window the app allows it still lays out in one row.
+    let narrow = barHost(width: Metrics.windowMinWidth).fittingSize.height
+    XCTAssertEqual(
+      narrow,
+      height,
+      accuracy: 0.5,
+      "the bar grew taller at \(Metrics.windowMinWidth)pt — it wraps at a permitted window"
     )
   }
 
   /// Crossing the hour re-sizes the glyphs and moves nothing around them —
-  /// including the column they sit in. Measured on the *content* rather than on
-  /// `SessionColumnView`, whose width is a fixed frame and would answer 288
-  /// even if the timer inside it had reflowed.
-  func testTheColumnDoesNotReflowWhenTheTimerCrossesTheHour() {
-    func columnSize(elapsed: TimeInterval) -> CGSize {
-      let host = NSHostingView(
-        rootView: SessionColumnContent(
-          elapsed: elapsed,
-          level: MicLevelFeed(level: 0.4),
-          kind: .meeting,
-          controls: .stop,
-          markers: [],
-          onMark: {},
-          onStop: {}
-        )
-      )
-      host.layoutSubtreeIfNeeded()
-      return host.fittingSize
-    }
-    let before = columnSize(elapsed: 3599)
-    let after = columnSize(elapsed: 3600)
+  /// including the bar they sit in.
+  func testTheBarDoesNotReflowWhenTheTimerCrossesTheHour() {
+    let before = barHost(elapsed: 3599).fittingSize
+    let after = barHost(elapsed: 3600).fittingSize
     XCTAssertGreaterThan(before.height, 0, "hosting view produced no layout")
-    XCTAssertEqual(before.width, after.width, accuracy: 0.5, "the column reflowed at the hour")
-    XCTAssertEqual(before.height, after.height, accuracy: 0.5, "the column changed height at the hour")
+    XCTAssertEqual(before.height, after.height, accuracy: 0.5, "the bar changed height at the hour")
     XCTAssertNotEqual(
-      SessionTimerMetrics.fontSize(base: RecordingPaneMetrics.columnTimerBase, elapsed: 3599),
-      SessionTimerMetrics.fontSize(base: RecordingPaneMetrics.columnTimerBase, elapsed: 3600),
+      SessionTimerMetrics.fontSize(base: RecordingPaneMetrics.restTimerBase, elapsed: 3599),
+      SessionTimerMetrics.fontSize(base: RecordingPaneMetrics.restTimerBase, elapsed: 3600),
       "the size did not step, so 'no reflow' proves nothing"
     )
   }
+
+  /// The moments live in the bar's popover, so the number of them may not
+  /// change the bar. That is the whole reason the count is a count.
+  func testTheNumberOfMomentsNeverChangesTheBar() {
+    let none = barHost(markers: []).fittingSize
+    let many = barHost(markers: (0..<40).map { SessionMarker(at: TimeInterval($0 * 7)) }).fittingSize
+    XCTAssertEqual(none.height, many.height, accuracy: 0.5, "40 moments made the bar taller")
+  }
+
+  /// The resting height is the **Stop capsule**, and the constant that says so
+  /// has to be measured from the style that draws it rather than typed beside
+  /// it. It was typed — 40 against a row that lays out at 41 — so
+  /// `barHeight(bloomed: false)` promised 64pt while the bar drew 65, the
+  /// `.frame(minHeight:)` never bound, and the resting height was whatever child
+  /// happened to be tallest: exactly what the constant exists to prevent, with
+  /// every geometry test in this file green through it.
+  ///
+  /// Both halves are asserted, because either alone leaves the hole open. The
+  /// **drawn Stop button** is the reservation (so the AppKit face the metric
+  /// measures and the SwiftUI face the button draws cannot drift apart), and it
+  /// is the tallest thing on the row (so it is really the floor).
+  func testTheRestingBarDrawsExactlyTheHeightItReserves() {
+    let stop = NSHostingView(
+      rootView: Button(RecordingPaneCopy.stopTitle) {}
+        .buttonStyle(RecordingStopButtonStyle())
+        .frame(width: 160)
+    )
+    stop.layoutSubtreeIfNeeded()
+    XCTAssertGreaterThan(stop.fittingSize.height, 0, "the hosting view produced no layout")
+    XCTAssertEqual(
+      stop.fittingSize.height,
+      RecordingPaneMetrics.controlRowHeight,
+      accuracy: 0.5,
+      "Stop draws \(stop.fittingSize.height)pt and the bar reserves "
+        + "\(RecordingPaneMetrics.controlRowHeight)pt for it"
+    )
+
+    // …and it is the floor, so the bar's content height is its height.
+    XCTAssertEqual(
+      RecordingPaneMetrics.barContentHeight(bloomed: false),
+      RecordingPaneMetrics.controlRowHeight
+    )
+    XCTAssertEqual(
+      barHost().fittingSize.height,
+      RecordingPaneMetrics.barHeight(bloomed: false),
+      accuracy: 0.5
+    )
+  }
+
+  /// The same claim from the other side: the reservation **follows** the style.
+  /// A padding change is supposed to move the bar's height with it, and the
+  /// derivation is the only thing that makes that true.
+  func testTheReservedRowIsDerivedFromTheStopStyleRatherThanTypedIn() {
+    let line = ("0" as NSString)
+      .size(withAttributes: [.font: RecordingStopButtonStyle.measuringFont])
+      .height
+    XCTAssertEqual(
+      RecordingPaneMetrics.controlRowHeight,
+      (line + 2 * RecordingStopButtonStyle.verticalPadding).rounded(.up)
+    )
+    XCTAssertEqual(RecordingStopButtonStyle.verticalPadding, CraftTokens.spacing12)
+    XCTAssertEqual(RecordingStopButtonStyle.fontSize, 14)
+  }
+
+  // MARK: - The bloom's trigger is the whole bar
+
+  /// The bar grows into a taller card "while the pointer is over it", and over
+  /// **it** has to mean the bar and not its glyphs. A root `HStack` with no fill
+  /// hit-tests to its children only, so `.onHover` on one reports the dot, the
+  /// clock, the kind line and the three buttons — and nothing in the several
+  /// hundred points of `Spacer` between them. Two opposite failures fall out: a
+  /// pointer parked in the gap never blooms the bar at all, and a pointer
+  /// travelling from the clock to Stop crosses the gap and fires `false` then
+  /// `true`, costing two full bloom animations and two transcript relayouts
+  /// inside one gesture.
+  ///
+  /// It is asserted here rather than left to `.contentShape(Rectangle())`
+  /// because SwiftUI resolves hover inside the hosting view: neither `hitTest`
+  /// nor the hosting view's tracking areas can tell a shaped bar from an
+  /// unshaped one (measured, both ways), which is how this shipped. The tracking
+  /// area is the same promise in something a test can read.
+  func testTheWholeBarIsTheBloomsTriggerIncludingTheGap() {
+    let hover = SessionHoverView()
+    hover.frame = CGRect(x: 0, y: 0, width: 980, height: RecordingPaneMetrics.barHeight(bloomed: false))
+    hover.updateTrackingAreas()
+
+    XCTAssertEqual(hover.trackingAreas.count, 1, "the bar has no hover surface, or has two")
+    XCTAssertEqual(
+      hover.trackingAreas.first?.rect,
+      hover.bounds,
+      "the hover surface does not cover the bar — the gap between the clock and Stop is not in it"
+    )
+    // Re-laid out (the bloom makes the bar taller), the surface follows.
+    hover.frame.size.height = RecordingPaneMetrics.barHeight(bloomed: true)
+    hover.updateTrackingAreas()
+    XCTAssertEqual(hover.trackingAreas.count, 1)
+    XCTAssertEqual(hover.trackingAreas.first?.rect, hover.bounds)
+
+    // And it reports both edges of the crossing.
+    var reported: [Bool] = []
+    hover.onHover = { reported.append($0) }
+    hover.mouseEntered(with: Self.mouseMoved)
+    hover.mouseExited(with: Self.mouseMoved)
+    XCTAssertEqual(reported, [true, false])
+
+    // It claims every point for hover and none for the mouse: Mark, Stop and
+    // the moments button sit above it and keep their clicks.
+    XCTAssertNil(hover.hitTest(CGPoint(x: 490, y: 20)))
+  }
+
+  /// …and the bar really installs one. The defect was the *absence* of a
+  /// surface, so the test that catches it has to look at the laid-out bar.
+  func testTheLaidOutBarCarriesThatHoverSurfaceAtItsFullWidth() {
+    let host = barHost(width: 980)
+    func find(_ view: NSView) -> SessionHoverView? {
+      if let hit = view as? SessionHoverView { return hit }
+      for sub in view.subviews {
+        if let hit = find(sub) { return hit }
+      }
+      return nil
+    }
+    guard let surface = find(host) else {
+      return XCTFail("the bar draws no hover surface, so most of it does not bloom")
+    }
+    XCTAssertEqual(surface.bounds.width, 980, accuracy: 1, "the surface is narrower than the bar")
+    XCTAssertEqual(
+      surface.bounds.height,
+      RecordingPaneMetrics.barHeight(bloomed: false),
+      accuracy: 1
+    )
+  }
+
+  private static let mouseMoved: NSEvent = NSEvent.mouseEvent(
+    with: .mouseMoved,
+    location: .zero,
+    modifierFlags: [],
+    timestamp: 0,
+    windowNumber: 0,
+    context: nil,
+    eventNumber: 0,
+    clickCount: 0,
+    pressure: 0
+  )!
 
   // MARK: - The meter's feed
 
