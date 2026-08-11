@@ -114,6 +114,197 @@ verbs under `nota history` in the CLI section:
 Commands exit non-zero if a referenced profile is missing. Confirmation lines
 are written to stderr so stdout stays scriptable.
 
+## Recording Storage & Deletion
+
+XIA-436. **Nota never deletes a recording on its own.** There is no sweep, no
+scheduled cleanup, no "reclaim space" path and no deletion on failure —
+`grep` should keep finding none. The owner is asked to accept unbounded audio
+growth, and the deal is that the figure is always visible and always
+actionable by hand. The visible figure *is* the retention policy, which is why
+the storage surfaces and the deletion verbs shipped together.
+
+**The containment rule, one direction only:** deleting the transcript deletes
+the audio; deleting the audio never touches the transcript. Forbidden by
+construction — a cascade upward, a partial delete that leaves an assets folder
+behind (the folder goes wholesale, never file by file), and any "clean up"
+that removes a transcript to reclaim space.
+
+**The exported `.md` is never deleted by Nota.** It lives outside `~/.nota`,
+often beside the owner's own source audio. `nota history delete` reports its
+path so the owner is told where their notes still are; the app's **Delete
+record…** leaves it too, which is why the drawer row *survives* that verb —
+the row is built from that file.
+
+That sentence was **false in-tree** when it was written, and the fix is worth
+recording because it was the older code that was wrong, not the rule. The
+drawer row's hover **trash button** (`NotaModel.deleteHistory`, pre-XIA-436)
+removed `entry.url` — the exported `.md` — on one click with no confirmation,
+and then removed `<md-basename>.summary.assets` *next to the markdown*, a path
+that has never existed (real assets are at `~/.nota/history/<id>.assets`). So
+it destroyed the file this rule protects and left `<id>.json` +
+`<id>.assets/recording.caf` behind with the row that named them gone:
+unreachable from the app *and* from `nota history delete <id>`, while
+`nota history storage` went on counting bytes nobody could find a handle for.
+The button and the function are **gone**. Routing it through
+`RecordingStore.deleteRecord` was the alternative and was rejected — that verb
+keeps the `.md`, and the row *is* the `.md`, so the button would have read as
+doing nothing while being the app's one unconfirmed destructive control. The
+row's context menu is now the app's **only** deletion surface, and it gained
+**Reveal in Finder**: removing their own exported file stays the owner's to do,
+in the app that owns files.
+
+- `nota history storage [--json]` — per-record and total sizes, oldest first.
+  Read-only, with no flag that could delete. `--json` emits the whole
+  `StorageSummary`, which is what the macOS Usage sheet decodes: **one
+  computation**, so the sheet and the terminal cannot disagree about the
+  figure. It walks the history directory itself rather than through
+  `listHistoryRecords`, and both reasons are about a verb whose job is to
+  *find* things: one unparseable `<id>.json` used to reject the whole
+  `Promise.all` and take the verb down — **and both delete verbs with it**,
+  since `resolveTargets` computes the store even for a single named id — and a
+  record-driven walk cannot see an `<id>.assets/` folder no record names.
+  Those **orphans are counted, named on stdout, and included in the total**;
+  nothing removes them, because nothing may. A store's invisible bytes are the
+  one thing a figure that *is* the retention policy may not have.
+- `nota history delete-audio <id> | --older-than <age>` — removes
+  `recording.caf` and clears `audioPath`/`audioBytes`. The record survives in
+  full and still reads in both the app and the CLI. Three things it owes:
+  the write is **atomic** (temp + rename — `writeFile` truncates before it
+  writes, and a kill in between would strand the transcript this verb exists
+  to preserve); it is built from the record's **raw bytes**, not from the
+  object `loadHistoryRecord` normalizes, so a `status` it recomputed is never
+  persisted; and it **blanks `sourcePath` when that field named the file it
+  just deleted**, since `recordAudioPath` and `resolvedAudioURL` both fall
+  back to it and would otherwise report a path to a file that is gone (both
+  already read empty as "no audio"). A legacy record's `sourcePath` — the
+  owner's own file elsewhere — is never touched. **`RecordingStore.deleteAudio`
+  does all three too**, blanking included; it did not until the follow-up, so
+  the same verb through the app and through the CLI left records that differed
+  by one field under a header claiming they mirror each other exactly. The
+  confirmation names the
+  **per-speaker voice clips that stay**: they are audio of the same people,
+  this verb deliberately keeps them, and "only the recording goes" misleads
+  precisely the owner deleting audio for privacy.
+
+  **A record without audio is still a record.** Deleting the audio is the one
+  thing in the store that makes `resolvedAudioURL` answer nothing for a
+  non-legacy record, and `HistoryRecordInfo.find` used to gate its *whole*
+  result on that resolver — invisible until something could take a recording
+  away, since `sourcePath` was always there to answer. So the first successful
+  `delete-audio` cost the open document its history record entirely: blank
+  summary slot and tag chips, every speaker chip stuck on amber "no history
+  record", a name typed into a chip enrolling nothing, and
+  `acceptSuggestion` / `dismissSuggestion` / `setPinned` all silent no-ops —
+  while the verb's own confirmation promised the voice clips were kept *so that
+  enrollment still works*. `find` needs an `id` and nothing else now, and
+  `HistoryRecordInfo.audioURL` is optional. Anything that genuinely needs a
+  file asks for one and handles its absence; the storage verbs never used that
+  resolver at all (`keptAudioURL`, above).
+
+  **The drawer row outlives the record it named.** Rows are built from exported
+  `.md` files, "Delete record…" never removes one, and nothing else in the app
+  does either — so the row is still there afterwards and its context menu can
+  no longer find a record. That alert says what is true of both ways to reach
+  it (deleted just now, or an imported `.md` that never had a record), names
+  what is left on disk, and offers **Reveal in Finder** — the only thing that
+  removes the row, and the owner's to do. It may not say "try again": there is
+  nothing to retry, and after a deliberate delete it reads as a bug report for
+  the thing that just worked.
+
+  `StoredRecordRow` decodes **field by field**, for the reason
+  `DictationSettings` does: the app shells out to whatever `dist/index.js` is
+  on disk, and `refreshStorage` turns any decode throw into *no Storage section
+  at all*. One row from a build predating `status` / `speakerClipCount` /
+  `speakerClipBytes` would silently remove the figure the whole retention deal
+  rests on, with a stale `dist/` as the only clue. A row with no `id` still
+  throws — that is corrupt, not old.
+- `nota history delete <id> | --older-than <age>` — removes the record JSON and
+  its whole `<id>.assets/` folder.
+- `--older-than 90d` (also `w`/`m`/`y`; 1m = 30d, 1y = 365d) **prints every id
+  and the total, then asks.** No scheduled or automatic form exists. A record
+  whose timestamp cannot be parsed is never selected.
+- `--yes` skips the prompt and is **required** non-interactively: a run that
+  cannot be asked is refused, never assumed to consent. Both verbs preview and
+  confirm even for a single id.
+
+Storage and deletion deliberately do **not** use `recordAudioPath` (TS) or
+`LiveSessionPersistence.resolvedAudioURL` (Swift). Those fall back to the
+absolute `sourcePath` so a legacy record can still be *played*, and that path
+is the owner's own file outside the store: counting it would inflate the
+store's size with bytes it does not hold, and deleting it would hand an unlink
+the owner's original recording. `keptAudioPath` / `RecordingStore.keptAudioURL`
+see only inside the record's assets folder, and **refuse a value that climbs
+out of it** — the string is read off a JSON file and handed to an unlink, so a
+record must not be able to aim the one irreversible thing this app does.
+In the CLI a record with no stored audio reads **"audio not kept"**, in words
+rather than as `0 B` (which would mean a recording that exists and is empty) —
+once, quietly, never as an error. Legacy records simply have none. The app has
+no per-record audio *column* to render, so it says the same thing in the
+sentence an owner actually reads (`RecordingDeletionCopy.audioMessage` → "This
+record keeps no audio"); `StorageFormat.audio` is gone, because a helper whose
+only caller was its own test reads as coverage of a surface that does not
+exist.
+
+**A delete that only half happened is a failure, and is reported as one.**
+`RecordingStore.deleteRecord` removes the assets folder **first**, **checks
+the result**, and keeps the record JSON when it could not (an immutable flag,
+a read-only parent, a file owned by another uid after a Migration Assistant
+restore). A swallowed `try?` there was the forbidden partial delete happening
+by construction: the record JSON went, the recording stayed, and nothing in
+the store named it any more. Failing before the JSON is removed is the
+recoverable order — the owner still has a row and can try again. The TS twin
+gets this free (`rm(dir, {recursive: true, force: true})` throws on a real
+error; `force` only suppresses ENOENT), which is why the two sides now agree.
+
+**Discard deletes the whole record, audio included** (changed by XIA-436; it
+settled-and-kept under XIA-430). That does not bend the standing rule, which
+is about the *automatic* paths: Discard is an explicit press on a session the
+owner is saying they do not want, and a button labelled Discard that leaves
+the recording on disk is the one that lies. The other half is pinned by test —
+a session that *fails* still settles and keeps everything, because nobody
+chose that outcome. Two things it owes:
+
+- **It confirms, naming the length, the bytes and the way out.** It is the
+  most destructive verb in the app — a whole session's un-recreatable audio —
+  and it sits between **Save Transcript** and **Try Again**, both harmless, on
+  a banner it reads as dismissing. The drawer's verbs all name what goes, what
+  stays and that it cannot be undone; the one that destroys the most may not
+  say less. The message points at whichever alternative applies (Save
+  Transcript when something was heard, Try Again when not) — which is also how
+  the owner reaches the "a failed session keeps everything" path the rules
+  promise. `RecordingDeletionCopy.discardMessage`, a pure string.
+- **A discard whose delete did not land settles the record instead of walking
+  away from it.** `LiveSessionOwner.discard` is one function for that reason:
+  dropping the result and calling `release` regardless clears ownership of a
+  record still saying `recording`, so `settle` can never run for it,
+  `observeLiveSessionState` cannot rescue it (`isOwning` is false), the owner
+  is told "Recording discarded" — and the next launch's sweep stamps it
+  `failed(recording) + interrupted`, presenting as **"Interrupted"**: a fact
+  that never happened, with the audio they believed they discarded still on
+  disk. That is XIA-430's rule 3, and this is the one path that could break it.
+
+**The TS↔Swift JSON contract is pinned by the CLI's own output.**
+`macos/Nota/UI/Tests/Fixtures/storage-summary.json` is generated by
+`scripts/storage-summary-fixture.ts` (`npx tsx scripts/storage-summary-fixture.ts
+macos/Nota/UI/Tests/Fixtures/storage-summary.json`), decoded by the Swift
+`StoredStorageSummary` test, and rebuilt-and-compared by a vitest — so a shape
+change on either side goes red with an instruction to regenerate. The
+hand-written fixture it replaced *claimed* to be field-for-field what
+`--json` writes and was not: it was missing the `status` key every real row
+carries.
+
+TypeScript: `src/pipeline/storage.ts` (computation + the two primitives) +
+`src/cli/storage.ts` (verbs, injectable `ask`/`write`/`out`; the real
+`readline` prompt is driven by a test through a fake `process.stdin`).
+Swift: `macos/Nota/App/RecordingStorage.swift` (locate, delete, discard
+disposition, confirmation copy, byte formatting),
+`macos/Nota/UI/RecordingDeletionMenu.swift` (the row's context menu — reveal
+plus the two verbs — attached with one modifier call),
+`macos/Nota/UI/StorageSummaryView.swift` (the Usage sheet section, shown
+**even for an empty store**: the section carries "Nota never deletes
+recordings on its own.", and hiding it until there is something to delete
+shows it only to owners who have already found out).
+
 ## Custom Dictionary
 
 Shared custom-vocabulary store at `~/.nota/dictionary.json` (schema v1), read
@@ -1099,9 +1290,385 @@ in the background. A baked snapshot ships in-repo as the fallback. To see the
 current catalog: `nota models list`. To force a refresh: `nota models refresh`.
 The cache feeds cost computation for usage tracking.
 
+## The Recording Surface
+
+What a live session looks like while it is running (XIA-431 the accent,
+XIA-432 the pane). One arrangement, three components, one colour.
+
+### The ember
+
+`CraftTokens.ember(_:)` — `#d1662a` light, `#e8823a` dark — means exactly one
+thing: **the microphone is open.** It is not a brand colour, it does not vary
+by meeting-vs-memo, and nothing outside the recording components may draw with
+it. A second consumer would make it mean "Nota" instead of "we are capturing"
+and the signal would be gone. It is warm because everything else here is cool:
+the Craft Glass ground is a periwinkle/indigo wash and `primaryBlue` is the
+confident action, so the accent is the one warm thing in the room. The dark
+value is lifted and desaturated on purpose — `#d1662a` over the smoky wash
+reads as brown rather than as a live signal. `emberWash(_:)` is the same hue at
+10/16% for a ring interior or a meter lane; it is a glow, not a fill, and body
+text keeps its contrast over it.
+
+### The three components (`macos/Nota/UI/RecordingAccent.swift`)
+
+- **`SessionMeter`** is the live level, and it is **information**. It is the
+  only proof on screen that the microphone is actually open and hearing
+  something. Two variants (`.tall` in the column, `.compact` in a strip or
+  island) rather than a free `height`, because a meter whose bar count varies
+  continuously has no baseline to pin. It has a **floor**: a silent room draws
+  the minimum bar height, never nothing, since a blank meter and an absent
+  meter look the same.
+- **`SessionRing`** is the breathing ember circle, and it is **decoration**. It
+  carries no state the owner needs; it breathes because a live session should
+  feel alive.
+- **`SessionTimer`** is the elapsed clock — mono, tabular, and the single most
+  legible thing on the surface, because in a conversation what matters is the
+  indicator that things are flowing.
+
+### Why the timer's metrics are a type and not a view
+
+`SessionTimerMetrics` is pure arithmetic (`text`, `form`, `fontSize`,
+`plateWidth`) for the reason `HUDPillMetrics` and `HUDPrompterMetrics` are: the
+numbers are then asserted without a window server, a hosting view or a
+microphone. The decision it holds is the **step**: `mm:ss` draws at the
+caller's size and `h:mm:ss` at 72% of it, and the change happens exactly once,
+at the hour. It is deliberately not a fitted or auto-shrinking font — those
+re-measure on every tick and the digits would breathe with the seconds.
+
+The half that makes the step free is `plateWidth`, which reserves the wider of
+the two forms **up front** and is therefore independent of `elapsed` by
+construction. That is what makes "the plate keeps its width" a fact about the
+code rather than a hope about the metrics: crossing the hour re-sizes the
+glyphs inside a box that never moves, and `hh:mm:ss` is reserved rather than
+`h:mm:ss` so a tenth hour cannot ask for a second step.
+
+### Reduce Motion is answered differently by the two, on purpose
+
+`RecordingMotion` writes it down once, and the asymmetry is the whole point:
+
+- The **meter keeps moving** under Reduce Motion — with a plainer curve, no
+  spring overshoot, but it moves. Freezing it would not calm the interface; it
+  would make a live session and a wedged one look identical.
+- The **ring stops breathing** and holds at a steady scale and opacity. Nothing
+  is lost: the meter is already saying the thing the ring was dressing up.
+
+`reduceMotion` is deliberately **not** a parameter of
+`SessionMeterMetrics.barHeights`. The heights are what the microphone is doing,
+and that is not a motion preference; only the curve between two readings is.
+
+### Reduce Transparency changes the material and nothing else
+
+The panels degrade to opaque system materials through the existing
+`liquidGlass` branch, and the hairline and the shadow stay — they are constants
+on `CraftTokens`, not properties of the glass. Nothing moves: every number in
+`RecordingPaneMetrics` is a constant, so there is nothing for an accessibility
+setting to reach. And the ember is untouched — it is a function of the colour
+scheme alone. Stop is a **solid** fill rather than glass for exactly this
+reason: a glass Stop would go quiet precisely where the material degrades, and
+Stop is the one control that may never be hard to find.
+
+### The pane (B2, `macos/Nota/UI/RecordingPane.swift`)
+
+A ~288pt session column on the **trailing** edge, with the transcript taking
+the rest at full height. A column rather than a band across the top because the
+transcript should not pay height for the indicator.
+
+**The drawer and the column share an edge, and the stated reason they did not
+was false.** The ticket justified trailing with "⌘L owns this window's left
+edge"; it does not. `ContentView.historyDrawerLayer` is a
+`ZStack(alignment: .topTrailing)` holding a 380pt `HistoryDrawerView`, so ⌘L
+opens on the **right** — directly over the 288pt session column, and wider than
+it. Three options, and the third is what is implemented:
+
+1. Move the column to the leading edge. Cheapest to reason about, and it
+   reverses XIA-423's locked visual direction on an implementer's say-so.
+2. Push the pane aside while the drawer is open. The drawer is an overlay
+   precisely so it costs the content no layout; making it cost layout on one
+   pane only would be a second, contradictory drawer behaviour.
+3. **Accept the overlap** (current). The drawer is a transient, dismiss-on-
+   click-outside surface; the column is a persistent indicator. Covering an
+   indicator for as long as the owner is reading a list is what an overlay is
+   for, and it is what already happens to the transcript.
+
+This is a design call and the owner's to make — it is written down here rather
+than silently reversed. If it goes to (1), `RecordingPaneMetrics.columnWidth`
+and the `HStack` order in `LiveMeetingView.recordingPane` are the whole change;
+no arithmetic depends on the side.
+
+Top to bottom: the 58pt timer inside the ring, the tall meter, the kind line,
+`Mark ⌘K` (ghost) and `Stop` (solid ember, **the only filled control on the
+surface**), then the marker list at the bottom, newest first. The markers are
+last because they accumulate, and a list that grows must not push the fixed
+things around.
+
+- **The ring is derived, not typed in.** `ringDiameterNeeded` circumscribes the
+  timer's reserved plate, so the step at the hour changes the glyphs inside a
+  circle that never moves and a future change to the base size cannot silently
+  clip the clock. It clears the **glyphs**, not the line box —
+  `ringGlyphHeightRatio` — because monospaced digits and a colon have neither
+  ascenders nor descenders, and a ring sized to the line box is a ring sized to
+  whitespace: 30pt larger than the thing it encircles, reading as a balloon
+  around a clock rather than a ring on one.
+- **The column scrolls, and that is a measured decision.** At full size it is
+  taller than `Metrics.windowMinHeight`. The alternative was shrinking the
+  timer, which is the one thing the column exists to make large — so the column
+  keeps its size and a window too short for it scrolls rather than clipping the
+  marker list to a half-drawn heading. A `minHeight` tied to the container
+  keeps the ordinary case identical to the design, `Spacer` and all. The marker
+  list is deliberately **not** its own scroll view: two nested on one axis fight
+  over every wheel event.
+- **The fold is measured on the transcript, not on the pane, and that is what
+  makes it reachable.** The first cut folded below 720pt of *pane* and explained
+  it as "what happens when ⌘L takes the width" — but ⌘L is a `ZStack` overlay
+  that consumes **zero** width and `Metrics.windowMinWidth` is 780, so no window
+  this app allows could ever produce a strip: `SessionStripView` had no
+  production caller and a test asserted a threshold nothing could cross.
+  `RecordingPaneMetrics.foldWidth` is now *derived* —
+  `columnWidth + dividerWidth + transcriptMinWidth` = 288 + 1 + 520 = 809 — and
+  `RecordingPaneLayout.form` folds exactly when keeping the column would leave
+  the transcript under its floor. That also settles the second thing nobody had
+  reconciled: at the narrowest permitted window the column would leave 491pt of
+  transcript, which is why 780 now folds. `transcriptMinWidth` is 520 because it
+  leaves 408pt of text once the gutter, its gap and the two margins are paid —
+  about 56 characters at 14pt, the low end of a readable measure.
+  In the strip the timer steps to 26pt, the meter to `.compact`, the ring to a
+  breathing **dot** — a ring containing a 26pt clock would be ~114pt tall and a
+  strip is not. The marker list is the fold's one loss, and it is the compiler
+  that enforces it: `SessionStripView` has no `markers` parameter. (A
+  `showsMarkerList(_:)` predicate said the same thing in a place only a test
+  read, which made it a claim rather than a constraint; the two per-form numbers
+  that *are* worth centralizing — `timerBase` and `meterVariant` — are now read
+  by the views, which is what a layout helper is for.)
+- **The kind reaches the surface as one word.** No mode chrome, no toggle, no
+  segmented control, and above all no change to the accent: a kind is
+  relabelable after the fact, and a colour that moved with it would be lying
+  about a record the owner reclassified. `RecordingPaneCopy.all(kind:controls:)`
+  owns every fixed string the pane can draw so the promise is diffable —
+  `testAMemoAndAMeetingDifferByExactlyOneString` walks every state and fails if
+  a second string ever differs.
+- **The transcript lays out a speaker column the pipeline does not fill yet.**
+  `LiveTranscriptLine.speaker` is nil today, `LiveTranscript.blocks` already
+  groups consecutive lines by it, and a turn draws the name above its text when
+  there is one. Realtime speaker labels are a known unresolved follow-up; the
+  grouping is not waiting to be written, it is waiting to be fed, and the day it
+  is the transcript gains names and not one number in `RecordingPaneMetrics`
+  moves. The volatile tail is a line like any other — it continues the turn it
+  belongs to and differs only in being drawn at 55%, the same opacity the HUD
+  prompter dims its in-flight run to.
+- **…but the grouping may not cost the laziness, so the drawn model is flat.**
+  `LiveTranscript.rows` turns the blocks into one row per line plus a header row
+  where the speaker changes, and `LiveTranscriptView` puts those rows **directly**
+  in its `LazyVStack`. A `LazyVStack` defers only its direct children: nesting a
+  block's lines in an inner `VStack` made the whole session **one** child —
+  because every line's speaker is nil today, there is exactly one block — so a
+  90-minute meeting built and measured 800 `Text` views with
+  `.fixedSize(vertical:)` on every render pass, on screen or off. Master had put
+  each segment straight in the stack. The gutter timestamp belongs to whichever
+  row opens a turn and the rest reserve the cell and draw nothing in it, so
+  nothing steps left; the inter-turn gap is paid by the row that opens one,
+  since a flat stack has no blocks left to space apart.
+- **The row model is memoized against the transcript** (`LiveTranscriptRowCache`).
+  Building it is O(all segments), and a render the transcript did not cause —
+  a clock tick, anything that invalidates the window — must not pay for it. The
+  key is the segment count, the last segment's id, the partial, and the whole
+  seconds of `elapsed` (all `elapsed` reaches is the volatile line's gutter
+  timestamp, which is drawn to the second).
+- **There is one clock.** `LiveMeetingFormat.duration` delegates to
+  `SessionTimerMetrics.text`. The gutter timestamp beside a transcript line,
+  the time on a marker row and the big clock in the column name the same
+  instant, and two implementations of "the same instant" is a disagreement
+  waiting for a rounding change.
+- **Only a live session wears the column** (`LiveMeetingControls
+  .showsRecordingPane`). A failed session gets the banner over whatever it
+  heard: the column is the indicator that a session is *flowing*, and a
+  breathing ring with a live meter over a dead microphone is the exact lie the
+  meter exists to make impossible. **The idle state owes the same rule and did
+  not keep it**: it drew a breathing ember ring above the Start button, over a
+  closed microphone, in the state every owner sees before every recording — the
+  state that teaches them what the colour means. It draws none now, and
+  `testTheIdlePaneDrawsNoEmber` renders the pane and scans the pixels, because
+  "there is no ember on screen" is not a claim a constant can carry.
+  The idle and failed states keep `.liquidGlassButton()` deliberately: the
+  ghost/solid-ember pair is the *recording pane's* vocabulary and those are not
+  recording surfaces. "All of it goes" was only ever true of the pane.
+- **`LiveMeetingSession.level`** republishes `MicCapture.rmsLevel` rather than
+  exposing the capture engine, which would hand a view `start()` and `stop()`
+  as well. Two things about it are load-bearing:
+  - **It is its own object** (`MicLevelFeed`, held as a plain `let`), not a
+    `@Published Float` on the session. The tap delivers ~45 buffers a second and
+    the session is observed by `ContentView` *and* `LiveMeetingView`, so a level
+    on it invalidated the entire window body — toolbar, drawer overlay,
+    transcript — 45 times a second, which is three times the rate CLAUDE.md
+    already flags as an unbounded main-actor cost for the HUD prompter, against
+    a much larger hierarchy. Only `SessionMeterFeedView` observes the feed.
+    `MeterPublishGate` throttles the writes on top of that: never faster than
+    66 ms (the HUD's own tick), never for a move too small to see, and — the
+    escape the movement gate needs — any difference at all after 500 ms, or a
+    level decaying toward silence in sub-threshold steps would wedge the meter
+    at the last loud reading.
+  - **It answers the microphone only while the audio is being kept**
+    (`LiveMeetingSession.meterFollowsMicrophone`). On the AssemblyAI path
+    `stop()` sits in `.stopping` for up to the 5s watchdog with the tap still
+    installed, while `handlePCMBuffer` drops every buffer at its own guard. So
+    the owner pressed Stop, kept talking, watched the ember meter answer their
+    voice, and reasonably concluded those words were captured; they reached
+    neither `recording.caf` nor the socket. The meter falls to its floor the
+    moment audio stops being kept, and to zero when capture ends
+    (`stopCapture`, the one call all five exits share).
+- **A marker row is its timestamp, and its label when it has one.** It used to
+  fall back to the section heading, so every row under a heading reading MOMENTS
+  read `12:04  Moments` — rendered, and never looked at. `label` stays nil until
+  XIA-433 gives markers a meaning to say.
+
+## Record Lifecycle
+
+A history record is created at **sample zero**, not built at the end (XIA-430).
+`LiveSessionPersistence.beginRecording` writes `~/.nota/history/<id>.json` with
+`status: recording` and makes `<id>.assets/` **before the microphone opens**;
+the session records straight into `<id>.assets/recording.caf`, so there is no
+move-the-audio step after Stop and nothing to lose if the process never reaches
+the end. `sealTranscript` then fills that same record in — same id, same file.
+
+The status is one persisted string, and its vocabulary is the **contract**
+between `src/pipeline/history-status.ts` and `macos/Nota/App/HistoryStatus.swift`
+— same raw strings, same legacy mapping, same legal transitions, so
+`nota history show <id>` reports what the app is displaying:
+
+```
+recording → transcribing → transcribed → summarizing → done
+                ↓              ↓             ↓
+                       failed:<stage>
+```
+
+- **`transcribed` is a rest state, not a synonym for done.** It is where a
+  transcript-only live meeting comes to rest, and `nota history summarize`
+  refuses a `done` record without `--force` — calling a never-summarized
+  transcript finished would put every live meeting behind that flag.
+- **A record fails only in the stage it is in.** `canAdvance` refuses anything
+  else, and `updateStatus` refuses to write an illegal move rather than
+  recording a session nobody ran. `transcribed` fails as the summary it was
+  waiting for.
+- **Legacy records load, and never as live.** `"completed"` → `done`,
+  `"transcribed"` keeps its name, and an absent/unknown value resolves by what
+  the record HAS (a summary → `done`, none → `transcribed`). Resolving a legacy
+  record into a live stage would get it swept up as "Interrupted" at the next
+  launch, on every machine, forever. Tolerant per field, like
+  `DictationSettings.init(from:)` and `sanitizeCatalog`.
+- **Interrupted recovery runs once at launch**, before the first
+  `refreshHistory()`: nothing of ours is running, so anything still claiming a
+  live stage belongs to a process that went away. Those become
+  `failed(stage:)` + `interrupted: true`, which presents as **"Interrupted"**
+  rather than naming a stage that never got the chance to fail on its own.
+- **`audioPath` is relative to the record's own assets folder** (normally just
+  `recording.caf`), so the whole store can be relocated without rewriting a
+  single record (XIA-428). `sourcePath` stays absolute for the consumers that
+  read it, and is the *fallback* for records that predate `audioPath` — never
+  the authority when both exist. `LiveSessionPersistence.resolvedAudioURL`
+  (Swift) and `recordAudioPath` (TS) are the two halves of that rule;
+  `HistoryRecordInfo.find` resolves through the Swift one, so a record whose
+  store moved still names audio that is really there — but it does **not
+  require an answer**: both names for the audio are cleared by `delete-audio`,
+  and a record without audio is still a record (XIA-436). Nothing in the TS CLI
+  reads a record's audio yet — every verb takes its input path from argv — so
+  `recordAudioPath` is exercised by tests alone, deliberately.
+- **`audioBytes` is corrected at every exit, never only at the seal.**
+  `beginRecording` writes 0, which is true at sample zero and a lie from the
+  first buffer on; `sealTranscript` stamps the final size, and `settleAsFailed`
+  and the launch sweep stamp whatever was captured before things went wrong. An
+  interrupted record's recording is playable, so the record may not describe it
+  as empty. The field is always present, so no consumer has to tell "zero" from
+  "never written".
+- **Nothing deletes audio.** `deleteAudioFile()` and every call to it are gone;
+  `LiveMeetingSession.closeAudioFile()` drops the handle and the URL and does
+  **not** touch the file — `audioFile = nil; audioURL = nil` is the whole body,
+  and there is deliberately no delete counterpart anywhere in that type. A
+  failed transcription leaves the audio; a failed summary leaves the audio
+  **and** the transcript. Audio is the one artifact that cannot be regenerated,
+  and the failures are exactly when it is wanted. Deletion is an explicit user
+  verb, not a failure path.
+
+### The session lifecycle around that record
+
+The record is the durable half; these are the rules the *call sites* owe it.
+They live in `LiveSessionOwner` (`macos/Nota/App/LiveSessionLifecycle.swift`)
+rather than in `NotaModel`, because `NotaModel.init` sweeps the real `~/.nota`
+and runs preflight — a test cannot build one, and every defect below was a call
+site, not the machine.
+
+- **A Start press is accepted the moment it is seen, and the pane says so.**
+  `LiveMeetingSession.start` stays `.idle` across the mic-permission prompt and
+  the whole realtime open + `Begin` round trip, and a guard that asked only "is
+  it recording?" admitted a second press in that window. The second press wrote
+  a second record, took ownership, and cancelled the first task — whose cleanup
+  then cleared the *new* owner, so Stop found no record, sealed nothing, and the
+  whole meeting's transcript was lost while the record still said `recording`.
+  `isStarting` closes it in the model; `LiveMeetingControls.starting` closes it
+  on screen (the Start button is withdrawn, the header says "Starting…", and
+  ContentView enters the live phase from the press rather than from
+  `.recording`).
+- **A task may only clean up after itself.** `release`/`settle` take the record
+  the task was started for and do nothing unless it is still the owned one. An
+  unconditional `activeRecord = nil` in a cancelled task is what disowned a
+  live session.
+- **Every exit reaches a terminal status, and each has a route.** Clean stop
+  seals; a mid-session failure keeps the pane with **Save Transcript** (a failed
+  session is stoppable on purpose — `stop()` accepts `.failed` so the transcript
+  it heard can still be sealed), Try Again and Discard, and each of those
+  settles the record; a **server-initiated** end (`Termination`, or a clean
+  close) leaves no affordance at all, so `observeLiveSessionState` runs the stop
+  path itself; a process that goes away is the launch sweep's job. `.failed` is
+  deliberately not auto-settled: the banner is a pending decision, not a strand.
+- **A failure is written in the stage the record is IN.** `settleAsFailed` reads
+  the stage off the record instead of trusting the call site. `canAdvance`
+  refuses any other stage, `updateStatus` then writes *nothing*, and a discarded
+  false is a record claiming a live stage forever — which is exactly what the
+  stop path's `failed(stage: .transcribing)` on a `recording` record did.
+- **A write that did not land is never reported as success.** `mutateRecord` and
+  `updateStatus` are not `@discardableResult`; `sealTranscript` throws
+  `recordUnwritable` rather than returning a `SavedSession` for content that is
+  not on disk. And it writes the **content first and the status last**: the two
+  are separate atomic writes, and a crash between them must leave `transcribing`
+  (which the sweep resolves) rather than `transcribed` (a rest state the sweep
+  will never revisit, with no transcript and no `outputPath` in it).
+- **The CLI's write path honors the machine too.** `canCompleteWithSummary`
+  gates every verb that lands a summary (`setRecordSummary`,
+  `completeHistoryRecord`, `applyEnrichmentToRecord`), so `nota history
+  summarize` can no longer write `done` over a record that never reached a
+  transcript. It is expressed through `canAdvance` rather than beside it, and it
+  still admits the three real retries: `summarizing`, `done` (`--force`), and
+  `failed:summarizing`.
+- **`nota history show` and `nota history list` print the state the app
+  displays.** `historyStatusLabel` wraps `describeHistoryStatus`; `show` puts it
+  on **stderr** (stdout stays the record's JSON) and `list` carries it in a
+  trailing `State` column beside the raw `status` scripts match on.
+
 ## Key Design Decisions
 
 - Nota is the primary name; MeetingSum references exist only for backward compatibility.
+- The record comes before the audio, and the audio is never taken away
+  (XIA-430). Building the record at the end meant every failure before the end
+  — a crash, a dead socket, a process killed mid-sentence — left the recording
+  in a temp file with nothing pointing at it, and the cancel/failure paths then
+  deleted it outright. Now `beginRecording` writes the record and its assets
+  folder first, the session records into that folder, and every later step
+  edits the record in place. What falls out is worth stating: a record can
+  exist with nothing in it (so the launch sweep has to resolve interrupted
+  ones), the status has to be a typed machine rather than an ad-hoc string (so
+  a record cannot claim to have skipped a stage), and no failure path may
+  remove a file. See Record Lifecycle.
+- A durable record is only worth what its **call sites** honor, and all three
+  of that inversion's real defects were call sites rather than the machine
+  (XIA-430, second pass). A live session's record ownership therefore lives in
+  one testable type (`LiveSessionOwner`): one record at a time with the press
+  accepted the instant it is seen (a second press during the invisible,
+  seconds-long start window used to disown the session that was recording the
+  meeting), cleanup that may only clear the record the task itself started, and
+  a settle on every way out — including the two the user cannot reach, a
+  server-initiated end and a process that went away. Writes are checked and the
+  content is written before the status claims it: a `SavedSession` returned for
+  a write that did not land is a record saying Transcribed with no transcript
+  in it, and a status flipped first turns a crash into a record the launch
+  sweep will never look at again. See Record Lifecycle → the session lifecycle.
 - Model registry (`src/registry.ts`) is the single source of truth: model id → task, provider, required API key env, base URL. Transcription models are statically curated; summary models are sourced dynamically from the auto-refreshed catalog (`src/catalog.ts` + `~/.nota/models-catalog.json`) with a baked in-repo fallback. Only the API keys the resolved models actually need are required.
 - Summary model ids are auto-admitted weekly: mainline chat models (gpt-5.x, gemini flash/pro, deepseek v4+) matching allowlist predicates. Run `nota models list` for the current set.
 - Summary default is key-aware: `deepseek-v4-flash` > `gpt-5.4-mini` > `gemini-3.6-flash` based on which API key is set. A hint is printed when DeepSeek is skipped despite being the cheapest option. CLI engines never join that chain (ADR 0003).
@@ -1365,6 +1932,19 @@ The cache feeds cost computation for usage tracking.
   it to six lines" is an unbounded cost on the main actor. The window is wide
   enough that the clamped line count — the only thing the card's height depends
   on — is the one the full text would have produced.
+- **A feed that ticks does not belong on an object a window observes**, and
+  what a `LazyVStack` defers is only its **direct** children. The two together
+  are how the recording pane came to rebuild a whole meeting 45 times a second
+  (XIA-432): the microphone level was a `@Published` property of
+  `LiveMeetingSession` — observed by `ContentView` and `LiveMeetingView` — and
+  the transcript was one `LazyVStack` child, because grouping by a speaker label
+  the pipeline never fills produces exactly one block. So the level lives on its
+  own `MicLevelFeed` that only the meter observes and is gated to ~15 Hz, the
+  transcript is a flat list of rows, and the row model is memoized against the
+  transcript rather than recomputed per render. The same trap is already written
+  down for the HUD prompter one section up; the general rule is that the *rate*
+  of a publisher and the *breadth* of its observers multiply, and neither is
+  visible from the line that assigns the value.
 - The HUD draft feed is split at the source (`finalizedDraft` + `roughDraft` →
   `HUDDraft`), not merged and re-split downstream: a 120-character tail cannot be
   un-merged, and the prompter needs the finalized and volatile halves at full

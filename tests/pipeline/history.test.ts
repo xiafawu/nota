@@ -69,7 +69,7 @@ describe("history", () => {
       historyDir,
     );
 
-    expect(completed.status).toBe("completed");
+    expect(completed.status).toBe("done");
     expect(completed.summary?.narrative).toBe("A short meeting.");
   });
 
@@ -367,7 +367,7 @@ describe("history", () => {
     });
 
     describe("setRecordSummary", () => {
-      it("sets the summary, flips status to completed, and appends usage", async () => {
+      it("sets the summary, flips status to done, and appends usage", async () => {
         const record = await createHistoryRecord(transcribedInput(), historyDir);
         expect(record.status).toBe("transcribed");
 
@@ -393,7 +393,7 @@ describe("history", () => {
           historyDir,
         );
 
-        expect(updated.status).toBe("completed");
+        expect(updated.status).toBe("done");
         expect(updated.summary?.narrative).toBe("We planned things.");
         expect(updated.summaryEdited).toBe(false);
         expect(updated.usage).toHaveLength(1);
@@ -401,7 +401,7 @@ describe("history", () => {
 
         // Persisted, not just returned (record is truth).
         const loaded = await loadHistoryRecord(record.id, historyDir);
-        expect(loaded.status).toBe("completed");
+        expect(loaded.status).toBe("done");
         expect(loaded.summary?.title).toBe("Planning Sync");
       });
 
@@ -450,7 +450,7 @@ describe("history", () => {
         );
         expect(updated.summary?.tags).toEqual(["budget"]);
         expect(updated.summary?.narrative).toBe("We planned things.");
-        expect(updated.status).toBe("completed");
+        expect(updated.status).toBe("done");
         expect(updated.tagsEdited).toBe(false);
       });
     });
@@ -467,7 +467,7 @@ describe("history", () => {
 
         expect(updated.summary?.narrative).toBe("Hand-edited narrative.");
         expect(updated.summaryEdited).toBe(true);
-        expect(updated.status).toBe("completed");
+        expect(updated.status).toBe("done");
 
         const loaded = await loadHistoryRecord(record.id, historyDir);
         expect(loaded.summary?.narrative).toBe("Hand-edited narrative.");

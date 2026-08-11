@@ -5,6 +5,7 @@ import { loadConfig } from "./config.js";
 import { runPipeline } from "./orchestrator.js";
 import {
   formatHistoryList,
+  historyStatusLabel,
   listHistoryRecords,
   loadHistoryRecord,
   renameRecordSpeaker,
@@ -39,6 +40,12 @@ import {
   dictionaryList,
   dictionaryRemove,
 } from "./cli/dictionary.js";
+import {
+  StorageError,
+  deleteAudioCommand,
+  deleteRecordCommand,
+  storageCommand,
+} from "./cli/storage.js";
 import { printConfig } from "./cli/config.js";
 import { preflightCommand } from "./cli/preflight.js";
 import { applyEnvFile } from "./utils/env-file.js";
@@ -191,6 +198,10 @@ history
   .action(async (id: string) => {
     try {
       const record = await loadHistoryRecord(id);
+      // The state the app is showing for this record, in the app's own words
+      // — on stderr, so stdout stays the record's JSON and nothing that pipes
+      // this into `jq` has to change.
+      console.error(`Status: ${historyStatusLabel(record)} (${record.status})`);
       console.log(JSON.stringify(record, null, 2));
     } catch (error) {
       console.error(
@@ -251,6 +262,69 @@ history
         `\nError: ${error instanceof Error ? error.message : String(error)}`,
       );
       process.exit(1);
+    }
+  });
+
+// Storage + the two deletion verbs (XIA-436). There is deliberately no
+// scheduled or automatic form of either delete: Nota never reclaims a byte on
+// its own, and the visible figure below is the whole retention policy.
+history
+  .command("storage")
+  .description(
+    "Show per-record and total store sizes, oldest first (read-only)",
+  )
+  .option("--json", "Emit the whole storage summary as JSON")
+  .action(async (options) => {
+    try {
+      await storageCommand({ json: options.json });
+    } catch (error) {
+      handleStorageError(error);
+    }
+  });
+
+history
+  .command("delete-audio")
+  .description(
+    "Delete a record's kept recording; the transcript, summary and markers stay",
+  )
+  .argument("[id]", "History record id or unique prefix")
+  .option(
+    "--older-than <age>",
+    "Delete audio for every record older than this age (e.g. 90d); prints the full list and the total, then asks",
+  )
+  .option("--yes", "Skip the confirmation prompt (required non-interactively)")
+  .action(async (id: string | undefined, options) => {
+    try {
+      await deleteAudioCommand({
+        id,
+        olderThan: options.olderThan,
+        yes: options.yes,
+      });
+    } catch (error) {
+      handleStorageError(error);
+    }
+  });
+
+history
+  .command("delete")
+  .description(
+    "Delete a record and its whole assets folder, audio included; the exported .md is never deleted",
+  )
+  .argument("[id]", "History record id or unique prefix")
+  .option(
+    "--older-than <age>",
+    "Delete every record older than this age (e.g. 90d); prints the full list and the total, then asks",
+  )
+  .option("--yes", "Skip the confirmation prompt (required non-interactively)")
+  .action(async (id: string | undefined, options) => {
+    try {
+      await deleteRecordCommand({
+        id,
+        olderThan: options.olderThan,
+        yes: options.yes,
+      });
+    } catch (error) {
+      handleStorageError(error);
     }
   });
 
@@ -326,6 +400,13 @@ function handleEnrichError(error: unknown): never {
     `\nError: ${error instanceof Error ? error.message : String(error)}`,
   );
   process.exit(error instanceof EnrichError ? error.exitCode : 1);
+}
+
+function handleStorageError(error: unknown): never {
+  console.error(
+    `\nError: ${error instanceof Error ? error.message : String(error)}`,
+  );
+  process.exit(error instanceof StorageError ? error.exitCode : 1);
 }
 
 function handleSuggestionError(error: unknown): never {

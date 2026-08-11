@@ -82,13 +82,31 @@ export function defaultOutputPath(inputPath: string): string {
 }
 
 /**
+ * Where a record's markdown export goes: the path it already names, or a
+ * default derived from what it still knows about its source.
+ *
+ * `sourcePath` is not guaranteed to be there. `nota history delete-audio`
+ * blanks it when it named the recording it just removed (XIA-436) — leaving
+ * it would have every reader resolve audio to a file that is gone — so the
+ * fall-through is the record's own `sourceName`, and only then a plain
+ * literal. `defaultOutputPath("")` yields `./.summary.md`, a dotfile in the
+ * working directory, which is nobody's idea of where their notes went.
+ */
+export function recordOutputPath(
+  record: Pick<HistoryRecord, "outputPath" | "sourcePath" | "sourceName">,
+): string {
+  if (record.outputPath) return record.outputPath;
+  return defaultOutputPath(record.sourcePath || record.sourceName || "transcript");
+}
+
+/**
  * Rewrite a record's markdown export from the record itself (record is truth,
  * E3-a — the `.md` is a derived export). Returns the path written. Callers
  * treat a failure here as a warning: the record was already persisted, and
  * the next successful save repairs the file.
  */
 export async function writeOutputFromRecord(record: HistoryRecord): Promise<string> {
-  const outputPath = record.outputPath ?? defaultOutputPath(record.sourcePath);
+  const outputPath = recordOutputPath(record);
   await writeOutput(
     {
       summary: record.summary,

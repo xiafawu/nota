@@ -39,7 +39,23 @@ struct ContentView: View {
   private var phase: Phase {
     // A live session pins the pane until it settles (idle); failed keeps the
     // error banner on screen instead of silently dropping back to home.
-    if liveSession.state != .idle { return .liveMeeting }
+    // An accepted Start press pins it too, from the press itself: the session
+    // stays `.idle` through the mic prompt and the realtime handshake, and a
+    // pane that showed no change for those seconds invited a second press
+    // (XIA-430).
+    //
+    // And Stop unpins it IMMEDIATELY (XIA-435): `isLiveSessionHandedOff` is
+    // set on the press, before the stream is finalized and before the seal, so
+    // the window comes home in the same runloop turn whatever the transcript's
+    // length. The work that is left says where it got to in the drawer row and
+    // the menu bar, not in this pane.
+    if LivePhaseGate.showsLiveSession(
+      isStarting: model.isStartingLiveSession,
+      sessionIsIdle: liveSession.state == .idle,
+      handedOff: model.isLiveSessionHandedOff
+    ) {
+      return .liveMeeting
+    }
     if model.hasContent { return .document }
     if model.isRunning { return .running }
     return .home
@@ -56,9 +72,19 @@ struct ContentView: View {
   /// Transient run status only: the pill never persists into the completed
   /// document view (the header carries the title there).
   private var toolbarStatusPillState: ToolbarStatusPillState? {
-    guard model.isRunning else { return nil }
-    let text = model.phase.isEmpty ? model.status : model.phase
-    return ToolbarStatusPillState(isRunning: true, text: text)
+    if model.isRunning {
+      let text = model.phase.isEmpty ? model.status : model.phase
+      return ToolbarStatusPillState(isRunning: true, text: text)
+    }
+    // XIA-435: a handed-off record that failed before it wrote any markdown has
+    // no drawer row to appear in, and Stop took away the live pane that used to
+    // be the last surface acknowledging it. This is the one place left that can
+    // say so with the window in front. Only failures with nowhere else to go
+    // reach here — see `HandoffFailureNotice`.
+    if let failure = model.backgroundFailure {
+      return ToolbarStatusPillState(isRunning: false, text: failure)
+    }
+    return nil
   }
 
   /// Home/document swap matches the HUD show motion: fade + 8pt rise in,

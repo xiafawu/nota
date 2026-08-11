@@ -86,7 +86,7 @@ afterEach(() => {
 });
 
 describe("summarizeHistory", () => {
-  it("summarizes a transcribed record and marks it completed", async () => {
+  it("summarizes a transcribed record and marks it done", async () => {
     process.env.OPENAI_API_KEY = "test-key";
     const record = await createHistoryRecord(transcribedInput(), historyDir);
     expect(record.status).toBe("transcribed");
@@ -103,7 +103,7 @@ describe("summarizeHistory", () => {
 
     // Record is now completed with the summary persisted.
     const updated = await loadHistoryRecord(record.id, historyDir);
-    expect(updated.status).toBe("completed");
+    expect(updated.status).toBe("done");
     expect(updated.summary?.narrative).toBe("A recovered summary.");
     expect(updated.outputPath).toBe(outputPath);
 

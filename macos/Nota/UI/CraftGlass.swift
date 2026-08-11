@@ -63,6 +63,34 @@ enum CraftTokens {
     primaryBlue.opacity(scheme == .dark ? 0.45 : 0.32)
   }
 
+  // MARK: Recording accent (ember)
+
+  /// The one expressive accent on the whole surface, and it means exactly one
+  /// thing: **the microphone is open**. Per the recording-refresh reference
+  /// sweep (`docs/design/recording-refresh-inspiration.md`, do #3) recording
+  /// gets one contained accent that appears in no other state — so it does not
+  /// vary by meeting-vs-memo, it is not a brand color, and nothing outside the
+  /// recording components may draw with it. A second consumer would make the
+  /// color mean "Nota" instead of "we are capturing", and the signal is gone.
+  ///
+  /// Warm on purpose: the Craft Glass ground is a cool periwinkle/indigo wash
+  /// (`washLight`/`washDark`) and `primaryBlue` is the confident action, so the
+  /// accent is the one warm thing in the room.
+  static let emberLight: Color = Color(red: 0.820, green: 0.400, blue: 0.165)  // #d1662a
+  /// Lifted and desaturated for the dark ground — #d1662a over the smoky wash
+  /// reads as brown rather than as a live signal.
+  static let emberDark: Color = Color(red: 0.910, green: 0.510, blue: 0.227)  // #e8823a
+
+  static func ember(_ scheme: ColorScheme) -> Color {
+    scheme == .dark ? emberDark : emberLight
+  }
+
+  /// The wash behind an ember element (ring interior, meter lane). Low enough
+  /// that body text keeps its contrast over it — it is a glow, not a fill.
+  static func emberWash(_ scheme: ColorScheme) -> Color {
+    ember(scheme).opacity(scheme == .dark ? 0.16 : 0.10)
+  }
+
   // MARK: Chips (flat soft tint)
 
   static let chipCornerRadius: CGFloat = 6
@@ -139,7 +167,13 @@ private struct SplitMix64: RandomNumberGenerator {
 
 /// The "whisper of noise" layer: a seeded grid of tiny dots at very low
 /// opacity. Static (deterministic seed) so it never flickers.
-private struct CraftNoiseLayer: View {
+///
+/// Internal rather than private because `FieldBackground` draws the same grain
+/// over the animated ground (XIA-442). That is not a convenience: a smooth
+/// full-window gradient bands into visible contours at 8 bits, and the grain is
+/// what keeps the field reading as light rather than as a rendering. Two copies
+/// of it would be two answers to what the app's ground is made of.
+struct CraftNoiseLayer: View {
   let opacity: Double
   let color: Color
   private let seed: UInt64

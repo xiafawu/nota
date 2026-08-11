@@ -80,7 +80,8 @@ final class LiveMeetingSession: ObservableObject {
     let segments: [LiveSegment]
     let transcriptText: String
     let duration: TimeInterval
-    /// Temp 16 kHz mono CAF if the recording worked, else nil.
+    /// The 16 kHz mono CAF inside the record's assets folder, if the recording
+    /// worked. Nil when no destination was given or the file could not be opened.
     let audioURL: URL?
   }
 
@@ -90,6 +91,24 @@ final class LiveMeetingSession: ObservableObject {
   @Published private(set) var segments: [LiveSegment] = []
   @Published private(set) var partialText: String? = nil
   @Published private(set) var elapsed: TimeInterval = 0
+
+  /// The microphone's 0…1 meter level, republished from `MicCapture` so a
+  /// recording surface can draw the one thing that proves the microphone is
+  /// open. Republished rather than exposing `capture` itself: a view that holds
+  /// the capture engine holds its `start()` and `stop()` too, and this session
+  /// is the only thing entitled to call those.
+  ///
+  /// A plain `let` holding its **own** observable object, deliberately, and not
+  /// a `@Published Float` on this one. The tap delivers ~45 buffers a second
+  /// and this session is observed by `ContentView` and `LiveMeetingView`, so a
+  /// level on it invalidated the whole window body — toolbar, drawer overlay
+  /// and the entire transcript — 45 times a second. `MeterPublishGate` throttles
+  /// the writes on top of that; see it for the arithmetic.
+  ///
+  /// It goes to **zero** when capture ends (`stopCapture`) and while a session
+  /// is finalizing, because a meter that answers a voice whose audio is being
+  /// discarded is a meter claiming that voice was captured.
+  let level = MicLevelFeed()
 
   // MARK: - Lifecycle
 
@@ -107,11 +126,20 @@ final class LiveMeetingSession: ObservableObject {
   /// or `.apple` (on-device recognition — the memo path without an
   /// AssemblyAI key).
   ///
+  /// `audioDestination` is where the session records — since XIA-430 that is
+  /// the record's own `<id>.assets/recording.caf`, created before this call.
+  /// Nil records no audio at all (tests, and any caller with no record).
+  ///
   /// On any setup failure the session transitions to `.failed(message)` first
   /// (so the UI's error banner renders off the published state) and then
   /// throws `MicCaptureError`/`AssemblyAIError`.
-  func start(diarize: Bool = false, engine: LiveEngine = .assemblyAI) async throws {
+  func start(
+    diarize: Bool = false,
+    engine: LiveEngine = .assemblyAI,
+    audioDestination: URL? = nil
+  ) async throws {
     cancel()
+    self.audioDestination = audioDestination
 
     // 1. API key — only the AssemblyAI engine needs one; fail fast, before
     //    permission prompts or any engine work.
@@ -192,7 +220,9 @@ final class LiveMeetingSession: ObservableObject {
     capture.onPCMBuffer = { [weak self] buffer in
       // MicCapture delivers converted 16 kHz mono Float32 buffers on main.
       Task { @MainActor in
-        self?.handlePCMBuffer(buffer)
+        guard let self else { return }
+        self.publishLevel()
+        self.handlePCMBuffer(buffer)
       }
     }
     do {
@@ -203,7 +233,7 @@ final class LiveMeetingSession: ObservableObject {
       receiveTask = nil
       webSocketTask?.cancel(with: .normalClosure, reason: nil)
       teardownWS()
-      deleteAudioFile()
+      closeAudioFile()
       failStart(error)
       throw error
     }
@@ -226,8 +256,7 @@ final class LiveMeetingSession: ObservableObject {
       state = .stopping
       elapsedTask?.cancel()
       elapsedTask = nil
-      capture.onPCMBuffer = nil
-      capture.stop()
+      stopCapture()
       if let speech = appleSpeech {
         let finalText = try? await speech.finish()
         // A session that never produced a final delta still delivers its text
@@ -267,8 +296,7 @@ final class LiveMeetingSession: ObservableObject {
     // Stop capture and close the connection.
     elapsedTask?.cancel()
     elapsedTask = nil
-    capture.onPCMBuffer = nil
-    capture.stop()
+    stopCapture()
     receiveTask?.cancel()
     receiveTask = nil
     webSocketTask?.cancel(with: .normalClosure, reason: nil)
@@ -307,15 +335,14 @@ final class LiveMeetingSession: ObservableObject {
     elapsedTask = nil
     receiveTask?.cancel()
     receiveTask = nil
-    capture.onPCMBuffer = nil
-    capture.stop()
+    stopCapture()
     didSendTerminate = false
     webSocketTask?.cancel(with: .normalClosure, reason: nil)
     teardownWS()
     appleSpeech = nil
     appleHypothesesTask?.cancel()
     appleHypothesesTask = nil
-    deleteAudioFile()
+    closeAudioFile()
 
     // Reset state.
     segments = []
@@ -324,6 +351,7 @@ final class LiveMeetingSession: ObservableObject {
     startedAt = nil
     didReceiveTermination = false
     finalDuration = nil
+    audioDestination = nil
     lastResult = nil
     state = .idle
   }
@@ -439,6 +467,11 @@ final class LiveMeetingSession: ObservableObject {
 
   private var audioFile: AVAudioFile?
   private var audioURL: URL?
+  /// Where this session records, handed in by `start(audioDestination:)`.
+  /// It is a start parameter rather than settable state so `cancel()` — which
+  /// `start()` calls on itself first — can never clear it out from under the
+  /// session it is about to begin.
+  private var audioDestination: URL?
 
   /// Apple-engine state (nil when the session runs on AssemblyAI).
   private var appleSpeech: AppleSpeechStream?
@@ -501,7 +534,9 @@ final class LiveMeetingSession: ObservableObject {
     prepareAudioFile()
     capture.onPCMBuffer = { [weak self] buffer in
       Task { @MainActor in
-        try? self?.appleSpeech?.feed(buffer)
+        guard let self else { return }
+        self.publishLevel()
+        try? self.appleSpeech?.feed(buffer)
       }
     }
     do {
@@ -511,7 +546,7 @@ final class LiveMeetingSession: ObservableObject {
       appleHypothesesTask?.cancel()
       appleHypothesesTask = nil
       appleSpeech = nil
-      deleteAudioFile()
+      closeAudioFile()
       failStart(error)
       throw error
     }
@@ -621,8 +656,7 @@ final class LiveMeetingSession: ObservableObject {
     state = .failed(message)
     elapsedTask?.cancel()
     elapsedTask = nil
-    capture.onPCMBuffer = nil
-    capture.stop()
+    stopCapture()
     receiveTask?.cancel()
     receiveTask = nil
     teardownWS()
@@ -633,8 +667,7 @@ final class LiveMeetingSession: ObservableObject {
     guard state != .idle else { return }
     elapsedTask?.cancel()
     elapsedTask = nil
-    capture.onPCMBuffer = nil
-    capture.stop()
+    stopCapture()
     receiveTask?.cancel()
     receiveTask = nil
     webSocketTask?.cancel(with: .normalClosure, reason: nil)
@@ -658,6 +691,41 @@ final class LiveMeetingSession: ObservableObject {
   }
 
   // MARK: - Audio
+
+  /// Detach the tap, stop the engine, and drop the meter to silence.
+  ///
+  /// One call rather than three lines at each of the five exits, because the
+  /// third was the one that kept getting forgotten: the level is published
+  /// state and nothing else clears it, so a session that ended with the room
+  /// loud left a full meter on screen for the next surface to draw.
+  private func stopCapture() {
+    capture.onPCMBuffer = nil
+    capture.stop()
+    level.silence()
+  }
+
+  /// Whether the meter may answer the microphone right now.
+  ///
+  /// **Only while the audio is being kept.** On the AssemblyAI path `stop()`
+  /// sets `.stopping`, sends Terminate and then awaits the final transcript —
+  /// up to the 5 s watchdog — with the tap still installed, while
+  /// `handlePCMBuffer` drops every buffer at its own `state == .recording`
+  /// guard. So the owner pressed Stop, kept talking, watched the ember meter
+  /// answer their voice, and reasonably concluded those words were captured.
+  /// They reached neither `recording.caf` nor the socket. A meter that moves is
+  /// a claim that something is being recorded, and it may only be made when
+  /// something is.
+  static func meterFollowsMicrophone(_ state: SessionState) -> Bool {
+    state == .recording
+  }
+
+  private func publishLevel() {
+    if LiveMeetingSession.meterFollowsMicrophone(state) {
+      level.publish(capture.rmsLevel)
+    } else {
+      level.silence()
+    }
+  }
 
   private func handlePCMBuffer(_ buffer: AVAudioPCMBuffer) {
     guard state == .recording else { return }
@@ -737,12 +805,19 @@ final class LiveMeetingSession: ObservableObject {
     }
   }
 
-  /// Create the temp 16 kHz mono CAF the result will carry. Failure is
-  /// non-fatal: the transcript still works, `audioURL` just stays nil.
+  /// Open the 16 kHz mono CAF this session records into. Since XIA-430 the
+  /// destination is the record's OWN assets folder, handed in by the caller
+  /// before the microphone opens — the audio is written where it belongs from
+  /// the first sample, so there is nothing to move afterwards and nothing to
+  /// lose if the process never reaches the end. A session started without a
+  /// destination (tests, and any caller that has no record) records nothing;
+  /// failure stays non-fatal either way, and `audioURL` simply stays nil.
   private func prepareAudioFile() {
-    let url = FileManager.default.temporaryDirectory
-      .appendingPathComponent("NotaLiveMeeting-\(UUID().uuidString)")
-      .appendingPathExtension("caf")
+    guard let url = audioDestination else {
+      audioFile = nil
+      audioURL = nil
+      return
+    }
     let settings: [String: Any] = [
       AVFormatIDKey: kAudioFormatLinearPCM,
       AVSampleRateKey: 16_000.0,
@@ -766,8 +841,8 @@ final class LiveMeetingSession: ObservableObject {
     }
   }
 
-  /// Close the audio file and hand its URL to the result. The file is kept on
-  /// disk — the persistence slice moves it into the output directory.
+  /// Close the audio file and hand its URL to the result. The file stays
+  /// exactly where it was written — inside the record's assets folder.
   private func finalizeAudioFile() -> URL? {
     audioFile = nil
     let url = audioURL
@@ -775,11 +850,13 @@ final class LiveMeetingSession: ObservableObject {
     return url
   }
 
-  private func deleteAudioFile() {
+  /// Close the file handle without touching the file. This is what every
+  /// abort path calls, and the *only* thing it may do: audio is never
+  /// auto-deleted (XIA-430 — deleting it is an explicit user verb, and a
+  /// failed session is precisely when the recording is wanted most). There is
+  /// deliberately no delete counterpart anywhere in this type.
+  private func closeAudioFile() {
     audioFile = nil
-    if let audioURL {
-      try? FileManager.default.removeItem(at: audioURL)
-    }
     audioURL = nil
   }
 

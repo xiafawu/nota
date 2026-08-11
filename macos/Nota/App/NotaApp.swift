@@ -21,7 +21,9 @@ struct NotaApp: App {
     MenuBarExtra {
       DictationMenuBarView(controller: dictationController)
     } label: {
-      DictationStatusLabel(controller: dictationController)
+      // XIA-435: the slot stays warm after the ember dot goes out — the
+      // dictation glyph plus whatever stage a record is still at.
+      NotaMenuBarLabel(controller: dictationController, ledger: ProcessingLedger.shared)
     }
     .menuBarExtraStyle(.window)
 
@@ -30,6 +32,14 @@ struct NotaApp: App {
         .frame(minWidth: Metrics.windowMinWidth, minHeight: Metrics.windowMinHeight)
         .onOpenURL { url in
           model.accept(url)
+        }
+        // A completion notification's click opens the record; its Retry
+        // re-runs the summary and only the summary (XIA-435).
+        .onReceive(NotificationCenter.default.publisher(for: .notaOpenRecord)) { note in
+          if let id = note.object as? String { model.openRecord(id: id) }
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .notaRetryRecordSummary)) { note in
+          if let id = note.object as? String { model.retrySummary(recordID: id) }
         }
         .environmentObject(model)
     }
@@ -175,6 +185,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
   func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool {
     false
+  }
+
+  /// ⌘Q with work in flight asks **once**, and only then (XIA-435).
+  ///
+  /// The honest thing it has to say is that nothing is at risk: the audio and
+  /// the transcript are already on disk under the record either way. What
+  /// quitting costs is the summary, and the next launch's sweep leaves such a
+  /// record reading "Interrupted · transcript saved" with its Retry — so the
+  /// answer to "what happens if I say yes" is written down in the place the
+  /// owner will next look.
+  ///
+  /// The decision and its wording are `QuitPrompt.decide`, which a test can
+  /// reach; this is the alert that shows it. `ProcessingLedger.shared` is why
+  /// it is a singleton — the delegate has no route to `NotaModel`.
+  /// Quitting also **kills the summary child**, so the prompt's promise is
+  /// true. A Foundation child survives its parent: left alone the orphan either
+  /// finishes (and the record is not "unsummarized" as the alert said) or is
+  /// still running when the owner relaunches, at which point the launch sweep
+  /// offers a Retry that spawns a *second* `nota history summarize <id>` —
+  /// a second paid model call, and two uncoordinated writers on one record's
+  /// JSON. The in-memory ledger cannot see the orphan; the quit destroyed it.
+  /// See `RunningSummaries`.
+  func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+    guard let ask = QuitPrompt.decide(inFlight: ProcessingLedger.shared.inFlight) else {
+      RunningSummaries.shared.terminateAll()
+      return .terminateNow
+    }
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = ask.messageText
+    alert.informativeText = ask.informativeText
+    alert.addButton(withTitle: ask.quitButtonTitle)
+    alert.addButton(withTitle: ask.cancelButtonTitle)
+    NSApp.activate(ignoringOtherApps: true)
+    guard alert.runModal() == .alertFirstButtonReturn else { return .terminateCancel }
+    // "Quit Anyway" — leave the record exactly as the prompt describes:
+    // unsummarized, with its audio and transcript on disk, at `summarizing`,
+    // which is the state the next launch's sweep turns into
+    // "Interrupted · transcript saved" plus its Retry.
+    RunningSummaries.shared.terminateAll()
+    return .terminateNow
   }
 
   /// Dock-icon click with no visible windows must bring the main window back:

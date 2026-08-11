@@ -80,13 +80,11 @@ enum Metrics {
   static let docHeaderCompactThreshold: CGFloat = 4
   static let docHeaderCompactVerticalPadding: CGFloat = 8
 
-  // Live meeting pane (dictation in the main window).
-  static let liveMeetingOuterPadding: CGFloat = 24
-  static let liveMeetingHeaderSpacing: CGFloat = 12
-  static let liveMeetingControlSpacing: CGFloat = 16
-  static let liveMeetingRowSpacing: CGFloat = 8
-  static let liveMeetingBannerPadding: CGFloat = 12
-  static let liveMeetingBannerSpacing: CGFloat = 12
+  // The live meeting pane's own numbers now live in `RecordingPaneMetrics`
+  // (XIA-432): the pane is a two-column arrangement with a derived ring and a
+  // derived fold, and six loose paddings here had no readers left. Anything the
+  // recording surface lays out with belongs beside the arithmetic that derives
+  // it, not in the general token table.
 
   // Staged run progress (validate → transcribe → summarize → write).
   static let stageRowSpacing: CGFloat = 16

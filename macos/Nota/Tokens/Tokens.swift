@@ -37,13 +37,11 @@ enum Tokens {
   static let docTitleCompactFont: Font = .headline
   static let docSubtitleFont: Font = .subheadline
 
-  /// Live meeting pane (dictation in the main window).
-  static let liveMeetingIconFont: Font = .system(size: 48, weight: .semibold)
-  static let liveMeetingTitleFont: Font = .title2
-  static let liveMeetingCaptionFont: Font = .callout
-  static let liveMeetingStateFont: Font = .callout.weight(.semibold)
-  static let liveMeetingTimerFont: Font = .system(size: 28, weight: .semibold).monospacedDigit()
-  static let liveMeetingErrorWashOpacity: Double = 0.1
+  /// The live meeting pane's type now lives in `RecordingPaneMetrics` and
+  /// `SessionTimerMetrics` (XIA-432): the timer's size is *derived* (it steps at
+  /// the hour and the ring is sized from it), so a `liveMeetingTimerFont`
+  /// constant here could only ever be a second opinion. The six fonts and the
+  /// error wash this block held had no readers left after the rewrite.
 
   static let animFast: Animation = .easeInOut(duration: 0.2)
   static let animSnap: Animation = .easeInOut(duration: 0.15)

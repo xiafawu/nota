@@ -247,7 +247,7 @@ async function findDuplicateOutput(
   contentHash: string,
 ): Promise<{ id: string; sourceName: string; outputPath: string } | null> {
   const prior = await findHistoryByHash(contentHash);
-  if (!prior || prior.status !== "completed" || !prior.outputPath) {
+  if (!prior || prior.status !== "done" || !prior.outputPath) {
     return null;
   }
   const outputExists = await access(prior.outputPath)

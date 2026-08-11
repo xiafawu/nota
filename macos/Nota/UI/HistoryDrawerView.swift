@@ -394,11 +394,20 @@ struct HistoryDrawerView: View {
         model.openHistory(entry)
         onClose()
       },
-      onTogglePin: { model.setPinned(!(model.recordDetail(for: entry)?.pinned == true), for: entry) },
-      onDelete: {
-        model.deleteHistory(entry)
-        if model.history.isEmpty { onClose() }
-      }
+      onTogglePin: { model.setPinned(!(model.recordDetail(for: entry)?.pinned == true), for: entry) }
+    )
+    // XIA-435: the row IS the progress UI. One call — the accessory observes
+    // the ledger itself (see ProcessingRowAccessory.swift).
+    .processingStatus(model.processingSource(for: entry))
+    // XIA-436 owns the row's context menu and attaches it in exactly one line.
+    .recordingDeletionMenu(
+      entry: entry,
+      locate: { model.locateRecording(for: entry) },
+      onDeleteAudio: { model.deleteRecordingAudio($0) },
+      // No `onClose()` on an empty history here, unlike the trash button's
+      // path: rows are built from the exported `.md` files, and this verb
+      // never deletes one — so the row stays and the list cannot empty.
+      onDeleteRecord: { model.deleteRecording($0, entry: entry) }
     )
     .disabled(model.isRunning)
   }
@@ -486,7 +495,9 @@ private struct HistoryDrawerRow: View {
   let isPinned: Bool
   let onOpen: () -> Void
   let onTogglePin: () -> Void
-  let onDelete: () -> Void
+  // No `onDelete`: the row's trash button is gone (XIA-436). It deleted the
+  // exported `.md` — the one file Nota never deletes — and orphaned the record
+  // it was built from. Deletion is the context menu's two confirmed verbs.
 
   @State private var isHovered = false
 
@@ -546,14 +557,6 @@ private struct HistoryDrawerRow: View {
         .buttonStyle(.plain)
         .foregroundStyle(isPinned ? Color.accentColor : Color.secondary)
         .help(isPinned ? "Unpin" : "Pin")
-
-        Button(action: onDelete) {
-          Image(systemName: "trash")
-            .font(.system(size: 11))
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(.secondary)
-        .help("Delete")
       }
       .opacity(isHovered || isPinned ? 1 : 0)
       .animation(Tokens.animSnap, value: isHovered)

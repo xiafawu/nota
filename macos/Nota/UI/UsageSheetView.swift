@@ -91,6 +91,22 @@ struct UsageSheetView: View {
           loadedContent(viewModel: UsageSheetViewModel(rows: rows))
         }
       }
+
+      // Storage (XIA-436) sits below the money and outside every branch
+      // above: a store full of recordings is worth showing even when there is
+      // no spend to report, and a usage fetch that failed says nothing about
+      // how much disk the owner is using.
+      // An EMPTY store shows it too. The section is not only the figure — it
+      // carries "Nota never deletes recordings on its own.", the sentence a new
+      // owner most needs to have read before their first recording, and hiding
+      // it until there is something to delete shows it only to people who have
+      // already found out. A decoded summary means the CLI answered; that is
+      // the condition, not the count.
+      if let storage = usageProvider.storage {
+        Spacer(minLength: 0)
+        Divider()
+        StorageSummaryView(summary: storage)
+      }
     }
     .padding(CraftTokens.spacing24)
     .frame(width: 440, height: 480)
@@ -102,6 +118,9 @@ struct UsageSheetView: View {
         usageWindow = "30d"
       }
       Task { await usageProvider.refresh(window: usageWindow) }
+      // Storage is not windowed — it is the whole store — so it is fetched
+      // once here rather than on every window change.
+      Task { await usageProvider.refreshStorage() }
     }
     .onChange(of: usageWindow) { _, newValue in
       Task { await usageProvider.refresh(window: newValue) }

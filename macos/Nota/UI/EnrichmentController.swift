@@ -155,8 +155,8 @@ func enrichmentNeedsConfirm(record: EnrichmentRecord?, target: EnrichmentField) 
 
 /// Dashboard predicate: transcript-only records get the subtle "transcript"
 /// pill; it clears once the record completes (or when no record is known).
-func showsTranscriptPill(recordStatus: String?) -> Bool {
-  recordStatus == "transcribed"
+func showsTranscriptPill(recordStatus: HistoryStatus?) -> Bool {
+  recordStatus == .transcribed
 }
 
 /// Remove the enrichment sections (`## Summary`, `## Key Topics`,

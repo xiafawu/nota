@@ -31,12 +31,29 @@ final class LiveSessionPersistenceTests: XCTestCase {
 
   // MARK: - Fixtures
 
-  private func makeTempAudio(named name: String = "session-\(UUID().uuidString).wav") throws -> URL {
-    let url = tempAudioDirectory.appendingPathComponent(name)
-    // Arbitrary bytes — persistence never inspects audio content.
-    try Data([0x52, 0x49, 0x46, 0x46, 0x00, 0x00, 0x00, 0x00, 0x57, 0x41, 0x56, 0x45])
-      .write(to: url)
-    return url
+  /// Start a record the way the app does: on disk, `recording`, with its
+  /// assets folder made, before any audio exists.
+  private func beginRecording(
+    kind: HistoryKind = .meeting,
+    diarize: Bool = false,
+    identify: Bool = false
+  ) throws -> LiveSessionPersistence.StartedRecord {
+    try LiveSessionPersistence.beginRecording(
+      kind: kind,
+      diarize: diarize,
+      identify: identify,
+      historyDirectory: historyDirectory
+    )
+  }
+
+  /// Stand in for what the microphone would have written.
+  @discardableResult
+  private func writeAudio(
+    _ started: LiveSessionPersistence.StartedRecord,
+    bytes: Int = 12
+  ) throws -> URL {
+    try Data(repeating: 0x41, count: bytes).write(to: started.audioURL)
+    return started.audioURL
   }
 
   private func makeResult(
@@ -44,13 +61,24 @@ final class LiveSessionPersistenceTests: XCTestCase {
     transcript: String,
     duration: TimeInterval,
     audioURL: URL? = nil
-  ) throws -> LiveMeetingSession.LiveMeetingResult {
+  ) -> LiveMeetingSession.LiveMeetingResult {
     LiveMeetingSession.LiveMeetingResult(
       segments: segments,
       transcriptText: transcript,
       duration: duration,
-      audioURL: try audioURL ?? makeTempAudio()
+      audioURL: audioURL
     )
+  }
+
+  private func recordJSON(_ id: String) throws -> [String: Any] {
+    let url = historyDirectory.appendingPathComponent("\(id).json")
+    return try XCTUnwrap(
+      JSONSerialization.jsonObject(with: try Data(contentsOf: url)) as? [String: Any]
+    )
+  }
+
+  private func status(_ id: String) throws -> HistoryStatus {
+    HistoryStatus.normalized(fromRecord: try recordJSON(id))
   }
 
   private func persistedFileNames(in directory: URL) -> Set<String> {
@@ -62,65 +90,154 @@ final class LiveSessionPersistenceTests: XCTestCase {
     return Set(entries.map(\.lastPathComponent))
   }
 
-  // MARK: - Naming + file placement
+  // MARK: - Sample zero: the record exists before the audio does
 
-  func testPersistWritesMarkdownAudioAndRecordWithConventions() throws {
-    let audio = try makeTempAudio()
-    let result = try makeResult(
+  func testRecordExistsWithStatusRecordingBeforeAnyAudioIsWritten() throws {
+    let started = try beginRecording()
+
+    // The record is on disk NOW — before the microphone has been asked for a
+    // single buffer, and with nothing yet at the audio path it names.
+    XCTAssertTrue(FileManager.default.fileExists(atPath: started.recordURL.path))
+    XCTAssertEqual(try status(started.historyID), .recording)
+    XCTAssertFalse(
+      FileManager.default.fileExists(atPath: started.audioURL.path),
+      "no audio has been recorded yet — the record is what comes first"
+    )
+
+    // The assets folder the audio will be written into is already there.
+    var isDirectory: ObjCBool = false
+    XCTAssertTrue(
+      FileManager.default.fileExists(
+        atPath: started.assetsDirectory.path,
+        isDirectory: &isDirectory
+      )
+    )
+    XCTAssertTrue(isDirectory.boolValue)
+    XCTAssertEqual(started.assetsDirectory.lastPathComponent, "\(started.historyID).assets")
+    XCTAssertEqual(started.audioURL.lastPathComponent, "recording.caf")
+
+    let json = try recordJSON(started.historyID)
+    XCTAssertEqual(json["id"] as? String, started.historyID)
+    XCTAssertEqual(json["kind"] as? String, "meeting")
+    XCTAssertNotNil(json["createdAt"] as? String)
+    XCTAssertNotNil(json["capturedAt"] as? String)
+  }
+
+  func testAudioPathIsRelativeToTheRecordsOwnAssetsFolder() throws {
+    let started = try beginRecording()
+    let json = try recordJSON(started.historyID)
+
+    // Relative, and nothing but the file name: the store has to be movable
+    // wholesale without rewriting a single record (XIA-428).
+    XCTAssertEqual(json["audioPath"] as? String, "recording.caf")
+    XCTAssertFalse((json["audioPath"] as? String ?? "/").contains("/"))
+
+    XCTAssertEqual(
+      LiveSessionPersistence.resolvedAudioURL(
+        record: json,
+        historyDirectory: historyDirectory
+      )?.standardizedFileURL,
+      started.audioURL.standardizedFileURL
+    )
+
+    // Point the resolver at a DIFFERENT history directory — as moving
+    // ~/.nota would — and the same record still resolves, to the new place.
+    let moved = URL(fileURLWithPath: "/Volumes/Archive/nota/history", isDirectory: true)
+    XCTAssertEqual(
+      LiveSessionPersistence.resolvedAudioURL(record: json, historyDirectory: moved)?.path,
+      "/Volumes/Archive/nota/history/\(started.historyID).assets/recording.caf"
+    )
+  }
+
+  func testResolvedAudioFallsBackToSourcePathForALegacyRecord() {
+    // No audioPath at all — a record written before record-first recording.
+    let legacy: [String: Any] = ["id": "legacy-1", "sourcePath": "/tmp/legacy.m4a"]
+    XCTAssertEqual(
+      LiveSessionPersistence.resolvedAudioURL(
+        record: legacy,
+        historyDirectory: historyDirectory
+      )?.path,
+      "/tmp/legacy.m4a"
+    )
+    XCTAssertNil(
+      LiveSessionPersistence.resolvedAudioURL(record: [:], historyDirectory: historyDirectory)
+    )
+  }
+
+  // MARK: - Sealing: nothing is moved, the record is filled in
+
+  func testSealFillsTheSameRecordAndLeavesTheAudioWhereItWasRecorded() throws {
+    let started = try beginRecording()
+    try writeAudio(started, bytes: 4096)
+    let result = makeResult(
       segments: [
         LiveMeetingSession.LiveSegment(id: UUID(), text: "Hello world.", endTime: 3),
         LiveMeetingSession.LiveSegment(id: UUID(), text: "Second segment.", endTime: 7)
       ],
       transcript: "Hello world. Second segment.",
       duration: 8,
-      audioURL: audio
+      audioURL: started.audioURL
     )
 
-    let saved = try LiveSessionPersistence.persist(
+    let saved = try LiveSessionPersistence.sealTranscript(
+      started: started,
       result: result,
       outputDirectory: outputDirectory,
       historyDirectory: historyDirectory
     )
 
-    let outputNames = persistedFileNames(in: outputDirectory)
-    let historyNames = persistedFileNames(in: historyDirectory)
-
-    // Markdown follows the existing output naming convention
-    // `<DisplayName>-<yyyyMMdd-HHmmss>.summary.md`.
-    XCTAssertTrue(
-      outputNames.contains { name in
-        name.range(of: #"^Live-Meeting-\d{8}-\d{6}\.summary\.md$"#, options: .regularExpression) != nil
-      },
-      "output names were \(outputNames)"
+    // Same record, same id — not a second one built at the end.
+    XCTAssertEqual(saved.historyID, started.historyID)
+    XCTAssertEqual(saved.recordURL, started.recordURL)
+    XCTAssertEqual(
+      persistedFileNames(in: historyDirectory).filter { $0.hasSuffix(".json") }.count,
+      1
     )
-    XCTAssertEqual(saved.outputURL.deletingPathExtension().pathExtension, "summary")
-    XCTAssertEqual(saved.outputURL.pathExtension, "md")
 
-    // Audio follows the stable-input convention and was moved (not copied).
-    XCTAssertTrue(
-      outputNames.contains { name in
-        name.range(of: #"^\.nota-input-\d+-[0-9A-F-]+\.wav$"#, options: [.regularExpression, .caseInsensitive]) != nil
-      },
-      "output names were \(outputNames)"
+    // The audio never moved: it is still in the assets folder, and there is
+    // no `.nota-input-…` copy in the output directory.
+    XCTAssertEqual(saved.audioURL, started.audioURL)
+    XCTAssertTrue(FileManager.default.fileExists(atPath: started.audioURL.path))
+    XCTAssertFalse(
+      persistedFileNames(in: outputDirectory).contains { $0.hasPrefix(".nota-input-") },
+      "record-first recording writes the audio in place; nothing is moved after Stop"
     )
-    XCTAssertFalse(FileManager.default.fileExists(atPath: audio.path), "temp audio should be moved")
-    XCTAssertTrue(FileManager.default.fileExists(atPath: saved.audioURL.path))
 
-    // Record: one `<id>.json` whose id matches its filename.
-    XCTAssertEqual(historyNames.count, 1, "history names were \(historyNames)")
-    XCTAssertTrue(historyNames.contains("\(saved.historyID).json"))
-    XCTAssertEqual(saved.recordURL.lastPathComponent, "\(saved.historyID).json")
-    XCTAssertTrue(FileManager.default.fileExists(atPath: saved.recordURL.path))
+    let json = try recordJSON(started.historyID)
+    XCTAssertEqual(HistoryStatus.normalized(fromRecord: json), .transcribed)
+    XCTAssertEqual(json["transcriptText"] as? String, "Hello world. Second segment.")
+    XCTAssertEqual(json["durationMinutes"] as? Int, 1)
+    XCTAssertEqual(json["outputPath"] as? String, saved.outputURL.path)
+    XCTAssertEqual(json["audioBytes"] as? Int, 4096)
+    XCTAssertEqual(json["audioPath"] as? String, "recording.caf")
+
+    let segments = try XCTUnwrap(json["segments"] as? [[String: Any]])
+    XCTAssertEqual(segments.count, 2)
+    XCTAssertEqual(segments[1]["start"] as? Int, 3, "second segment starts where the first ended")
+
+    // Markdown follows the existing output naming convention.
+    XCTAssertTrue(
+      persistedFileNames(in: outputDirectory).contains { name in
+        name.range(
+          of: #"^Live-Meeting-\d{8}-\d{6}\.summary\.md$"#,
+          options: .regularExpression
+        ) != nil
+      },
+      "output names were \(persistedFileNames(in: outputDirectory))"
+    )
   }
 
   func testCustomDisplayNameDrivesFilename() throws {
-    let result = try makeResult(
-      segments: [LiveMeetingSession.LiveSegment(id: UUID(), text: "Hello", endTime: 2)],
-      transcript: "Hello",
-      duration: 2
-    )
-    let saved = try LiveSessionPersistence.persist(
-      result: result,
+    let started = try beginRecording()
+    try writeAudio(started)
+    let saved = try LiveSessionPersistence.sealTranscript(
+      started: started,
+      result: makeResult(
+        segments: [LiveMeetingSession.LiveSegment(id: UUID(), text: "Hello", endTime: 2)],
+        transcript: "Hello",
+        duration: 2,
+        audioURL: started.audioURL
+      ),
       displayName: "Client Sync 2026",
       outputDirectory: outputDirectory,
       historyDirectory: historyDirectory
@@ -131,16 +248,19 @@ final class LiveSessionPersistenceTests: XCTestCase {
   // MARK: - Markdown shape + metadata parse-back
 
   func testMarkdownMirrorsCLIShapeAndParsesBackViaHistoryEntry() throws {
-    let result = try makeResult(
-      segments: [
-        LiveMeetingSession.LiveSegment(id: UUID(), text: "First utterance.", endTime: 3),
-        LiveMeetingSession.LiveSegment(id: UUID(), text: "Second utterance.", endTime: 7)
-      ],
-      transcript: "First utterance. Second utterance.",
-      duration: 8
-    )
-    let saved = try LiveSessionPersistence.persist(
-      result: result,
+    let started = try beginRecording()
+    try writeAudio(started)
+    let saved = try LiveSessionPersistence.sealTranscript(
+      started: started,
+      result: makeResult(
+        segments: [
+          LiveMeetingSession.LiveSegment(id: UUID(), text: "First utterance.", endTime: 3),
+          LiveMeetingSession.LiveSegment(id: UUID(), text: "Second utterance.", endTime: 7)
+        ],
+        transcript: "First utterance. Second utterance.",
+        duration: 8,
+        audioURL: started.audioURL
+      ),
       title: "Live Meeting",
       outputDirectory: outputDirectory,
       historyDirectory: historyDirectory
@@ -151,15 +271,12 @@ final class LiveSessionPersistenceTests: XCTestCase {
     XCTAssertTrue(markdown.contains("**Captured:** "))
     XCTAssertTrue(markdown.contains("**Transcribed:** "))
     XCTAssertTrue(markdown.contains("**Duration:** 1 minutes\n"))
-    XCTAssertTrue(markdown.contains("**Source:** \(saved.audioURL.lastPathComponent)\n"))
+    XCTAssertTrue(markdown.contains("**Source:** recording.caf\n"))
     XCTAssertTrue(markdown.contains("## Full Transcript"))
     // CLI-style per-segment lines with `[MM:SS]` timestamps (start-derived).
     XCTAssertTrue(markdown.contains("[00:00] First utterance."))
     XCTAssertTrue(markdown.contains("[00:03] Second utterance."))
 
-    // parseSummaryMetadata round-trip via the public HistoryEntry path: the
-    // title comes from the `# ` heading, tags from the `**Tags:**` line
-    // (absent here → empty).
     let entry = HistoryEntry.make(url: saved.outputURL, modifiedAt: Date())
     XCTAssertEqual(entry.title, "Live Meeting")
     XCTAssertTrue(entry.tags.isEmpty)
@@ -168,33 +285,30 @@ final class LiveSessionPersistenceTests: XCTestCase {
   // MARK: - Record schema (HistoryRecordInfo.find / EnrichmentRecord consumers)
 
   func testRecordSchemaMatchesMeetingConventions() throws {
-    let audio = try makeTempAudio()
-    let result = try makeResult(
-      segments: [
-        LiveMeetingSession.LiveSegment(id: UUID(), text: "One", endTime: 3),
-        LiveMeetingSession.LiveSegment(id: UUID(), text: "Two", endTime: 7)
-      ],
-      transcript: "One Two",
-      duration: 90,
-      audioURL: audio
-    )
-    let saved = try LiveSessionPersistence.persist(
-      result: result,
+    let started = try beginRecording()
+    try writeAudio(started)
+    let saved = try LiveSessionPersistence.sealTranscript(
+      started: started,
+      result: makeResult(
+        segments: [
+          LiveMeetingSession.LiveSegment(id: UUID(), text: "One", endTime: 3),
+          LiveMeetingSession.LiveSegment(id: UUID(), text: "Two", endTime: 7)
+        ],
+        transcript: "One Two",
+        duration: 90,
+        audioURL: started.audioURL
+      ),
       outputDirectory: outputDirectory,
       historyDirectory: historyDirectory
     )
 
-    let data = try Data(contentsOf: saved.recordURL)
-    let json = try XCTUnwrap(
-      JSONSerialization.jsonObject(with: data) as? [String: Any]
-    )
-
+    let json = try recordJSON(started.historyID)
     XCTAssertEqual(json["id"] as? String, saved.historyID)
     XCTAssertNotNil(json["createdAt"] as? String)
     XCTAssertNotNil(json["updatedAt"] as? String)
     XCTAssertNotNil(json["capturedAt"] as? String)
     XCTAssertEqual(json["sourcePath"] as? String, saved.audioURL.path)
-    XCTAssertEqual(json["sourceName"] as? String, saved.audioURL.lastPathComponent)
+    XCTAssertEqual(json["sourceName"] as? String, "recording.caf")
     XCTAssertEqual(json["provider"] as? String, "assemblyai")
     XCTAssertEqual(json["durationMinutes"] as? Int, 2)
     XCTAssertEqual(json["transcriptText"] as? String, "One Two")
@@ -206,26 +320,14 @@ final class LiveSessionPersistenceTests: XCTestCase {
     XCTAssertEqual(options["identify"] as? Bool, false)
     XCTAssertEqual(options["model"] as? String, "universal-3.5-pro-streaming")
 
-    let segments = try XCTUnwrap(json["segments"] as? [[String: Any]])
-    XCTAssertEqual(segments.count, 2)
-    XCTAssertEqual(segments[0]["start"] as? Int, 0)
-    XCTAssertEqual(segments[0]["end"] as? Int, 3)
-    XCTAssertEqual(segments[0]["text"] as? String, "One")
-    XCTAssertEqual(segments[1]["start"] as? Int, 3, "second segment starts where the first ended")
-    XCTAssertEqual(segments[1]["end"] as? Int, 7)
-    XCTAssertEqual(segments[1]["text"] as? String, "Two")
-
-    // The app's own lookup finds it and enrichment decodes it (no summary →
-    // placeholder-ready "transcribed" record).
+    // The app's own lookup finds it and enrichment decodes it.
     let info = HistoryRecordInfo.find(
       outputPath: saved.outputURL.path,
       historyDir: historyDirectory
     )
     let found = try XCTUnwrap(info)
     XCTAssertEqual(found.historyID, saved.historyID)
-    XCTAssertEqual(found.sourcePath, saved.audioURL.path)
-    // contentsOfDirectory resolves /var → /private/var; persist's URL does
-    // not — compare on the resolved form.
+    XCTAssertEqual(found.audioURL?.path, saved.audioURL.path)
     XCTAssertEqual(
       found.recordURL.resolvingSymlinksInPath(),
       saved.recordURL.resolvingSymlinksInPath()
@@ -237,20 +339,21 @@ final class LiveSessionPersistenceTests: XCTestCase {
     XCTAssertNil(enrichment.summary)
   }
 
-  // MARK: - Skip / error handling
+  // MARK: - Failure keeps the audio
 
-  func testEmptyTranscriptSkipsPersistenceEntirely() throws {
-    let audio = try makeTempAudio()
-    let result = try makeResult(
-      segments: [],
-      transcript: "   \n\t ",
-      duration: 5,
-      audioURL: audio
-    )
+  func testAFailedTranscriptionLeavesTheAudioOnDisk() throws {
+    let started = try beginRecording()
+    try writeAudio(started, bytes: 2048)
 
     XCTAssertThrowsError(
-      try LiveSessionPersistence.persist(
-        result: result,
+      try LiveSessionPersistence.sealTranscript(
+        started: started,
+        result: makeResult(
+          segments: [],
+          transcript: "   \n\t ",
+          duration: 5,
+          audioURL: started.audioURL
+        ),
         outputDirectory: outputDirectory,
         historyDirectory: historyDirectory
       )
@@ -258,32 +361,352 @@ final class LiveSessionPersistenceTests: XCTestCase {
       XCTAssertEqual(error as? LiveSessionPersistenceError, .emptyTranscript)
     }
 
+    // The record says what went wrong, in which stage — and the recording is
+    // still there. This is exactly the case the old code destroyed audio in.
+    XCTAssertEqual(try status(started.historyID), .failed(stage: .transcribing))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: started.audioURL.path))
+    XCTAssertEqual(
+      try Data(contentsOf: started.audioURL).count,
+      2048,
+      "the audio is not merely present, it is intact"
+    )
     XCTAssertTrue(persistedFileNames(in: outputDirectory).isEmpty)
-    XCTAssertTrue(persistedFileNames(in: historyDirectory).isEmpty)
-    // The temp audio is untouched — nothing was moved.
-    XCTAssertTrue(FileManager.default.fileExists(atPath: audio.path))
   }
 
-  func testMissingAudioThrows() throws {
-    // Construct directly: makeResult substitutes a temp file for nil audio.
-    let result = LiveMeetingSession.LiveMeetingResult(
-      segments: [LiveMeetingSession.LiveSegment(id: UUID(), text: "Hello", endTime: 2)],
-      transcriptText: "Hello",
-      duration: 2,
-      audioURL: nil
-    )
-
+  func testASessionThatRecordedNothingFailsInTheRecordingStage() throws {
+    let started = try beginRecording()
+    // No audio was ever written.
     XCTAssertThrowsError(
-      try LiveSessionPersistence.persist(
-        result: result,
+      try LiveSessionPersistence.sealTranscript(
+        started: started,
+        result: makeResult(
+          segments: [LiveMeetingSession.LiveSegment(id: UUID(), text: "Hello", endTime: 2)],
+          transcript: "Hello",
+          duration: 2,
+          audioURL: nil
+        ),
         outputDirectory: outputDirectory,
         historyDirectory: historyDirectory
       )
     ) { error in
       XCTAssertEqual(error as? LiveSessionPersistenceError, .missingAudio)
     }
-    XCTAssertTrue(persistedFileNames(in: outputDirectory).isEmpty)
-    XCTAssertTrue(persistedFileNames(in: historyDirectory).isEmpty)
+    XCTAssertEqual(try status(started.historyID), .failed(stage: .recording))
+  }
+
+  func testAFailedSummaryLeavesAudioAndTranscript() throws {
+    let started = try beginRecording(kind: .memo)
+    try writeAudio(started, bytes: 999)
+    let saved = try LiveSessionPersistence.sealTranscript(
+      started: started,
+      result: makeResult(
+        segments: [LiveMeetingSession.LiveSegment(id: UUID(), text: "A note.", endTime: 2)],
+        transcript: "A note.",
+        duration: 2,
+        audioURL: started.audioURL
+      ),
+      outputDirectory: outputDirectory,
+      historyDirectory: historyDirectory
+    )
+
+    // The memo path: summarizing, then the summary fails.
+    XCTAssertTrue(LiveSessionPersistence.updateStatus(
+      id: started.historyID,
+      to: .summarizing,
+      historyDirectory: historyDirectory
+    ))
+    XCTAssertTrue(LiveSessionPersistence.updateStatus(
+      id: started.historyID,
+      to: .failed(stage: .summarizing),
+      historyDirectory: historyDirectory
+    ))
+
+    XCTAssertEqual(try status(started.historyID), .failed(stage: .summarizing))
+    XCTAssertTrue(FileManager.default.fileExists(atPath: started.audioURL.path))
+    XCTAssertEqual(try recordJSON(started.historyID)["transcriptText"] as? String, "A note.")
+    XCTAssertTrue(FileManager.default.fileExists(atPath: saved.outputURL.path))
+  }
+
+  // MARK: - A failed write is never reported as success
+
+  func testAWriteThatCannotLandIsThrownRatherThanReportedAsSaved() throws {
+    let started = try beginRecording()
+    try writeAudio(started, bytes: 64)
+    // The record is gone — the store was pruned, or the disk is refusing
+    // writes. `mutateRecord`/`updateStatus` both return false here.
+    try FileManager.default.removeItem(at: started.recordURL)
+
+    XCTAssertThrowsError(
+      try LiveSessionPersistence.sealTranscript(
+        started: started,
+        result: makeResult(
+          segments: [LiveMeetingSession.LiveSegment(id: UUID(), text: "Hi", endTime: 1)],
+          transcript: "Hi",
+          duration: 1,
+          audioURL: started.audioURL
+        ),
+        outputDirectory: outputDirectory,
+        historyDirectory: historyDirectory
+      )
+    ) { error in
+      // NOT a SavedSession. Returning one would have the UI report
+      // "Transcribed" for a record that says nothing of the sort — and would
+      // hand an empty transcript to whoever summarizes it next.
+      XCTAssertEqual(error as? LiveSessionPersistenceError, .recordUnwritable)
+    }
+  }
+
+  func testSealWritesTheContentBeforeItClaimsTheStatus() throws {
+    let started = try beginRecording()
+    try writeAudio(started, bytes: 64)
+    let saved = try LiveSessionPersistence.sealTranscript(
+      started: started,
+      result: makeResult(
+        segments: [LiveMeetingSession.LiveSegment(id: UUID(), text: "Hi", endTime: 1)],
+        transcript: "Hi",
+        duration: 1,
+        audioURL: started.audioURL
+      ),
+      outputDirectory: outputDirectory,
+      historyDirectory: historyDirectory
+    )
+
+    // Both writes landed, and the record says `transcribed` only because the
+    // content is already in it.
+    let json = try recordJSON(started.historyID)
+    XCTAssertEqual(json["transcriptText"] as? String, "Hi")
+    XCTAssertEqual(json["outputPath"] as? String, saved.outputURL.path)
+    XCTAssertEqual(try status(started.historyID), .transcribed)
+
+    // This is WHY that order: a crash between the two atomic writes leaves the
+    // earlier status, and only one of the two candidates is rescuable. If the
+    // status were flipped first, a crash would leave `transcribed` — no
+    // transcript, no outputPath, and nothing that will ever resolve it.
+    XCTAssertNotNil(
+      HistoryStatus.transcribing.interruptedResolution,
+      "a crash mid-seal must leave a status the launch sweep can resolve"
+    )
+    XCTAssertNil(
+      HistoryStatus.transcribed.interruptedResolution,
+      "`transcribed` is a rest state — the sweep will never revisit it"
+    )
+  }
+
+  // MARK: - Status transitions on disk
+
+  func testSettleAsFailedUsesTheStageTheRecordIsIn() throws {
+    let started = try beginRecording()
+    let dir = historyDirectory!
+
+    // A caller naming the stage itself gets this wrong: `failed(transcribing)`
+    // on a record still at `recording` is an illegal transition, so nothing is
+    // written at all and the record stays live forever.
+    XCTAssertFalse(LiveSessionPersistence.updateStatus(
+      id: started.historyID,
+      to: .failed(stage: .transcribing),
+      historyDirectory: dir
+    ))
+    XCTAssertEqual(try status(started.historyID), .recording)
+
+    XCTAssertTrue(LiveSessionPersistence.settleAsFailed(id: started.historyID, historyDirectory: dir))
+    XCTAssertEqual(try status(started.historyID), .failed(stage: .recording))
+  }
+
+  func testSettleAsFailedLeavesRestedAndTerminalRecordsAlone() throws {
+    let started = try beginRecording()
+    let dir = historyDirectory!
+    XCTAssertTrue(LiveSessionPersistence.updateStatus(id: started.historyID, to: .transcribing, historyDirectory: dir))
+    XCTAssertTrue(LiveSessionPersistence.updateStatus(id: started.historyID, to: .transcribed, historyDirectory: dir))
+
+    // Nothing is owed by a record at rest, so this reports settled and writes
+    // nothing — a live session's cleanup may not undo a seal that landed.
+    XCTAssertTrue(LiveSessionPersistence.settleAsFailed(id: started.historyID, historyDirectory: dir))
+    XCTAssertEqual(try status(started.historyID), .transcribed)
+  }
+
+  func testAnInterruptedRecordReportsTheAudioItActuallyHas() throws {
+    let started = try beginRecording()
+    try writeAudio(started, bytes: 4096)
+    // Sample zero's zero is still on the record: only a seal ever corrected it.
+    XCTAssertEqual(try recordJSON(started.historyID)["audioBytes"] as? Int, 0)
+
+    XCTAssertEqual(
+      LiveSessionPersistence.resolveInterruptedRecords(historyDirectory: historyDirectory),
+      [started.historyID]
+    )
+
+    // Interrupted, and its recording is 4096 playable bytes — not the empty
+    // file the record used to claim.
+    XCTAssertEqual(try status(started.historyID), .failed(stage: .recording))
+    XCTAssertEqual(try recordJSON(started.historyID)["audioBytes"] as? Int, 4096)
+  }
+
+  func testSettlingAFailedSessionAlsoRecordsWhatItCaptured() throws {
+    let started = try beginRecording()
+    try writeAudio(started, bytes: 128)
+    XCTAssertTrue(LiveSessionPersistence.settleAsFailed(
+      id: started.historyID,
+      historyDirectory: historyDirectory
+    ))
+    XCTAssertEqual(try recordJSON(started.historyID)["audioBytes"] as? Int, 128)
+  }
+
+  func testSettleAsFailedReportsAMissingRecord() {
+    XCTAssertFalse(LiveSessionPersistence.settleAsFailed(
+      id: "20260101-000000Z-nosuch",
+      historyDirectory: historyDirectory
+    ))
+  }
+
+  func testUpdateStatusWalksTheLifecycleAndRefusesToSkipIt() throws {
+    let started = try beginRecording()
+    let dir = historyDirectory!
+
+    XCTAssertFalse(
+      LiveSessionPersistence.updateStatus(id: started.historyID, to: .done, historyDirectory: dir),
+      "a session cannot go straight from recording to done"
+    )
+    XCTAssertEqual(try status(started.historyID), .recording)
+
+    XCTAssertTrue(
+      LiveSessionPersistence.updateStatus(
+        id: started.historyID, to: .transcribing, historyDirectory: dir
+      )
+    )
+    XCTAssertTrue(
+      LiveSessionPersistence.updateStatus(
+        id: started.historyID, to: .transcribed, historyDirectory: dir
+      )
+    )
+    XCTAssertTrue(
+      LiveSessionPersistence.updateStatus(
+        id: started.historyID, to: .summarizing, historyDirectory: dir
+      )
+    )
+    XCTAssertTrue(
+      LiveSessionPersistence.updateStatus(
+        id: started.historyID, to: .done, historyDirectory: dir
+      )
+    )
+
+    XCTAssertFalse(
+      LiveSessionPersistence.updateStatus(
+        id: started.historyID, to: .summarizing, historyDirectory: dir
+      ),
+      "done is terminal"
+    )
+    XCTAssertEqual(try status(started.historyID), .done)
+  }
+
+  func testUpdateStatusPreservesEveryOtherFieldOnTheRecord() throws {
+    let started = try beginRecording()
+    // A field this app does not model, written by the CLI.
+    LiveSessionPersistence.mutateRecord(
+      id: started.historyID,
+      historyDirectory: historyDirectory,
+      ["speakerClips": ["Speaker 1": "\(started.historyID).assets/Speaker 1.pcm"]]
+    )
+    LiveSessionPersistence.updateStatus(
+      id: started.historyID,
+      to: .transcribing,
+      historyDirectory: historyDirectory
+    )
+    let json = try recordJSON(started.historyID)
+    XCTAssertNotNil(json["speakerClips"], "a status write is a merge, never a rebuild")
+    XCTAssertEqual(json["audioPath"] as? String, "recording.caf")
+  }
+
+  // MARK: - Interrupted recovery
+
+  func testInterruptedSessionResolvesToFailedWithItsAudioIntact() throws {
+    // Exactly what a killed app leaves behind: a `recording` record with a
+    // playable file in it and no process anywhere.
+    let started = try beginRecording()
+    try writeAudio(started, bytes: 1234)
+
+    let resolved = LiveSessionPersistence.resolveInterruptedRecords(
+      historyDirectory: historyDirectory
+    )
+
+    XCTAssertEqual(resolved, [started.historyID])
+    XCTAssertEqual(try status(started.historyID), .failed(stage: .recording))
+    XCTAssertEqual(try recordJSON(started.historyID)["interrupted"] as? Bool, true)
+    // "Interrupted", not "Failed (recording)" — nothing failed, a process left.
+    XCTAssertEqual(
+      try status(started.historyID).presentation(interrupted: true),
+      "Interrupted"
+    )
+    // And the recording is still there, and still complete.
+    XCTAssertEqual(try Data(contentsOf: started.audioURL).count, 1234)
+  }
+
+  func testInterruptedRecoveryResolvesEveryLiveStage() throws {
+    var expected: [String: HistoryStatus] = [:]
+    let cases: [(HistoryStage, HistoryStatus)] = [
+      (.recording, .recording),
+      (.transcribing, .transcribing),
+      (.summarizing, .summarizing)
+    ]
+    for (stage, live) in cases {
+      let started = try beginRecording()
+      // Walk it into the live stage under test.
+      if live != .recording {
+        LiveSessionPersistence.mutateRecord(
+          id: started.historyID,
+          historyDirectory: historyDirectory,
+          ["status": live.rawValue]
+        )
+      }
+      expected[started.historyID] = .failed(stage: stage)
+    }
+
+    LiveSessionPersistence.resolveInterruptedRecords(historyDirectory: historyDirectory)
+
+    for (id, wanted) in expected {
+      XCTAssertEqual(try status(id), wanted)
+    }
+  }
+
+  func testInterruptedRecoveryLeavesRestedAndTerminalRecordsAlone() throws {
+    for expected in [HistoryStatus.transcribed, .done, .failed(stage: .transcribing)] {
+      let started = try beginRecording()
+      LiveSessionPersistence.mutateRecord(
+        id: started.historyID,
+        historyDirectory: historyDirectory,
+        ["status": expected.rawValue]
+      )
+      let resolved = LiveSessionPersistence.resolveInterruptedRecords(
+        historyDirectory: historyDirectory
+      )
+      XCTAssertFalse(
+        resolved.contains(started.historyID),
+        "\(expected.rawValue) was not interrupted"
+      )
+      XCTAssertEqual(try status(started.historyID), expected)
+    }
+  }
+
+  func testInterruptedRecoveryNeverTouchesALegacyRecord() throws {
+    // No status field at all, and a "completed" one: the two shapes every
+    // record on an existing machine has. Neither may be swept up as live.
+    try writeRecord(named: "legacy-none.json", [
+      "id": "legacy-none",
+      "outputPath": "/tmp/legacy-none.summary.md",
+      "sourcePath": "/tmp/legacy-none.m4a"
+    ])
+    try writeRecord(named: "legacy-completed.json", [
+      "id": "legacy-completed",
+      "status": "completed",
+      "outputPath": "/tmp/legacy-completed.summary.md",
+      "sourcePath": "/tmp/legacy-completed.m4a"
+    ])
+
+    let resolved = LiveSessionPersistence.resolveInterruptedRecords(
+      historyDirectory: historyDirectory
+    )
+    XCTAssertTrue(resolved.isEmpty, "resolved \(resolved)")
+    XCTAssertEqual(try status("legacy-none"), .transcribed)
+    XCTAssertEqual(try status("legacy-completed"), .done)
   }
 
   // MARK: - Pure helpers
@@ -320,47 +743,20 @@ final class LiveSessionPersistenceTests: XCTestCase {
 
   // MARK: - Kind field
 
-  func testPersistDefaultsKindToMeeting() throws {
-    let result = try makeResult(
-      segments: [LiveMeetingSession.LiveSegment(id: UUID(), text: "Hello", endTime: 2)],
-      transcript: "Hello",
-      duration: 2
-    )
-    let saved = try LiveSessionPersistence.persist(
-      result: result,
-      outputDirectory: outputDirectory,
-      historyDirectory: historyDirectory
-    )
-
-    let data = try Data(contentsOf: saved.recordURL)
-    let json = try XCTUnwrap(
-      try JSONSerialization.jsonObject(with: data) as? [String: Any]
-    )
+  // The kind and the option flags are written at sample zero now, not at the
+  // end: the record has to say what it is from the moment it exists.
+  func testBeginRecordingDefaultsKindToMeeting() throws {
+    let started = try beginRecording()
+    let json = try recordJSON(started.historyID)
     XCTAssertEqual(json["kind"] as? String, "meeting")
     let options = try XCTUnwrap(json["options"] as? [String: Any])
     XCTAssertEqual(options["diarize"] as? Bool, false)
     XCTAssertEqual(options["identify"] as? Bool, false)
   }
 
-  func testPersistWritesMemoKindAndPresetFlags() throws {
-    let result = try makeResult(
-      segments: [LiveMeetingSession.LiveSegment(id: UUID(), text: "Quick note", endTime: 3)],
-      transcript: "Quick note",
-      duration: 3
-    )
-    let saved = try LiveSessionPersistence.persist(
-      result: result,
-      kind: .memo,
-      diarize: true,
-      identify: true,
-      outputDirectory: outputDirectory,
-      historyDirectory: historyDirectory
-    )
-
-    let data = try Data(contentsOf: saved.recordURL)
-    let json = try XCTUnwrap(
-      try JSONSerialization.jsonObject(with: data) as? [String: Any]
-    )
+  func testBeginRecordingWritesMemoKindAndPresetFlags() throws {
+    let started = try beginRecording(kind: .memo, diarize: true, identify: true)
+    let json = try recordJSON(started.historyID)
     XCTAssertEqual(json["kind"] as? String, "memo")
     let options = try XCTUnwrap(json["options"] as? [String: Any])
     XCTAssertEqual(options["diarize"] as? Bool, true)
@@ -392,7 +788,10 @@ final class LiveSessionPersistenceTests: XCTestCase {
     }
 
     let result = HistoryRecordInfo.kindsAndStatusesByOutputPath(historyDir: historyDirectory)
-    XCTAssertEqual(result.statuses["/tmp/explicit.summary.md"], "transcribed")
+    XCTAssertEqual(result.statuses["/tmp/explicit.summary.md"], .transcribed)
+    // The legacy spelling normalizes on the way in, so the dashboard reads the
+    // same vocabulary for a record written years apart from this one.
+    XCTAssertEqual(result.statuses["/tmp/legacy-file.summary.md"], .done)
     XCTAssertEqual(result.kinds["/tmp/explicit.summary.md"], .memo, "explicit kind wins")
     XCTAssertEqual(result.kinds["/tmp/legacy-live.summary.md"], .meeting, "legacy streaming-model record infers meeting")
     XCTAssertEqual(result.kinds["/tmp/legacy-file.summary.md"], .file, "legacy CLI record infers file")
@@ -506,7 +905,10 @@ final class LiveSessionPersistenceTests: XCTestCase {
     details = HistoryRecordInfo.detailsByOutputPath(historyDir: historyDirectory)
     XCTAssertEqual(details["/tmp/a.summary.md"]?.pinned, false)
     XCTAssertEqual(details["/tmp/a.summary.md"]?.kind, .meeting)
-    XCTAssertEqual(details["/tmp/a.summary.md"]?.status, nil)
+    // This fixture carries no `status` at all — a record from before the
+    // field existed. It reads as `transcribed` (no summary on it), not as
+    // nothing: every record that exists resolves to a status.
+    XCTAssertEqual(details["/tmp/a.summary.md"]?.status, .transcribed)
   }
 
   func testSetPinnedIsNoOpWithoutMatchingRecord() throws {
