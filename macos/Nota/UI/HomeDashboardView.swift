@@ -170,16 +170,21 @@ struct HomeDashboardView: View {
 
   // MARK: - Greeting header
 
+  /// The two lines on this screen that are drawn **straight onto the ground**,
+  /// which is why they are the two that take the ink. Everything below them sits
+  /// on a surface of its own — the primary card, the glass cards, the stats
+  /// strip — and ink over glass over the field is a third composite that was
+  /// never measured. Those keep `.primary`/`.secondary` deliberately.
   private var greetingHeader: some View {
     VStack(alignment: .leading, spacing: CraftTokens.spacing8) {
       Text(HomeGreeting.eyebrow(isFirstRun: isFirstRun))
         .font(CraftTokens.metadataFont)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.ground(.timestamp))
 
       (Text(HomeGreeting.prefix(isFirstRun: isFirstRun) + ", ")
         + Text(userName).italic())
         .font(CraftTokens.greetingFont)
-        .foregroundStyle(.primary)
+        .foregroundStyle(.ground(.body))
     }
     .padding(.top, CraftTokens.spacing8)
   }

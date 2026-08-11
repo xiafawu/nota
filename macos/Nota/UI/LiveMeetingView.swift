@@ -185,13 +185,29 @@ struct LiveMeetingView: View {
 
   // MARK: - The recording pane (B2)
 
+  /// The rule between the two panes.
+  ///
+  /// Not `Divider()`, which draws the system separator — a colour picked for
+  /// opaque window chrome, not for a ground that moves under it. `.rail` is the
+  /// tier the solve measured for exactly this: the one thing on the surface that
+  /// is meant to be *barely* there (1.2:1) and must still be there on all
+  /// sixteen grounds. It is `dividerWidth` because the fold arithmetic already
+  /// spends that point.
+  private func rail(_ axis: Axis) -> some View {
+    Rectangle()
+      .fill(.ground(.rail))
+      .frame(
+        width: axis == .vertical ? RecordingPaneMetrics.dividerWidth : nil,
+        height: axis == .horizontal ? RecordingPaneMetrics.dividerWidth : nil)
+  }
+
   @ViewBuilder
   private func recordingPane(form: RecordingPaneForm) -> some View {
     switch form {
     case .column:
       HStack(spacing: 0) {
         transcript
-        Divider()
+        rail(.vertical)
         SessionColumnView(
           elapsed: session.elapsed,
           level: session.level,
@@ -212,7 +228,7 @@ struct LiveMeetingView: View {
           onMark: mark,
           onStop: onStop
         )
-        Divider()
+        rail(.horizontal)
         transcript
       }
     }
@@ -234,7 +250,7 @@ struct LiveMeetingView: View {
       ProgressView().controlSize(.large)
       Text(LiveMeetingFormat.stateLabel(session.state, isStarting: true))
         .font(.system(size: 13))
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.ground(.speaker))
     }
   }
 
@@ -255,7 +271,7 @@ struct LiveMeetingView: View {
     centeredState {
       Text(RecordingPaneCopy.kindLine(kind: kind, controls: .start))
         .font(RecordingPaneMetrics.kindLineFont)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.ground(.speaker))
       Button(action: onStart) {
         Label("Start Recording", systemImage: "mic.fill")
           .padding(.horizontal, CraftTokens.spacing12)

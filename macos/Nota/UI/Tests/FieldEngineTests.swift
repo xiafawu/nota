@@ -1,3 +1,5 @@
+import AppKit
+import SwiftUI
 import XCTest
 
 @testable import Nota
@@ -403,6 +405,219 @@ final class FieldEngineTests: XCTestCase {
     }
     let fx = f(xyz.x), fy = f(xyz.y), fz = f(xyz.z)
     return SIMD3<Double>(116 * fy - 16, 500 * (fx - fy), 200 * (fy - fz))
+  }
+}
+
+// MARK: - The ink, on the screen
+
+/// The other half of the solve: `GroundInk`'s four tiers were measured against
+/// every ground in both themes, and until XIA-443 not one of them reached a
+/// pixel — the surfaces that sit on the field drew at SwiftUI's `.primary` /
+/// `.secondary` / `.tertiary`, which are contrasts nobody measured against a
+/// ground that moves.
+///
+/// Rendered rather than asserted about constants wherever the claim is about
+/// what is on the screen, for the reason `testTheIdlePaneDrawsNoEmber` is: a
+/// call site that quietly went back to `.primary` would pass every assertion
+/// that only asked the type what it thinks its colours are.
+@MainActor
+final class GroundInkTests: XCTestCase {
+
+  /// A real ground, not a made-up grey: the tiers were solved on these cells and
+  /// a mid-band one is what the transcript is actually read over.
+  private func ground(light: Bool) -> FieldColor.RGB {
+    let sim = FieldSimulation(palette: GroundPalette.all[0], light: light)
+    for _ in 0..<30 { sim.step(dt: 1.0 / 60) }
+    return sim.color(x: sim.width / 2, y: sim.height / 2)
+  }
+
+  private func swiftUIColor(_ rgb: FieldColor.RGB) -> Color {
+    Color(.sRGB, red: rgb.x / 255, green: rgb.y / 255, blue: rgb.z / 255)
+  }
+
+  // MARK: 1. Every tier resolves to the solved alpha, in both themes
+
+  /// The whole point of one accessor: the alpha a view draws with is the alpha
+  /// the sweep measured, not a plausible-looking number typed beside it. (A
+  /// plausible 52% timestamp measured 2.81:1 against a 3.0 bar — see
+  /// `GroundInk`'s table.)
+  func testEveryTierResolvesToTheInkAtItsSolvedAlpha() {
+    for scheme in [ColorScheme.light, .dark] {
+      var environment = EnvironmentValues()
+      environment.colorScheme = scheme
+      let expected = GroundInk.ink(light: scheme == .light)
+
+      for tier in GroundInk.Tier.allCases {
+        let resolved = GroundInkStyle(tier: tier).resolve(in: environment)
+        guard let ns = NSColor(resolved).usingColorSpace(.sRGB) else {
+          return XCTFail("\(tier) did not resolve to an sRGB colour")
+        }
+        XCTAssertEqual(Double(ns.redComponent) * 255, expected.x, accuracy: 0.6, "\(tier)")
+        XCTAssertEqual(Double(ns.greenComponent) * 255, expected.y, accuracy: 0.6, "\(tier)")
+        XCTAssertEqual(Double(ns.blueComponent) * 255, expected.z, accuracy: 0.6, "\(tier)")
+        XCTAssertEqual(
+          Double(ns.alphaComponent), tier.alpha, accuracy: 1e-6,
+          "\(tier) is drawn at an alpha the sweep never measured")
+      }
+    }
+  }
+
+  /// **The surface composites a tier by lerping to the ink at exactly that
+  /// tier's alpha** — which is the assumption every bar in `GroundInk`'s table
+  /// rests on. `composite(_:over:light:)` is `FieldColor.mix`, a straight
+  /// per-channel lerp; if the compositor were working in linear light instead,
+  /// every partial-alpha tier would land lighter than it was measured and the
+  /// 3.0:1 timestamp would be the first to fall through its floor.
+  ///
+  /// Asserted against **rendered swatches** of the two endpoints rather than
+  /// against the numbers that were asked for, and in the bitmap's **own**
+  /// components rather than converted to sRGB. Both are the same correction: the
+  /// probe's rep is Generic RGB (gamma 1.8), so an sRGB reading of a 50%
+  /// composite comes back 145 where the compositor wrote 127 — a difference that
+  /// looks exactly like linear-light blending and is nothing but the round trip.
+  /// Endpoints measured the same way, the lerp is a claim about the compositor
+  /// and not about anybody's colour space.
+  func testTheSurfaceCompositesEachTierAtExactlyItsAlpha() {
+    for light in [true, false] {
+      let scheme: ColorScheme = light ? .light : .dark
+      let g = ground(light: light)
+      guard
+        let groundEnd = Self.swatch(over: g, ink: nil, scheme: scheme),
+        // The body tier is the ink at alpha 1, so it *is* the far endpoint.
+        let inkEnd = Self.swatch(over: g, ink: .body, scheme: scheme)
+      else { return XCTFail("the hosting view produced no bitmap") }
+
+      for tier in GroundInk.Tier.allCases {
+        guard let drawn = Self.swatch(over: g, ink: tier, scheme: scheme) else {
+          return XCTFail("the hosting view produced no bitmap")
+        }
+        let expected = groundEnd + (inkEnd - groundEnd) * tier.alpha
+        XCTAssertEqual(drawn.x, expected.x, accuracy: 1.5, "\(tier) \(scheme)")
+        XCTAssertEqual(drawn.y, expected.y, accuracy: 1.5, "\(tier) \(scheme)")
+        XCTAssertEqual(drawn.z, expected.z, accuracy: 1.5, "\(tier) \(scheme)")
+      }
+    }
+  }
+
+  // MARK: 2. The surface that sits on the ground draws with it
+
+  /// **The live transcript is inked, not labelled.**
+  ///
+  /// The discriminating measurement, and it took two false starts to find one.
+  /// "No glyph is darker than the ink" was the first, and it cannot fail:
+  /// `.primary` resolves to `labelColor`, which is black at 85% — *lighter* than
+  /// `#1C1A16` at full strength — so the surface this ticket found was already
+  /// inside that bound. An equality against the composite is no good either: no
+  /// glyph reaches full coverage at 14pt, so the extreme pixel is always some
+  /// way short of the tier's own colour.
+  ///
+  /// What does separate them is which colour the extreme pixel is reaching
+  /// *for*. The body tier is the ink at alpha 1, so the darkest thing the
+  /// transcript can draw is the ink swatch, and `labelColor` bottoms out a long
+  /// way short of it. Both are rendered here, in the same probe, at the same
+  /// font and over the same ground — so the bar cannot rot as fonts, smoothing
+  /// or the rep's colour space change. Only the ratio between two things
+  /// measured together is asserted.
+  func testTheTranscriptIsInkedAndNotLabelled() {
+    for scheme in [ColorScheme.light, .dark] {
+      let light = scheme == .light
+      let g = ground(light: light)
+      guard
+        let inkEnd = Self.swatch(over: g, ink: .body, scheme: scheme),
+        let transcript = renderTranscript(over: g, scheme: scheme),
+        let labelled = RenderProbe.bitmap(
+          ZStack {
+            swiftUIColor(g)
+            Text("Right, so the migration lands next Tuesday.")
+              .font(RecordingPaneMetrics.transcriptFont)
+              .foregroundStyle(.primary)
+          }
+          .environment(\.colorScheme, scheme),
+          size: CGSize(width: 420, height: 60))
+      else { return XCTFail("the hosting view produced no bitmap") }
+
+      let ink = Self.tone(inkEnd)
+      let drawn = Self.extremeTone(transcript, darkest: light)
+      let system = Self.extremeTone(labelled, darkest: light)
+      print("[ink] \(scheme): transcript \(drawn), ink \(ink), labelColor \(system)")
+
+      XCTAssertLessThan(
+        abs(drawn - ink), abs(system - ink) / 3,
+        "the transcript's extreme glyph is nearer the system label colour than "
+          + "the measured ink — a call site is back on .primary/.secondary")
+    }
+  }
+
+  // MARK: Helpers
+
+  /// One tier drawn over one ground, read back in the bitmap's **own**
+  /// components (×255) and never converted. `ink: nil` is the bare ground, which
+  /// is the near endpoint of the lerp.
+  private static func swatch(
+    over g: FieldColor.RGB, ink tier: GroundInk.Tier?, scheme: ColorScheme
+  ) -> FieldColor.RGB? {
+    guard
+      let rep = RenderProbe.bitmap(
+        ZStack {
+          Color(.sRGB, red: g.x / 255, green: g.y / 255, blue: g.z / 255)
+          if let tier { Rectangle().fill(.ground(tier)) }
+        }
+        .environment(\.colorScheme, scheme),
+        size: CGSize(width: 24, height: 24)),
+      let pixel = rep.colorAt(x: rep.pixelsWide / 2, y: rep.pixelsHigh / 2)
+    else { return nil }
+    return FieldColor.RGB(
+      Double(pixel.redComponent) * 255,
+      Double(pixel.greenComponent) * 255,
+      Double(pixel.blueComponent) * 255)
+  }
+
+  /// A one-number stand-in for "how dark this is", in the rep's own components.
+  /// Deliberately **not** WCAG luminance: that weights the channels for human
+  /// vision, and what is compared here is two renders of the same glyphs in two
+  /// near-neutral colours, on a surface whose bars were already measured
+  /// properly by the sweep at the top of this file.
+  private static func tone(_ c: FieldColor.RGB) -> Double { (c.x + c.y + c.z) / 3 }
+
+  private static func extremeTone(_ rep: NSBitmapImageRep, darkest: Bool) -> Double {
+    var extreme = darkest ? Double.infinity : -.infinity
+    for x in 0..<rep.pixelsWide {
+      for y in 0..<rep.pixelsHigh {
+        guard let pixel = rep.colorAt(x: x, y: y) else { continue }
+        let t = tone(
+          FieldColor.RGB(
+            Double(pixel.redComponent) * 255,
+            Double(pixel.greenComponent) * 255,
+            Double(pixel.blueComponent) * 255))
+        extreme = darkest ? min(extreme, t) : max(extreme, t)
+      }
+    }
+    return extreme
+  }
+
+  private func renderTranscript(
+    over g: FieldColor.RGB, scheme: ColorScheme
+  ) -> NSBitmapImageRep? {
+    let lines = [
+      LiveTranscriptLine(
+        id: UUID(), text: "Right, so the migration lands next Tuesday.", endTime: 12,
+        speaker: "Amara"),
+      LiveTranscriptLine(
+        id: UUID(), text: "We still owe the rollback note.", endTime: 19, speaker: "Amara"),
+      LiveTranscriptLine(
+        id: UUID(), text: "I can write that this afternoon.", endTime: 27, speaker: "Kenny"),
+      LiveTranscriptLine(
+        id: LiveTranscript.volatileLineID, text: "and I'll ping the on-call", endTime: 31,
+        speaker: "Kenny", isVolatile: true),
+    ]
+    let rows = LiveTranscript.rows(LiveTranscript.blocks(lines))
+    return RenderProbe.bitmap(
+      ZStack {
+        swiftUIColor(g)
+        LiveTranscriptView(rows: rows, volatileID: LiveTranscript.volatileLineID)
+      }
+      .environment(\.colorScheme, scheme),
+      size: CGSize(width: 620, height: 300))
   }
 }
 

@@ -132,9 +132,12 @@ enum RecordingPaneMetrics {
   static let transcriptFont: Font = .system(size: 14)
   static let gutterFont: Font = .system(size: 11, weight: .regular, design: .monospaced)
 
-  /// The volatile tail's opacity — the same 55% the HUD prompter dims its
-  /// in-flight run to, so "not final yet" means one thing across the app.
-  static let volatileOpacity: Double = 0.55
+  // There is no `volatileOpacity` here any more. The tail was dimmed to 55% to
+  // match the HUD prompter, and over the ground that is an unmeasured alpha one
+  // point under `GroundInk.Tier.timestamp` — so the transcript draws the tail at
+  // that tier instead, and every alpha the transcript spends is one the sweep
+  // solved. The HUD keeps its own 55%: that is white text on a dark glass plate,
+  // not ink on the field, and it was never in this measurement.
 }
 
 // MARK: - Layout decisions
@@ -683,13 +686,13 @@ struct SessionMarkerList: View {
     VStack(alignment: .leading, spacing: CraftTokens.spacing8) {
       Text(RecordingPaneCopy.markersHeading)
         .font(.system(size: 11, weight: .semibold))
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.ground(.speaker))
         .textCase(.uppercase)
 
       if markers.isEmpty {
         Text(RecordingPaneCopy.noMarkers)
           .font(RecordingPaneMetrics.markerLabelFont)
-          .foregroundStyle(.tertiary)
+          .foregroundStyle(.ground(.timestamp))
       } else {
         // Deliberately not its own `ScrollView`: the column already scrolls
         // (`SessionColumnView`), and two scroll views nested on the same axis
@@ -700,11 +703,11 @@ struct SessionMarkerList: View {
             HStack(spacing: CraftTokens.spacing8) {
               Text(LiveTranscript.timestamp(marker.at))
                 .font(RecordingPaneMetrics.markerTimeFont)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.ground(.timestamp))
               if let label = RecordingPaneCopy.markerLabel(marker) {
                 Text(label)
                   .font(RecordingPaneMetrics.markerLabelFont)
-                  .foregroundStyle(.primary)
+                  .foregroundStyle(.ground(.body))
                   .lineLimit(1)
               }
               Spacer(minLength: 0)
@@ -805,7 +808,7 @@ struct SessionColumnContent: View {
 
       Text(RecordingPaneCopy.kindLine(kind: kind, controls: controls))
         .font(RecordingPaneMetrics.kindLineFont)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.ground(.speaker))
 
       VStack(spacing: CraftTokens.spacing12) {
         SessionControls(
@@ -853,7 +856,7 @@ struct SessionStripView: View {
 
       Text(RecordingPaneCopy.kindLine(kind: kind, controls: controls))
         .font(RecordingPaneMetrics.kindLineFont)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.ground(.speaker))
         .lineLimit(1)
 
       Spacer(minLength: CraftTokens.spacing16)
@@ -921,10 +924,10 @@ struct LiveTranscriptView: View {
     HStack(spacing: CraftTokens.spacing8) {
       Image(systemName: "waveform")
         .symbolEffect(.pulse, isActive: true)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.ground(.speaker))
       Text(RecordingPaneCopy.listening)
         .font(RecordingPaneMetrics.transcriptFont)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.ground(.speaker))
     }
   }
 
@@ -940,20 +943,25 @@ struct LiveTranscriptView: View {
       // so a continuation never steps left under the line above it.
       Text(row.gutter.map(LiveTranscript.timestamp) ?? "")
         .font(RecordingPaneMetrics.gutterFont)
-        .foregroundStyle(.tertiary)
+        .foregroundStyle(.ground(.timestamp))
         .frame(width: RecordingPaneMetrics.gutterWidth, alignment: .trailing)
 
       switch row.content {
       case .speaker(let name):
         Text(name)
           .font(RecordingPaneMetrics.speakerFont)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(.ground(.speaker))
           .frame(maxWidth: .infinity, alignment: .leading)
       case .line(let line):
+        // The volatile tail is **a tier, not an `.opacity()` on the body tier**.
+        // It used to be body at 55%, which is a number nobody measured: against
+        // the solved table it lands a hair under the timestamp tier's 56% —
+        // i.e. just below the 3.0:1 bar the dimmest readable text is held to,
+        // on the one line that is being read while it is written. The tier is
+        // visually the same dimming and is on the measured side of it.
         Text(line.text)
           .font(RecordingPaneMetrics.transcriptFont)
-          .foregroundStyle(.primary)
-          .opacity(line.isVolatile ? RecordingPaneMetrics.volatileOpacity : 1)
+          .foregroundStyle(.ground(line.isVolatile ? .timestamp : .body))
           .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
       }

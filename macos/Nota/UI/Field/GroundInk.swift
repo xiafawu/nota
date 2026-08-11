@@ -1,4 +1,5 @@
 import Foundation
+import SwiftUI
 
 /// One fixed ink per theme, and a fixed alpha per text tier.
 ///
@@ -86,4 +87,59 @@ enum GroundInk {
   static func contrast(of tier: Tier, over ground: FieldColor.RGB, light isLight: Bool) -> Double {
     contrast(composite(tier, over: ground, light: isLight), ground)
   }
+
+  // MARK: - The ink, drawn
+
+  /// The tier as a colour a view can draw with: the theme's ink, at the tier's
+  /// solved alpha.
+  ///
+  /// **It observes nothing.** The ground is a moving value and the obvious
+  /// design is to sample the frame under the glyph and pick an ink to suit it —
+  /// which is the one thing the solve exists to make unnecessary. Every tier
+  /// clears its bar on all sixteen grounds in both themes, at every moment of
+  /// the flow, so the ink is a **constant per (tier, scheme)** and no label on
+  /// the surface has any reason to watch `FieldEngine`. Sampling per frame would
+  /// hang a ~20 Hz publisher off every piece of text on the two largest views in
+  /// the app, which is the XIA-432 trap rebuilt by hand.
+  ///
+  /// Drawing the ink at `tier.alpha` is the same arithmetic
+  /// `composite(_:over:light:)` measured, and that is checked rather than
+  /// assumed: `FieldColor.mix` is a straight per-channel lerp, the compositor
+  /// does a straight per-channel lerp in the destination's own encoding, and
+  /// `testTheSurfaceCompositesEachTierAtExactlyItsAlpha` renders both endpoints
+  /// and the tier and compares them. Had the compositor been working in linear
+  /// light instead, every partial-alpha tier would land lighter than it was
+  /// measured and the 3.0:1 timestamp would be the first through its floor.
+  static func color(_ tier: Tier, _ scheme: ColorScheme) -> Color {
+    let rgb = ink(light: scheme == .light)
+    return Color(
+      .sRGB,
+      red: rgb.x / 255,
+      green: rgb.y / 255,
+      blue: rgb.z / 255,
+      opacity: tier.alpha)
+  }
+}
+
+/// `.foregroundStyle(.ground(.body))` — a tier, resolved against whatever colour
+/// scheme the view is being drawn in.
+///
+/// A `ShapeStyle` rather than a `Color` the caller has to build, for two
+/// reasons. It keeps the alpha in one place: a view that took
+/// `GroundInk.ink(light:)` and applied its own `.opacity()` would be typing in a
+/// number nobody measured, and the tier table is the *minimum* each tier needs
+/// on the worst cell of the worst ground — every one of them was rounded up to
+/// reach it. And it spares six views an `@Environment(\.colorScheme)` they would
+/// otherwise carry only to hand it straight back to this type; the environment
+/// is read at resolve time, where SwiftUI already has it.
+struct GroundInkStyle: ShapeStyle {
+  let tier: GroundInk.Tier
+
+  func resolve(in environment: EnvironmentValues) -> Color {
+    GroundInk.color(tier, environment.colorScheme)
+  }
+}
+
+extension ShapeStyle where Self == GroundInkStyle {
+  static func ground(_ tier: GroundInk.Tier) -> GroundInkStyle { GroundInkStyle(tier: tier) }
 }
