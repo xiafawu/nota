@@ -715,7 +715,13 @@ final class LiveMeetingSession: ObservableObject {
   /// They reached neither `recording.caf` nor the socket. A meter that moves is
   /// a claim that something is being recorded, and it may only be made when
   /// something is.
-  static func meterFollowsMicrophone(_ state: SessionState) -> Bool {
+  ///
+  /// `nonisolated` because it is arithmetic on a value and nothing else, and
+  /// because it is now the *shared* predicate for the ember (XIA-434): the
+  /// window's meter, the island's dot and the menu bar's dot all ask it, and the
+  /// last two are decided by pure types that have no business being main-actor
+  /// isolated.
+  nonisolated static func meterFollowsMicrophone(_ state: SessionState) -> Bool {
     state == .recording
   }
 

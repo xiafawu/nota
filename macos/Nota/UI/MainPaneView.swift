@@ -52,11 +52,22 @@ struct MainPaneView: View {
           session: model.liveSession,
           kind: model.activeSessionKind,
           isStarting: model.isStartingLiveSession,
-          onStart: { model.startLiveSession() },
+          // The **kind**, not the default. This closure is both the idle Start
+          // button and the failure banner's Try Again, and `startLiveSession()`
+          // defaults to `.meeting` — so a failed memo retried from the window
+          // came back as a meeting (wrong kind on the record, wrong
+          // diarize/identify flags) while the same press on the island came back
+          // as a memo. The pane already names `activeSessionKind` in its own
+          // copy, so honouring it is what this state was already saying.
+          onStart: { model.startLiveSession(kind: model.activeSessionKind) },
           onStop: { model.stopLiveSession() },
           onDiscard: { model.discardLiveSession() },
           discardAudioBytes: { model.liveRecordingAudioBytes() },
-          onMarkersChanged: { model.recordLiveMarkers($0) }
+          // One verb for every surface that offers Mark (XIA-434): the pane's
+          // capsule, the island's, and the menu bar's row all land here.
+          onMark: { _ = model.markCurrentMoment() },
+          markerLog: model.sessionMarkers,
+          markersUnsaved: model.markersUnsaved
         )
       }
 

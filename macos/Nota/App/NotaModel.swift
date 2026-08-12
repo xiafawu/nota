@@ -133,6 +133,27 @@ final class NotaModel: ObservableObject {
   /// directly (via `@ObservedObject`) to switch the pane on state changes.
   let liveSession = LiveMeetingSession()
 
+  /// The live session's flagged moments (XIA-433), hoisted here by XIA-434.
+  ///
+  /// It was a `@StateObject` private to `LiveMeetingView`, which was right while
+  /// the live pane was the only thing that could flag a moment. It is not any
+  /// more: the island and the menu bar both offer Mark, and both exist precisely
+  /// when that view does not — the window can be closed, hidden, or on another
+  /// Space. Two logs would be worse than none, because every press writes the
+  /// **whole** array onto the record, so the second writer would erase the
+  /// first's moments on its next press.
+  ///
+  /// A plain `let`, not `@Published`: it publishes its own changes and the
+  /// surface that draws the list observes it directly, exactly as `liveSession`
+  /// is observed.
+  let sessionMarkers = SessionMarkerLog()
+
+  /// A ⌘K whose write did not reach the record. Published because the pane
+  /// draws it and the pane no longer owns it. Cleared by the next press that
+  /// lands — every press rewrites the whole list, so one that lands carries the
+  /// ones that did not (`SessionMarkPress`).
+  @Published private(set) var markersUnsaved = false
+
   private let projectDirectory = URL(fileURLWithPath: ProcessInfo.processInfo.environment["NOTA_PROJECT_DIR"] ?? "/Users/xiafawu/Developer/Nota")
   private let outputDirectory = notaOutputDirectory()
 
@@ -615,6 +636,14 @@ final class NotaModel: ObservableObject {
     // still processing in the background — independently, keyed by its own
     // record id — and cannot follow it here.
     isLiveSessionHandedOff = false
+    isLiveHandoffProcessing = false
+    // A marker belongs to the session that flagged it; a new one starts empty.
+    // This used to live in `LiveMeetingView.onChange(of: session.state)`, which
+    // could only run while that view was on screen — and the log is the model's
+    // now precisely because the island and the menu bar can flag a moment when
+    // it is not.
+    sessionMarkers.reset()
+    markersUnsaved = false
     // The last handoff's failure, if it had one, has been read by now: it is
     // about a record the owner has moved on from.
     backgroundFailure = nil
@@ -725,6 +754,9 @@ final class NotaModel: ObservableObject {
     // bar's warm slot. The record's own status is the progress, so the window
     // has nothing left to wait for.
     isLiveSessionHandedOff = true
+    // …and this one says the record went somewhere to be worked on, which
+    // Discard's identical `isLiveSessionHandedOff = true` does not mean.
+    isLiveHandoffProcessing = true
     let historyDirectory = notaHistoryDirectory()
 
     // The job enters the ledger keyed by THIS record's id and nothing else.
@@ -855,6 +887,17 @@ final class NotaModel: ObservableObject {
   /// The one thing that brings the window home immediately — see
   /// `LivePhaseGate`.
   @Published private(set) var isLiveSessionHandedOff = false
+
+  /// True only when a **Stop** handed a record to background processing
+  /// (XIA-434).
+  ///
+  /// `isLiveSessionHandedOff` cannot answer that question: `discardLiveSession`
+  /// sets it too, and Discard hands nothing off — it deletes the record and its
+  /// audio. The island reads this one, because a floating card reading
+  /// "Transcribing… 3s ago" with a Show button, over another app, about a
+  /// recording the owner has just deleted, is the one claim that surface may not
+  /// make. Cleared by the next start, like the flag above.
+  @Published private(set) var isLiveHandoffProcessing = false
 
   /// A handed-off record that ended in failure with **no drawer row to say so**
   /// — see `HandoffFailureNotice`. Shown in the toolbar pill, because leaving
@@ -1171,6 +1214,49 @@ final class NotaModel: ObservableObject {
   /// thing that can insist somebody looks.
   func recordLiveMarkers(_ markers: [SessionMarker]) -> Bool {
     liveRecords.recordMarkers(markers)
+  }
+
+  /// ⌘K, from **every** surface that offers it — the pane's Mark capsule, the
+  /// island's, and the menu bar's row (XIA-434).
+  ///
+  /// One function because there is one log and one record: the press moves
+  /// `sessionMarkers`, writes the whole list at press time, and publishes
+  /// whether it landed. Returns the marker it just made so a surface with
+  /// something to say about *this* press (the island's "Marked 28:40 · 3rd")
+  /// has it in hand; nil when there is no live microphone to mark.
+  ///
+  /// The mic gate is `LiveMeetingSession.meterFollowsMicrophone`, the same
+  /// predicate the ember obeys: a moment flagged into a session whose audio is
+  /// no longer being kept is a timestamp pointing at nothing.
+  @discardableResult
+  func markCurrentMoment() -> SessionMarker? {
+    guard LiveMeetingSession.meterFollowsMicrophone(liveSession.state) else { return nil }
+    // Through `SessionMarkPress`, not around it: "the press writes the record,
+    // and a failed write keeps the moment" is asserted against that function,
+    // and a second implementation of it here would be untested by construction.
+    let landed = SessionMarkPress.press(
+      log: sessionMarkers,
+      at: liveSession.elapsed,
+      write: { [weak self] markers in self?.recordLiveMarkers(markers) ?? false }
+    )
+    markersUnsaved = !landed
+    // Newest first (`SessionMarkerOrder`), so the press that just happened.
+    return sessionMarkers.markers.first
+  }
+
+  /// The island could not be put on screen after one recreate. Said in the
+  /// status line because there is no island to say it on — the same reasoning
+  /// that puts a review card's failure back on the HUD pill.
+  func reportIslandUnavailable() {
+    let notice = "Recording indicator unavailable — the session is still running."
+    // `status` is `@Published` and republishes on every assignment, including
+    // one that changes nothing — and the island's controller is subscribed to
+    // this object. Writing the same sentence again is a wake-up for every
+    // observer of the model, which is how this report used to feed back into
+    // the code that made it. The controller latches too; both halves are cheap
+    // and either alone leaves a loop half-closed.
+    guard status != notice else { return }
+    status = notice
   }
 
   /// Settle a record whose session ended without anyone pressing Stop.

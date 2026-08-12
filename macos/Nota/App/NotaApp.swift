@@ -7,6 +7,11 @@ struct NotaApp: App {
   @StateObject private var model = NotaModel()
   @StateObject private var dictationController: DictationController
   private let hudController: DictationHUDController
+  /// The mini-recorder island (XIA-434). Built without the model and handed one
+  /// by the menu-bar label's `onAppear` — `@StateObject` properties cannot be
+  /// read from `init()`, and the status item is the surface that outlives every
+  /// window anyway.
+  private let islandController = MiniRecorderIslandController()
 
   init() {
     if let exitCode = runHeadlessSmokeTestIfRequested(arguments: Array(ProcessInfo.processInfo.arguments.dropFirst())) {
@@ -19,11 +24,21 @@ struct NotaApp: App {
 
   var body: some Scene {
     MenuBarExtra {
-      DictationMenuBarView(controller: dictationController)
+      DictationMenuBarView(
+        controller: dictationController,
+        model: model,
+        island: islandController
+      )
     } label: {
       // XIA-435: the slot stays warm after the ember dot goes out — the
-      // dictation glyph plus whatever stage a record is still at.
-      NotaMenuBarLabel(controller: dictationController, ledger: ProcessingLedger.shared)
+      // dictation glyph plus whatever stage a record is still at. XIA-434 puts
+      // the live session's ember dot and clock in front of both.
+      NotaMenuBarLabel(
+        controller: dictationController,
+        ledger: ProcessingLedger.shared,
+        model: model,
+        island: islandController
+      )
     }
     .menuBarExtraStyle(.window)
 
@@ -41,6 +56,10 @@ struct NotaApp: App {
         .onReceive(NotificationCenter.default.publisher(for: .notaRetryRecordSummary)) { note in
           if let id = note.object as? String { model.retrySummary(recordID: id) }
         }
+        // The island's **Show** is deliberately NOT subscribed here: see
+        // `AppDelegate.showLiveRecord`. A subscriber inside the WindowGroup's
+        // content does not exist when there is no window, which is exactly the
+        // case the island exists for.
         .environmentObject(model)
     }
     .commands {
@@ -118,11 +137,49 @@ private struct OpenTuningWindowButton: View {
 #endif
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+  private var showLiveRecordObserver: NSObjectProtocol?
+
   func applicationDidFinishLaunching(_ notification: Notification) {
     hideFromDockUnderTests()
     ensureShareInboxExists()
     enforceSingleInstance()
     AppearanceSetting.current.apply()
+    // The island's **Show** (XIA-434). Handled HERE — not inside the
+    // WindowGroup's content — because the case the island exists for is
+    // precisely the one where there is no `ContentView` to be subscribed: the
+    // owner started a meeting, ⌘W'd the window and switched to Zoom. A
+    // subscriber inside the scene's content does not exist then, so Show did
+    // nothing at all: no activation, no window, no error.
+    //
+    // This is the one place Nota is brought forward on that path, and it is an
+    // explicit press on a button labelled Show. Nothing about *presenting* the
+    // island activates the app, which is the rule that matters.
+    showLiveRecordObserver = NotificationCenter.default.addObserver(
+      forName: .notaShowLiveRecord,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      MainActor.assumeIsolated { self?.showLiveRecord() }
+    }
+  }
+
+  /// Bring the document window forward, creating it when the WindowGroup has
+  /// released its last one — the same fallback `applicationShouldHandleReopen`
+  /// already owed, and for the same reason.
+  @MainActor
+  private func showLiveRecord() {
+    NSApp.activate(ignoringOtherApps: true)
+    let document = NSApp.windows.first { $0.identifier?.rawValue.hasPrefix("document") == true }
+      ?? NSApp.windows.first { !($0 is NSPanel) && $0.canBecomeMain }
+    guard let window = document else {
+      // `DictationStatusLabel` — which lives in the menu-bar label and is
+      // therefore alive for the whole life of the process — answers this with
+      // SwiftUI's `openWindow`.
+      NotificationCenter.default.post(name: .notaReopenMainWindow, object: nil)
+      return
+    }
+    if window.isMiniaturized { window.deminiaturize(nil) }
+    window.makeKeyAndOrderFront(nil)
   }
 
   /// Create `~/.nota/inbox` so the share extension can stage into it.

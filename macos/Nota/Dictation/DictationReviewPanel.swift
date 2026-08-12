@@ -898,7 +898,9 @@ final class DictationReviewPanel: NSPanel {
 /// Backed by `DictationSettingsStore.defaults`, which is a private wiped suite
 /// under XCTest: a test that drags the card must not move the owner's real one.
 enum ReviewPositionStore {
-  private static let key = "com.xiafawu.nota.dictationReviewPosition"
+  /// Internal for the reason `HUDPositionStore.key` is: the island asserts it
+  /// does not share this key, and an assertion against a copied string cannot.
+  static let key = "com.xiafawu.nota.dictationReviewPosition"
 
   static func load() -> CGPoint? {
     guard let pair = DictationSettingsStore.defaults.array(forKey: key) as? [Double],

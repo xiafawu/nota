@@ -485,7 +485,9 @@ final class HUDDragView: GlassBackingView {
 /// Backed by `DictationSettingsStore.defaults`, which is a private wiped suite
 /// under XCTest: a test that drags the HUD must not move the owner's real one.
 enum HUDPositionStore {
-  private static let key = "com.xiafawu.nota.dictationHUDPosition"
+  /// Internal so a test can compare it against `IslandPositionStore.key` as a
+  /// symbol rather than against a copied literal that cannot notice a rename.
+  static let key = "com.xiafawu.nota.dictationHUDPosition"
 
   static func load() -> CGPoint? {
     guard let pair = DictationSettingsStore.defaults.array(forKey: key) as? [Double],

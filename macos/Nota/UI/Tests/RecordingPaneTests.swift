@@ -1555,7 +1555,12 @@ final class RecordingPaneTests: XCTestCase {
   /// microphone is open. Rendered and scanned rather than asserted about a
   /// constant, because "there is no ember on screen" is a claim about pixels.
   func testTheIdlePaneDrawsNoEmber() {
-    let idle = LiveMeetingView(session: LiveMeetingSession(), onStart: {}, onStop: {})
+    let idle = LiveMeetingView(
+      session: LiveMeetingSession(),
+      onStart: {},
+      onStop: {},
+      markerLog: SessionMarkerLog()
+    )
     guard
       let bitmap = RenderProbe.bitmap(
         idle.environment(\.colorScheme, .light),

@@ -141,27 +141,21 @@ struct LiveMeetingView: View {
   /// is a stat of a file the model owns, and it is read when the dialog opens
   /// rather than on every render of a pane that redraws per transcript turn.
   var discardAudioBytes: () -> Int? = { nil }
-  /// Write the session's moments onto its history record — called on **every**
-  /// press with the whole list (XIA-433). A closure for the reason `onStop` is
-  /// one: only the model owns the record on disk, and a view that reached for
-  /// it would be a second writer of the same file.
-  ///
-  /// It **returns whether the write landed**, and the default answers false
-  /// rather than true: a `LiveMeetingView` nobody wired a record to has not
-  /// saved anything, and the one thing this path may never do is report a
-  /// success it did not have.
-  var onMarkersChanged: ([SessionMarker]) -> Bool = { _ in false }
+  /// Flag this instant — the same press the island's Mark capsule and the menu
+  /// bar's row make (XIA-434). A closure for the reason `onStop` is one: only
+  /// the model owns the record on disk, and a view that reached for it would be
+  /// a second writer of the same file.
+  var onMark: () -> Void = {}
+
+  /// The session's flagged moments. **The model's log**, not this view's
+  /// (XIA-434): the island and the menu bar can flag a moment while this view is
+  /// closed or on another Space, and every press writes the whole array onto the
+  /// record — so a second log would erase the first's moments on its next press.
+  @ObservedObject var markerLog: SessionMarkerLog
+  /// A ⌘K whose write did not land, published by the model for the same reason.
+  var markersUnsaved: Bool = false
 
   @State private var confirmingDiscard = false
-  /// A ⌘K whose write did not land. Cleared by the next press that does — the
-  /// whole list goes every time, so one that lands carries the ones that did
-  /// not. See `SessionMarkPress`.
-  @State private var markersUnsaved = false
-
-  /// The session's flagged moments. The view's copy; the record's copy is
-  /// written at press time by `onMarkersChanged`, so a session that never
-  /// reaches Stop keeps them. See `SessionMarkerLog`.
-  @StateObject private var markerLog = SessionMarkerLog()
 
   /// The transcript's row model, memoized. It maps every segment of the
   /// session, so it may not be rebuilt by a render the transcript did not
@@ -228,13 +222,9 @@ struct LiveMeetingView: View {
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .background(FieldBackground(role: .recording))
-    // A marker belongs to the session that flagged it; a new one starts empty.
-    .onChange(of: session.state) { old, new in
-      if new == .recording, old != .recording {
-        markerLog.reset()
-        markersUnsaved = false
-      }
-    }
+    // The "a marker belongs to the session that flagged it" reset moved to
+    // `NotaModel.performStartLiveSession` with the log (XIA-434): it may not
+    // depend on this view being on screen when a session starts.
   }
 
   // MARK: - The recording pane
@@ -262,7 +252,7 @@ struct LiveMeetingView: View {
         level: session.level,
         controls: controls,
         markers: markerLog.markers,
-        onMark: mark,
+        onMark: onMark,
         onStop: onStop
       )
       .padding(.bottom, RecordingPaneMetrics.clusterBottomInset)
@@ -284,20 +274,6 @@ struct LiveMeetingView: View {
   private func transcript(bottomReserve: CGFloat = 0) -> some View {
     LiveTranscriptView(rows: rows, volatileID: volatileID, bottomReserve: bottomReserve)
       .frame(maxWidth: .infinity, maxHeight: .infinity)
-  }
-
-  /// ⌘K, and the Mark capsule. Everything it does is `SessionMarkPress` — a
-  /// view method is unreachable from a test, and "the press writes the record"
-  /// is the ticket's headline claim, so the claim lives where it can be driven.
-  /// Nothing here waits for or inspects a transcript: a moment is a timestamp,
-  /// so a mark pressed before a single word has been recognized lands exactly
-  /// like any other.
-  private func mark() {
-    markersUnsaved = !SessionMarkPress.press(
-      log: markerLog,
-      at: session.elapsed,
-      write: onMarkersChanged
-    )
   }
 
   // MARK: - Starting (press accepted, session not live yet)
@@ -434,7 +410,8 @@ struct LiveMeetingView: View {
   LiveMeetingView(
     session: NotaModel().liveSession,
     onStart: {},
-    onStop: {}
+    onStop: {},
+    markerLog: SessionMarkerLog()
   )
   .frame(width: 980, height: 620)
 }

@@ -153,11 +153,27 @@ struct ProcessingMenuBarLabel: View {
 struct NotaMenuBarLabel: View {
   @ObservedObject var controller: DictationController
   @ObservedObject var ledger: ProcessingLedger
+  /// A plain `let`, deliberately not `@ObservedObject`: the bar item would
+  /// otherwise re-render on every change the model publishes, and the only thing
+  /// here that is a function of a live session is `MenuBarSessionLabel`, which
+  /// observes the session itself as a leaf (XIA-432's rule, one surface further
+  /// out).
+  let model: NotaModel
+  /// Started here rather than in `NotaApp.init`, because this is the view that
+  /// exists for the whole life of the process — the document window can be
+  /// closed, the status item cannot. `start(model:)` is idempotent, which is
+  /// what makes an `onAppear` a legal place to do it (the precedent is
+  /// `DictationStatusLabel`'s `controller.start()`).
+  let island: MiniRecorderIslandController
 
   var body: some View {
     HStack(spacing: 3) {
       DictationStatusLabel(controller: controller)
+      // XIA-434: the ember dot and the elapsed clock go IN THE BAR, because the
+      // status item is the one thing visible in every app and on every Space.
+      MenuBarSessionLabel(session: model.liveSession)
       ProcessingMenuBarLabel(ledger: ledger)
     }
+    .onAppear { island.start(model: model) }
   }
 }

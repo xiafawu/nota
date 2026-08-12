@@ -24,11 +24,27 @@ struct DictationStatusLabel: View {
 
 struct DictationMenuBarView: View {
   @ObservedObject var controller: DictationController
+  /// A plain `let` (XIA-434): the live-session rows are drawn by
+  /// `SessionMenuSection`, which observes the session itself, so this popover
+  /// does not re-render on everything the model publishes.
+  let model: NotaModel
+  /// The island's controller, because its `perform(_:)` is **the** switch from
+  /// a `MiniIslandAction` to a model verb. This view carried a second one until
+  /// the review — two implementations of "⌘K means one thing wherever it is
+  /// pressed", sitting exactly where they can drift, and the test that appeared
+  /// to cover it asserted `SessionMenuRow.mark.action == .mark`: the enum, not
+  /// the call.
+  let island: MiniRecorderIslandController
   @Environment(\.openWindow) private var openWindow
   @Environment(\.openSettings) private var openSettings
 
   var body: some View {
     VStack(alignment: .leading, spacing: 14) {
+      // XIA-434: the live session comes FIRST — a status row and its two verbs,
+      // above the dictation rows. It renders nothing at all when no session is
+      // running, the shape `ProcessingMenuBarLabel` already uses.
+      SessionMenuSection(session: model.liveSession, perform: island.perform)
+
       statusHeader
 
       // When permissions block dictation the onboarding below is the single
@@ -295,7 +311,7 @@ private struct RecentDictationRow: View {
 
 /// Menu-row treatment for popover actions: full-width hit target with a hover
 /// wash and pressed state, matching how window-style extras present commands.
-private struct MenuRowButtonStyle: ButtonStyle {
+struct MenuRowButtonStyle: ButtonStyle {
   func makeBody(configuration: Configuration) -> some View {
     MenuRowLabel(configuration: configuration)
   }
