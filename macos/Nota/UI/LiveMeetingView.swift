@@ -82,6 +82,21 @@ enum LiveMeetingControls: Equatable, CaseIterable {
   var showsRecordingPane: Bool {
     self == .stop || self == .finalizing
   }
+
+  /// Whether the transcript may wear the ember rule for a flagged moment
+  /// (XIA-433). Exactly the states that show the cluster, and expressed as
+  /// `showsRecordingPane` rather than as a second list of cases so the two
+  /// cannot drift.
+  ///
+  /// It is a rule about the **colour**, not about the marks. `CraftTokens
+  /// .ember(_:)` means the microphone is open; the failed banner's transcript
+  /// is drawn by the same `LiveTranscriptView`, and the session's marks are
+  /// still in the log when it is — so without this a failed session would carry
+  /// ember down its margin with a dead microphone and no meter, which is the
+  /// lie `showsRecordingPane` withholds the cluster to avoid and the one
+  /// `testTheIdlePaneDrawsNoEmber` already pins for idle. The moments are not
+  /// lost by it: they are on the record, written at press time.
+  var drawsMarkerRules: Bool { showsRecordingPane }
 }
 
 /// Live dictation pane (XIA-423 / XIA-432, rearranged by XIA-444, rebuilt by
@@ -126,11 +141,26 @@ struct LiveMeetingView: View {
   /// is a stat of a file the model owns, and it is read when the dialog opens
   /// rather than on every render of a pane that redraws per transcript turn.
   var discardAudioBytes: () -> Int? = { nil }
+  /// Write the session's moments onto its history record — called on **every**
+  /// press with the whole list (XIA-433). A closure for the reason `onStop` is
+  /// one: only the model owns the record on disk, and a view that reached for
+  /// it would be a second writer of the same file.
+  ///
+  /// It **returns whether the write landed**, and the default answers false
+  /// rather than true: a `LiveMeetingView` nobody wired a record to has not
+  /// saved anything, and the one thing this path may never do is report a
+  /// success it did not have.
+  var onMarkersChanged: ([SessionMarker]) -> Bool = { _ in false }
 
   @State private var confirmingDiscard = false
+  /// A ⌘K whose write did not land. Cleared by the next press that does — the
+  /// whole list goes every time, so one that lands carries the ones that did
+  /// not. See `SessionMarkPress`.
+  @State private var markersUnsaved = false
 
-  /// The session's flagged moments. Session-local and not persisted — the UI
-  /// slot is this ticket's, the plumbing is XIA-433's. See `SessionMarkerLog`.
+  /// The session's flagged moments. The view's copy; the record's copy is
+  /// written at press time by `onMarkersChanged`, so a session that never
+  /// reaches Stop keeps them. See `SessionMarkerLog`.
   @StateObject private var markerLog = SessionMarkerLog()
 
   /// The transcript's row model, memoized. It maps every segment of the
@@ -154,8 +184,24 @@ struct LiveMeetingView: View {
     rowCache.rows(
       segments: session.segments,
       partial: session.partialText,
-      elapsed: session.elapsed
+      elapsed: session.elapsed,
+      markers: Self.drawnMarkers(controls: controls, log: markerLog.markers)
     )
+  }
+
+  /// Which of the session's moments the transcript may rule (XIA-433) — the
+  /// whole log while the microphone is open, and **nothing** otherwise.
+  ///
+  /// A static function rather than an expression inline in `rows`, because it
+  /// is the one thing standing between the reserved ember and a failed
+  /// session's transcript, and a test can hold a function. `LiveMeetingView`'s
+  /// own body cannot be reached from this bundle, so what is assertable is this
+  /// decision plus the row model it feeds.
+  static func drawnMarkers(
+    controls: LiveMeetingControls,
+    log: [SessionMarker]
+  ) -> [SessionMarker] {
+    controls.drawsMarkerRules ? log : []
   }
 
   private var volatileID: UUID? {
@@ -184,7 +230,10 @@ struct LiveMeetingView: View {
     .background(FieldBackground(role: .recording))
     // A marker belongs to the session that flagged it; a new one starts empty.
     .onChange(of: session.state) { old, new in
-      if new == .recording, old != .recording { markerLog.reset() }
+      if new == .recording, old != .recording {
+        markerLog.reset()
+        markersUnsaved = false
+      }
     }
   }
 
@@ -217,6 +266,18 @@ struct LiveMeetingView: View {
         onStop: onStop
       )
       .padding(.bottom, RecordingPaneMetrics.clusterBottomInset)
+
+      // Only when a press did not reach the record. It sits just above the
+      // band the cluster already reserves — derived from that reserve rather
+      // than placed by a second number — so it covers no words, and it is
+      // absent from every laid-out geometry the cluster's tests measure.
+      if markersUnsaved {
+        Text(RecordingPaneCopy.markersUnsaved)
+          .font(.caption)
+          .foregroundStyle(.ground(.timestamp))
+          .padding(.bottom, RecordingPaneMetrics.transcriptBottomReserve)
+          .accessibilityAddTraits(.isStaticText)
+      }
     }
   }
 
@@ -225,8 +286,18 @@ struct LiveMeetingView: View {
       .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
 
+  /// ⌘K, and the Mark capsule. Everything it does is `SessionMarkPress` — a
+  /// view method is unreachable from a test, and "the press writes the record"
+  /// is the ticket's headline claim, so the claim lives where it can be driven.
+  /// Nothing here waits for or inspects a transcript: a moment is a timestamp,
+  /// so a mark pressed before a single word has been recognized lands exactly
+  /// like any other.
   private func mark() {
-    markerLog.mark(at: session.elapsed)
+    markersUnsaved = !SessionMarkPress.press(
+      log: markerLog,
+      at: session.elapsed,
+      write: onMarkersChanged
+    )
   }
 
   // MARK: - Starting (press accepted, session not live yet)

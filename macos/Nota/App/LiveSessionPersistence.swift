@@ -562,6 +562,72 @@ enum LiveSessionPersistence {
     max(1, Int((duration / 60).rounded(.up)))
   }
 
+  // MARK: - Moment markers (XIA-433)
+
+  /// The record's `markers` array: `{ id, atSeconds, createdAt }`, oldest
+  /// first, with `label` present only when there is one.
+  ///
+  /// **Oldest first, whatever order the caller holds them in.** The in-memory
+  /// log is newest-first because the owner is looking for the moment they just
+  /// flagged; the record is a document, and a document's moments run with the
+  /// recording. Sorting here rather than asking the caller to is what makes
+  /// that a property of the file rather than of whoever last wrote to it.
+  ///
+  /// A nil `label` is **omitted**, never stored as null: this dictionary goes
+  /// through `JSONSerialization`, and the TypeScript side reads an absent key
+  /// as `undefined` where a null would be a value it has to special-case.
+  ///
+  /// **A marker whose `at` is not finite is dropped, not carried.** The whole
+  /// array is written on every press and `JSONSerialization` refuses a
+  /// non-finite Double, so one infinity would not cost one bad marker — it
+  /// would fail the write for the rest of the session, taking every moment
+  /// already safely on disk with it, since each later press re-serializes the
+  /// same poisoned array. `SessionMarkerLog.mark` already clamps on the way in;
+  /// this is the backstop for a caller that did not come through it, and it
+  /// costs the one value that cannot be a time anyway.
+  static func markerDictionaries(_ markers: [SessionMarker]) -> [[String: Any]] {
+    markers
+      .filter { $0.at.isFinite }
+      .sorted { $0.at < $1.at }
+      .map { marker in
+        var dictionary: [String: Any] = [
+          "id": marker.id.uuidString,
+          "atSeconds": marker.at,
+          "createdAt": iso8601(marker.createdAt)
+        ]
+        if let label = marker.label, !label.isEmpty {
+          dictionary["label"] = label
+        }
+        return dictionary
+      }
+  }
+
+  /// Write the session's markers onto its record — **at press time**, not at
+  /// Stop, so a session that crashes, is killed or never reaches the seal keeps
+  /// every moment the owner flagged.
+  ///
+  /// The whole array goes every time, because `mutateRecord` sets a key rather
+  /// than appending to one. That is not a cost worth optimising away: it makes
+  /// the record's list exactly the log's list after every press, so there is no
+  /// state in which the two have diverged and no repair path to get wrong.
+  /// Everything else on the record survives — `mutateRecord` merges — so a
+  /// press cannot clobber a field the CLI owns.
+  ///
+  /// Not `@discardableResult`, for the reason `mutateRecord` is not: a false
+  /// here is a moment the owner believes they flagged and the record does not
+  /// hold.
+  static func recordMarkers(
+    id: String,
+    markers: [SessionMarker],
+    historyDirectory: URL
+  ) -> Bool {
+    mutateRecord(
+      id: id,
+      historyDirectory: historyDirectory,
+      ["markers": markerDictionaries(markers)]
+    )
+  }
+
   /// CLI's TranscriptSegment shape: `{ start, end, text }`. Live segments
   /// carry only an end time, so each segment's start is the previous end
   /// (first segment starts at 0).

@@ -916,4 +916,310 @@ final class LiveSessionPersistenceTests: XCTestCase {
     let details = HistoryRecordInfo.detailsByOutputPath(historyDir: historyDirectory)
     XCTAssertTrue(details.isEmpty)
   }
+
+  // MARK: - Moment markers (XIA-433)
+
+  private func storedMarkers(on id: String) -> [[String: Any]] {
+    let record = LiveSessionPersistence.loadRecord(id: id, historyDirectory: historyDirectory)
+    return record?["markers"] as? [[String: Any]] ?? []
+  }
+
+  /// A marker's `createdAt` read back as an instant, so the assertions below
+  /// are about the time it names rather than about the spelling of it.
+  private func createdAt(_ marker: [String: Any]?) -> Date? {
+    guard let text = marker?["createdAt"] as? String else { return nil }
+    let formatter = ISO8601DateFormatter()
+    formatter.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+    return formatter.date(from: text)
+  }
+
+  /// **A moment is a timestamp, not an annotation on text**, and the record has
+  /// to be able to hold one before a single word exists. This is the very first
+  /// press of a session: the record was written at sample zero, nothing has
+  /// been recognized, `transcriptText` is still empty — and the mark lands on
+  /// disk all the same, at press time rather than at Stop.
+  func testAMarkerPressedBeforeAnySpeechIsStillKept() throws {
+    let started = try beginRecording()
+    let pressedAt = Date(timeIntervalSince1970: 1_700_000_000)
+
+    XCTAssertTrue(
+      LiveSessionPersistence.recordMarkers(
+        id: started.historyID,
+        markers: [SessionMarker(at: 0, createdAt: pressedAt)],
+        historyDirectory: historyDirectory
+      )
+    )
+
+    let written = storedMarkers(on: started.historyID)
+    XCTAssertEqual(written.count, 1)
+    XCTAssertEqual(written.first?["atSeconds"] as? Double, 0)
+    XCTAssertNotNil(written.first?["id"] as? String)
+    // The wall clock written is **the press's**, not the write's. `createdAt`
+    // is a stored property of the marker for exactly this reason, and a
+    // `Date()` taken at serialization time would pass every other assertion in
+    // this file.
+    XCTAssertEqual(
+      createdAt(written.first)?.timeIntervalSince1970 ?? 0,
+      pressedAt.timeIntervalSince1970,
+      accuracy: 0.001,
+      "the record stamped the write's clock over the press's"
+    )
+    // Nothing about the record moved on: the transcript is still empty and the
+    // status is still the live one. A mark is not a stage.
+    let record = LiveSessionPersistence.loadRecord(
+      id: started.historyID,
+      historyDirectory: historyDirectory
+    )
+    XCTAssertEqual(record?["transcriptText"] as? String, "")
+    XCTAssertEqual(record?["status"] as? String, HistoryStatus.recording.rawValue)
+  }
+
+  /// The in-memory log is newest-first — the owner is looking for the moment
+  /// they just flagged — and the record is a document, whose moments run with
+  /// the recording. The sort lives in `markerDictionaries`, so the file's order
+  /// is a property of the file rather than of whichever caller wrote last.
+  func testMarkersReachTheRecordOldestFirstHoweverTheyArrive() throws {
+    let started = try beginRecording()
+    let arriving = [SessionMarker(at: 95), SessionMarker(at: 40), SessionMarker(at: 10)]
+    XCTAssertEqual(arriving.map(\.at), [95, 40, 10], "the fixture is not in log order")
+
+    XCTAssertTrue(
+      LiveSessionPersistence.recordMarkers(
+        id: started.historyID,
+        markers: arriving,
+        historyDirectory: historyDirectory
+      )
+    )
+    XCTAssertEqual(
+      storedMarkers(on: started.historyID).compactMap { $0["atSeconds"] as? Double },
+      [10, 40, 95]
+    )
+  }
+
+  /// `mutateRecord` **sets** a key rather than appending to one, so every press
+  /// writes the whole list. That is what makes the record's list exactly the
+  /// log's list after every press — there is no state in which the two have
+  /// diverged, and so no repair path to get wrong.
+  func testEveryPressReplacesTheWholeListRatherThanAppendingToIt() throws {
+    let started = try beginRecording()
+    let pressedAt = Date(timeIntervalSince1970: 1_700_000_000)
+    let first = SessionMarker(at: 12, createdAt: pressedAt)
+    let second = SessionMarker(at: 40, createdAt: pressedAt.addingTimeInterval(28))
+
+    _ = LiveSessionPersistence.recordMarkers(
+      id: started.historyID, markers: [first], historyDirectory: historyDirectory
+    )
+    _ = LiveSessionPersistence.recordMarkers(
+      id: started.historyID, markers: [second, first], historyDirectory: historyDirectory
+    )
+
+    let written = storedMarkers(on: started.historyID)
+    XCTAssertEqual(written.count, 2, "the second press appended to the first press's list")
+    XCTAssertEqual(written.compactMap { $0["atSeconds"] as? Double }, [12, 40])
+    XCTAssertEqual(
+      Set(written.compactMap { $0["id"] as? String }),
+      Set([first.id.uuidString, second.id.uuidString]),
+      "a rewrite gave the same moment a new identity"
+    )
+    // Nor a new history. The whole array is rewritten on every press, so a
+    // `createdAt` stamped at write time would walk every earlier moment's wall
+    // clock forward to the latest press.
+    XCTAssertEqual(
+      createdAt(written.first)?.timeIntervalSince1970 ?? 0,
+      pressedAt.timeIntervalSince1970,
+      accuracy: 0.001,
+      "the second press restamped the first moment"
+    )
+    XCTAssertEqual(
+      createdAt(written.last)?.timeIntervalSince1970 ?? 0,
+      pressedAt.timeIntervalSince1970 + 28,
+      accuracy: 0.001
+    )
+  }
+
+  /// A marker write may not cost the record anything else it holds. The CLI
+  /// writes fields this app does not model (usage, suggestions, speakerClips)
+  /// and the seal writes the transcript; `mutateRecord` merges, and this is the
+  /// assertion that the marker path really goes through it.
+  func testAMarkerWriteDoesNotClobberTheFieldsAroundIt() throws {
+    let started = try beginRecording()
+    XCTAssertTrue(
+      LiveSessionPersistence.mutateRecord(
+        id: started.historyID,
+        historyDirectory: historyDirectory,
+        ["suggestions": [["label": "Speaker 1"]], "transcriptText": "already heard"]
+      )
+    )
+
+    _ = LiveSessionPersistence.recordMarkers(
+      id: started.historyID,
+      markers: [SessionMarker(at: 7)],
+      historyDirectory: historyDirectory
+    )
+
+    let record = LiveSessionPersistence.loadRecord(
+      id: started.historyID,
+      historyDirectory: historyDirectory
+    )
+    XCTAssertEqual(record?["transcriptText"] as? String, "already heard")
+    XCTAssertEqual((record?["suggestions"] as? [[String: Any]])?.count, 1)
+    XCTAssertEqual((record?["markers"] as? [[String: Any]])?.count, 1)
+    XCTAssertEqual(record?["audioPath"] as? String, "recording.caf")
+  }
+
+  /// A nil label is **omitted**, never written as null. The dictionary goes
+  /// through `JSONSerialization`, and the TypeScript side reads an absent key
+  /// as `undefined` where a null would be a value every consumer has to
+  /// special-case. The auto-title follow-up fills it; until then it is not
+  /// there at all.
+  func testAnUnlabelledMarkerStoresNoLabelKeyAtAll() throws {
+    let started = try beginRecording()
+    _ = LiveSessionPersistence.recordMarkers(
+      id: started.historyID,
+      markers: [SessionMarker(at: 7), SessionMarker(at: 20, label: "Rollback note")],
+      historyDirectory: historyDirectory
+    )
+
+    let written = storedMarkers(on: started.historyID)
+    XCTAssertNil(written.first?["label"], "an unlabelled marker wrote a label key")
+    XCTAssertEqual(written.last?["label"] as? String, "Rollback note")
+    // And the whole array is still JSON-legal — `mutateRecord` refuses to
+    // encode one that is not, which is the failure this guards against.
+    XCTAssertTrue(JSONSerialization.isValidJSONObject(["markers": written]))
+  }
+
+  /// **The whole point of writing at press time**: a session that never reaches
+  /// Stop keeps its moments. `settleAsFailed` is the closest a test can get to
+  /// the process going away, and it goes through `updateStatus` →
+  /// `mutateRecord` — the merge — so the markers come through it untouched.
+  func testAMomentSurvivesASessionThatNeverReachesStop() throws {
+    let started = try beginRecording()
+    _ = LiveSessionPersistence.recordMarkers(
+      id: started.historyID,
+      markers: [SessionMarker(at: 12), SessionMarker(at: 44)],
+      historyDirectory: historyDirectory
+    )
+
+    _ = LiveSessionPersistence.settleAsFailed(
+      id: started.historyID,
+      historyDirectory: historyDirectory
+    )
+
+    let record = LiveSessionPersistence.loadRecord(
+      id: started.historyID,
+      historyDirectory: historyDirectory
+    )
+    XCTAssertEqual((record?["markers"] as? [[String: Any]])?.count, 2)
+    XCTAssertEqual(
+      record?["status"] as? String,
+      HistoryStatus.failed(stage: .recording).rawValue,
+      "the fixture stopped failing in the stage the record was in"
+    )
+  }
+
+  /// And a session that *does* reach Stop keeps them too — `sealTranscript`
+  /// writes transcript, segments, output path and status through the same
+  /// merge, and none of that names markers.
+  func testTheSealKeepsTheMomentsTheSessionFlagged() throws {
+    let started = try beginRecording()
+    try writeAudio(started)
+    _ = LiveSessionPersistence.recordMarkers(
+      id: started.historyID,
+      markers: [SessionMarker(at: 12)],
+      historyDirectory: historyDirectory
+    )
+
+    _ = try LiveSessionPersistence.sealTranscript(
+      started: started,
+      result: makeResult(
+        segments: [LiveMeetingSession.LiveSegment(id: UUID(), text: "hello", endTime: 20)],
+        transcript: "hello",
+        duration: 20
+      ),
+      outputDirectory: outputDirectory,
+      historyDirectory: historyDirectory
+    )
+
+    let record = LiveSessionPersistence.loadRecord(
+      id: started.historyID,
+      historyDirectory: historyDirectory
+    )
+    XCTAssertEqual((record?["markers"] as? [[String: Any]])?.count, 1)
+    XCTAssertEqual(record?["transcriptText"] as? String, "hello")
+  }
+
+  /// **And the route a killed process really takes.** `settleAsFailed` is what
+  /// the *in-process* failure paths run; a session whose process went away is
+  /// resolved at the next launch by `resolveInterruptedRecords`, which is a
+  /// different write with different keys (`interrupted`, `audioBytes`) — and it
+  /// is the one the ticket's "a crash keeps them" claim actually rests on.
+  func testAMomentSurvivesTheLaunchSweepThatFindsAnInterruptedSession() throws {
+    let started = try beginRecording()
+    try writeAudio(started, bytes: 64)
+    _ = LiveSessionPersistence.recordMarkers(
+      id: started.historyID,
+      markers: [SessionMarker(at: 12), SessionMarker(at: 44)],
+      historyDirectory: historyDirectory
+    )
+
+    let resolved = LiveSessionPersistence.resolveInterruptedRecords(
+      historyDirectory: historyDirectory
+    )
+    XCTAssertEqual(resolved, [started.historyID])
+
+    let record = LiveSessionPersistence.loadRecord(
+      id: started.historyID,
+      historyDirectory: historyDirectory
+    )
+    XCTAssertEqual(
+      (record?["markers"] as? [[String: Any]])?.compactMap { $0["atSeconds"] as? Double },
+      [12, 44],
+      "the sweep that rescues an interrupted record dropped its moments"
+    )
+    XCTAssertEqual(record?["interrupted"] as? Bool, true)
+    XCTAssertEqual(record?["audioBytes"] as? Int, 64)
+  }
+
+  /// The press path end to end, minus the one closure that hands it to the
+  /// model: ⌘K moves `SessionMarkerLog`, and the *log's own array* is what
+  /// reaches the record. Item 2 of the ticket is exactly this — the tally on
+  /// the capsule used to be all a press did.
+  @MainActor
+  func testPressingMarkWritesTheWholeLogToTheRecord() throws {
+    let started = try beginRecording()
+    let log = SessionMarkerLog()
+
+    log.mark(at: 12)
+    XCTAssertTrue(
+      LiveSessionPersistence.recordMarkers(
+        id: started.historyID, markers: log.markers, historyDirectory: historyDirectory
+      )
+    )
+    XCTAssertEqual(storedMarkers(on: started.historyID).count, 1)
+
+    log.mark(at: 44)
+    XCTAssertTrue(
+      LiveSessionPersistence.recordMarkers(
+        id: started.historyID, markers: log.markers, historyDirectory: historyDirectory
+      )
+    )
+    XCTAssertEqual(
+      storedMarkers(on: started.historyID).compactMap { $0["atSeconds"] as? Double },
+      [12, 44],
+      "the record does not hold what the tally on the capsule is counting"
+    )
+  }
+
+  /// A write against a record that is not there is a **false** — not a crash
+  /// and not a silent success. It is the answer `NotaModel.recordLiveMarkers`
+  /// gives when no session owns a record.
+  func testMarkingARecordThatIsNotThereReportsTheFailure() {
+    XCTAssertFalse(
+      LiveSessionPersistence.recordMarkers(
+        id: "no-such-record",
+        markers: [SessionMarker(at: 3)],
+        historyDirectory: historyDirectory
+      )
+    )
+  }
 }

@@ -1160,6 +1160,19 @@ final class NotaModel: ObservableObject {
     return size
   }
 
+  /// Persist the live session's flagged moments (XIA-433), at press time, with
+  /// the whole list — and **report whether they landed**.
+  ///
+  /// A pass-through to `LiveSessionOwner.recordMarkers`, where the decision
+  /// (does a live session own a record?) and the write both live, because that
+  /// type is the one a test can build. Deliberately not `@discardableResult`:
+  /// the whole defect this ticket removes is a moment the owner believes they
+  /// flagged and the record does not hold, and the compiler is the cheapest
+  /// thing that can insist somebody looks.
+  func recordLiveMarkers(_ markers: [SessionMarker]) -> Bool {
+    liveRecords.recordMarkers(markers)
+  }
+
   /// Settle a record whose session ended without anyone pressing Stop.
   ///
   /// Two routes end a session from the outside: AssemblyAI sends

@@ -55,7 +55,8 @@ struct MainPaneView: View {
           onStart: { model.startLiveSession() },
           onStop: { model.stopLiveSession() },
           onDiscard: { model.discardLiveSession() },
-          discardAudioBytes: { model.liveRecordingAudioBytes() }
+          discardAudioBytes: { model.liveRecordingAudioBytes() },
+          onMarkersChanged: { model.recordLiveMarkers($0) }
         )
       }
 

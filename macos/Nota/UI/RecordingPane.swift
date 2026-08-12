@@ -149,6 +149,19 @@ enum RecordingPaneMetrics {
   static let blockSpacing: CGFloat = CraftTokens.spacing16
   static let lineSpacing: CGFloat = CraftTokens.spacing4
 
+  // MARK: The marker rule (XIA-433)
+
+  /// The ember rule beside a marked line. Two points: it is a *rule*, not a
+  /// bar — the one thing on the reading surface allowed to be warm, and the
+  /// least of it that can still be seen.
+  static let markerRuleWidth: CGFloat = 2
+  /// How far into the left margin the rule sits, measured from the row's own
+  /// leading edge. **Derived**, not typed: half the transcript's horizontal
+  /// padding, so the rule is centred in the margin the transcript already has
+  /// and can never be pushed off the window by a padding change. It is drawn
+  /// as an overlay, so this is an offset and not an inset — no text moves.
+  static var markerRuleInset: CGFloat { transcriptPaddingH / 2 }
+
   // MARK: Type
 
   static let kindLineFont: Font = .system(size: 13, weight: .medium)
@@ -358,6 +371,17 @@ enum RecordingPaneCopy {
   static let stopTitle = "Stop"
   static let listening = "Listening…"
 
+  /// Shown over the transcript when a ⌘K did not reach the record (XIA-433).
+  ///
+  /// The tally on the Mark capsule is the whole of what a press says out loud,
+  /// so an unwritable record — a full disk, a store on a network mount that
+  /// dropped, a record deleted from a terminal mid-session — would otherwise
+  /// have the count climbing over a file that holds none of it. It names what
+  /// is still true (the moments are in this session) and what is not (they are
+  /// not on disk yet), and it goes away by itself: every press writes the whole
+  /// list, so the next one that lands carries the ones that did not.
+  static let markersUnsaved = "Moments aren't reaching this recording yet — kept for now."
+
   /// `SessionMarkerList`'s two strings. They are **not** in
   /// `all(kind:controls:)` any more: that list is every string the surface can
   /// put on screen, and since the Moments capsule went there is no surface that
@@ -394,6 +418,7 @@ enum RecordingPaneCopy {
       markHelp,
       stopTitle,
       listening,
+      markersUnsaved,
     ]
   }
 }
@@ -403,17 +428,29 @@ enum RecordingPaneCopy {
 /// A flagged moment in a running session.
 ///
 /// `label` is unused today and deliberately present: the marker's *meaning*
-/// (auto-titled from the surrounding transcript) is XIA-433's, and a row that
+/// (auto-titled from the surrounding transcript) is a follow-up, and a row that
 /// has to grow a second line later is a row that has to be re-laid-out later.
+///
+/// Two times, because they answer different questions and neither can be
+/// derived from the other. `at` is where the mark lands **in the recording** —
+/// the only one the transcript, the summary or a future scrubber can use — and
+/// `createdAt` is the wall clock, which is what survives the record being read
+/// by something that never had the session's origin. Both are persisted
+/// (`LiveSessionPersistence.markerDictionaries`), which is why `createdAt` is
+/// a stored property rather than stamped at write time: a marker written at
+/// press time and rewritten on the next press must not change its own history.
 struct SessionMarker: Equatable, Identifiable {
   let id: UUID
   /// Seconds into the session.
   let at: TimeInterval
+  /// Wall clock at the moment the owner pressed.
+  let createdAt: Date
   var label: String?
 
-  init(id: UUID = UUID(), at: TimeInterval, label: String? = nil) {
+  init(id: UUID = UUID(), at: TimeInterval, createdAt: Date = Date(), label: String? = nil) {
     self.id = id
     self.at = at
+    self.createdAt = createdAt
     self.label = label
   }
 }
@@ -428,25 +465,134 @@ enum SessionMarkerOrder {
   }
 }
 
-/// Session-local marker storage.
+/// The session's marker list, in memory.
 ///
-/// **Stub, and named as one.** The end-to-end marker (persisted on the record,
-/// carried into the summary, shown on the finished document) is XIA-433. What
-/// this owns is the UI slot: pressing Mark increments a tally the owner can see,
-/// so the affordance is real rather than a dead button, and the log is thrown
-/// away with the session. Nothing *lists* these while a session runs — the
-/// recording surface has no marker list (see `SessionCapsuleCluster`) — so
-/// until XIA-433 the count is the whole of what a mark says out loud.
+/// It is the *view's* copy and it is no longer the only one (XIA-433): every
+/// press also writes the whole list onto the history record, at press time, so
+/// a session that never reaches Stop keeps its moments. That write is the
+/// model's — this type owns no disk and no record id, which is what keeps the
+/// ordering rule and the clamp assertable without a store.
+///
+/// Nothing *lists* these while a session runs — the recording surface has no
+/// marker list (owner, 2026-08-11; see `SessionCapsuleCluster`) — so the count
+/// on the Mark capsule is what a mark says out loud in-window. The ember rule
+/// in the transcript's margin (XIA-433, item 3, asked for by name) is not a
+/// second readback and does not reopen that call: it names *where* a moment
+/// landed among the words that were being said, it lists nothing, it cannot be
+/// opened or scrolled to, and it exists only while the microphone is open.
 @MainActor
 final class SessionMarkerLog: ObservableObject {
   @Published private(set) var markers: [SessionMarker] = []
 
-  func mark(at elapsed: TimeInterval) {
-    markers = SessionMarkerOrder.inserting(SessionMarker(at: max(0, elapsed)), into: markers)
+  /// `createdAt` is a parameter so a test can pin the wall clock; production
+  /// never passes one. Returns the marker it inserted, so a caller with
+  /// something to say about *this* press has it in hand.
+  ///
+  /// A non-finite `elapsed` is clamped to zero rather than stored. `max(0, x)`
+  /// already answers 0 for NaN (`nan >= 0` is false) and does **not** for
+  /// `+infinity` — and an infinity reaching the record would not cost one bad
+  /// marker: the whole array is written on every press and `JSONSerialization`
+  /// refuses a non-finite Double, so a single such value vetoes every moment of
+  /// the session, including the ones already safely on disk, for the rest of
+  /// the session.
+  @discardableResult
+  func mark(at elapsed: TimeInterval, createdAt: Date = Date()) -> SessionMarker {
+    let marker = SessionMarker(
+      at: elapsed.isFinite ? max(0, elapsed) : 0,
+      createdAt: createdAt
+    )
+    markers = SessionMarkerOrder.inserting(marker, into: markers)
+    return marker
   }
 
   func reset() {
     markers = []
+  }
+}
+
+/// What ⌘K and the Mark capsule do, as one function a test can drive.
+///
+/// The view's `mark()` is the one call site of the whole feature and it is a
+/// SwiftUI view method, which no test in this bundle can reach. So the press
+/// itself lives here: the log moves, the record is written **at press time**
+/// with the whole list, and the answer to that write is **returned rather than
+/// dropped** — a moment the owner believes they flagged and the record does not
+/// hold is the failure this ticket exists to remove, and the tally on the Mark
+/// capsule is the only feedback a press has.
+///
+/// **A failed write does not throw the moment away.** It stays in the log, and
+/// because every press rewrites the whole array the next successful press
+/// carries it — one transient failure heals itself instead of costing the owner
+/// a moment they cannot recreate. What the surface owes in the meantime is to
+/// stop claiming success, which is what the false is for
+/// (`RecordingPaneCopy.markersUnsaved`, drawn over the transcript until a press
+/// lands).
+@MainActor
+enum SessionMarkPress {
+  /// Returns whether the moment reached the record.
+  static func press(
+    log: SessionMarkerLog,
+    at elapsed: TimeInterval,
+    now: Date = Date(),
+    write: ([SessionMarker]) -> Bool
+  ) -> Bool {
+    log.mark(at: elapsed, createdAt: now)
+    return write(log.markers)
+  }
+}
+
+/// Which transcript line a marker belongs to.
+///
+/// **The rule: a marker at `t` belongs to the first line whose `endTime >= t`**
+/// — the turn that was in flight when the owner pressed. A `LiveSegment`
+/// carries only an end time and the codebase's standing idiom is that a
+/// segment's start is the previous segment's end (`segmentDictionaries`,
+/// `buildMarkdown`), so that predicate *is* `start <= t < end` with the starts
+/// derived, and it needs no field the pipeline does not fill.
+///
+/// Two properties it is chosen for, both of which the obvious alternative
+/// ("the nearest line") loses:
+///
+/// - **It never moves a rule that has already been drawn.** Lines are appended
+///   with ascending end times, so a line that already covers `t` keeps
+///   covering it forever. The volatile tail (`endTime == elapsed`) covers every
+///   fresh mark, and when that tail finalizes into a segment of about the same
+///   end time the rule lands on the same words.
+/// - **A mark past every line simply has no line yet**, rather than being
+///   attached to the last one and jumping forward when the next turn arrives.
+///   Marking during silence is exactly the case, and a rule that relocates
+///   itself under the owner's eyes is worse than a rule that arrives with the
+///   words it belongs to. The mark is not lost by that: it is on disk and in
+///   the tally the instant it is pressed, which is what item 4 of the ticket
+///   asks for — a marker is a timestamp, not an annotation on text.
+///
+/// **It is one pass, not a scan per marker.** Both inputs are ordered — lines
+/// by construction (segments arrive with ascending end times and the volatile
+/// tail closes them), markers by the sort here — so the matching walks each
+/// list once. `first(where:)` per marker is O(markers × lines), and it runs
+/// inside the row model, which is rebuilt on every volatile recognizer result:
+/// a 90-minute meeting with 800 lines and 40 marks would have spent ~16,000
+/// comparisons ~15 times a second on the main actor, which is the XIA-432 trap
+/// arriving on the one tick the row cache does not refuse.
+enum LiveTranscriptMarking {
+  static func markedLineIDs(
+    markers: [SessionMarker],
+    lines: [LiveTranscriptLine]
+  ) -> Set<UUID> {
+    guard !markers.isEmpty, !lines.isEmpty else { return [] }
+    var ids: Set<UUID> = []
+    var index = lines.startIndex
+    // Ascending, whatever order the log holds them in — the log is newest
+    // first, and a single forward walk needs the marks in the order the lines
+    // are in.
+    for at in markers.map(\.at).sorted() {
+      while index < lines.endIndex, lines[index].endTime < at { index += 1 }
+      // Past the last line: this mark has no line yet, and neither has any
+      // later one, so the walk is over.
+      guard index < lines.endIndex else { break }
+      ids.insert(lines[index].id)
+    }
+    return ids
   }
 }
 
@@ -515,6 +661,13 @@ struct LiveTranscriptRow: Equatable, Identifiable {
   /// text would step left under the line above it.
   let gutter: TimeInterval?
   let content: Content
+  /// A moment was flagged during this line, so it wears the ember rule in the
+  /// left margin (XIA-433). A flag on the row rather than a wrapper around a
+  /// run of rows, for the reason the whole model is flat: anything that groups
+  /// rows into a container collapses the `LazyVStack` back into one child.
+  /// It is drawn as an **overlay**, so no marked line is a different size from
+  /// an unmarked one and no text moves when a mark lands.
+  var isMarked: Bool = false
 
   /// Rows that start a turn take the larger inter-block gap. That difference is
   /// what makes a turn read as a turn once a flat stack has no blocks left to
@@ -582,7 +735,14 @@ enum LiveTranscript {
   ///
   /// One row per line, always — that is the invariant the laziness rests on —
   /// plus one header row per turn that has a speaker.
-  static func rows(_ blocks: [LiveTranscriptBlock]) -> [LiveTranscriptRow] {
+  /// `markedLineIDs` comes from `LiveTranscriptMarking`, which works on lines
+  /// rather than blocks — the marking rule is about time, and blocks are a
+  /// grouping by speaker. A speaker header row is never marked: the rule
+  /// belongs beside the words that were being said, not beside a name.
+  static func rows(
+    _ blocks: [LiveTranscriptBlock],
+    markedLineIDs: Set<UUID> = []
+  ) -> [LiveTranscriptRow] {
     var rows: [LiveTranscriptRow] = []
     for block in blocks {
       // The gutter belongs to whichever row opens the turn: the speaker header
@@ -593,7 +753,14 @@ enum LiveTranscript {
         gutter = nil
       }
       for line in block.lines {
-        rows.append(LiveTranscriptRow(id: .line(line.id), gutter: gutter, content: .line(line)))
+        rows.append(
+          LiveTranscriptRow(
+            id: .line(line.id),
+            gutter: gutter,
+            content: .line(line),
+            isMarked: markedLineIDs.contains(line.id)
+          )
+        )
         gutter = nil
       }
     }
@@ -625,6 +792,29 @@ final class LiveTranscriptRowCache {
     let lastSegmentID: UUID?
     let partial: String?
     let elapsedSeconds: Int
+    /// Every field of every marker, hashed — **not** the count.
+    ///
+    /// The count is what a list that is only ever appended to needs, and that
+    /// is what the marker list is *today*. It is not what it will be: `label`
+    /// is a `var` the auto-title follow-up fills **in place**, and against a
+    /// count the transcript would then go on drawing the rows it built before
+    /// the label existed until an unrelated segment arrived. A signature costs
+    /// one pass over a list of tens and cannot be wrong about a mutation, which
+    /// is the trade a memo of an O(all segments) rebuild should always take.
+    let markerSignature: Int
+  }
+
+  /// The signature above. `at` is hashed by its bit pattern so two equal
+  /// times can never hash apart.
+  static func signature(of markers: [SessionMarker]) -> Int {
+    var hasher = Hasher()
+    hasher.combine(markers.count)
+    for marker in markers {
+      hasher.combine(marker.id)
+      hasher.combine(marker.at.bitPattern)
+      hasher.combine(marker.label)
+    }
+    return hasher.finalize()
   }
 
   /// How many times the model was really rebuilt. Exposed so a test can prove
@@ -637,20 +827,22 @@ final class LiveTranscriptRowCache {
   func rows(
     segments: [LiveMeetingSession.LiveSegment],
     partial: String?,
-    elapsed: TimeInterval
+    elapsed: TimeInterval,
+    markers: [SessionMarker] = []
   ) -> [LiveTranscriptRow] {
     let next = Key(
       segmentCount: segments.count,
       lastSegmentID: segments.last?.id,
       partial: partial,
-      elapsedSeconds: elapsed.isFinite && elapsed > 0 ? Int(elapsed) : 0
+      elapsedSeconds: elapsed.isFinite && elapsed > 0 ? Int(elapsed) : 0,
+      markerSignature: Self.signature(of: markers)
     )
     if next == key { return rows }
     key = next
+    let lines = LiveTranscript.lines(segments: segments, partial: partial, elapsed: elapsed)
     rows = LiveTranscript.rows(
-      LiveTranscript.blocks(
-        LiveTranscript.lines(segments: segments, partial: partial, elapsed: elapsed)
-      )
+      LiveTranscript.blocks(lines),
+      markedLineIDs: LiveTranscriptMarking.markedLineIDs(markers: markers, lines: lines)
     )
     recomputeCount += 1
     return rows
@@ -711,9 +903,14 @@ struct RecordingCapsuleButtonStyle: ButtonStyle {
 ///
 /// The decisions worth keeping with it: the list used to sit at the bottom of
 /// the session column, and neither a bar nor a capsule has a bottom to put it
-/// at — hairlines down the transcript were the alternative and were refused,
-/// because a mark is a *time* and a mark inside a scrolling transcript is only
-/// findable if you already know where it is. And it keeps its own `ScrollView`,
+/// at — hairlines down the transcript were the alternative and were refused as
+/// a *list*, because a mark is a time and a set of hairlines you have to scroll
+/// a live transcript to find is only findable if you already know where it is.
+/// That refusal is about readback and it stands. XIA-433's ember rule is not
+/// the thing that was refused: it is drawn beside the words that were being
+/// said, it enumerates nothing, and it is gone the moment the microphone
+/// closes — a marked-up transcript, not a way to browse moments. And this view
+/// keeps its own `ScrollView`,
 /// which the column's version explicitly did not: nesting two on one axis is
 /// what that comment was avoiding, and unbounded it would outgrow whatever
 /// eventually presents it.
@@ -1040,6 +1237,11 @@ struct LiveTranscriptView: View {
   /// mid-scroll.
   var bottomReserve: CGFloat = 0
 
+  /// The ember is a function of the colour scheme alone (`CraftTokens.ember`),
+  /// so the marked-line rule reads it here rather than through a token that
+  /// would have to guess.
+  @Environment(\.colorScheme) private var colorScheme
+
   var body: some View {
     ScrollViewReader { proxy in
       ScrollView {
@@ -1121,6 +1323,31 @@ struct LiveTranscriptView: View {
           .foregroundStyle(.ground(line.isVolatile ? .timestamp : .body))
           .fixedSize(horizontal: false, vertical: true)
           .frame(maxWidth: .infinity, alignment: .leading)
+      }
+    }
+    // The ember rule for a flagged moment (XIA-433). An **overlay**, so it
+    // occupies no layout at all: a mark that landed mid-sentence may not move
+    // the sentence it landed in, and a row that has one is exactly the size of
+    // a row that has not. It rides in the left margin the transcript's own
+    // horizontal padding already reserves, so it costs the text no width
+    // either.
+    //
+    // **The ember still means one thing.** A row can only arrive here marked
+    // while the microphone is open: `LiveMeetingView.drawnMarkers` withholds
+    // the whole list from every state that is not recording or finalizing, so
+    // a failed session's transcript — which is drawn by this same view, with
+    // the session's marks still in the log — carries no ember at all. Inside a
+    // live session the rule is not a second meaning but a location for the one
+    // meaning there is: this is where the owner flagged something while we
+    // were capturing.
+    .overlay(alignment: .leading) {
+      if row.isMarked {
+        Capsule(style: .continuous)
+          .fill(CraftTokens.ember(colorScheme))
+          .frame(width: RecordingPaneMetrics.markerRuleWidth)
+          .offset(x: -RecordingPaneMetrics.markerRuleInset)
+          .allowsHitTesting(false)
+          .accessibilityHidden(true)
       }
     }
     // A flat stack has no blocks left to space apart, so the gap between turns

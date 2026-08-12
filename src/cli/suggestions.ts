@@ -12,7 +12,7 @@
  * stderr; stdout stays scriptable.
  */
 
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { isIdentityAvailable, computeEmbeddings } from "../pipeline/embed.js";
 import { DEFAULT_SPEAKERS_FILE, loadProfiles, computeSuggestions } from "../pipeline/speakers.js";
@@ -23,6 +23,7 @@ import {
   renameRecordSpeaker,
   setSuggestionState,
   speakerClipPath,
+  writeHistoryRecordFile,
   type HistoryRecord,
 } from "../pipeline/history.js";
 import { enrollSpeaker, EnrollError } from "./enroll.js";
@@ -124,11 +125,7 @@ export async function recomputeSuggestions(
     updatedAt: new Date().toISOString(),
     suggestions,
   };
-  await writeFile(
-    path.join(historyDir, `${record.id}.json`),
-    JSON.stringify(record, null, 2),
-    "utf-8",
-  );
+  await writeHistoryRecordFile(path.join(historyDir, `${record.id}.json`), record);
   process.stderr.write(
     `Recomputed ${suggestions.length} suggestion(s) for history "${record.id}" from stored clips.\n`,
   );

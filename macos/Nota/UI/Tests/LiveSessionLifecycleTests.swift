@@ -269,4 +269,58 @@ final class LiveSessionLifecycleTests: XCTestCase {
     XCTAssertFalse(blocked.isOwning)
     XCTAssertFalse(blocked.isStarting)
   }
+
+  // MARK: - Moments (XIA-433)
+
+  /// **⌘K reaches the record the live session owns.** This is the seam between
+  /// the press and the file: the view calls the model, the model calls this,
+  /// and this is the only one of the three a test can hold. Without it the
+  /// whole feature could be unwired — the closure dropped from the
+  /// `LiveMeetingView(...)` call in `MainPaneView`, say — with every other
+  /// marker test in the suite still green.
+  func testAPressWritesTheSessionsMomentsOntoTheRecordItOwns() throws {
+    let started = try startedRecord(press())
+
+    XCTAssertTrue(owner.recordMarkers([SessionMarker(at: 12), SessionMarker(at: 44)]))
+
+    let record = try XCTUnwrap(
+      LiveSessionPersistence.loadRecord(
+        id: started.historyID,
+        historyDirectory: historyDirectory
+      )
+    )
+    XCTAssertEqual(
+      (record["markers"] as? [[String: Any]])?.compactMap { $0["atSeconds"] as? Double },
+      [12, 44]
+    )
+    // A moment is not a stage: the record is still recording, and still holds
+    // everything the start wrote.
+    XCTAssertEqual(try status(started.historyID), .recording)
+    XCTAssertEqual(record["audioPath"] as? String, "recording.caf")
+  }
+
+  /// No owned record is **no** — not a silent success and not a crash. It is
+  /// the same ownership check `release` and `settle` make, and it is what the
+  /// surface reads to stop claiming that a press was saved.
+  func testAPressWithNoLiveSessionIsRefusedAndWritesNothing() throws {
+    XCTAssertFalse(owner.recordMarkers([SessionMarker(at: 3)]))
+    XCTAssertEqual(
+      try FileManager.default.contentsOfDirectory(atPath: historyDirectory.path),
+      [],
+      "a press with no session owning a record wrote a file anyway"
+    )
+
+    // And after the session it owned has been settled, likewise: the record on
+    // disk is a failed one and no later press may append to it.
+    let started = try startedRecord(press())
+    XCTAssertTrue(owner.settle(started))
+    XCTAssertFalse(owner.recordMarkers([SessionMarker(at: 9)]))
+    let record = try XCTUnwrap(
+      LiveSessionPersistence.loadRecord(
+        id: started.historyID,
+        historyDirectory: historyDirectory
+      )
+    )
+    XCTAssertNil(record["markers"])
+  }
 }

@@ -1,4 +1,4 @@
-import { access, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
+import { access, mkdir, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { homedir } from "node:os";
@@ -68,6 +68,37 @@ export interface UsageEntry {
   pricedAsOf?: string;
 }
 
+/**
+ * A moment the owner flagged with ⌘K while a session was recording (XIA-433).
+ *
+ * Written by the macOS app at PRESS time — `LiveSessionPersistence
+ * .recordMarkers` sets the whole `markers` array through `mutateRecord`, so a
+ * session that crashes before Stop keeps every mark. **The CLI never writes
+ * this field**, the same deal `pinned` has; it survives every TS write path
+ * because they all rebuild through `{ ...record }` and carry unknown keys
+ * across. It is declared here so that survival is a contract rather than a
+ * property of a spread nobody was thinking about, and
+ * `tests/pipeline/history-markers.test.ts` drives every one of those paths so
+ * that it fails rather than drifting.
+ *
+ * Survival is two things, and merging was only the first. Every writer of
+ * `<id>.json` goes through `writeHistoryRecordFile` now: `writeFile` truncates
+ * before it writes, so the summary run the app kicks off after the seal had a
+ * window in which a crash left a half-file — taking the transcript and the
+ * moments the app wrote at press time precisely so a crash could not.
+ *
+ * `atSeconds` is the offset into the recording — the only one the transcript,
+ * a summary or a scrubber can use — and `createdAt` is the wall clock, which
+ * is what a reader with no session origin has. `label` is the auto-title
+ * follow-up and is absent (never null) until then.
+ */
+export interface HistoryMarker {
+  id: string;
+  atSeconds: number;
+  createdAt: string;
+  label?: string;
+}
+
 export interface HistoryRecord {
   id: string;
   createdAt: string;
@@ -122,6 +153,12 @@ export interface HistoryRecord {
    * the JSON in place; the CLI never writes it. Absent means unpinned.
    */
   pinned?: boolean;
+  /**
+   * Moments flagged with ⌘K during a live session, oldest first. Managed by
+   * the app, which edits the JSON in place; the CLI never writes it. Absent on
+   * every record from a run that flagged none.
+   */
+  markers?: HistoryMarker[];
   /**
    * Tentative-band speaker suggestions from the run that created this record
    * (decision 3 of the speaker-workflow spec): one entry per diarized label
@@ -222,6 +259,34 @@ function historyPath(id: string, historyDir: string): string {
   return path.join(historyDir, `${id}.json`);
 }
 
+/**
+ * Write a record so a crash can never leave half of one: a sibling temp file,
+ * then a rename (atomic within a filesystem). The temp is removed on failure so
+ * a crashed write leaves no `.tmp` in a store whose size is a figure the owner
+ * reads.
+ *
+ * `writeFile` opens with `'w'`, which **truncates before it writes** — the
+ * hazard `delete-audio` was made atomic for (`storage.ts`), and every other
+ * writer of `<id>.json` had it. That matters more since XIA-433: moments are
+ * written by the app at press time precisely so a session that dies keeps them,
+ * and the summary run that follows the seal rewrites the same file. A power cut
+ * inside that rewrite used to cost the transcript, the moments and the record
+ * itself; now the previous record survives intact.
+ */
+export async function writeHistoryRecordFile(
+  file: string,
+  record: unknown,
+): Promise<void> {
+  const temp = `${file}.tmp-${process.pid}-${Date.now()}`;
+  try {
+    await writeFile(temp, JSON.stringify(record, null, 2), "utf-8");
+    await rename(temp, file);
+  } catch (error) {
+    await rm(temp, { force: true });
+    throw error;
+  }
+}
+
 /** Absolute path of a captured per-speaker PCM clip for a record. */
 export function speakerClipPath(
   id: string,
@@ -319,11 +384,7 @@ export async function createHistoryRecord(
     record.speakerClips = clips;
   }
 
-  await writeFile(
-    historyPath(record.id, historyDir),
-    JSON.stringify(record, null, 2),
-    "utf-8",
-  );
+  await writeHistoryRecordFile(historyPath(record.id, historyDir), record);
   return record;
 }
 
@@ -344,7 +405,7 @@ export async function completeHistoryRecord(
     status: "done",
   };
 
-  await writeFile(filePath, JSON.stringify(updated, null, 2), "utf-8");
+  await writeHistoryRecordFile(filePath, updated);
   return updated;
 }
 
@@ -414,7 +475,7 @@ export async function setRecordSummary(
   if (input.summaryEdited !== undefined) updated.summaryEdited = input.summaryEdited;
   if (input.tagsEdited !== undefined) updated.tagsEdited = input.tagsEdited;
 
-  await writeFile(filePath, JSON.stringify(updated, null, 2), "utf-8");
+  await writeHistoryRecordFile(filePath, updated);
   return updated;
 }
 
@@ -447,7 +508,7 @@ export async function setRecordTags(
   };
   if (input.tagsEdited !== undefined) updated.tagsEdited = input.tagsEdited;
 
-  await writeFile(filePath, JSON.stringify(updated, null, 2), "utf-8");
+  await writeHistoryRecordFile(filePath, updated);
   return updated;
 }
 
@@ -502,7 +563,7 @@ export async function applyEnrichmentToRecord(
     updated.summaryOutdated = patch.summaryOutdated;
   }
 
-  await writeFile(filePath, JSON.stringify(updated, null, 2), "utf-8");
+  await writeHistoryRecordFile(filePath, updated);
   return updated;
 }
 
@@ -661,11 +722,7 @@ export async function renameRecordSpeaker(
     // "Regenerate summary" affordance (decision 5).
     ...(record.summary ? { summaryOutdated: true } : {}),
   };
-  await writeFile(
-    historyPath(record.id, historyDir),
-    JSON.stringify(updated, null, 2),
-    "utf-8",
-  );
+  await writeHistoryRecordFile(historyPath(record.id, historyDir), updated);
 
   return { record: updated, segmentsRenamed, clipRenamed, outputRewritten };
 }
@@ -760,10 +817,6 @@ export async function setSuggestionState(
         : s,
     ),
   };
-  await writeFile(
-    historyPath(record.id, historyDir),
-    JSON.stringify(updated, null, 2),
-    "utf-8",
-  );
+  await writeHistoryRecordFile(historyPath(record.id, historyDir), updated);
   return updated;
 }

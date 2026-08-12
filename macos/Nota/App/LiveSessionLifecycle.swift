@@ -131,6 +131,38 @@ final class LiveSessionOwner {
     isStopping = false
   }
 
+  // MARK: - Moments
+
+  /// Write the live session's flagged moments onto the record it owns
+  /// (XIA-433), and report whether they got there.
+  ///
+  /// It lives here rather than on `NotaModel` for the reason everything else in
+  /// this type does: record ownership is the only question it asks, and
+  /// `NotaModel` cannot be built under test. Three things it is:
+  ///
+  /// - **Ownership-checked**, like `release` and `settle`. No owned record is
+  ///   no live session — a false rather than a failure, but still a false: a
+  ///   caller with no record to put a moment in has not flagged one.
+  /// - **At press time**, with the whole list. The point of the ticket is that
+  ///   a session which never reaches Stop keeps its moments, so the write may
+  ///   not wait for the seal.
+  /// - **On the main actor**, like every other write to this record.
+  ///   `mutateRecord` and `sealTranscript` are synchronous read-modify-writes
+  ///   of one file; a detached task would race the seal, and the seal would win
+  ///   — dropping exactly the markers this exists to keep.
+  ///
+  /// Not `@discardableResult`, for the reason `LiveSessionPersistence
+  /// .recordMarkers` is not: a dropped false is a moment the owner believes
+  /// they flagged and the record does not hold.
+  func recordMarkers(_ markers: [SessionMarker]) -> Bool {
+    guard let started = record else { return false }
+    return LiveSessionPersistence.recordMarkers(
+      id: started.historyID,
+      markers: markers,
+      historyDirectory: historyDirectory()
+    )
+  }
+
   // MARK: - Ownership-checked cleanup
 
   /// Give up ownership of `started`, but only if it is still the record that

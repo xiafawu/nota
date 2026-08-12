@@ -390,6 +390,507 @@ final class RecordingPaneTests: XCTestCase {
     LiveMeetingSession.LiveSegment(id: UUID(), text: text, endTime: end)
   }
 
+  // MARK: - The ember margin rule (XIA-433)
+
+  private func line(_ text: String, endingAt end: TimeInterval, speaker: String? = nil) -> LiveTranscriptLine {
+    LiveTranscriptLine(id: UUID(), text: text, endTime: end, speaker: speaker)
+  }
+
+  /// **A moment is a timestamp, not an annotation on text.** Pressing ⌘K
+  /// before a single word has been recognized has to land — it is the case a
+  /// rule written as "attach the mark to a line" fails on, and it is a common
+  /// one (the owner flags the thing that was *just* said, before the recognizer
+  /// has caught up). Nothing may throw the mark away for want of a line to
+  /// hang it on: it is in the log, it goes to disk (see
+  /// `LiveSessionPersistenceTests`), and it simply has no rule to draw yet.
+  func testAMarkerPressedBeforeAnySpeechIsStillKept() {
+    let log = SessionMarkerLog()
+    log.mark(at: 4)
+    XCTAssertEqual(log.markers.count, 1)
+    XCTAssertEqual(log.markers.first?.at, 4)
+
+    XCTAssertTrue(
+      LiveTranscriptMarking.markedLineIDs(markers: log.markers, lines: []).isEmpty,
+      "a transcript with no lines produced a marked line id"
+    )
+
+    let cache = LiveTranscriptRowCache()
+    let rows = cache.rows(segments: [], partial: nil, elapsed: 4, markers: log.markers)
+    XCTAssertTrue(rows.isEmpty, "a mark before any speech invented a transcript row")
+  }
+
+  // MARK: - The press itself
+
+  /// **⌘K writes the record, and it writes the whole log.** This is the
+  /// ticket's headline claim and it lives in `SessionMarkPress` rather than in
+  /// `LiveMeetingView.mark()` for exactly this reason: a view method is
+  /// unreachable from this bundle, and a claim nothing can drive is a claim
+  /// nobody is keeping.
+  func testEveryPressHandsTheWholeLogToTheRecordWriter() {
+    let log = SessionMarkerLog()
+    var writes: [[TimeInterval]] = []
+
+    XCTAssertTrue(
+      SessionMarkPress.press(log: log, at: 12) { markers in
+        writes.append(markers.map(\.at))
+        return true
+      }
+    )
+    XCTAssertTrue(
+      SessionMarkPress.press(log: log, at: 44) { markers in
+        writes.append(markers.map(\.at))
+        return true
+      }
+    )
+
+    XCTAssertEqual(writes.count, 2, "a press did not reach the record at all")
+    XCTAssertEqual(writes[0], [12])
+    XCTAssertEqual(
+      writes[1], [44, 12],
+      "the second press wrote its own moment instead of the session's list"
+    )
+    XCTAssertEqual(log.markers.count, 2)
+  }
+
+  /// **A write that did not land is not reported as success**, and the moment
+  /// is not thrown away either. It stays in the log, and because every press
+  /// rewrites the whole array the next press that lands carries it — one
+  /// unwritable moment costs a warning, never a moment the owner cannot
+  /// recreate.
+  func testAFailedWriteIsReportedAndTheMomentIsCarriedToTheNextPress() {
+    let log = SessionMarkerLog()
+
+    XCTAssertFalse(
+      SessionMarkPress.press(log: log, at: 12) { _ in false },
+      "an unwritable record was reported as a flagged moment"
+    )
+    XCTAssertEqual(log.markers.count, 1, "the press vanished from the session as well")
+
+    var landed: [TimeInterval] = []
+    XCTAssertTrue(
+      SessionMarkPress.press(log: log, at: 44) { markers in
+        landed = markers.map(\.at)
+        return true
+      }
+    )
+    XCTAssertEqual(
+      landed, [44, 12],
+      "the press that landed did not carry the moment the failed one held"
+    )
+  }
+
+  /// A press stamps the wall clock **once**, at the press, and the log keeps
+  /// what it stamped. `createdAt` is a stored property for this reason: every
+  /// later press rewrites the whole array, and a marker rewritten must not
+  /// change its own history.
+  func testAPressStampsItsOwnWallClockAndNoLaterPressRestampsIt() {
+    let log = SessionMarkerLog()
+    let first = Date(timeIntervalSince1970: 1_700_000_000)
+    let second = first.addingTimeInterval(32)
+
+    log.mark(at: 12, createdAt: first)
+    log.mark(at: 44, createdAt: second)
+
+    XCTAssertEqual(log.markers.map(\.createdAt), [second, first])
+  }
+
+  /// A non-finite elapsed is clamped on the way in. `max(0, x)` answers 0 for
+  /// NaN and **not** for `+infinity`, and an infinity is not one bad marker: the
+  /// whole array is written on every press, `JSONSerialization` refuses a
+  /// non-finite Double, so one would veto every moment of the session —
+  /// including the ones already safely on disk — for the rest of the session.
+  func testATimeThatIsNotATimeCannotPoisonTheSessionsMoments() {
+    let log = SessionMarkerLog()
+    log.mark(at: .infinity)
+    log.mark(at: .nan)
+    log.mark(at: -5)
+
+    XCTAssertEqual(log.markers.map(\.at), [0, 0, 0])
+    XCTAssertTrue(
+      JSONSerialization.isValidJSONObject(
+        ["markers": LiveSessionPersistence.markerDictionaries(log.markers)]
+      )
+    )
+    // And the backstop, for a marker that did not come through the log at all.
+    let raw = LiveSessionPersistence.markerDictionaries([
+      SessionMarker(at: 9),
+      SessionMarker(at: .infinity)
+    ])
+    XCTAssertEqual(raw.count, 1, "a time that cannot be encoded reached the record")
+    XCTAssertTrue(JSONSerialization.isValidJSONObject(["markers": raw]))
+  }
+
+  /// The matching rule, stated as the claim: a mark belongs to **the turn that
+  /// was in flight when it was pressed** — the first line whose `endTime` has
+  /// not yet passed it. A `LiveSegment` carries only an end time, so that
+  /// predicate is `start <= t < end` with each start derived as the previous
+  /// end, which is the same idiom `segmentDictionaries` and `buildMarkdown`
+  /// already use.
+  func testAMarkerRulesTheLineThatWasInFlightWhenItWasPressed() {
+    let lines = [
+      line("first", endingAt: 5),
+      line("second", endingAt: 12),
+      line("third", endingAt: 20)
+    ]
+    // 8 falls inside the second turn (5…12), not the one that had already ended.
+    let marked = LiveTranscriptMarking.markedLineIDs(
+      markers: [SessionMarker(at: 8)],
+      lines: lines
+    )
+    XCTAssertEqual(marked, [lines[1].id])
+
+    // Exactly on a boundary, the turn that is closing owns it: `endTime >= t`.
+    XCTAssertEqual(
+      LiveTranscriptMarking.markedLineIDs(markers: [SessionMarker(at: 5)], lines: lines),
+      [lines[0].id]
+    )
+    // And a mark at zero belongs to the first line, whatever it ends at —
+    // there is no line before it for it to fall through to.
+    XCTAssertEqual(
+      LiveTranscriptMarking.markedLineIDs(markers: [SessionMarker(at: 0)], lines: lines),
+      [lines[0].id]
+    )
+  }
+
+  /// **A rule that has been drawn never moves.** A mark past every line — the
+  /// owner flagging something during silence — waits for the line it belongs
+  /// to rather than attaching to the last one and then jumping forward when the
+  /// next turn arrives. The alternative ("nearest line") relocates a rule under
+  /// the owner's eyes, which is worse than a rule that arrives with its words.
+  func testAMarkerPastEveryLineWaitsForTheLineItBelongsTo() {
+    let earlier = [line("first", endingAt: 5), line("second", endingAt: 12)]
+    XCTAssertTrue(
+      LiveTranscriptMarking.markedLineIDs(markers: [SessionMarker(at: 30)], lines: earlier).isEmpty,
+      "a mark during silence was attached to a turn that had already ended"
+    )
+
+    let later = earlier + [line("third", endingAt: 34)]
+    XCTAssertEqual(
+      LiveTranscriptMarking.markedLineIDs(markers: [SessionMarker(at: 30)], lines: later),
+      [later[2].id],
+      "the line that finally covered the mark did not take it"
+    )
+    // And the lines it passed over are still unmarked — the mark did not smear.
+    XCTAssertFalse(
+      LiveTranscriptMarking.markedLineIDs(markers: [SessionMarker(at: 30)], lines: later)
+        .contains(later[1].id)
+    )
+  }
+
+  /// The volatile tail has `endTime == elapsed`, so it covers every fresh mark;
+  /// when it finalizes into a segment ending at about the same instant, the
+  /// rule lands on the same words. That is the whole of why the rule is
+  /// "first line whose end has not passed" and not something anchored to a
+  /// line id: the id changes at finalization and the instant does not.
+  func testAFreshMarkRidesTheVolatileTailAndStaysWhenItFinalizes() {
+    let spoken = segment("already said", at: 9)
+    let cache = LiveTranscriptRowCache()
+    let markers = [SessionMarker(at: 14)]
+
+    let live = cache.rows(segments: [spoken], partial: "still talking", elapsed: 14, markers: markers)
+    XCTAssertEqual(
+      live.filter(\.isMarked).map(\.id),
+      [LiveTranscriptRow.ID.line(LiveTranscript.volatileLineID)],
+      "a mark pressed mid-turn did not land on the in-flight line"
+    )
+
+    let finalized = segment("still talking", at: 14)
+    let settled = cache.rows(segments: [spoken, finalized], partial: nil, elapsed: 15, markers: markers)
+    XCTAssertEqual(
+      settled.filter(\.isMarked).map(\.id),
+      [LiveTranscriptRow.ID.line(finalized.id)],
+      "the rule left the words it was drawn beside when the turn finalized"
+    )
+  }
+
+  /// The rule belongs beside the **words**, never beside a name. A speaker
+  /// header is a row like any other in a flat stack, so nothing structural
+  /// stops it taking a mark — only `rows(_:markedLineIDs:)` matching on line
+  /// ids does, and that is the assertion.
+  func testTheMarkerRuleNeverLandsOnASpeakerHeader() {
+    let lines = [
+      line("hello", endingAt: 5, speaker: "Amara"),
+      line("and then", endingAt: 12, speaker: "Bo")
+    ]
+    let marked = LiveTranscriptMarking.markedLineIDs(markers: [SessionMarker(at: 3)], lines: lines)
+    let rows = LiveTranscript.rows(LiveTranscript.blocks(lines), markedLineIDs: marked)
+
+    let headers = rows.filter {
+      if case .speaker = $0.content { return true }
+      return false
+    }
+    XCTAssertEqual(headers.count, 2, "the fixture stopped producing speaker headers")
+    XCTAssertTrue(headers.allSatisfy { !$0.isMarked }, "a speaker header wore the ember rule")
+    XCTAssertEqual(rows.filter(\.isMarked).count, 1)
+  }
+
+  /// **The mark is a flag on a flat row, not a wrapper around a run of them.**
+  /// That is the property the laziness rests on: a `LazyVStack` defers only its
+  /// direct children, so a container hung around the marked rows would collapse
+  /// a whole session into one child (XIA-432).
+  ///
+  /// The row *count* cannot fail for that reason — `LiveTranscript.rows`
+  /// appends one row per line whether it is marked or not — so what is asserted
+  /// is the model marking cannot break: the drawn model is exactly one row per
+  /// line plus one header per turn that has a speaker, the ids are byte for
+  /// byte the unmarked ones, and marking changes nothing but the flag. What no
+  /// test in this bundle can reach is `LiveTranscriptView`'s own hierarchy;
+  /// that claim is carried by the `.overlay` in the row view and by this
+  /// model's shape, not by an assertion.
+  func testMarkingIsAFlagOnAFlatRowAndChangesNothingElse() {
+    let lines = (0..<8).map { line("line \($0)", endingAt: TimeInterval($0 * 6 + 6)) }
+    let blocks = LiveTranscript.blocks(lines)
+    let plain = LiveTranscript.rows(blocks)
+    let marked = LiveTranscript.rows(blocks, markedLineIDs: [lines[1].id, lines[6].id])
+
+    let headers = plain.filter {
+      if case .speaker = $0.content { return true }
+      return false
+    }
+    XCTAssertEqual(
+      plain.count,
+      lines.count + headers.count,
+      "the drawn model stopped being one row per line plus one header per named turn"
+    )
+    XCTAssertEqual(plain.map(\.id), marked.map(\.id))
+    XCTAssertEqual(plain.map(\.gutter), marked.map(\.gutter))
+    XCTAssertEqual(plain.map(\.startsTurn), marked.map(\.startsTurn))
+    XCTAssertEqual(marked.filter(\.isMarked).count, 2)
+    XCTAssertEqual(
+      zip(plain, marked).filter { $0.0 != $0.1 }.count,
+      2,
+      "flagging two moments changed a row it does not belong to"
+    )
+  }
+
+  /// The memo has to see a mark, or the rule would not be drawn until the next
+  /// turn arrived — and it has to *stop* seeing one, or the flag would rebuild
+  /// 400 line structs on every clock tick, which is the cost the cache exists
+  /// to refuse.
+  func testFlaggingAMomentRebuildsTheRowModelAndNothingElseDoes() {
+    let cache = LiveTranscriptRowCache()
+    let segments = [segment("one", at: 5), segment("two", at: 12)]
+
+    _ = cache.rows(segments: segments, partial: nil, elapsed: 12, markers: [])
+    XCTAssertEqual(cache.recomputeCount, 1)
+
+    _ = cache.rows(segments: segments, partial: nil, elapsed: 12, markers: [])
+    XCTAssertEqual(cache.recomputeCount, 1, "an unchanged transcript was rebuilt")
+
+    let markers = [SessionMarker(at: 8)]
+    let marked = cache.rows(segments: segments, partial: nil, elapsed: 12, markers: markers)
+    XCTAssertEqual(cache.recomputeCount, 2, "a flagged moment did not reach the row model")
+    XCTAssertEqual(marked.filter(\.isMarked).count, 1)
+
+    _ = cache.rows(segments: segments, partial: nil, elapsed: 12, markers: markers)
+    XCTAssertEqual(cache.recomputeCount, 2, "the same marker list rebuilt the model again")
+  }
+
+  /// The key is a **signature of every marker**, not a count, and each of these
+  /// three changes is one a count cannot see. Two of them can happen today: a
+  /// `reset()` and a fresh press across a session boundary (the row cache is a
+  /// `@State` that outlives the session, the log is emptied), and a mark whose
+  /// time differs. The third — a `label` written in place — is what the
+  /// auto-title follow-up does, and a memo that could not see it would go on
+  /// drawing rows built before the label existed.
+  func testTheRowModelSeesEveryChangeToAMarkerAndNotOnlyTheirNumber() {
+    let cache = LiveTranscriptRowCache()
+    let segments = [segment("one", at: 5), segment("two", at: 12)]
+    let early = [SessionMarker(at: 3)]
+
+    let first = cache.rows(segments: segments, partial: nil, elapsed: 12, markers: early)
+    XCTAssertEqual(cache.recomputeCount, 1)
+    XCTAssertEqual(first.filter(\.isMarked).map(\.id), [.line(segments[0].id)])
+
+    // Same count, different time — a different line entirely.
+    let later = [SessionMarker(at: 9)]
+    let second = cache.rows(segments: segments, partial: nil, elapsed: 12, markers: later)
+    XCTAssertEqual(cache.recomputeCount, 2, "a marker that moved did not reach the row model")
+    XCTAssertEqual(second.filter(\.isMarked).map(\.id), [.line(segments[1].id)])
+
+    // Same count, same time, same id — only a label, written in place.
+    var labelled = later[0]
+    labelled.label = "the rollback"
+    _ = cache.rows(segments: segments, partial: nil, elapsed: 12, markers: [labelled])
+    XCTAssertEqual(cache.recomputeCount, 3, "a marker's label changed and the model did not")
+  }
+
+  /// **The rule is drawn inside the margin, and it moves no text.** Both halves
+  /// are measured off the rendered pixels rather than argued from the fact that
+  /// `.overlay` takes no layout.
+  ///
+  /// The text is measured as the leading edge of the **body text**, not as the
+  /// leftmost ink anywhere in the bitmap: the leftmost ink is the gutter
+  /// timestamp, ~24pt left of the words, so a `.padding(.leading, 8)` on the
+  /// line branch would move every sentence on screen without moving it.
+  ///
+  /// And the ember is bounded on **both** sides against derived numbers. Left
+  /// of the body text is not enough — the whole gutter is left of it, so a
+  /// `markerRuleInset` typed to 0 would draw the rule inside the transcript's
+  /// content column and still pass. The claim is that the rule sits in the
+  /// margin `transcriptPaddingH` reserves and nowhere else, which is what makes
+  /// the `transcriptPaddingH / 2` derivation load-bearing rather than
+  /// decorative, plus that it is on screen at all.
+  func testTheEmberRuleSitsInsideTheMarginAndMovesNoText() {
+    let lines = [line("the migration lands next Tuesday", endingAt: 12)]
+    let blocks = LiveTranscript.blocks(lines)
+    let plain = LiveTranscript.rows(blocks)
+    let marked = LiveTranscript.rows(blocks, markedLineIDs: [lines[0].id])
+    XCTAssertTrue(marked[0].isMarked)
+
+    guard
+      let plainRep = Self.transcriptBitmap(plain),
+      let markedRep = Self.transcriptBitmap(marked),
+      let plainText = Self.leftmostBodyTextColumn(plainRep),
+      let markedText = Self.leftmostBodyTextColumn(markedRep),
+      let ember = Self.leftmostEmberColumn(markedRep)
+    else {
+      return XCTFail("the transcript did not render")
+    }
+
+    XCTAssertEqual(
+      plainText,
+      markedText,
+      "flagging a moment moved the transcript's text (\(plainText) → \(markedText))"
+    )
+    XCTAssertEqual(
+      Self.leftmostInkColumn(plainRep),
+      Self.leftmostInkColumn(markedRep),
+      "flagging a moment moved the gutter timestamp"
+    )
+
+    let scale = CGFloat(markedRep.pixelsWide) / Self.transcriptProbeSize.width
+    let margin = RecordingPaneMetrics.transcriptPaddingH * scale
+    let rule = RecordingPaneMetrics.markerRuleWidth * scale
+    XCTAssertGreaterThanOrEqual(
+      CGFloat(ember), 0, "the rule was drawn off the leading edge of the window"
+    )
+    XCTAssertLessThanOrEqual(
+      CGFloat(ember) + rule,
+      margin.rounded(.up),
+      "the rule left the margin the transcript reserves and entered its content column"
+    )
+    XCTAssertNil(
+      Self.leftmostEmberColumn(plainRep),
+      "an unmarked transcript drew the ember, which means the microphone is open"
+    )
+  }
+
+  /// **The ember is withheld from every state that is not recording.** The
+  /// failed banner draws the same `LiveTranscriptView` over the same transcript,
+  /// and the session's marks are still in the log when it does — so without this
+  /// decision a stopped session would carry ember down its margin beside a dead
+  /// microphone, no meter and no clock: the lie `showsRecordingPane` withholds
+  /// the cluster to avoid, and the one `testTheIdlePaneDrawsNoEmber` pins for
+  /// idle. Nothing is lost by it; the moments are on the record.
+  func testOnlyALiveSessionsTranscriptWearsTheEmberRule() {
+    let log = [SessionMarker(at: 8)]
+    for controls in LiveMeetingControls.allCases {
+      let drawn = LiveMeetingView.drawnMarkers(controls: controls, log: log)
+      XCTAssertEqual(
+        drawn.isEmpty,
+        !controls.showsRecordingPane,
+        "\(controls) disagrees with the cluster about whether a session is flowing"
+      )
+    }
+    XCTAssertTrue(LiveMeetingView.drawnMarkers(controls: .saveOrDiscard, log: log).isEmpty)
+    XCTAssertTrue(LiveMeetingView.drawnMarkers(controls: .retryOrDiscard, log: log).isEmpty)
+    XCTAssertEqual(LiveMeetingView.drawnMarkers(controls: .stop, log: log), log)
+  }
+
+  /// And the pixels agree: the transcript a failed session shows carries no
+  /// ember, drawn from the *same* rows the live one would have drawn had the
+  /// markers reached it.
+  func testAStoppedSessionsTranscriptDrawsNoEmber() {
+    let lines = [line("we lost the socket mid-sentence", endingAt: 12)]
+    let blocks = LiveTranscript.blocks(lines)
+    let log = [SessionMarker(at: 6)]
+
+    let stopped = LiveTranscript.rows(
+      blocks,
+      markedLineIDs: LiveTranscriptMarking.markedLineIDs(
+        markers: LiveMeetingView.drawnMarkers(controls: .saveOrDiscard, log: log),
+        lines: lines
+      )
+    )
+    XCTAssertTrue(stopped.allSatisfy { !$0.isMarked })
+
+    guard let rep = Self.transcriptBitmap(stopped) else {
+      return XCTFail("the transcript did not render")
+    }
+    XCTAssertNil(
+      Self.leftmostEmberColumn(rep),
+      "a failed session's transcript drew the colour that means the microphone is open"
+    )
+  }
+
+  private static let transcriptProbeSize = CGSize(width: 500, height: 160)
+
+  private static func transcriptBitmap(_ rows: [LiveTranscriptRow]) -> NSBitmapImageRep? {
+    RenderProbe.bitmap(
+      ZStack {
+        Color.white
+        LiveTranscriptView(rows: rows, volatileID: nil)
+      }
+      .environment(\.colorScheme, .light),
+      size: transcriptProbeSize
+    )
+  }
+
+  /// Leftmost column of the **body text** — the ink at or right of where the
+  /// gutter cell ends. The gutter timestamp is the leftmost ink in the whole
+  /// bitmap and sits a whole cell away from the words, so measuring "the
+  /// leftmost dark pixel" measures a column that does not move when the
+  /// sentence does.
+  private static func leftmostBodyTextColumn(_ rep: NSBitmapImageRep) -> Int? {
+    let scale = CGFloat(rep.pixelsWide) / transcriptProbeSize.width
+    let contentStart = Int(
+      ((RecordingPaneMetrics.transcriptPaddingH + RecordingPaneMetrics.gutterWidth) * scale)
+        .rounded(.up)
+    )
+    return leftmostColumn(rep, from: contentStart) { pixel in
+      pixel.brightnessComponent < 0.65
+    }
+  }
+
+  /// Leftmost column holding a dark, near-neutral pixel — the ink
+  /// (`GroundInk.light` is `#1C1A16`, brightness 0.11) at any tier, over the
+  /// white ground the probe paints.
+  private static func leftmostInkColumn(_ rep: NSBitmapImageRep) -> Int? {
+    Self.leftmostColumn(rep) { pixel in
+      pixel.brightnessComponent < 0.65
+    }
+  }
+
+  /// Leftmost column holding the ember. Matched on hue **and** a high
+  /// saturation floor, which is what tells `#d1662a` (saturation 0.80,
+  /// brightness 0.82) from the warm near-black ink (saturation 0.21,
+  /// brightness 0.11) whose hue is only 0.05 of a turn away.
+  private static func leftmostEmberColumn(_ rep: NSBitmapImageRep) -> Int? {
+    guard let target = NSColor(CraftTokens.ember(.light)).usingColorSpace(.sRGB) else { return nil }
+    let hue = target.hueComponent
+    return Self.leftmostColumn(rep) { pixel in
+      guard pixel.saturationComponent > 0.5, pixel.brightnessComponent > 0.5 else { return false }
+      let delta = abs(pixel.hueComponent - hue)
+      return min(delta, 1 - delta) < 0.04
+    }
+  }
+
+  private static func leftmostColumn(
+    _ rep: NSBitmapImageRep,
+    from first: Int = 0,
+    matching: (NSColor) -> Bool
+  ) -> Int? {
+    for x in max(0, first)..<rep.pixelsWide {
+      for y in stride(from: 0, to: rep.pixelsHigh, by: 2) {
+        guard let pixel = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+        guard pixel.alphaComponent > 0.5 else { continue }
+        if matching(pixel) { return x }
+      }
+    }
+    return nil
+  }
+
   func testWithNoSpeakerLabelsTheTranscriptIsOneContinuousBlock() {
     let lines = LiveTranscript.lines(
       segments: [segment("one", at: 3), segment("two", at: 7)],
