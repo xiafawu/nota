@@ -1290,6 +1290,140 @@ in the background. A baked snapshot ships in-repo as the fallback. To see the
 current catalog: `nota models list`. To force a refresh: `nota models refresh`.
 The cache feeds cost computation for usage tracking.
 
+## The Ground
+
+What the app is drawn *on*. XIA-442 built the field, XIA-443 the ink tiers,
+XIA-446 gave each view its own colour. `macos/Nota/UI/Field/`.
+
+The ground is a **64×36 image scaled to the window**, which is not a
+compromise: every feature in it is a soft blob hundreds of points across, so
+the upscale *is* the blur. `.interpolation(.high)` is load-bearing — at `.none`
+or `.low` the same buffer reads as a grid of squares, which is what this
+approach looks like done wrong. Six colour seeds ride a divergence-free curl
+current; the whole frame is advected along that current and relaxed 7% back
+toward the seeds' target every step, which is what makes it flow rather than
+crossfade. It runs at **20fps, deliberately not 60** — nothing in it moves fast
+enough for a third frame between two others to resolve.
+
+### A family per launch, a ground per view (XIA-446)
+
+The launch draws a **`GroundFamily`** — a chord of three of the sixteen
+palettes, one per **`GroundRole`** (`home`, `recording`, `transcript`) — and
+holds it for the process. It used to draw a single palette, and the two things
+that were then in tension are both true now: the ground is still different
+every morning, and the three views are still visibly different from each other.
+
+**The morph is free, and that is the whole design.** The field already relaxes
+toward its target every step, so a *target* whose hues move is followed over
+about a second and a half on the current it is already flowing on. Nothing
+interpolates pixels and nothing cross-fades two images. What produces a cut is
+**`reprime()`**, not changing colour — which is why the engine's original "one
+ground per launch, never re-rolled" note was aimed at the wrong noun. So
+`FieldSimulation.morph(to:push:)` moves the wash hue, the six seed hues and
+`push`, and may **never** reprime, rebuild the seeds (that snaps all six home
+and restarts the composition at minute zero), or touch `elapsed` (that is the
+session's warmth). `Seed.hue` is `var` for exactly this: a seed keeps where it
+has drifted to and only its colour moves. Hues travel the **short way round**
+(`GroundMorph.hue`) for the reason `GroundWarmth.rotate` does — the long arc
+crosses the far side of the wheel and every intermediate is mud. The morph
+**lands** rather than approaching forever; an exponential never arrives, and a
+field still doing hue arithmetic for a switch that finished a minute ago is
+work nobody asked for.
+
+`testAViewSwitchMorphsAndDoesNotCut` is the assertion that holds all of it:
+the first frame after a switch moves **0.54** against a whole-morph travel of
+**42.90** — 1.3%. Anything that reprimes takes that number to most of the way
+and the test goes red.
+
+**Under Reduce Motion a switch paints once instead of morphing.** The morph is
+advanced by `step`, and a Reduce Motion engine never steps again — without the
+one-frame landing the previous view's ground would stay up until the next
+launch.
+
+**Which view is which is declared by the call site**, never inferred:
+`FieldBackground(role:)`. Home is `.home`, the live session `.recording`, and
+**both** the transcript and the in-progress run are `.transcript` — a run is
+the transcript arriving, and the pane becomes the document without the window
+changing, so a ground that switched underneath at the moment the text landed
+would read as a second event. Two surfaces are briefly mounted at once while
+`ContentView` cross-fades its phases, so the last `onAppear` wins, which is the
+incoming view; nothing clears the role on the way out, or the outgoing view
+would drag the ground back with it.
+
+**Readability is `push`'s job and `flatten` is fixed at 0.40** — measured, not
+simplified. Push moves the value band away from the ink; flatten collapses the
+band itself. The luminance-span floor is 5.0 points and 0.40 already measures
+5.3 on `ink` light, so every raise sweeps below it (0.45 → 4.8, 0.50 → 4.3,
+0.62 → 3.2) and a transcript ground that "calmed down" by flattening would be
+the field turning back into flat paint. `transcript` therefore takes **push
+0.97** — the last value with margin, since 1.00 measures *exactly* the floor —
+buying the ink 1.1 points of extra lightness separation in light mode and 1.3
+in dark. `home` and `recording` keep 0.90: nothing about those two asked for a
+change. There is deliberately **no `GroundRole.flatten`**, and
+`testNoRoleRaisesFlatten` is what the next person to want one has to argue
+with.
+
+**The seven families were chosen by measurement.** All 560 triples were scored
+on 65% base-hue arc plus 35% the mean arc between their seed hues — the seed
+term is what stops `tidepool` and `quarry`, which share a base hue of 190° and
+carry very different families, from being scored as one colour. Minimum
+separation 45 (below it the three views read as the same room, which loses the
+point), maximum 98 (above it they are three unrelated colours rather than a
+chord — the top-scoring triple in the whole set is 108.6 and looks like three
+different apps), and no two families sharing more than one palette (without it
+the search returns four near-copies of the same violet). Roles inside a chord
+are assigned by rule too: each ground is scored on how far its seeds sit from
+its own base wash, and the busiest becomes `home` (the front door, which can
+afford to be loudest) while the quietest carries the transcript.
+
+**Families overlap on purpose** — a palette is a colour and a role is a job, so
+the same colour holds different jobs in different chords (`kiln` records in
+Riverbank and carries the transcript in Sunfall). Requiring the sixteen to
+partition into threes would have meant retiring a palette for arithmetic's
+sake. Seven families cover fourteen of the sixteen: **`meadow` (44°) and
+`vellum` (50°) are drawn by nothing**, being near-twins of `orchard` (60°) and
+`kiln` (30°) which are. That is a finding about the sixteen rather than a gap
+to paper over, and they stay in `GroundPalette.all` because the ember proof
+walks that array.
+
+**The ember rule needed no new proof**, and two separate attempts to defend it
+here were wasted work worth recording. Separation from ember holds by
+**saturation**, not hue — the ground tops out near 38% (light) / 50% (dark)
+against ember's 80% — which is why `kiln` can sit at 30°, inside the ember hue
+band, from the first frame at warmth zero.
+`FieldEngineTests.testTheGroundNeverComesNearEmber` already walks all sixteen
+palettes at four warmth points and requires ΔE > 20, so every ground in every
+family inherits it. A per-view *hue rotation* would have needed a fresh proof;
+re-using the existing sixteen does not.
+
+### What the ground costs, and the trap it is built around
+
+`FieldBackground` is **three flat siblings** and only `FieldImageLayer` holds
+the `@ObservedObject`, so a published frame re-evaluates an `Image` in a
+`GeometryReader` and nothing else. The first cut hung the grain off the
+observing struct as an `.overlay`, which made `CraftNoiseLayer` — a `Canvas`
+whose renderer closure is not comparable — redraw ~476 ellipses across the full
+window twenty times a second, having previously run **once, ever**. That is
+`SessionMeterFeedView`'s shape and the XIA-432 trap for the third time: the
+*rate* of a publisher and the *breadth* of its observers multiply, and the fix
+is always to narrow the observer rather than to slow the publisher.
+
+**The wash is underneath, always — not an `if`/`else`.** A branch meant the
+first body evaluation drew the cool periwinkle wash (`engine.image` is nil
+until `onAppear` runs, which is *after* the evaluation that installed it) and
+the first frame then swapped the subtree outright: a hard cut with no
+crossfade, because a `_ConditionalContent` branch change is not an animation.
+Keeping the wash as the floor makes the arrival a fade, makes a CoreGraphics
+refusal degrade to the surface that was there before rather than to a hole, and
+costs one static gradient. The floor is the wash **gradient**, not
+`CraftWashBackground`, which carries its own grain layer and drew it twice.
+
+The engine is a `static let` **nobody else observes**, refcounted by viewers
+(both production surfaces can be up at once), stopped when the app is occluded
+(`onDisappear` does not fire for minimise, ⌘H, or another Space — and Nota is
+left running all day), and **inert under XCTest**, so view tests see the wash
+they were written against rather than whichever ground the process drew.
+
 ## The Recording Surface
 
 What a live session looks like while it is running (XIA-431 the accent,
