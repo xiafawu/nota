@@ -83,14 +83,24 @@ enum RecordingPaneMetrics {
   /// cluster has no such spacer and has to reserve instead.
   ///
   /// One→two **digits** is the same defect at the tenth moment, and it moves
-  /// the same control. So the count gets the reservation
-  /// `SessionTimerMetrics.plateWidth` gives the clock, at every count from zero
-  /// up. Past 99 it widens once, which is the hour step's bargain: one step, at
-  /// a boundary nobody crosses by accident.
-  static let markerCountWidth: CGFloat = {
-    let font = NSFont.monospacedDigitSystemFont(ofSize: actionIconSize, weight: .semibold)
-    return ("00" as NSString).size(withAttributes: [.font: font]).width.rounded(.up)
-  }()
+  /// the same control.
+  ///
+  /// Reserving a plate wide enough for both answered it and cost the row its
+  /// shape: the plate is drawn from zero, so Mark carried it permanently empty
+  /// and laid out at 44pt against Stop's 23pt. The count is a **badge overlay**
+  /// now (`SessionCapsuleCluster.markerCount`), which is outside the layout
+  /// entirely — so no count of any width can move Stop, and there is nothing
+  /// left to reserve. These three numbers are the badge's own, and none of them
+  /// reaches the row: `capsuleHeight`, `transcriptBottomReserve` and every
+  /// cluster width are computed without them.
+  static let markerBadgeFontSize: CGFloat = 11
+  static let markerBadgePaddingH: CGFloat = CraftTokens.spacing4
+  /// A two-digit tally is wider than this and grows past it; one digit is
+  /// round, which is what a badge should be at its most common value.
+  static let markerBadgeDiameter: CGFloat = 18
+  /// Half the badge, so it straddles the capsule's rim rather than sitting
+  /// inside it (where the glyph is) or beside it (where nothing is).
+  static let markerBadgeInset: CGFloat = 6
 
   /// The tallest thing any capsule has to hold. **Measured, not typed** — this
   /// is the precedent XIA-444 got wrong: `controlRowHeight` was written as 40
@@ -924,12 +934,12 @@ struct SessionCapsuleCluster: View {
     Button {
       perform(action)
     } label: {
-      HStack(spacing: CraftTokens.spacing4) {
-        Image(systemName: action.symbol)
-        if action.carriesMarkerCount { markerCount }
-      }
+      Image(systemName: action.symbol)
     }
     .buttonStyle(RecordingCapsuleButtonStyle(tint: action.tint))
+    .overlay(alignment: .topTrailing) {
+      if action.carriesMarkerCount { markerCount }
+    }
     // Both capsules belong to a session that is running, so there is no longer
     // a per-action question to ask: the table's `requiresALiveSession` is gone
     // with the one case that answered it differently.
@@ -943,24 +953,53 @@ struct SessionCapsuleCluster: View {
     .keyboardShortcut(action == .mark ? KeyboardShortcut("k", modifiers: .command) : nil)
   }
 
-  /// The tally, on a plate reserved **from zero**.
+  /// The tally, as a **badge over** the Mark capsule rather than an element
+  /// inside it.
   ///
-  /// `markerCountWidth` reserved the one→two digit step and nothing reserved
-  /// the zero→one step, so the plate and its gap appeared out of nothing on the
-  /// first ⌘K — and the cluster is centred, so that widening split across both
-  /// sides and translated Stop right, out from under the pointer resting on it.
-  /// That is the motion `RecordingPaneCopy.markerCount` refuses one digit
-  /// earlier, so the plate is always drawn and only its *text* comes and goes:
-  /// an empty log still shows the flag alone rather than a tally of nothing.
+  /// The rule it has to keep is that no count may move Stop. The first answer
+  /// was a plate reserved from zero — `markerCountWidth`, always drawn, its
+  /// *text* coming and going — and it kept the rule at a price the owner saw
+  /// immediately: Mark then carried that plate and its gap permanently empty,
+  /// so it drew 44pt against Stop's 23pt with its glyph pushed off centre, and
+  /// a row of three capsules read as one lopsided pair (measured off the
+  /// owner's screenshot, 2026-08-11).
   ///
-  /// It rides on Mark since the Moments capsule went (2026-08-11), and it is
-  /// now the *whole* of the feedback a press of ⌘K gets — there is no list left
-  /// to open, so a Mark that did not visibly count would be a button with no
-  /// observable effect at all.
+  /// An overlay is not in the layout at all, so the rule stops being a
+  /// reservation to keep in step with the digits and becomes a fact about where
+  /// the count is drawn: Mark is square at every count, the ninth moment and
+  /// the tenth cost the row exactly nothing, and there is no width to reserve
+  /// for a number that is not there. `markerCountWidth` went with it.
+  ///
+  /// The tally rides on Mark since the Moments capsule went (2026-08-11), and
+  /// it is the *whole* of the feedback a press of ⌘K gets — there is no list
+  /// left to open, so a Mark that did not visibly count would be a button with
+  /// no observable effect at all. Which is also why the badge sits **outside**
+  /// the capsule's own accessibility label: `action.label` names what the
+  /// control does, and the count is state, not a name that changes 40 times a
+  /// session.
+  @ViewBuilder
   private var markerCount: some View {
-    Text(RecordingPaneCopy.markerCount(markers) ?? "")
-      .monospacedDigit()
-      .frame(minWidth: RecordingPaneMetrics.markerCountWidth)
+    if let count = RecordingPaneCopy.markerCount(markers) {
+      Text(count)
+        .font(.system(size: RecordingPaneMetrics.markerBadgeFontSize, weight: .semibold))
+        .monospacedDigit()
+        // White on white, not the notification badge's red: on this surface red
+        // is Stop and the ember is the open microphone, and a third red thing
+        // counting bookmarks would spend a colour that means something. It also
+        // keeps `stopRedMinX` — the probe that proves Stop never moves — looking
+        // at exactly one red shape.
+        .foregroundStyle(CraftTokens.primaryBlue)
+        .padding(.horizontal, RecordingPaneMetrics.markerBadgePaddingH)
+        .frame(
+          minWidth: RecordingPaneMetrics.markerBadgeDiameter,
+          minHeight: RecordingPaneMetrics.markerBadgeDiameter
+        )
+        .background(.white, in: Capsule(style: .continuous))
+        // Far enough out to clear the capsule's own rim on both edges, and no
+        // further: a badge that floats free of its control belongs to nothing.
+        .offset(x: RecordingPaneMetrics.markerBadgeInset, y: -RecordingPaneMetrics.markerBadgeInset)
+        .allowsHitTesting(false)
+    }
   }
 }
 

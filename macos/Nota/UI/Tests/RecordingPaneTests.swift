@@ -545,12 +545,15 @@ final class RecordingPaneTests: XCTestCase {
   /// The tally rides on Mark, and its number may not change the cluster's
   /// height **or its width** — at any count, the first one included.
   ///
-  /// The tally rides on the control it counts and is drawn on a plate reserved
-  /// from zero (`RecordingPaneMetrics.markerCountWidth`). This used to assert
-  /// the opposite for the zero→one step — that the first moment *did* widen the
-  /// capsule — which is the defect stated as a promise: a centred cluster
-  /// splits any widening across both sides, so it stepped Stop right under the
-  /// pointer, one digit before the step this constant was written for.
+  /// The tally rides on the control it counts, as a **badge overlaid** on Mark.
+  /// This used to assert the opposite for the zero→one step — that the first
+  /// moment *did* widen the capsule — which is the defect stated as a promise:
+  /// a centred cluster splits any widening across both sides, so it stepped
+  /// Stop right under the pointer. The plate reserved from zero that first
+  /// fixed it kept this test green and cost the row its shape (Mark laid out at
+  /// 44pt against Stop's 23pt, permanently, for digits that were not there). An
+  /// overlay is outside the layout, so the size claim below now holds by
+  /// construction rather than by a reservation someone has to keep in step.
   func testTheNumberOfMomentsNeverChangesTheClustersSize() {
     let none = clusterHost(markers: []).fittingSize
     let one = clusterHost(markers: [SessionMarker(at: 3)]).fittingSize
@@ -655,13 +658,18 @@ final class RecordingPaneTests: XCTestCase {
     return nil
   }
 
-  /// **Stop does not move when a moment is flagged.** `markerCountWidth`
-  /// reserves the one→two *digit* step; nothing reserved the zero→one step, so
-  /// the count plate and its gap appeared out of nothing on the first ⌘K — and
-  /// because the cluster is horizontally centred, that widening is split across
-  /// both sides and Stop translated right, out from under the pointer resting
-  /// on it. That is the exact motion `RecordingPaneCopy.markerCount` refuses
-  /// for the same reason one digit earlier.
+  /// **Stop does not move when a moment is flagged.** The count plate and its
+  /// gap once appeared out of nothing on the first ⌘K — and because the cluster
+  /// is horizontally centred, that widening is split across both sides and Stop
+  /// translated right, out from under the pointer resting on it. That is the
+  /// exact motion `RecordingPaneCopy.markerCount` refuses for the same reason
+  /// one digit earlier.
+  ///
+  /// The count is a badge overlaid on Mark now, so nothing about it is in the
+  /// layout and no width can reach Stop. That makes this test cheap to satisfy
+  /// and no less worth running: it is the claim, and the claim outlived two
+  /// mechanisms for keeping it. The badge is deliberately not red, so the probe
+  /// below still has exactly one red shape to find.
   ///
   /// Asserted where it happens: the leading edge of the drawn red capsule, over
   /// four marker counts that cross both steps.
