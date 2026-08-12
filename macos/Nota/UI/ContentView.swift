@@ -126,8 +126,25 @@ struct ContentView: View {
     .animation(Tokens.animFast, value: model.isHistoryDrawerPresented)
     .animation(Tokens.animFast, value: model.isSummaryRailPresented)
     .animation(Tokens.animFast, value: phase)
-    // No `.toolbarBackground(.hidden)`: the bar stays borderless at rest but
-    // regains its scroll-edge material once content scrolls beneath it.
+    // The toolbar draws **no** material, in every phase (XIA-446).
+    //
+    // This reverses a deliberate earlier decision — "the bar stays borderless
+    // at rest but regains its scroll-edge material once content scrolls
+    // beneath it" — and the reversal is not a change of taste. That rule was
+    // written when the transcript pane had nothing behind it, so the material
+    // appeared over the system window background and read as a toolbar. The
+    // ground now runs the full height of every phase, and a material band
+    // across the top of it is a hard horizontal seam through a surface whose
+    // entire quality is that it is continuous: the field above the line is
+    // washed out and the field below it is not, at a boundary that has nothing
+    // to do with the picture.
+    //
+    // What the material was buying — telling scrolled content apart from the
+    // chrome — the ground buys differently. The controls are Liquid Glass
+    // capsules that refract whatever is under them, so they read as floating
+    // *on* the ground rather than needing a plate to sit on, which is the same
+    // argument the recording cluster settled (XIA-445).
+    .toolbarBackground(.hidden, for: .windowToolbar)
     .toolbar { toolbarContent }
     .navigationTitle(navigationTitle)
     .onChange(of: model.isRunning) { _, running in

@@ -1340,6 +1340,20 @@ advanced by `step`, and a Reduce Motion engine never steps again — without the
 one-frame landing the previous view's ground would stay up until the next
 launch.
 
+**The toolbar draws no material, in every phase.** This reverses a deliberate
+earlier decision — the bar used to stay borderless at rest and regain its
+scroll-edge material once content scrolled beneath it — and the reversal is
+not a change of taste. That rule was written when the transcript pane had
+nothing behind it, so the material appeared over the system window background
+and read as a toolbar. With the ground running the full height of every phase,
+the same material is a hard horizontal seam: washed-out field above the line
+and full field below, at a boundary that has nothing to do with the picture.
+What the material bought — telling scrolled content apart from the chrome —
+the ground buys differently, since the toolbar's controls are Liquid Glass
+capsules that refract what is under them and therefore read as floating *on*
+the ground rather than needing a plate to sit on. Same argument as the
+recording cluster (XIA-445).
+
 **Which view is which is declared by the call site**, never inferred:
 `FieldBackground(role:)`. Home is `.home`, the live session `.recording`, and
 **both** the transcript and the in-progress run are `.transcript` — a run is
