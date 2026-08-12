@@ -201,7 +201,11 @@ final class FieldSimulation {
     var u: Double
     var v: Double
     let radius: Double
-    let hue: Double
+    /// `var` since XIA-446: a view switch moves each seed's hue toward the new
+    /// role's ground while leaving the seed exactly where it has drifted to.
+    /// Rebuilding the seeds would take the composition back to minute zero,
+    /// which is a cut in the one surface that may never cut.
+    var hue: Double
     let homeU: Double
     let homeV: Double
   }
@@ -216,12 +220,37 @@ final class FieldSimulation {
   private(set) var elapsed: TimeInterval = 0
   private(set) var seeds: [Seed]
 
-  /// Changing any of these re-primes: the next `step` paints the target
-  /// outright instead of advecting a frame built under the old settings.
-  var palette: GroundPalette { didSet { if palette != oldValue { reprime() } } }
+  /// The ground the field is heading for. Set at init and by `morph(to:push:)`,
+  /// which is why it is no longer settable from outside: the old setter
+  /// reprimed, and a section change that reprimed would paint the new ground
+  /// outright — the one cut this surface may not have. See `GroundMorph`.
+  private(set) var palette: GroundPalette
+
+  /// Still re-primes, and should: an appearance flip is a different band
+  /// entirely, and advecting a frame built for the other one would show the
+  /// old band draining out of the new one for a second.
   var light: Bool { didSet { if light != oldValue { reprime() } } }
-  var push: Double { didSet { if push != oldValue { reprime() } } }
-  var flatten: Double { didSet { if flatten != oldValue { reprime() } } }
+
+  /// Where the value band sits, animated per view (`GroundRole.push`).
+  ///
+  /// It lost its re-prime with the palette's and for the same reason. Nothing
+  /// mutated it at runtime before XIA-446 — it was set at init and never
+  /// again — so no behaviour is lost, and a re-prime here would make the one
+  /// role that raises it (`transcript`) arrive as a cut.
+  private(set) var push: Double
+
+  /// Fixed, and `let` to say so.
+  ///
+  /// 0.40 is 5.3 points of luminance span on `ink` light against a measured
+  /// floor of 5.0, so there is no headroom to spend: every raise (0.45 → 4.8,
+  /// 0.50 → 4.3, 0.62 → 3.2) reads as flat paint rather than as a
+  /// photograph. Readability that a view needs comes from `push`. See
+  /// `GroundRole.push` and `testLuminanceVariationSurvivesAtFlattenForty`.
+  let flatten: Double
+
+  /// Where the animated values are heading. Nil until something asks for a
+  /// morph, so a simulation nobody switches costs no arithmetic at all.
+  private var morphTarget: (palette: GroundPalette, push: Double)?
 
   private var primed = false
 
@@ -241,6 +270,66 @@ final class FieldSimulation {
     self.push = push
     self.buffer = [Float](repeating: 0, count: self.width * self.height * 3)
     self.seeds = FieldSimulation.makeSeeds(palette: palette)
+    self.baseHue = palette.baseHue
+  }
+
+  /// The hue of the wash, **animated**.
+  ///
+  /// Split from `palette.baseHue` by XIA-446: the palette is where the field
+  /// is going and this is where it currently is, and during a view switch they
+  /// differ for about a second. Everything that paints reads this one.
+  private(set) var baseHue: Double
+
+  /// Head for another ground, without cutting to it.
+  ///
+  /// The three things this deliberately does **not** do are the whole contract:
+  /// no `reprime()` (which would paint the target outright), no `makeSeeds()`
+  /// (which would snap all six seeds home and restart the composition), and no
+  /// touch of `elapsed` (which carries the session's warmth). What moves is the
+  /// wash hue, the six seed hues and `push` — nothing spatial, nothing temporal.
+  ///
+  /// Idempotent: asking for the ground it is already heading for changes
+  /// nothing, so a view that re-appears mid-morph does not restart it.
+  func morph(to palette: GroundPalette, push: Double) {
+    guard morphTarget?.palette != palette || morphTarget?.push != push else { return }
+    morphTarget = (palette, push)
+  }
+
+  /// Advance the animated values toward `target`.
+  ///
+  /// Called from `step` rather than from a clock of its own, so a field that is
+  /// not being stepped — Reduce Motion, an occluded app — does not creep. The
+  /// cost of that is stated plainly: under Reduce Motion a view switch is a
+  /// single repaint at the new ground rather than a morph, which is the right
+  /// answer for someone who asked for less motion.
+  private func advanceMorph(dt: TimeInterval) {
+    guard let morphTarget else { return }
+    let k = GroundMorph.fraction(dt: dt)
+    guard k > 0 else { return }
+
+    baseHue = GroundMorph.hue(baseHue, toward: morphTarget.palette.baseHue, by: k)
+    let hues = morphTarget.palette.familyHues
+    for i in seeds.indices {
+      seeds[i].hue = GroundMorph.hue(
+        seeds[i].hue, toward: hues[i % hues.count], by: k)
+    }
+    self.push = fieldLerp(self.push, morphTarget.push, k)
+
+    // Landing is a real state, not a limit approached forever: an exponential
+    // never arrives, and a field still doing per-step hue arithmetic for a
+    // switch that finished forty seconds ago is work nobody asked for. The
+    // tolerance is a fifth of a degree — a quarter of the smallest hue step
+    // any of the sixteen palettes are separated by.
+    let landed =
+      abs(GroundMorph.hue(baseHue, toward: morphTarget.palette.baseHue, by: 1) - baseHue) < 0.2
+      && abs(self.push - morphTarget.push) < 0.001
+    if landed {
+      baseHue = morphTarget.palette.baseHue
+      for i in seeds.indices { seeds[i].hue = hues[i % hues.count] }
+      self.push = morphTarget.push
+      self.palette = morphTarget.palette
+      self.morphTarget = nil
+    }
   }
 
   private static func makeSeeds(palette: GroundPalette) -> [Seed] {
@@ -257,7 +346,17 @@ final class FieldSimulation {
 
   /// Paint the target outright on the next step rather than advecting into it.
   func reprime() {
+    // A re-prime is a deliberate cut, so it lands the ground it is heading for
+    // rather than leaving a half-travelled hue behind: an appearance flip
+    // mid-morph would otherwise repaint at whatever colour the switch happened
+    // to have reached and then keep crawling from there.
+    if let morphTarget {
+      palette = morphTarget.palette
+      push = morphTarget.push
+      self.morphTarget = nil
+    }
     seeds = FieldSimulation.makeSeeds(palette: palette)
+    baseHue = palette.baseHue
     primed = false
   }
 
@@ -287,7 +386,7 @@ final class FieldSimulation {
     return FrameConstants(
       theme: T,
       baseHue: GroundWarmth.rotate(
-        hue: palette.baseHue, amount: w * GroundWarmth.baseHuePull),
+        hue: baseHue, amount: w * GroundWarmth.baseHuePull),
       baseSaturation: T.baseSaturation + w * GroundWarmth.baseSaturationLift,
       seedColors: seeds.map { s in
         FieldColor.rgb(
@@ -355,6 +454,10 @@ final class FieldSimulation {
   // MARK: The only mutator
 
   func step(dt: TimeInterval) {
+    // Before anything is measured or advected: the target has to be where it
+    // is going to be for *this* frame, or the frame paints one step behind the
+    // switch it is showing.
+    advanceMorph(dt: dt)
     elapsed += dt
     let t = elapsed
     let advect = dt * FieldSimulation.motionScale

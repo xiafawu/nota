@@ -61,12 +61,21 @@ struct FieldBackground: View {
   /// push the environment into it and to keep the viewer count.
   private let engine: FieldEngine
 
+  /// Which of the launch family's three grounds this surface wears.
+  ///
+  /// Declared by the call site rather than inferred from anything, because
+  /// "which view am I" is not a question the ground can answer — the same
+  /// `MainPaneView` hosts a transcript and a processing run, and both are the
+  /// same role for a different reason than they are the same view.
+  private let role: GroundRole
+
   @Environment(\.colorScheme) private var colorScheme
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   /// Defaults to the shared engine so the two call sites share one ground; the
   /// parameter exists so a preview or a test can drive its own.
-  init(engine: FieldEngine = .shared) {
+  init(role: GroundRole, engine: FieldEngine = .shared) {
+    self.role = role
     self.engine = engine
   }
 
@@ -90,11 +99,21 @@ struct FieldBackground: View {
     .onAppear {
       engine.light = (colorScheme == .light)
       engine.reduceMotion = reduceMotion
+      // Set before `addViewer`, which paints if there is no frame yet: a first
+      // frame painted at the previous role's ground would be a cut that the
+      // morph then has to walk back.
+      //
+      // Two surfaces are briefly mounted at once while ContentView cross-fades
+      // its phases, so the last `onAppear` wins — which is the incoming view,
+      // and therefore right. Nothing clears the role on the way out for the
+      // same reason: the outgoing view must not drag the ground back with it.
+      engine.role = role
       engine.addViewer()
     }
     .onDisappear { engine.removeViewer() }
     .onChange(of: colorScheme) { _, new in engine.light = (new == .light) }
     .onChange(of: reduceMotion) { _, new in engine.reduceMotion = new }
+    .onChange(of: role) { _, new in engine.role = new }
   }
 }
 
@@ -141,7 +160,7 @@ enum FieldBackgroundMetrics {
 #if DEBUG
 #Preview("Field ground") {
   ZStack {
-    FieldBackground()
+    FieldBackground(role: .home)
     Text("Good afternoon")
       .font(.system(size: 34, weight: .semibold))
   }

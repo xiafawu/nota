@@ -181,7 +181,7 @@ struct LiveMeetingView: View {
       }
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
-    .background(FieldBackground())
+    .background(FieldBackground(role: .recording))
     // A marker belongs to the session that flagged it; a new one starts empty.
     .onChange(of: session.state) { old, new in
       if new == .recording, old != .recording { markerLog.reset() }

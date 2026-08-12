@@ -133,7 +133,7 @@ struct HomeDashboardView: View {
 
   var body: some View {
     ZStack {
-      FieldBackground()
+      FieldBackground(role: .home)
 
       ScrollView {
         VStack(alignment: .leading, spacing: CraftTokens.spacing32) {

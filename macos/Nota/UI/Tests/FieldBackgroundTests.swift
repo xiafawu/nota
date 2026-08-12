@@ -221,7 +221,7 @@ final class FieldBackgroundTests: XCTestCase {
   /// cost shows up in a bitmap: the second `Canvas` draws the same grain in the
   /// same place, which is precisely why it survived review.
   func testTheGroundDrawsExactlyOneGrainLayerOverAGradientFloor() {
-    let description = String(describing: type(of: FieldBackground(engine: makeEngine()).body))
+    let description = String(describing: type(of: FieldBackground(role: .home, engine: makeEngine()).body))
 
     let grainLayers = description.components(separatedBy: "CraftNoiseLayer").count - 1
     XCTAssertEqual(

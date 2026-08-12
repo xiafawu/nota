@@ -33,6 +33,13 @@ final class FieldEngine: ObservableObject {
   /// though a uniform draw over sixteen produces one every sixteen launches.
   static let groundDefaultsKey = "notaFieldGroundID"
 
+  /// XIA-446: the launch now draws a **family** rather than a palette, so what
+  /// is remembered across launches is the family. A new key rather than a
+  /// reused one — the old value is a palette id, and a family lookup would
+  /// simply miss it and exclude nothing, which is a silent half-working
+  /// exclusion instead of a clean start.
+  static let familyDefaultsKey = "notaFieldFamilyID"
+
   /// 50 ms — twenty frames a second, and deliberately not sixty.
   ///
   /// The field is a 64×36 image blown up across a window: every feature in it
@@ -163,6 +170,43 @@ final class FieldEngine: ObservableObject {
 
   var palette: GroundPalette { simulation.palette }
 
+  /// The chord this launch drew. One per process, still — the *family* is what
+  /// the original "one ground per launch" rule now means.
+  private(set) var family: GroundFamily = GroundFamily.all[0]
+
+  /// Which view is on screen, and therefore which of the family's three grounds
+  /// the field is heading for.
+  ///
+  /// Pushed in by `FieldBackground` rather than read from anywhere, for the
+  /// reason `light` is: this object outlives every view that draws it. Setting
+  /// it moves a target; it never repaints, never reprimes and never rebuilds —
+  /// see `GroundMorph`.
+  ///
+  /// **Under Reduce Motion it paints once instead of morphing.** The morph is
+  /// advanced by `step`, and a Reduce Motion engine will never step again, so
+  /// without this a view switch would leave the previous view's ground on
+  /// screen until the next launch.
+  var role: GroundRole = .home {
+    didSet {
+      guard role != oldValue else { return }
+      simulation.morph(to: family.palette(for: role), push: role.push)
+      if reduceMotion { landMorphAndPaint() }
+    }
+  }
+
+  /// Reduce Motion's answer to a view switch: arrive, in one frame.
+  ///
+  /// `step(dt:)` is the only thing that advances a morph, so a dt large enough
+  /// to land it is asked for explicitly rather than reaching into the
+  /// simulation's private state. `GroundMorph.timeConstant * 12` is far past
+  /// the landing tolerance, and `paintOneFrame`'s own `step(dt: 0)` then fills
+  /// the buffer with the ground that has arrived.
+  private func landMorphAndPaint() {
+    guard drawsFrames else { return }
+    simulation.step(dt: GroundMorph.timeConstant * 12)
+    paintOneFrame()
+  }
+
   // MARK: - Building one
 
   /// The production initializer: draws the ground, remembers it, and starts
@@ -197,10 +241,19 @@ final class FieldEngine: ObservableObject {
     light: Bool,
     using generator: inout G
   ) {
-    let last = defaults.string(forKey: FieldEngine.groundDefaultsKey)
-    let palette = GroundPalette.pick(excluding: last, using: &generator)
-    defaults.set(palette.id, forKey: FieldEngine.groundDefaultsKey)
-    self.init(simulation: FieldSimulation(palette: palette, light: light))
+    let last = defaults.string(forKey: FieldEngine.familyDefaultsKey)
+    let family = GroundFamily.pick(excluding: last, using: &generator)
+    defaults.set(family.id, forKey: FieldEngine.familyDefaultsKey)
+    // The engine opens on `home`'s ground rather than on a neutral one and
+    // then morphing to it: the home dashboard is what the first frame is
+    // almost always under, and a launch that visibly travelled from some other
+    // colour to the right one would be the arrival cut with extra steps.
+    let role = GroundRole.home
+    self.init(
+      simulation: FieldSimulation(
+        palette: family.palette(for: role), light: light, push: role.push))
+    self.family = family
+    self.role = role
   }
 
   /// The injected form, which starts no timer and draws no ground — the tests

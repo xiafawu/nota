@@ -24,6 +24,11 @@ struct MainPaneView: View {
       switch content {
       case .empty(let state):
         EmptyMainView(state: state, isDropTargeted: isDropTargeted)
+          // A run in progress is the transcript arriving, so it wears the
+          // transcript's ground: this pane becomes the document without the
+          // window changing, and a ground that switched underneath at the
+          // moment the text landed would read as a second event.
+          .background(FieldBackground(role: .transcript))
       case .rich(let document):
         RichDocumentPane(
           document: document,
@@ -33,6 +38,15 @@ struct MainPaneView: View {
           onDismissSuggestion: onDismissSuggestion,
           enrichment: EnrichmentController.shared
         )
+        // The ground reaches the two panes that never had one. It is attached
+        // per branch rather than to this `ZStack`, because `.liveMeeting` draws
+        // its own inside `LiveMeetingView` — one here as well would stack two
+        // full-window image layers for the one that can only ever show the top.
+        //
+        // `RichTextViewer` already sets `drawsBackground = false` on both the
+        // scroll view and the text view, so the transcript was built to sit
+        // over something and had been falling through to the window material.
+        .background(FieldBackground(role: .transcript))
       case .liveMeeting:
         LiveMeetingView(
           session: model.liveSession,
