@@ -49,29 +49,45 @@ final class FieldBackgroundTests: XCTestCase {
 
   // MARK: - The draw
 
-  /// One ground per launch, and never the one before it.
-  func testTheEngineDrawsAGroundThatIsNotLastLaunchesAndRemembersIt() {
-    for previous in GroundPalette.all {
-      defaults.set(previous.id, forKey: FieldEngine.groundDefaultsKey)
+  /// One **family** per launch, and never the one before it.
+  ///
+  /// XIA-446 moved the draw up a level: a launch used to pick a palette and the
+  /// whole app wore it, and now it picks a chord of three and each view wears
+  /// one of them. The rule is unchanged — a different ground every morning —
+  /// and only the noun it applies to moved.
+  func testTheEngineDrawsAFamilyThatIsNotLastLaunchesAndRemembersIt() {
+    for previous in GroundFamily.all {
+      defaults.set(previous.id, forKey: FieldEngine.familyDefaultsKey)
       var rng = SplitMix64(seed: 0xA11CE &+ UInt64(previous.name.count))
       let engine = FieldEngine(defaults: defaults, light: true, using: &rng)
 
       XCTAssertNotEqual(
-        engine.palette.id, previous.id,
-        "the launch drew the ground the last one used")
+        engine.family.id, previous.id,
+        "the launch drew the family the last one used")
       XCTAssertEqual(
-        defaults.string(forKey: FieldEngine.groundDefaultsKey), engine.palette.id,
-        "the ground was drawn but not stored, so the next launch can repeat it")
+        defaults.string(forKey: FieldEngine.familyDefaultsKey), engine.family.id,
+        "the family was drawn but not stored, so the next launch can repeat it")
     }
   }
 
-  /// A first-ever launch has nothing to exclude and still gets a ground.
+  /// A first-ever launch has nothing to exclude and still gets a family.
   func testTheFirstLaunchDrawsWithNothingStored() {
-    XCTAssertNil(defaults.string(forKey: FieldEngine.groundDefaultsKey))
+    XCTAssertNil(defaults.string(forKey: FieldEngine.familyDefaultsKey))
     var rng = SplitMix64(seed: 99)
     let engine = FieldEngine(defaults: defaults, light: false, using: &rng)
-    XCTAssertTrue(GroundPalette.all.contains(engine.palette))
-    XCTAssertEqual(defaults.string(forKey: FieldEngine.groundDefaultsKey), engine.palette.id)
+    XCTAssertTrue(GroundFamily.all.contains(engine.family))
+    XCTAssertEqual(defaults.string(forKey: FieldEngine.familyDefaultsKey), engine.family.id)
+  }
+
+  /// The launch opens on the home ground rather than on some neutral one it
+  /// then travels away from. The first frame is almost always under the home
+  /// dashboard, and a visible journey from the wrong colour to the right one
+  /// would be the arrival cut with extra steps.
+  func testTheEngineOpensOnItsFamilysHomeGround() {
+    var rng = SplitMix64(seed: 7)
+    let engine = FieldEngine(defaults: defaults, light: true, using: &rng)
+    XCTAssertEqual(engine.palette, engine.family.palette(for: .home))
+    XCTAssertEqual(engine.role, .home)
   }
 
   // MARK: - Who is looking
