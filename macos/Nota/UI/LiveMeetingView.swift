@@ -75,28 +75,30 @@ enum LiveMeetingControls: Equatable, CaseIterable {
     }
   }
 
-  /// Whether the recording bar is what this state shows. A failed session is
-  /// deliberately **not** on it: the bar is the indicator that a session is
-  /// flowing, and nothing is. What that state needs is the transcript it heard
-  /// and one decision about it, which is the banner.
+  /// Whether the recording cluster is what this state shows. A failed session
+  /// is deliberately **not** on it: the cluster is the indicator that a session
+  /// is flowing, and nothing is. What that state needs is the transcript it
+  /// heard and one decision about it, which is the banner.
   var showsRecordingPane: Bool {
     self == .stop || self == .finalizing
   }
 }
 
-/// Live dictation pane (XIA-423 / XIA-432, rearranged by XIA-444): a session
-/// **bar** above a full-width transcript.
+/// Live dictation pane (XIA-423 / XIA-432, rearranged by XIA-444, rebuilt by
+/// XIA-445): a **cluster of three glass capsules** floating at the bottom of a
+/// full-window transcript.
 ///
-/// It was a 288pt trailing column until XIA-444, and what changed is which axis
-/// the indicator is charged to. The column's argument — that in a conversation
-/// what matters is the indicator that things are flowing — is unchanged and is
-/// why the bar still carries the clock, the meter and the accent; what did not
-/// survive is charging the text a quarter of the window's *width* for it, when
-/// the whole indicator is a few glyphs wide and the transcript is what the
-/// owner is reading. The clock the column made the session's object is one
-/// hover away (`SessionBarView`'s bloom). The meter is information rather than
-/// decoration, which is why Reduce Motion stops the ring breathing and never
-/// stops the meter (`RecordingMotion`).
+/// It was a 288pt trailing column, then a full-width bar, and each step gave
+/// the transcript back an axis the indicator had been charging it for — first
+/// width, now height. The column's argument survives both: in a conversation
+/// what matters is the indicator that things are flowing, which is why the
+/// cluster still carries the clock and the meter. What did not survive is
+/// spending any of the reading surface on it. The transcript runs the whole
+/// window and reserves the cluster's footprint at the bottom, so the words are
+/// never behind glass and the glass never pushes the words.
+///
+/// The meter is information rather than decoration, which is why Reduce Motion
+/// stops the ring breathing and never stops the meter (`RecordingMotion`).
 ///
 /// Owns no session state — it renders `session` and forwards the affordances
 /// through `onStart` / `onStop` / `onDiscard` so the model stays the single
@@ -188,46 +190,36 @@ struct LiveMeetingView: View {
 
   // MARK: - The recording pane
 
-  /// The rule between the bar and the transcript.
+  /// The cluster floating over the transcript, which takes the whole window.
   ///
-  /// Not `Divider()`, which draws the system separator — a colour picked for
-  /// opaque window chrome, not for a ground that moves under it. `.rail` is the
-  /// tier the solve measured for exactly this: the one thing on the surface that
-  /// is meant to be *barely* there (1.2:1) and must still be there on all
-  /// sixteen grounds.
+  /// The **rail** went with the bar (XIA-445). It was the measured `.rail` tier
+  /// rather than a `Divider()`, and that argument was the ink argument and is
+  /// untouched — what it separated is simply no longer two stacked things. A
+  /// hairline under a floating capsule would be a rule between a surface and
+  /// itself.
   ///
-  /// XIA-443 wrote this against the two-pane layout and XIA-444 deleted that
-  /// layout, each unable to see the other. The rule survives the merge because
-  /// it is the ink argument and not the layout argument: a `Divider()` under the
-  /// bar would be a fresh unmeasured colour on the ground, introduced after the
-  /// sweep that exists to forbid exactly that. It takes no `axis` any more —
-  /// there is one rule now, and it is horizontal.
-  private var rail: some View {
-    Rectangle()
-      .fill(.ground(.rail))
-      .frame(height: RecordingPaneMetrics.railWidth)
-  }
-
-  /// The bar over the transcript, and no `HStack` left: the transcript takes
-  /// the whole width.
+  /// A `ZStack` and not a `VStack`: the cluster costs the transcript no layout
+  /// height at all. What it does cost is the bottom of the *scroll content*,
+  /// reserved by `transcriptBottomReserve` — an overlay alone would sit on the
+  /// newest line, which is precisely the line `scrollToNewest` pins to `.bottom`.
   private var recordingPane: some View {
-    VStack(spacing: 0) {
-      SessionBarView(
+    ZStack(alignment: .bottom) {
+      transcript(bottomReserve: RecordingPaneMetrics.transcriptBottomReserve)
+
+      SessionCapsuleCluster(
         elapsed: session.elapsed,
         level: session.level,
-        kind: kind,
         controls: controls,
         markers: markerLog.markers,
         onMark: mark,
         onStop: onStop
       )
-      rail
-      transcript
+      .padding(.bottom, RecordingPaneMetrics.clusterBottomInset)
     }
   }
 
-  private var transcript: some View {
-    LiveTranscriptView(rows: rows, volatileID: volatileID)
+  private func transcript(bottomReserve: CGFloat = 0) -> some View {
+    LiveTranscriptView(rows: rows, volatileID: volatileID, bottomReserve: bottomReserve)
       .frame(maxWidth: .infinity, maxHeight: .infinity)
   }
 
@@ -292,7 +284,9 @@ struct LiveMeetingView: View {
       if case .failed(let message) = session.state {
         errorBanner(message: message)
       }
-      transcript
+      // No reserve: nothing floats over a failed session's transcript. The
+      // cluster is the indicator that a session is *flowing*, and nothing is.
+      transcript()
     }
   }
 

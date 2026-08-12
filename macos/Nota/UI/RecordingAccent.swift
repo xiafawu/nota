@@ -16,13 +16,14 @@ import SwiftUI
 /// - The **ring** is decoration. It breathes because a live session should feel
 ///   alive, and nothing is lost by holding it still — the meter is already
 ///   saying the thing the ring is only dressing up.
-/// - The **bloom** — the recording bar growing into a taller card while the
-///   pointer is over it (XIA-444) — is a transition between two states the
-///   owner asked for, so it may not be dropped; what Reduce Motion takes is the
-///   travel between them. It **snaps**: both states are drawn exactly as they
-///   would have been, and the card simply arrives at the new one.
+/// There used to be a third entry here — the recording bar's hover bloom
+/// (XIA-444), which snapped rather than travelled under Reduce Motion. The bar
+/// is gone (XIA-445) and the capsule cluster has exactly one size, so there is
+/// no transition left to have an opinion about. The asymmetry above is what
+/// survives, and it survives whole: it is about what a *live microphone* is
+/// allowed to look like, not about the shape drawn around it.
 ///
-/// All three live here so a future component has to pick a side deliberately.
+/// Both live here so a future component has to pick a side deliberately.
 enum RecordingMotion {
   /// Never nil, at either setting: the meter always animates.
   static func meterAnimation(reduceMotion: Bool) -> Animation? {
@@ -35,19 +36,6 @@ enum RecordingMotion {
   static func ringAnimation(reduceMotion: Bool) -> Animation? {
     guard !reduceMotion else { return nil }
     return .easeInOut(duration: SessionRingMetrics.cycle / 2).repeatForever(autoreverses: true)
-  }
-
-  /// The recording bar's hover bloom. Nil under Reduce Motion, which is a snap
-  /// rather than a freeze: `withAnimation(nil)` still assigns the new state, so
-  /// the bloomed card is drawn — it just does not travel there.
-  ///
-  /// Short and unsprung on purpose even at the ordinary setting. This one is
-  /// driven by the pointer rather than by the microphone, so it can be asked to
-  /// reverse mid-flight; a spring's overshoot on a card that big reads as the
-  /// bar wobbling under the cursor.
-  static func bloomAnimation(reduceMotion: Bool) -> Animation? {
-    guard !reduceMotion else { return nil }
-    return .easeOut(duration: 0.18)
   }
 }
 

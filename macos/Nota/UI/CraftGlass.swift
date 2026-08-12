@@ -63,6 +63,28 @@ enum CraftTokens {
     primaryBlue.opacity(scheme == .dark ? 0.45 : 0.32)
   }
 
+  // MARK: Stop (the recording surface's one red)
+
+  /// Stop's colour on the recording cluster, and nowhere else.
+  ///
+  /// The owner chose red over the ember on 2026-08-11 **with the measurement in
+  /// hand**, which is the part worth keeping: CIE76 ΔE from `systemRed` to the
+  /// ember is 38.5 dark and 33.1 light, i.e. two warm things closer together
+  /// than the moving field is ever allowed to get to the ember (41.3, pinned by
+  /// the field tests). That objection was real and is recorded rather than
+  /// argued away.
+  ///
+  /// What defuses it is the timer capsule the same call chose. "C · Essential"
+  /// draws no ember **dot**, so the only ember left in the cluster is the
+  /// meter's thin moving bars — a filled red capsule cannot be read as those at
+  /// any size. The collision the number describes is between two *fills*, and
+  /// after that choice there is only one.
+  ///
+  /// `systemRed` rather than a hand-mixed value: it is the destructive colour
+  /// every other surface in this app already uses (the failed-session banner's
+  /// tint, the destructive menu items), and it is per-scheme for free.
+  static let stopRed: Color = Color(nsColor: .systemRed)
+
   // MARK: Recording accent (ember)
 
   /// The one expressive accent on the whole surface, and it means exactly one

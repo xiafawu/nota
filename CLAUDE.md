@@ -1293,7 +1293,11 @@ The cache feeds cost computation for usage tracking.
 ## The Recording Surface
 
 What a live session looks like while it is running (XIA-431 the accent,
-XIA-432 the pane). One arrangement, three components, one colour.
+XIA-432 the pane, XIA-445 the cluster it is now). One arrangement, three
+components, and one reserved colour: the ember still means the microphone is
+open and nothing else. The cluster's two action capsules are blue and red,
+which are colours for *actions* — see the cluster section for why the red is
+allowed to sit near a warm accent now and was not before.
 
 ### The ember
 
@@ -1313,14 +1317,22 @@ text keeps its contrast over it.
 
 - **`SessionMeter`** is the live level, and it is **information**. It is the
   only proof on screen that the microphone is actually open and hearing
-  something. Two variants (`.tall` on the bloomed bar, `.compact` at rest and in
-  the island) rather than a free `height`, because a meter whose bar count
+  something. Two variants (`.compact` in the cluster and in the island,
+  `.tall` for a surface that has the room) rather than a free `height`, because
+  a meter whose bar count
   varies continuously has no baseline to pin. It has a **floor**: a silent room draws
   the minimum bar height, never nothing, since a blank meter and an absent
   meter look the same.
 - **`SessionRing`** is the breathing ember circle, and it is **decoration**. It
   carries no state the owner needs; it breathes because a live session should
-  feel alive.
+  feel alive. **No surface draws it today** — the column's ring went with the
+  column, the bar's dot went with the bar, and the cluster's Essential timer
+  capsule has neither. It survives for two reasons worth naming rather than
+  letting it look like dead code: it is the positive control for the ember pixel
+  probe (`testTheProbeSeesTheEmberItIsLookingFor`, without which
+  `testTheIdlePaneDrawsNoEmber` would pass against a blank canvas), and it is
+  the other half of the Reduce Motion asymmetry below, which is a rule about
+  what a live microphone may look like and not about one shape.
 - **`SessionTimer`** is the elapsed clock — mono, tabular, and the single most
   legible thing on the surface, because in a conversation what matters is the
   indicator that things are flowing.
@@ -1358,113 +1370,152 @@ and that is not a motion preference; only the curve between two readings is.
 
 ### Reduce Transparency changes the material and nothing else
 
-The panels degrade to opaque system materials through the existing
+The capsules degrade to opaque system materials through the existing
 `liquidGlass` branch, and the hairline and the shadow stay — they are constants
 on `CraftTokens`, not properties of the glass. Nothing moves: every number in
 `RecordingPaneMetrics` is a constant or is measured once from a font, and
 neither kind reads an `@Environment` value, so there is nothing for an
-accessibility setting to reach. The bar's two heights are the same — the bloom
-is driven by the pointer, and Reduce Motion reaches the animation between them
-and neither of them. And the ember is untouched — it is a function of the colour
-scheme alone. Stop is a **solid** fill rather than glass for exactly this
-reason: a glass Stop would go quiet precisely where the material degrades, and
-Stop is the one control that may never be hard to find.
+accessibility setting to reach. The cluster has exactly one size, so Reduce
+Motion has no transition to reach either. And the ember is untouched — it is a
+function of the colour scheme alone.
 
-### The bar (B2 as XIA-432 shipped it, rearranged by XIA-444; `macos/Nota/UI/RecordingPane.swift`)
+**Stop's red survives the degrade, and the mechanism is what makes that true.**
+`Glass.tint(_:)` is a property of the *effect*, and the degraded branch swaps
+the effect for `.regularMaterial` and takes the tint with it — a tinted-glass
+Stop would go grey precisely where the material goes away, which is the failure
+the bar's solid ember fill existed to prevent. So `RecordingCapsuleTint` draws
+the colour as the capsule's own background **over** its glass: the glass is what
+degrades, the colour is not. Both action capsules use that one mechanism, and
+`testStopStaysItsOwnRedOverAnyBackdrop` renders Stop over white and black and
+looks for red in both. What it deliberately does **not** assert is that the two
+readings are equal, which the bar's opaque Stop could promise: 62% over glass is
+the owner's number and the whole reason the capsule refracts at all, so it does
+vary with the ground. What it may not do is stop being red.
 
-A full-width session **bar** above the transcript, and the transcript takes the
-whole width under it. It was a ~288pt trailing column until XIA-444, and what
-changed is which axis the indicator is charged to: the column's argument — in a
-conversation what matters is the indicator that things are flowing — is
-unchanged and is why the bar still carries the clock, the meter and the accent.
-What did not survive is charging the *text* a quarter of every window for an
-indicator that is a few glyphs, a meter and three buttons wide. Height is the
-axis a transcript has most of.
+### The cluster (XIA-445, replacing XIA-444's bar; `macos/Nota/UI/RecordingPane.swift`)
 
-Three things went with the column, and each removed a whole class of
-arithmetic:
+Three Liquid Glass capsules — **timer, Mark, Stop** — horizontally centred near
+the bottom of the live-meeting view, floating **over** the transcript rather
+than sitting in the layout above it. The transcript takes the whole window.
 
-- **The fold.** There were two forms (`RecordingPaneForm`, `foldWidth`,
-  `transcriptMinWidth`, `RecordingPaneLayout.form(width:)`, `SessionStripView`)
-  because a fixed-width column could starve the text at a narrow window. A bar
-  takes the width it is given at every window this app allows, so there is one
-  arrangement and no threshold to be wrong about. `LiveMeetingView` lost both
-  its `HStack` and the `GeometryReader` whose only reader was the fold.
-- **The overlap with ⌘L.** `ContentView.historyDrawerLayer` is a
-  `ZStack(alignment: .topTrailing)` holding a 380pt `HistoryDrawerView`, which
-  opened directly over the trailing column and wider than it. The three options
-  written down here (move the column to the leading edge / push the pane aside /
-  accept the overlap) are moot: the drawer now overlays the transcript, exactly
-  as it already did, and no arithmetic depends on a side.
-- **The ring around the clock.** `ringDiameterNeeded` / `ringGlyphHeightRatio`
-  are gone. A circle sized to contain the bloom's 58pt clock is ~225pt across —
-  taller than the transcript it would sit over. The ember is a breathing **dot**
-  (`dotDiameter`) in both of the bar's states.
+It was a ~288pt trailing column (XIA-432), then a full-width bar (XIA-444), and
+each step handed the transcript back an axis the indicator had been charging it
+for: first width, now height. The column's argument survives all of it — in a
+conversation what matters is the indicator that things are flowing — which is
+why the cluster still carries the clock and the meter. What did not survive is
+spending any of the reading surface on it. **The bar was measured and rejected**
+against a live prototype the owner drove on 2026-08-11: it still took a band off
+every window for a clock, a meter and two buttons, and it *grew* that band on
+hover.
 
-Left to right: the dot, the meter, the clock, the kind line, then past the gap
-the moment count, `Mark ⌘K` (ghost) and `Stop` (solid ember, **the only filled
-control on the surface**). That is the column's top-to-bottom order laid on its
-side.
+What went with the bar, and each removal took a class of arithmetic with it:
 
-- **The moments are a count that opens a popover** (owner, 2026-08-10), not a
-  list the surface has to find room for and not hairlines down the transcript. A
-  bar has no bottom to accumulate at, and "a list that grows must not push the
-  fixed things around" was the column's own reason for putting its list last;
-  the popover is what the column's height was buying. A mark is a *time*, and a
-  hairline in a scrolling transcript is findable only if you already know where
-  it is. The bar shows the flag always and the tally past zero — never "0"
-  (`RecordingPaneCopy.markerCount`), because a control that appeared on the
-  first mark would move under the pointer. `SessionMarkerList` keeps its own
-  `ScrollView` now, which the column's version explicitly did not: a popover has
-  no outer scroll to fight with, and unbounded it would outgrow the screen.
-- **The clock blooms on hover** (owner, same day). 22pt at rest; with the
-  pointer over the bar the whole bar grows into a taller card carrying the 58pt
-  clock the column made the session's object. What animates is the **card** —
-  both states' plates are reserved up front by `SessionTimerMetrics` and are
-  each independent of `elapsed`, so nothing inside is re-measured while the
-  height is in flight — and it is a size step rather than a `scaleEffect`, which
-  would interpolate a rendered layer instead of typesetting one. Nothing is
-  *only* available bloomed, so a pointer that never arrives costs nothing.
-  Reduce Motion makes it **snap**, and that lives in
-  `RecordingMotion.bloomAnimation` beside the ring's and the meter's rather than
-  in an `if` in the view: nil is a snap and not a freeze, since
-  `withAnimation(nil)` still arrives at the state.
-- **The whole bar is the bloom's trigger, and `.onHover` alone could not say
-  so.** SwiftUI hover follows hit testing, and the bar's root `HStack` has no
-  fill: unshaped it reported hover over the dot, the clock, the kind line and
-  the buttons, and over none of the several hundred points of `Spacer` between
-  them. Both failures are real — a pointer parked in the gap never bloomed the
-  bar, and a pointer travelling from the clock to Stop crossed the gap and fired
-  `false` then `true`, costing two full 0.18s height animations and two
-  relayouts of the transcript inside one gesture. The surface is an AppKit
-  tracking area (`SessionHoverArea` / `SessionHoverView`) rather than
-  `.contentShape(Rectangle())`, which is what the app's five other `.onHover`
-  call sites use: SwiftUI resolves hover inside the hosting view, so neither
-  `hitTest` nor the hosting view's tracking areas can tell a shaped bar from an
-  unshaped one — measured, both ways — and a promise nothing can assert is how
-  this shipped. It takes no clicks (`hitTest` returns nil, as `GlassPlateView`
-  does); enter and exit reach a tracking area's owner regardless.
-- **The resting height is the Stop capsule, measured from the style that draws
-  it.** `RecordingPaneMetrics.controlRowHeight` is the floor —  the 22pt clock
-  and the compact meter are both shorter than the buttons beside them — and it
-  was *typed* as 40 against a row that lays out at 41 (a 14pt semibold label's
-  line box is 17, plus `spacing12` twice). So `barHeight(bloomed: false)`
-  promised 64 while the bar drew 65, the `.frame(minHeight:)` never bound, and
-  the resting height was decided by whichever child happened to be tallest —
-  precisely what the constant exists to prevent, with every geometry test in the
-  file green through it. It is now derived from
-  `RecordingStopButtonStyle.measuringFont` / `.verticalPadding`, in the same
-  measurement `SessionTimerMetrics.plateHeight` uses for the clock, and
-  `testTheRestingBarDrawsExactlyTheHeightItReserves` compares the reservation
-  against the laid-out bar — the check a number that calls itself a derivation
-  owes.
-- **The kind reaches the surface as one word.** No mode chrome, no toggle, no
-  segmented control, and above all no change to the accent: a kind is
-  relabelable after the fact, and a colour that moved with it would be lying
-  about a record the owner reclassified. `RecordingPaneCopy.all(kind:controls:)`
-  owns every fixed string the pane can draw so the promise is diffable —
-  `testAMemoAndAMeetingDifferByExactlyOneString` walks every state and fails if
-  a second string ever differs.
+- **The hover bloom** (the 22pt → 58pt clock, `SessionHoverArea`,
+  `barHeight(bloomed:)`, `RecordingPaneLayout`, `RecordingMotion.bloomAnimation`).
+  The cluster is one size. Two reserved plates, an animation between them, and
+  an AppKit tracking area installed to trigger it are all gone — deleted, not
+  left unreferenced.
+- **The rail.** `RecordingPaneMetrics.railWidth` drawn with `.ground(.rail)` was
+  the *ink* argument (a measured 1.2:1 tier rather than a `Divider()`) and that
+  argument is untouched; what it separated is simply no longer two stacked
+  things. A hairline under a floating capsule is a rule between a surface and
+  itself.
+- **The ghost/solid button pair.** `RecordingGhostButtonStyle` and
+  `RecordingStopButtonStyle` were shaped for a full-width row with text labels.
+  One `RecordingCapsuleButtonStyle` replaces both — icon only, one tint
+  parameter — so Mark and Stop differ by a colour and nothing else.
+
+Left to right: the clock (with the meter), Mark, Stop. The column's
+top-to-bottom order, laid on its side, for the third time.
+
+- **They are SIBLINGS, never nested.** Apple's guidance is that Liquid Glass
+  inside Liquid Glass is silently auto-converted to a vibrant fill — so a
+  capsule drawn inside a capsule is not a *doubled* rim (the toolbar-pill
+  failure one section up), it is a rim quietly **overridden**, with nothing on
+  screen to announce it. One `GlassEffectContainer` holds the three so their
+  lensing merges instead of refracting three times, and it is given the **same**
+  spacing the `HStack` uses (`RecordingPaneMetrics.capsuleGap`): the container's
+  spacing *is* the merge distance, and two numbers would merge the plates at a
+  gap the eye does not see or fail to merge at the one it does.
+- **SwiftUI `.glassEffect` is correct here**, via `craftGlassPanel`, and that is
+  not a contradiction of the floating-panel rule in Key Design Decisions. That
+  rule is about an `NSPanel`: SwiftUI glass refracts only its own hierarchy, and
+  a HUD's hierarchy is a glyph and a line of text, which is why the dictation
+  surfaces need `NSGlassEffectView`. This cluster is inside the main window and
+  the morphing field it refracts **is** in its hierarchy. Do not reach for
+  AppKit here.
+- **All three capsules are exactly the same height, and the number is measured.**
+  `RecordingPaneMetrics.capsuleHeight` is `capsuleContentHeight + 2 *
+  capsulePaddingV`, and the content height is the max of the 30pt clock's
+  reserved line box, the compact meter's tallest bar, and the action glyph's
+  line box measured from `actionMeasuringFont` — never a typed literal. A row of
+  capsules is one object made of parts; three heights reads as three things that
+  happen to be near each other. The precedent is XIA-444's, and it is a warning:
+  `controlRowHeight` was *typed* 40 against a row that laid out at 41, so the
+  bar reserved 64 and drew 65 with every geometry test in the file green through
+  it. So the cluster owes both halves —
+  `testTheCapsuleHeightIsDerivedFromTheTallestThingACapsuleHolds` for the
+  derivation and `testEveryCapsuleDrawsExactlyTheHeightTheClusterReserves` for
+  the laid-out view, plus
+  `testTheThreeCapsulesAreTheSameHeightAsEachOther`, because three capsules
+  could each agree with the same wrong constant.
+- **The timer capsule is clear glass: the meter and the clock, and nothing
+  else.** That is the owner's "C · Essential", chosen over three fuller variants
+  on the same day, and each omission has a reason. The ember **dot** went
+  because the meter proves the same thing and proves it harder — a dot is lit
+  whether or not anything is being heard, and a meter with a floor is the only
+  thing on screen that can tell a live microphone from a wedged one. The **kind
+  line** went because a kind is relabelable after Stop and forbidden from
+  changing anything visual, so during a session it is a word that never moves
+  and never does anything. The clock is 30pt through `SessionTimerMetrics`,
+  which still reserves the wider of `mm:ss` / `hh:mm:ss` up front, so the step at
+  the hour re-sizes glyphs inside a box that never moves (XIA-431, unchanged).
+- **Mark is blue, icon only, and carries the tally.**
+  `CraftTokens.primaryBlue` at `RecordingCapsuleTint.strength` (62%) over the
+  glass — the app's existing "confident action" colour, used for an action, at
+  ΔE 132 from the ember where no confusion is possible. A press opens the
+  moments popover (`SessionMarkerList`, which keeps its own `ScrollView`); the
+  count appears past zero and never as "0" (`RecordingPaneCopy.markerCount`),
+  because a control that appeared on the first mark would move under the
+  pointer. **The same rule one digit later** is why the count sits on a reserved
+  two-digit plate (`markerCountWidth`): unreserved, the tenth moment widens Mark
+  and steps *Stop* right, under the pointer most likely to be aiming at it.
+  **⌘K still flags a moment** and lives on a zero-sized button behind the row,
+  not on the capsule — a press there opens the list, so the shortcut on that
+  button would open a list instead of marking.
+- **Stop is red, icon only, and the loudest thing on the surface.** The owner
+  chose red over the ember **with the measurement in hand**: CIE76 ΔE from
+  `systemRed` to the ember is 38.5 dark / 33.1 light, closer than the moving
+  field is ever allowed to get (41.3, pinned by the field tests). That objection
+  was real and is recorded rather than argued away — and what defuses it is the
+  Essential timer capsule the same call chose. With the ember dot gone, the only
+  ember left in the cluster is the meter's thin moving bars, which no filled
+  capsule can be read as: the collision the number describes is between two
+  *fills*, and there is now only one. `CraftTokens.stopRed`.
+- **The transcript reserves the cluster's whole footprint** — the owner's
+  "Reserve space", over reading through the refraction (which would bet the
+  ink solve covers ink *under glass* on the ground, and it does not) and over
+  the cluster fading while text arrives (a moving thing at the edge of vision
+  during the one activity that should feel calm). It is **scroll content**
+  padding and not a frame inset, which is the half that matters:
+  `scrollToNewest` pins the newest row to `.bottom`, i.e. to exactly the point
+  the cluster covers, so an overlay alone would leave the line being read
+  permanently behind glass. `transcriptBottomReserve` is composed from the
+  constants the cluster is *placed* with (`capsuleHeight + clusterBottomInset +
+  clusterTranscriptGap`) rather than typed a second time, and
+  `testTheTranscriptReservesTheClustersWholeFootprint` asserts both the
+  composition and that the laid-out transcript really grows by it. A failed
+  session's transcript reserves nothing: nothing floats over it.
+- **The kind reaches the surface as one word, in the idle state.** The cluster
+  draws no kind at all now, so `RecordingPaneCopy.kindLine` is read only by
+  `idleView` — and it stays in `all(kind:controls:)`, which
+  `testAMemoAndAMeetingDifferByExactlyOneString` still walks unchanged. That
+  promise is about the *pane* rather than about one of its states: the whole of
+  the difference between a memo and a meeting is still one string, and it is
+  still that one. `markTitle` / `markShortcut` / `stopTitle` survive too, now as
+  the accessibility labels and tooltips of two icon-only capsules — still
+  strings the surface puts in front of someone, which is why they are still
+  covered.
 - **The transcript lays out a speaker column the pipeline does not fill yet.**
   `LiveTranscriptLine.speaker` is nil today, `LiveTranscript.blocks` already
   groups consecutive lines by it, and a turn draws the name above its text when
@@ -1472,8 +1523,7 @@ side.
   grouping is not waiting to be written, it is waiting to be fed, and the day it
   is the transcript gains names and not one number in `RecordingPaneMetrics`
   moves. The volatile tail is a line like any other — it continues the turn it
-  belongs to and differs only in being drawn at 55%, the same opacity the HUD
-  prompter dims its in-flight run to.
+  belongs to and differs only in being drawn at the `timestamp` ink tier.
 - **…but the grouping may not cost the laziness, so the drawn model is flat.**
   `LiveTranscript.rows` turns the blocks into one row per line plus a header row
   where the speaker changes, and `LiveTranscriptView` puts those rows **directly**
@@ -1494,22 +1544,22 @@ side.
   timestamp, which is drawn to the second).
 - **There is one clock.** `LiveMeetingFormat.duration` delegates to
   `SessionTimerMetrics.text`. The gutter timestamp beside a transcript line,
-  the time on a marker row and the clock on the bar name the same
+  the time on a marker row and the clock in the cluster name the same
   instant, and two implementations of "the same instant" is a disagreement
   waiting for a rounding change.
-- **Only a live session wears the bar** (`LiveMeetingControls
+- **Only a live session wears the cluster** (`LiveMeetingControls
   .showsRecordingPane`). A failed session gets the banner over whatever it
-  heard: the bar is the indicator that a session is *flowing*, and a
-  breathing ring with a live meter over a dead microphone is the exact lie the
-  meter exists to make impossible. **The idle state owes the same rule and did
-  not keep it**: it drew a breathing ember ring above the Start button, over a
-  closed microphone, in the state every owner sees before every recording — the
-  state that teaches them what the colour means. It draws none now, and
-  `testTheIdlePaneDrawsNoEmber` renders the pane and scans the pixels, because
-  "there is no ember on screen" is not a claim a constant can carry.
+  heard: the cluster is the indicator that a session is *flowing*, and a live
+  meter over a dead microphone is the exact lie the meter exists to make
+  impossible. **The idle state owes the same rule and did not keep it**: it drew
+  a breathing ember ring above the Start button, over a closed microphone, in
+  the state every owner sees before every recording — the state that teaches
+  them what the colour means. It draws none now, and `testTheIdlePaneDrawsNoEmber`
+  renders the pane and scans the pixels, because "there is no ember on screen"
+  is not a claim a constant can carry.
   The idle and failed states keep `.liquidGlassButton()` deliberately: the
-  ghost/solid-ember pair is the *recording pane's* vocabulary and those are not
-  recording surfaces. "All of it goes" was only ever true of the pane.
+  capsule vocabulary is the *recording surface's*, and those are not recording
+  surfaces.
 - **`LiveMeetingSession.level`** republishes `MicCapture.rmsLevel` rather than
   exposing the capture engine, which would hand a view `start()` and `stop()`
   as well. Two things about it are load-bearing:
