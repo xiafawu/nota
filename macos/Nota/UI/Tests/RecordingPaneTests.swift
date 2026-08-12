@@ -345,11 +345,11 @@ final class RecordingPaneTests: XCTestCase {
     XCTAssertTrue(log.markers.isEmpty)
   }
 
-  /// The bar shows a **count**, and an empty log shows the flag alone rather
-  /// than a tally of nothing. The popover is where the words live — the heading
-  /// and `noMarkers` survived the column, which is what the owner's call asked
-  /// for (2026-08-10).
-  func testAnEmptyLogShowsNoCountAndTheWordsLiveInThePopover() {
+  /// Mark shows a **count**, and an empty log shows the flag alone rather than
+  /// a tally of nothing. The words are `SessionMarkerList`'s and the surface
+  /// draws none of them since the Moments capsule went — they are asserted here
+  /// because that view is XIA-433's and still has to say something sensible.
+  func testAnEmptyLogShowsNoCountAndTheListStillHasItsWords() {
     XCTAssertNil(RecordingPaneCopy.markerCount([]))
     XCTAssertEqual(RecordingPaneCopy.markerCount([SessionMarker(at: 3)]), "1")
     XCTAssertEqual(
@@ -485,6 +485,48 @@ final class RecordingPaneTests: XCTestCase {
     )
   }
 
+  /// **The cluster is exactly three capsules and the two gaps between them.**
+  ///
+  /// The count is the claim. `SessionClusterAction.allCases` says what the row
+  /// holds and a `ForEach` draws it, so the table and the drawing cannot
+  /// disagree with each other — which is precisely why neither of them can
+  /// answer "is there a capsule here that should not be". Only the laid-out
+  /// width can, so the reservation is composed from the three faces the row is
+  /// allowed to have and compared against what the cluster draws.
+  ///
+  /// The faces come from `cluster.capsule(_:)`, the same builder the row uses:
+  /// a test that rebuilt the label would measure its own copy of the markup and
+  /// agree with itself about a capsule the cluster had stopped drawing.
+  func testTheClusterIsExactlyThreeCapsulesAndTwoGaps() {
+    func laidOut<V: View>(_ view: V) -> CGFloat {
+      let host = NSHostingView(rootView: view)
+      host.layoutSubtreeIfNeeded()
+      return host.fittingSize.width
+    }
+    let cluster = SessionCapsuleCluster(
+      elapsed: 61,
+      level: MicLevelFeed(level: 0.4),
+      controls: .stop,
+      markers: [],
+      onMark: {},
+      onStop: {}
+    )
+    let reserved =
+      laidOut(SessionTimerCapsule(elapsed: 61, level: MicLevelFeed(level: 0.4)))
+      + laidOut(cluster.capsule(.mark))
+      + laidOut(cluster.capsule(.stop))
+      + 2 * RecordingPaneMetrics.capsuleGap
+
+    let drawn = clusterHost().fittingSize.width
+    XCTAssertGreaterThan(drawn, 0, "the hosting view produced no layout")
+    XCTAssertEqual(
+      drawn,
+      reserved,
+      accuracy: 0.5,
+      "the cluster draws \(drawn)pt against three capsules and two gaps at \(reserved)pt"
+    )
+  }
+
   /// Crossing the hour re-sizes the glyphs and moves nothing around them —
   /// including the capsule they sit in, and the two capsules beside it.
   func testTheClusterDoesNotReflowWhenTheTimerCrossesTheHour() {
@@ -500,7 +542,7 @@ final class RecordingPaneTests: XCTestCase {
     )
   }
 
-  /// The moments live in a popover, so their number may not change the cluster's
+  /// The tally rides on Mark, and its number may not change the cluster's
   /// height **or its width** — at any count, the first one included.
   ///
   /// The tally rides on the control it counts and is drawn on a plate reserved
@@ -652,12 +694,32 @@ final class RecordingPaneTests: XCTestCase {
     guard let first = edges[0].1 else {
       return XCTFail("the probe found no red capsule at all")
     }
-    // The probe must be looking at Stop and not at the ember meter, which is
-    // the other warm thing on the surface and sits at the far left of the row.
-    XCTAssertGreaterThan(
+    // The probe must be looking at Stop, and "right of centre" was only ever a
+    // sanity guard. Now that the row is three capsules the edge is *derivable*,
+    // so it is derived: the cluster is centred in the canvas, and Stop is the
+    // last thing in it, so its leading edge is the row's trailing edge less its
+    // own width. Nothing about that reading survives a capsule being added back.
+    let cluster = clusterHost()
+    let stopCapsule = NSHostingView(
+      rootView: SessionCapsuleCluster(
+        elapsed: 754,
+        level: MicLevelFeed(level: 0.4),
+        controls: .stop,
+        markers: [],
+        onMark: {},
+        onStop: {}
+      ).capsule(.stop)
+    )
+    stopCapsule.layoutSubtreeIfNeeded()
+    let expected =
+      (size.width + cluster.fittingSize.width) / 2 - stopCapsule.fittingSize.width
+    XCTAssertEqual(
       first,
-      size.width / 2,
-      "the matched pixels are left of centre, so this is not the last capsule"
+      expected,
+      accuracy: 1,
+      "Stop's drawn edge is \(first)pt, but a centred row of "
+        + "\(cluster.fittingSize.width)pt ending in a \(stopCapsule.fittingSize.width)pt "
+        + "capsule puts it at \(expected)pt"
     )
     for (count, edge) in edges {
       guard let edge else { return XCTFail("no red capsule at \(count) moments") }
@@ -693,13 +755,13 @@ final class RecordingPaneTests: XCTestCase {
     return minX.map { CGFloat($0) / scale }
   }
 
-  /// **The visible Mark capsule flags a moment**, which is the defect this
-  /// whole fourth capsule exists for: the shipped cluster gave the only
-  /// Mark-looking control the *moments popover*, and `onMark` survived on a
-  /// zero-sized, fully transparent, `accessibilityHidden(true)` button behind
-  /// the row. So a mouse could not flag a moment at all, and VoiceOver could
-  /// not either — the one element that marked was removed from the tree, and
-  /// the one that could be reached opened a list.
+  /// **The visible Mark capsule flags a moment.** The first cut of the cluster
+  /// gave the only Mark-looking control the *moments popover*, and `onMark`
+  /// survived on a zero-sized, fully transparent, `accessibilityHidden(true)`
+  /// button behind the row. So a mouse could not flag a moment at all, and
+  /// VoiceOver could not either — the one element that marked was removed from
+  /// the tree, and the one that could be reached opened a list. The list is
+  /// gone from the surface now and this is what has to stay true without it.
   ///
   /// Asserted through `perform(_:)`, which is the same call every capsule's
   /// button makes. Walking the accessibility tree was tried first and cannot
@@ -722,21 +784,18 @@ final class RecordingPaneTests: XCTestCase {
     XCTAssertEqual(marked, 1, "the Mark capsule does not flag a moment")
     XCTAssertEqual(stopped, 0)
 
-    cluster.perform(.moments)
-    XCTAssertEqual(marked, 1, "opening the moments flagged a moment")
-    XCTAssertEqual(stopped, 0, "opening the moments stopped the session")
-
     cluster.perform(.stop)
     XCTAssertEqual(stopped, 1)
     XCTAssertEqual(marked, 1)
   }
 
-  /// Four pills, four buttons, one job each — the owner's "one button per pill"
-  /// with the job that had no pill given one. Every one of them is named, since
-  /// an icon-only control's label is the only name it has.
+  /// Three pills, two buttons, one job each — the owner's "one button per pill"
+  /// over a table with nothing left in it that the surface does not do. Every
+  /// one of them is named, since an icon-only control's label is the only name
+  /// it has.
   func testEveryJobOnTheClusterIsItsOwnNamedCapsule() {
     let actions = SessionClusterAction.allCases
-    XCTAssertEqual(actions, [.mark, .moments, .stop], "the row's order changed")
+    XCTAssertEqual(actions, [.mark, .stop], "the row's order changed")
     XCTAssertEqual(
       Set(actions.map(\.label)).count,
       actions.count,
@@ -748,14 +807,37 @@ final class RecordingPaneTests: XCTestCase {
       "two capsules draw the same glyph"
     )
     XCTAssertEqual(SessionClusterAction.mark.label, RecordingPaneCopy.markTitle)
-    XCTAssertEqual(SessionClusterAction.moments.label, RecordingPaneCopy.markersHeading)
     XCTAssertEqual(SessionClusterAction.stop.label, RecordingPaneCopy.stopTitle)
 
-    // The tally rides on the control it counts, and on nothing else.
-    XCTAssertEqual(actions.filter(\.carriesMarkerCount), [.moments])
-    // Listing what was already flagged reads nothing and changes nothing, so it
-    // is the one capsule a stopped session does not refuse.
-    XCTAssertEqual(actions.filter { !$0.requiresALiveSession }, [.moments])
+    // The tally rides on the control that produces it, and on nothing else.
+    // With no list left to open it is the only feedback ⌘K has.
+    XCTAssertEqual(actions.filter(\.carriesMarkerCount), [.mark])
+  }
+
+  /// **Reviewing moments is not something the recording surface does** (owner,
+  /// 2026-08-11), so the marker list has no way to be reached from it. Asserted
+  /// on the table because that is what the row is built from: a capsule that is
+  /// not a case cannot be drawn, disabled, tinted or given a shortcut.
+  ///
+  /// `SessionMarkerList` itself is deliberately still in the file — XIA-433 is
+  /// where a mark gets a meaning worth reading back — so it is exercised here
+  /// rather than left to rot untouched.
+  func testNoCapsuleOpensTheMarkerList() {
+    XCTAssertFalse(
+      SessionClusterAction.allCases.contains { $0.symbol == "list.bullet" },
+      "a capsule is drawing the moments list's glyph again"
+    )
+    XCTAssertFalse(
+      SessionClusterAction.allCases.map(\.label).contains(RecordingPaneCopy.markersHeading),
+      "a capsule is named for the moments list again"
+    )
+
+    // The list survives for XIA-433 and still lays out, with both of its states.
+    for markers in [[], [SessionMarker(at: 12), SessionMarker(at: 40)]] {
+      let host = NSHostingView(rootView: SessionMarkerList(markers: markers))
+      host.layoutSubtreeIfNeeded()
+      XCTAssertEqual(host.fittingSize.width, SessionMarkerList.width + 2 * CraftTokens.spacing16, accuracy: 0.5)
+    }
   }
 
   /// ⌘K is **named on the surface**. The cluster is icon-only, so the shortcut

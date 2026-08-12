@@ -335,7 +335,7 @@ enum RecordingPaneCopy {
     marker.label
   }
 
-  /// Every action capsule is **icon only** on the cluster (owner, 2026-08-11),
+  /// Both action capsules are **icon only** on the cluster (owner, 2026-08-11),
   /// so these reach the owner as the accessibility label and the tooltip rather
   /// than as a drawn label — which is exactly why they are strings the surface
   /// puts in front of someone, and why they are in `all(kind:controls:)`.
@@ -347,18 +347,22 @@ enum RecordingPaneCopy {
   static var markHelp: String { "\(markTitle) \(markShortcut)" }
   static let stopTitle = "Stop"
   static let listening = "Listening…"
+
+  /// `SessionMarkerList`'s two strings. They are **not** in
+  /// `all(kind:controls:)` any more: that list is every string the surface can
+  /// put on screen, and since the Moments capsule went there is no surface that
+  /// draws these. They survive with the view they belong to, for XIA-433.
   static let markersHeading = "Moments"
   static let noMarkers = "No moments yet"
 
-  /// The count on the Moments capsule — **nil at zero**, not "0".
+  /// The count on the Mark capsule — **nil at zero**, not "0".
   ///
   /// The button itself is always there, and since the zero→one fix so is the
   /// *plate* it is drawn on (`SessionCapsuleCluster.markerCount`): an
   /// affordance — or a reservation — that appeared the moment the first moment
   /// was flagged would be a control that moves under the pointer, on the one
   /// surface whose whole job is to hold still. What it may not do is report a
-  /// tally nobody has started, so an empty log shows the glyph alone and the
-  /// popover says `noMarkers` in words.
+  /// tally nobody has started, so an empty log shows the glyph alone.
   ///
   /// Not part of `all(kind:controls:)` below, and that is deliberate: this is
   /// the one string on the surface that is a function of the session rather
@@ -380,8 +384,6 @@ enum RecordingPaneCopy {
       markHelp,
       stopTitle,
       listening,
-      markersHeading,
-      noMarkers,
     ]
   }
 }
@@ -420,10 +422,11 @@ enum SessionMarkerOrder {
 ///
 /// **Stub, and named as one.** The end-to-end marker (persisted on the record,
 /// carried into the summary, shown on the finished document) is XIA-433. What
-/// this owns is the UI slot: pressing Mark produces a visible, timestamped row
+/// this owns is the UI slot: pressing Mark increments a tally the owner can see,
 /// so the affordance is real rather than a dead button, and the log is thrown
-/// away with the session. When the real model lands, the column reads its
-/// markers instead and `SessionMarkerList` does not change.
+/// away with the session. Nothing *lists* these while a session runs — the
+/// recording surface has no marker list (see `SessionCapsuleCluster`) — so
+/// until XIA-433 the count is the whole of what a mark says out loud.
 @MainActor
 final class SessionMarkerLog: ObservableObject {
   @Published private(set) var markers: [SessionMarker] = []
@@ -684,23 +687,26 @@ struct RecordingCapsuleButtonStyle: ButtonStyle {
 
 // MARK: - Marker list
 
-/// The flagged moments, newest first — the contents of the Mark capsule's
-/// popover (owner's call, 2026-08-10: "markers are a count that opens a
-/// popover", not hairlines down the transcript; unchanged by XIA-445, which
-/// moved which control opens it and nothing else).
+/// The flagged moments, newest first.
 ///
-/// The list used to sit at the bottom of the session column, and neither a bar
-/// nor a capsule has a bottom to put it at. The popover is what the column's
-/// height was buying:
-/// somewhere a list may accumulate without pushing the fixed things around.
-/// Hairlines in the transcript were the alternative and were refused — a mark
-/// is a *time*, and a mark in the middle of a scrolling transcript is only
-/// findable if you already know where it is.
+/// **It has no caller on the recording surface, on purpose.** The cluster
+/// dropped its Moments capsule on 2026-08-11 — you are recording, not browsing
+/// — and nothing else in the app opens a marker list yet. It is kept rather
+/// than deleted because **XIA-433** is the ticket that gives a mark a meaning
+/// worth reading back (an auto-title from the surrounding transcript, persisted
+/// on the record and carried into the summary), and this view is already
+/// shaped for the row that lands then: a timestamp, and a label beside it when
+/// there is one. Deleting it would cost that ticket a rewrite of a view whose
+/// decisions were already argued.
 ///
-/// It keeps its own `ScrollView` now, which the column's version explicitly did
-/// not: nesting two on one axis is what that comment was avoiding, and a
-/// popover has no outer scroll to fight with. Unbounded it would grow the
-/// popover past the screen on a long meeting.
+/// The decisions worth keeping with it: the list used to sit at the bottom of
+/// the session column, and neither a bar nor a capsule has a bottom to put it
+/// at — hairlines down the transcript were the alternative and were refused,
+/// because a mark is a *time* and a mark inside a scrolling transcript is only
+/// findable if you already know where it is. And it keeps its own `ScrollView`,
+/// which the column's version explicitly did not: nesting two on one axis is
+/// what that comment was avoiding, and unbounded it would outgrow whatever
+/// eventually presents it.
 struct SessionMarkerList: View {
   let markers: [SessionMarker]
 
@@ -789,7 +795,7 @@ struct SessionTimerCapsule: View {
   }
 }
 
-/// The three jobs the cluster's action capsules do, as a table rather than as
+/// The two jobs the cluster's action capsules do, as a table rather than as
 /// closures buried in a view builder.
 ///
 /// It exists because of the defect it replaces. The first cut collapsed
@@ -804,19 +810,19 @@ struct SessionTimerCapsule: View {
 ///
 /// With the table, the cluster draws `allCases` in order and dispatches on the
 /// case, so "which control does what" is one switch a test reads directly
-/// rather than three closures a rendered window would have to be driven to
-/// discover.
+/// rather than closures a rendered window would have to be driven to discover.
+///
+/// There is no `moments` case any more (owner, 2026-08-11): reviewing what has
+/// been flagged is not something a recording surface does. See the cluster's
+/// own comment for what went with it.
 enum SessionClusterAction: CaseIterable {
-  /// Flag this instant. The primary of the two, and the one with a shortcut.
+  /// Flag this instant, and carry the tally of what has been flagged.
   case mark
-  /// Show what has been flagged.
-  case moments
   case stop
 
   var symbol: String {
     switch self {
     case .mark: return "bookmark.fill"
-    case .moments: return "list.bullet"
     case .stop: return "stop.fill"
     }
   }
@@ -825,7 +831,6 @@ enum SessionClusterAction: CaseIterable {
   var label: String {
     switch self {
     case .mark: return RecordingPaneCopy.markTitle
-    case .moments: return RecordingPaneCopy.markersHeading
     case .stop: return RecordingPaneCopy.stopTitle
     }
   }
@@ -836,7 +841,7 @@ enum SessionClusterAction: CaseIterable {
     self == .mark ? RecordingPaneCopy.markHelp : label
   }
 
-  /// Blue for the two that are about moments, red for the one that ends the
+  /// Blue for the one that flags a moment, red for the one that ends the
   /// session. `CraftTokens.primaryBlue` is the app's "confident action" colour
   /// and sits at ΔE 132 from the ember, where no confusion is possible; Stop's
   /// red is the owner's call with the measurement in hand (`CraftTokens.stopRed`).
@@ -844,31 +849,34 @@ enum SessionClusterAction: CaseIterable {
     self == .stop ? CraftTokens.stopRed : CraftTokens.primaryBlue
   }
 
-  /// Only the count rides on a capsule, and it rides on the one it counts.
-  var carriesMarkerCount: Bool { self == .moments }
-
-  /// Mark and Stop belong to a session that is running. Listing what was
-  /// already flagged reads nothing and changes nothing, so it is never refused.
-  var requiresALiveSession: Bool { self != .moments }
+  /// The count rides on the capsule that produces it. It used to ride on the
+  /// capsule that *listed* them, and when that capsule went the tally stayed:
+  /// it is the only feedback a press of ⌘K has.
+  var carriesMarkerCount: Bool { self == .mark }
 }
 
-/// The recording surface: four sibling capsules floating over the transcript
-/// (XIA-445; the fourth added when Mark turned out to be unreachable).
+/// The recording surface: three sibling capsules floating over the transcript
+/// (XIA-445).
 ///
-/// Left to right the session, then what to do about it — the clock, Mark,
-/// Moments, Stop. That is the bar's order and the column's before it; what
-/// changed is that the row no longer takes a band of the window to say it.
+/// Left to right the session, then what to do about it — the clock, Mark, Stop.
+/// That is the bar's order and the column's before it; what changed is that the
+/// row no longer takes a band of the window to say it.
 ///
-/// **Why four and not three.** The owner asked for one button per pill and for
-/// icons only, and three pills could not hold four jobs: the shipped cut gave
-/// the Mark capsule the moments popover and hid `onMark` on a zero-sized
-/// button, which cost a mouse and a VoiceOver user the ability to flag a moment
-/// at all. Putting the list on a long-press or a right-click of the Mark
-/// capsule was the alternative and was rejected — it keeps three pills by
-/// hiding a whole affordance behind a gesture nothing on screen names, on the
-/// surface whose other rule is that nothing moves and nothing is hidden. A
-/// fourth capsule honours "one button per pill" exactly: four pills, four
-/// buttons, one job each, all four reachable by mouse and all four named.
+/// **Three, and reviewing moments is deliberately not one of them** (owner,
+/// 2026-08-11). A fourth capsule for the list was built and rejected: you are
+/// recording, not browsing, and a control whose whole job is to read back what
+/// you already flagged is not something the surface over a live transcript owes
+/// you. Hanging the list off a long-press or a right-click of Mark was rejected
+/// too, and for the older reason — that hides a whole affordance behind a
+/// gesture nothing on screen names, on the one surface whose other rules are
+/// that nothing moves and nothing is hidden. So the list is simply not reachable
+/// while recording; **moment markers end to end are XIA-433**, which is where a
+/// mark gets a meaning worth reading back.
+///
+/// What did **not** go with it is the **tally**, which now rides on Mark. It is
+/// the only feedback a press of ⌘K has — with no count and no list, marking is
+/// a button that does nothing observable — and keeping it was the one cost the
+/// owner weighed against a fourth pill.
 ///
 /// One `GlassEffectContainer` at the same spacing the `HStack` uses, because the
 /// container's spacing *is* the merge distance: two numbers here would merge the
@@ -884,12 +892,6 @@ struct SessionCapsuleCluster: View {
   let onMark: () -> Void
   let onStop: () -> Void
 
-  /// The popover is **this view's** state and not the pane's. A press on
-  /// Moments may not invalidate `LiveMeetingView`'s body: that body draws the
-  /// transcript, and XIA-432 is this file's whole account of what a frequent
-  /// change costs when a broad observer is watching.
-  @State private var showingMoments = false
-
   private var isStoppable: Bool { controls == .stop }
 
   var body: some View {
@@ -901,22 +903,24 @@ struct SessionCapsuleCluster: View {
     }
   }
 
-  /// What each capsule does, in one place. `nonmutating` state, so this is the
-  /// same call the button makes *and* a call a test can make on the view value
-  /// without a window server — which is the only way "the visible Mark capsule
-  /// flags a moment" can be asserted at all in this bundle: SwiftUI publishes
-  /// no accessibility tree for an unhosted hosting view, measured on
-  /// 2026-08-11, so walking for the labels proves nothing either way.
+  /// What each capsule does, in one place. This is the same call the button
+  /// makes *and* a call a test can make on the view value without a window
+  /// server — which is the only way "the visible Mark capsule flags a moment"
+  /// can be asserted at all in this bundle: SwiftUI publishes no accessibility
+  /// tree for an unhosted hosting view, measured on 2026-08-11, so walking for
+  /// the labels proves nothing either way.
   func perform(_ action: SessionClusterAction) {
     switch action {
     case .mark: onMark()
-    case .moments: showingMoments.toggle()
     case .stop: onStop()
     }
   }
 
+  /// Internal for the reason `perform(_:)` is: the width claim below is about
+  /// the capsules the cluster really draws, and a test that rebuilt the label
+  /// itself would be measuring its own copy of the markup.
   @ViewBuilder
-  private func capsule(_ action: SessionClusterAction) -> some View {
+  func capsule(_ action: SessionClusterAction) -> some View {
     Button {
       perform(action)
     } label: {
@@ -926,7 +930,10 @@ struct SessionCapsuleCluster: View {
       }
     }
     .buttonStyle(RecordingCapsuleButtonStyle(tint: action.tint))
-    .disabled(action.requiresALiveSession && !isStoppable)
+    // Both capsules belong to a session that is running, so there is no longer
+    // a per-action question to ask: the table's `requiresALiveSession` is gone
+    // with the one case that answered it differently.
+    .disabled(!isStoppable)
     .accessibilityLabel(action.label)
     .accessibilityHint(action == .mark ? RecordingPaneCopy.markShortcut : "")
     .help(action.help)
@@ -934,9 +941,6 @@ struct SessionCapsuleCluster: View {
     // one the owner can see. It went on a hidden zero-sized button only because
     // the visible capsule's press opened the list.
     .keyboardShortcut(action == .mark ? KeyboardShortcut("k", modifiers: .command) : nil)
-    .popover(isPresented: shows(action), arrowEdge: .top) {
-      SessionMarkerList(markers: markers)
-    }
   }
 
   /// The tally, on a plate reserved **from zero**.
@@ -948,17 +952,15 @@ struct SessionCapsuleCluster: View {
   /// That is the motion `RecordingPaneCopy.markerCount` refuses one digit
   /// earlier, so the plate is always drawn and only its *text* comes and goes:
   /// an empty log still shows the flag alone rather than a tally of nothing.
+  ///
+  /// It rides on Mark since the Moments capsule went (2026-08-11), and it is
+  /// now the *whole* of the feedback a press of ⌘K gets — there is no list left
+  /// to open, so a Mark that did not visibly count would be a button with no
+  /// observable effect at all.
   private var markerCount: some View {
     Text(RecordingPaneCopy.markerCount(markers) ?? "")
       .monospacedDigit()
       .frame(minWidth: RecordingPaneMetrics.markerCountWidth)
-  }
-
-  /// Only the Moments capsule opens the list, so only it gets a live binding —
-  /// the others get a constant `false`, which is what keeps one popover
-  /// attached to one control while the capsules are built by one function.
-  private func shows(_ action: SessionClusterAction) -> Binding<Bool> {
-    action == .moments ? $showingMoments : .constant(false)
   }
 }
 
@@ -1147,7 +1149,8 @@ private struct RecordingPaneGallery: View {
 }
 
 /// Past the hour, and with no moments flagged: the clock steps to `h:mm:ss`
-/// inside a plate that was reserved for it, and the Mark capsule is square.
+/// inside a plate that was reserved for it, and Mark draws its tally plate
+/// empty — the width it will still have at the first ⌘K, and at the tenth.
 #Preview("recording cluster – past the hour") {
   CraftWashBackground()
     .overlay(

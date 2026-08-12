@@ -1394,15 +1394,13 @@ vary with the ground. What it may not do is stop being red.
 
 ### The cluster (XIA-445, replacing XIA-444's bar; `macos/Nota/UI/RecordingPane.swift`)
 
-Four Liquid Glass capsules — **timer, Mark, Moments, Stop** — horizontally
-centred near the bottom of the live-meeting view, floating **over** the
-transcript rather than sitting in the layout above it. The transcript takes the
-whole window.
+Three Liquid Glass capsules — **timer, Mark, Stop** — horizontally centred near
+the bottom of the live-meeting view, floating **over** the transcript rather
+than sitting in the layout above it. The transcript takes the whole window.
 
-It shipped as three, and the fourth is a fix rather than a flourish: see
-"Mark and Moments are two capsules" below. The owner's constraints —
-one button per pill, icons only — are what a fourth capsule *keeps*, and what
-three could not.
+A fourth capsule (**Moments**, opening the marker list in a popover) was built
+and then ruled out by the owner on 2026-08-11: see "Mark carries the tally, and
+nothing on the surface lists moments" below.
 
 It was a ~288pt trailing column (XIA-432), then a full-width bar (XIA-444), and
 each step handed the transcript back an axis the indicator had been charging it
@@ -1432,14 +1430,17 @@ What went with the bar, and each removal took a class of arithmetic with it:
   parameter — so the action capsules differ by a colour and a glyph and nothing
   else.
 
-Left to right: the clock (with the meter), Mark, Moments, Stop. The column's
-top-to-bottom order, laid on its side, for the third time. The three action
+Left to right: the clock (with the meter), Mark, Stop. The column's
+top-to-bottom order, laid on its side, for the third time. The two action
 capsules are `SessionClusterAction.allCases` — glyph, label, tooltip, tint,
-whether the tally rides on it, whether a stopped session refuses it — and the
-cluster draws that table with a `ForEach` and dispatches on the case in one
-`perform(_:)`. That is not tidiness: "which control does what" is exactly what
-shipped wrong, and as a table it is a fact a test reads rather than three
-closures a rendered window would have to be driven to discover.
+whether the tally rides on it — and the cluster draws that table with a
+`ForEach` and dispatches on the case in one `perform(_:)`. That is not
+tidiness: "which control does what" is exactly what shipped wrong, and as a
+table it is a fact a test reads rather than closures a rendered window would
+have to be driven to discover. A stopped session refuses **both** of them, so
+there is no per-action `requiresALiveSession` any more — the one case that
+answered it differently is gone, and a property that can only say `true` reads
+as a question the surface is still asking.
 
 - **They are SIBLINGS, never nested.** Apple's guidance is that Liquid Glass
   inside Liquid Glass is silently auto-converted to a vibrant fill — so a
@@ -1473,8 +1474,18 @@ closures a rendered window would have to be driven to discover.
   `testTheThreeCapsulesAreTheSameHeightAsEachOther`, because capsules
   could each agree with the same wrong constant. That one measures the three
   distinct *faces* — the timer capsule and the two tints of
-  `RecordingCapsuleButtonStyle` — and Moments is a fourth capsule drawn by the
-  same style as Mark, so it can differ from them in nothing but its glyph.
+  `RecordingCapsuleButtonStyle`.
+
+  **The row's *width* is pinned the same way**, and it is the only thing that
+  can see a capsule the surface should not have. `allCases` says what the row
+  holds and a `ForEach` draws it, so the table and the drawing agree with each
+  other by construction whatever is in the table.
+  `testTheClusterIsExactlyThreeCapsulesAndTwoGaps` composes the reservation from
+  the three faces plus two `capsuleGap`s and compares it against the laid-out
+  cluster; the faces come from `SessionCapsuleCluster.capsule(_:)` (internal for
+  the reason `perform(_:)` is), since a test that rebuilt the label would
+  measure its own copy of the markup. On the four-capsule build it reads
+  351.0pt drawn against 275.0pt reserved.
 - **The timer capsule is clear glass: the meter and the clock, and nothing
   else.** That is the owner's "C · Essential", chosen over three fuller variants
   on the same day, and each omission has a reason. The ember **dot** went
@@ -1486,32 +1497,55 @@ closures a rendered window would have to be driven to discover.
   and never does anything. The clock is 30pt through `SessionTimerMetrics`,
   which still reserves the wider of `mm:ss` / `hh:mm:ss` up front, so the step at
   the hour re-sizes glyphs inside a box that never moves (XIA-431, unchanged).
-- **Mark and Moments are two capsules, because they are two jobs.** Both are
-  `CraftTokens.primaryBlue` at `RecordingCapsuleTint.strength` (62%) over the
-  glass — the app's existing "confident action" colour, used for actions, at
-  ΔE 132 from the ember where no confusion is possible — and they differ by
-  glyph (`bookmark.fill` / `list.bullet`) and by the tally, which rides on the
-  capsule that counts it. **Mark flags a moment and carries ⌘K; Moments opens
-  the popover** (`SessionMarkerList`, which keeps its own `ScrollView`).
+- **Mark carries the tally, and nothing on the surface lists moments** (owner,
+  2026-08-11). Mark is `CraftTokens.primaryBlue` at
+  `RecordingCapsuleTint.strength` (62%) over the glass — the app's existing
+  "confident action" colour, used for actions, at ΔE 132 from the ember where no
+  confusion is possible — draws `bookmark.fill`, runs `onMark`, carries ⌘K
+  (`.keyboardShortcut`, named in `.help` and in the accessibility hint as
+  `Mark ⌘K`, `RecordingPaneCopy.markHelp`), and shows the moment count beside
+  the glyph past zero.
 
-  It shipped as one capsule doing both and that capsule did the **wrong** one:
-  the visible, Mark-looking control opened the list, and `onMark` survived only
-  on a zero-sized, fully transparent, `accessibilityHidden(true)` button tucked
-  into the row's `.background`. So a mouse or trackpad user could not flag a
-  moment at all, a VoiceOver user could not either (the only element that marked
-  was removed from the tree), and ⌘K was named in no label, no tooltip and no
-  hint anywhere on the surface. The rejected alternative was keeping three pills
-  and hanging the list off a long-press or right-click of Mark: that hides a
-  whole affordance behind a gesture nothing on screen names, on the one surface
-  whose other rules are that nothing moves and nothing is hidden. A fourth
-  capsule honours "one button per pill" exactly — four pills, four buttons, one
-  job each, every one of them named by `SessionClusterAction.label` and
-  tooltipped by `.help`, with Mark's tooltip reading `Mark ⌘K`
-  (`RecordingPaneCopy.markHelp`). `testEachCapsuleRunsItsOwnJobAndNoOtherCapsulesJob`
-  drives `perform(_:)` — the same call every capsule's button makes — because
-  walking the accessibility tree cannot answer it: SwiftUI publishes no tree for
-  a hosting view in an unhosted test bundle, with or without a window (measured
-  2026-08-11, every label came back empty, Stop's included).
+  **Reviewing moments during a recording is deliberately not possible.** You are
+  recording, not browsing, and a control whose whole job is to read back what
+  you already flagged is not something the surface over a live transcript owes
+  you. Reading a mark back belongs to **XIA-433** (moment markers end to end),
+  which is where a mark gets a meaning worth reading — an auto-title from the
+  surrounding transcript, persisted on the record and carried into the summary.
+  Two things were rejected to get here: a **fourth capsule** (Moments,
+  `list.bullet`, opening `SessionMarkerList` in a popover — it shipped, and the
+  owner ruled it out the same day), and hanging the list off a **long-press or
+  right-click of Mark**, which hides a whole affordance behind a gesture nothing
+  on screen names, on the one surface whose other rules are that nothing moves
+  and nothing is hidden. `testNoCapsuleOpensTheMarkerList` pins it on the table,
+  because a capsule that is not a case cannot be drawn, disabled, tinted or
+  given a shortcut.
+
+  **The tally survived when the list did not**, and that is the one cost weighed
+  against the fourth pill. With no count and no list, ⌘K is a button with no
+  observable effect at all — the count is the only feedback a press has, so it
+  moved onto the capsule that produces it (`carriesMarkerCount == .mark`).
+
+  `SessionMarkerList` is **kept in the file with no caller**, and says so in its
+  own comment: XIA-433 wants exactly this row (a timestamp, and a label beside
+  it when there is one), and its decisions — a popover rather than hairlines
+  down the transcript, its own `ScrollView` — were already argued. It produces
+  no unused-symbol warning (checked on the Debug build), and
+  `testNoCapsuleOpensTheMarkerList` lays it out in both states rather than
+  leaving it to rot untouched.
+
+  What all of this is downstream of is worth keeping: the cluster's *first* cut
+  had one capsule doing both jobs and it did the **wrong** one — the visible,
+  Mark-looking control opened the list, and `onMark` survived only on a
+  zero-sized, fully transparent, `accessibilityHidden(true)` button tucked into
+  the row's `.background`. So a mouse or trackpad user could not flag a moment
+  at all, a VoiceOver user could not either, and ⌘K was named in no label, no
+  tooltip and no hint anywhere.
+  `testEachCapsuleRunsItsOwnJobAndNoOtherCapsulesJob` drives `perform(_:)` — the
+  same call every capsule's button makes — because walking the accessibility
+  tree cannot answer it: SwiftUI publishes no tree for a hosting view in an
+  unhosted test bundle, with or without a window (measured 2026-08-11, every
+  label came back empty, Stop's included).
 
   **The tally is reserved from zero**, not past the first mark. The count itself
   is nil at zero and never "0" (`RecordingPaneCopy.markerCount`), and the plate
@@ -1524,7 +1558,11 @@ closures a rendered window would have to be driven to discover.
   accident, through a `Spacer(minLength:)` that pinned the trailing edge; a
   centred cluster has no such spacer and has to reserve instead.
   `testTheNumberOfMomentsNeverMovesStop` renders the cluster at 0, 1, 9 and 10
-  moments and compares the drawn leading edge of the red capsule.
+  moments and compares the drawn leading edge of the red capsule. It also
+  *derives* that edge rather than only guarding that it is right of centre: a
+  centred row's trailing edge less Stop's own laid-out width. The row got one
+  capsule shorter when Moments went, and a derivation moves with it where a
+  hand-typed number would have had to be loosened.
 - **Stop is red, icon only, and the loudest thing on the surface.** The owner
   chose red over the ember **with the measurement in hand**: CIE76 ΔE from
   `systemRed` to the ember is 38.5 dark / 33.1 light, closer than the moving
@@ -1570,14 +1608,20 @@ closures a rendered window would have to be driven to discover.
   `testAMemoAndAMeetingDifferByExactlyOneString` still walks unchanged. That
   promise is about the *pane* rather than about one of its states: the whole of
   the difference between a memo and a meeting is still one string, and it is
-  still that one. `markTitle` / `markersHeading` / `stopTitle` survive as the
-  accessibility labels of the three icon-only action capsules, and
-  `markShortcut` / `markHelp` as Mark's hint and tooltip — still strings the
-  surface puts in front of someone, which is why they are still covered.
+  still that one. `markTitle` / `stopTitle` survive as the accessibility labels
+  of the two icon-only action capsules, and `markShortcut` / `markHelp` as
+  Mark's hint and tooltip — still strings the surface puts in front of someone,
+  which is why they are still covered.
   (That sentence used to claim all of `markTitle` / `markShortcut` / `stopTitle`
   were labels and tooltips of *two* capsules; only `stopTitle` was true of the
   code. `markTitle` was on a button hidden from accessibility, and `markShortcut`
   was drawn nowhere at all.)
+
+  `markersHeading` / `noMarkers` came **out** of `all(kind:controls:)` with the
+  Moments capsule. That list is every string the surface can put on screen, and
+  no surface draws those two now — they belong to `SessionMarkerList`, which has
+  no caller. They stay as constants beside the view that reads them, not in the
+  promise about what an owner sees.
 - **The transcript lays out a speaker column the pipeline does not fill yet.**
   `LiveTranscriptLine.speaker` is nil today, `LiveTranscript.blocks` already
   groups consecutive lines by it, and a turn draws the name above its text when
