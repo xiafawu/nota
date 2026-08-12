@@ -500,26 +500,25 @@ final class RecordingPaneTests: XCTestCase {
     )
   }
 
-  /// The moments live in a popover, so their number may not change the row's
-  /// height — and past the first mark it may not change its **width** either.
+  /// The moments live in a popover, so their number may not change the cluster's
+  /// height **or its width** — at any count, the first one included.
   ///
-  /// The tally rides on the control it counts, which is the one thing allowed
-  /// to widen a capsule, and it does that exactly once: when the first moment
-  /// is flagged. After that it is drawn on a reserved two-digit plate
-  /// (`RecordingPaneMetrics.markerCountWidth`), because the alternative is Stop
-  /// stepping right under the pointer at the tenth mark — the zero→one defect
-  /// `markerCount` already refuses, one digit later.
-  func testTheNumberOfMomentsNeverChangesTheClustersHeight() {
+  /// The tally rides on the control it counts and is drawn on a plate reserved
+  /// from zero (`RecordingPaneMetrics.markerCountWidth`). This used to assert
+  /// the opposite for the zero→one step — that the first moment *did* widen the
+  /// capsule — which is the defect stated as a promise: a centred cluster
+  /// splits any widening across both sides, so it stepped Stop right under the
+  /// pointer, one digit before the step this constant was written for.
+  func testTheNumberOfMomentsNeverChangesTheClustersSize() {
     let none = clusterHost(markers: []).fittingSize
     let one = clusterHost(markers: [SessionMarker(at: 3)]).fittingSize
+    let nine = clusterHost(markers: (0..<9).map { SessionMarker(at: TimeInterval($0 * 7)) }).fittingSize
     let many = clusterHost(markers: (0..<40).map { SessionMarker(at: TimeInterval($0 * 7)) }).fittingSize
-    XCTAssertEqual(none.height, many.height, accuracy: 0.5, "40 moments made the cluster taller")
-    XCTAssertEqual(one.width, many.width, accuracy: 0.5, "the tally widened the capsule per digit")
-    XCTAssertGreaterThan(
-      one.width,
-      none.width,
-      "the tally is drawn without widening the capsule, so it overlaps the flag"
-    )
+    XCTAssertGreaterThan(none.width, 0, "the hosting view produced no layout")
+    for (count, size) in [(1, one), (9, nine), (40, many)] {
+      XCTAssertEqual(size.height, none.height, accuracy: 0.5, "\(count) moments made the cluster taller")
+      XCTAssertEqual(size.width, none.width, accuracy: 0.5, "\(count) moments made the cluster wider")
+    }
   }
 
   /// The transcript **reserves the cluster's whole footprint** at the bottom
@@ -527,9 +526,24 @@ final class RecordingPaneTests: XCTestCase {
   /// which matters precisely because `scrollToNewest` pins the newest row to
   /// `.bottom`, i.e. to the point the cluster covers.
   ///
-  /// Both halves: the number is composed from the constants the cluster is
-  /// placed with rather than typed a second time, and the laid-out transcript
-  /// really grows by it.
+  /// The reserve has to come off the scroll view's **visible region**, and that
+  /// is the whole of what this test is for. As shipped it was scroll *content*
+  /// padding on the `LazyVStack`, and content padding buys nothing here:
+  /// `scrollTo(_:anchor: .bottom)` aligns the target row's bottom with the
+  /// bottom of the visible region, so 83pt of padding *after* the last row is
+  /// simply offset the scroll view never needs to reach. The newest line came
+  /// to rest flush against the window's bottom edge and the one before it sat
+  /// behind the glass — for the whole session, with the reservation constant
+  /// green beside it. The predecessor test measured `fittingSize` with and
+  /// without the reserve, which content padding satisfies perfectly.
+  ///
+  /// So: the composition (never typed a second time), and then the laid-out
+  /// scroll view, whose visible region must end `transcriptBottomReserve` above
+  /// the bottom of the pane. Measured off the backing `NSScrollView` because
+  /// that is the only place the difference is visible at all — a SwiftUI
+  /// `.safeAreaInset` leaves its frame, clip view and `contentInsets` at full
+  /// height (measured 2026-08-11), so a test could not tell it from the content
+  /// padding that was the defect.
   func testTheTranscriptReservesTheClustersWholeFootprint() {
     XCTAssertEqual(
       RecordingPaneMetrics.transcriptBottomReserve,
@@ -538,36 +552,231 @@ final class RecordingPaneTests: XCTestCase {
         + RecordingPaneMetrics.clusterTranscriptGap
     )
 
+    guard let bare = Self.transcriptBottomClearance(reserve: 0) else {
+      return XCTFail("no scroll view in the laid-out transcript")
+    }
+    guard
+      let reserved = Self.transcriptBottomClearance(
+        reserve: RecordingPaneMetrics.transcriptBottomReserve
+      )
+    else {
+      return XCTFail("no scroll view in the laid-out transcript")
+    }
+
+    XCTAssertEqual(bare, 0, accuracy: 0.5, "an unreserved transcript already ends short")
+    XCTAssertEqual(
+      reserved,
+      RecordingPaneMetrics.transcriptBottomReserve,
+      accuracy: 0.5,
+      "the scroll view's visible region ends \(reserved)pt above the pane's bottom, "
+        + "for a cluster that covers \(RecordingPaneMetrics.transcriptBottomReserve)pt — "
+        + "content padding does not move where scrollTo(anchor: .bottom) lands"
+    )
+  }
+
+  /// How far above the bottom of the pane the transcript's **visible region**
+  /// ends, laid out at a real size.
+  ///
+  /// Measured off the backing `NSScrollView` rather than off a fitting size,
+  /// because the fitting size cannot tell a reserve `scrollTo` respects from
+  /// one it scrolls straight past. Both mechanisms that would be respected are
+  /// summed: SwiftUI may inset the clip view's frame or set `contentInsets`,
+  /// and the two are the same promise expressed differently.
+  private static func transcriptBottomClearance(reserve: CGFloat) -> CGFloat? {
     let rows = LiveTranscript.rows(
       LiveTranscript.blocks(
         LiveTranscript.lines(
-          segments: (0..<4).map {
+          segments: (0..<40).map {
             LiveMeetingSession.LiveSegment(id: UUID(), text: "line \($0)", endTime: TimeInterval($0))
           },
           partial: nil,
-          elapsed: 4
+          elapsed: 40
         )
       )
     )
+    let host = NSHostingView(
+      rootView: LiveTranscriptView(rows: rows, volatileID: nil, bottomReserve: reserve)
+    )
+    host.frame = CGRect(x: 0, y: 0, width: 600, height: 400)
+    host.layoutSubtreeIfNeeded()
+    guard let scroll = firstScrollView(in: host) else { return nil }
+    let clip = scroll.convert(scroll.contentView.frame, to: host)
+    let below = host.isFlipped ? host.bounds.maxY - clip.maxY : clip.minY
+    return below + scroll.contentInsets.bottom
+  }
 
-    func drawnHeight(reserve: CGFloat) -> CGFloat {
-      let host = NSHostingView(
-        rootView: LiveTranscriptView(rows: rows, volatileID: nil, bottomReserve: reserve)
-          .frame(width: 600)
-      )
-      host.layoutSubtreeIfNeeded()
-      return host.fittingSize.height
+  private static func firstScrollView(in view: NSView) -> NSScrollView? {
+    if let scroll = view as? NSScrollView { return scroll }
+    for child in view.subviews {
+      if let found = firstScrollView(in: child) { return found }
+    }
+    return nil
+  }
+
+  /// **Stop does not move when a moment is flagged.** `markerCountWidth`
+  /// reserves the one→two *digit* step; nothing reserved the zero→one step, so
+  /// the count plate and its gap appeared out of nothing on the first ⌘K — and
+  /// because the cluster is horizontally centred, that widening is split across
+  /// both sides and Stop translated right, out from under the pointer resting
+  /// on it. That is the exact motion `RecordingPaneCopy.markerCount` refuses
+  /// for the same reason one digit earlier.
+  ///
+  /// Asserted where it happens: the leading edge of the drawn red capsule, over
+  /// four marker counts that cross both steps.
+  func testTheNumberOfMomentsNeverMovesStop() {
+    let size = CGSize(width: 700, height: 140)
+
+    func stopLeadingEdge(_ count: Int) -> CGFloat? {
+      let markers = (0..<count).map { SessionMarker(at: TimeInterval($0 * 7)) }
+      guard
+        let rep = RenderProbe.bitmap(
+          ZStack {
+            Color.white
+            SessionCapsuleCluster(
+              elapsed: 754,
+              level: MicLevelFeed(level: 0.4),
+              controls: .stop,
+              markers: markers,
+              onMark: {},
+              onStop: {}
+            )
+          }
+          .environment(\.colorScheme, .light),
+          size: size
+        )
+      else { return nil }
+      return Self.stopRedMinX(rep)
     }
 
-    let bare = drawnHeight(reserve: 0)
-    let reserved = drawnHeight(reserve: RecordingPaneMetrics.transcriptBottomReserve)
-    XCTAssertGreaterThan(bare, 0, "the hosting view produced no layout")
+    let edges = [0, 1, 9, 10].map { ($0, stopLeadingEdge($0)) }
+    guard let first = edges[0].1 else {
+      return XCTFail("the probe found no red capsule at all")
+    }
+    // The probe must be looking at Stop and not at the ember meter, which is
+    // the other warm thing on the surface and sits at the far left of the row.
+    XCTAssertGreaterThan(
+      first,
+      size.width / 2,
+      "the matched pixels are left of centre, so this is not the last capsule"
+    )
+    for (count, edge) in edges {
+      guard let edge else { return XCTFail("no red capsule at \(count) moments") }
+      XCTAssertEqual(
+        edge,
+        first,
+        accuracy: 1,
+        "Stop starts at \(edge)pt with \(count) moments and \(first)pt with none"
+      )
+    }
+  }
+
+  /// The leading edge, in points, of the pixels that are Stop's red.
+  ///
+  /// Two conditions, because the ember meter is also a warm colour on this
+  /// surface: red has to lead green by a lot (the meter's washed bars do not),
+  /// and green and blue have to be close to each other (the ember's are 0.24
+  /// apart at full strength). Either alone lets one of the two through.
+  private static func stopRedMinX(_ rep: NSBitmapImageRep) -> CGFloat? {
+    let scale = CGFloat(rep.pixelsWide) / max(rep.size.width, 1)
+    var minX: Int?
+    for x in stride(from: 0, to: rep.pixelsWide, by: 1) {
+      for y in stride(from: 0, to: rep.pixelsHigh, by: 2) {
+        guard let pixel = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+        guard pixel.alphaComponent > 0.5 else { continue }
+        guard pixel.redComponent - pixel.greenComponent > 0.30 else { continue }
+        guard abs(pixel.greenComponent - pixel.blueComponent) < 0.10 else { continue }
+        minX = min(minX ?? x, x)
+        break
+      }
+      if minX != nil { break }
+    }
+    return minX.map { CGFloat($0) / scale }
+  }
+
+  /// **The visible Mark capsule flags a moment**, which is the defect this
+  /// whole fourth capsule exists for: the shipped cluster gave the only
+  /// Mark-looking control the *moments popover*, and `onMark` survived on a
+  /// zero-sized, fully transparent, `accessibilityHidden(true)` button behind
+  /// the row. So a mouse could not flag a moment at all, and VoiceOver could
+  /// not either — the one element that marked was removed from the tree, and
+  /// the one that could be reached opened a list.
+  ///
+  /// Asserted through `perform(_:)`, which is the same call every capsule's
+  /// button makes. Walking the accessibility tree was tried first and cannot
+  /// answer this: SwiftUI publishes no tree for a hosting view in an unhosted
+  /// test bundle, with or without a window (measured 2026-08-11 — every label
+  /// came back empty, Stop's included).
+  func testEachCapsuleRunsItsOwnJobAndNoOtherCapsulesJob() {
+    var marked = 0
+    var stopped = 0
+    let cluster = SessionCapsuleCluster(
+      elapsed: 61,
+      level: MicLevelFeed(level: 0.4),
+      controls: .stop,
+      markers: [],
+      onMark: { marked += 1 },
+      onStop: { stopped += 1 }
+    )
+
+    cluster.perform(.mark)
+    XCTAssertEqual(marked, 1, "the Mark capsule does not flag a moment")
+    XCTAssertEqual(stopped, 0)
+
+    cluster.perform(.moments)
+    XCTAssertEqual(marked, 1, "opening the moments flagged a moment")
+    XCTAssertEqual(stopped, 0, "opening the moments stopped the session")
+
+    cluster.perform(.stop)
+    XCTAssertEqual(stopped, 1)
+    XCTAssertEqual(marked, 1)
+  }
+
+  /// Four pills, four buttons, one job each — the owner's "one button per pill"
+  /// with the job that had no pill given one. Every one of them is named, since
+  /// an icon-only control's label is the only name it has.
+  func testEveryJobOnTheClusterIsItsOwnNamedCapsule() {
+    let actions = SessionClusterAction.allCases
+    XCTAssertEqual(actions, [.mark, .moments, .stop], "the row's order changed")
     XCTAssertEqual(
-      reserved - bare,
-      RecordingPaneMetrics.transcriptBottomReserve,
-      accuracy: 0.5,
-      "the transcript kept \(reserved - bare)pt clear for a cluster that needs "
-        + "\(RecordingPaneMetrics.transcriptBottomReserve)pt"
+      Set(actions.map(\.label)).count,
+      actions.count,
+      "two capsules answer to the same name"
+    )
+    XCTAssertEqual(
+      Set(actions.map(\.symbol)).count,
+      actions.count,
+      "two capsules draw the same glyph"
+    )
+    XCTAssertEqual(SessionClusterAction.mark.label, RecordingPaneCopy.markTitle)
+    XCTAssertEqual(SessionClusterAction.moments.label, RecordingPaneCopy.markersHeading)
+    XCTAssertEqual(SessionClusterAction.stop.label, RecordingPaneCopy.stopTitle)
+
+    // The tally rides on the control it counts, and on nothing else.
+    XCTAssertEqual(actions.filter(\.carriesMarkerCount), [.moments])
+    // Listing what was already flagged reads nothing and changes nothing, so it
+    // is the one capsule a stopped session does not refuse.
+    XCTAssertEqual(actions.filter { !$0.requiresALiveSession }, [.moments])
+  }
+
+  /// ⌘K is **named on the surface**. The cluster is icon-only, so the shortcut
+  /// reaches the owner through the tooltip and the accessibility hint or it
+  /// reaches them nowhere: it used to be drawn in no label, no `.help`, and no
+  /// hint anywhere, on a button that was itself hidden from accessibility.
+  func testTheMarkControlNamesItsShortcut() {
+    XCTAssertEqual(SessionClusterAction.mark.help, RecordingPaneCopy.markHelp)
+    XCTAssertEqual(
+      SessionClusterAction.stop.help,
+      RecordingPaneCopy.stopTitle,
+      "a capsule with no shortcut invented one"
+    )
+    XCTAssertEqual(RecordingPaneCopy.markShortcut, "⌘K")
+    XCTAssertTrue(
+      RecordingPaneCopy.markHelp.contains(RecordingPaneCopy.markTitle),
+      "the Mark tooltip does not name the action"
+    )
+    XCTAssertTrue(
+      RecordingPaneCopy.markHelp.contains(RecordingPaneCopy.markShortcut),
+      "the Mark tooltip does not name ⌘K, which is drawn nowhere else"
     )
   }
 
@@ -791,9 +1000,17 @@ final class RecordingPaneTests: XCTestCase {
 
 /// Renders a view into a bitmap so a claim about **pixels** can be asserted.
 ///
-/// Two of this suite's claims are of that kind and neither could be made about
-/// a constant: "the idle pane draws no ember" and "Stop is drawn identically
-/// with and without Reduce Transparency".
+/// Three of this suite's claims are of that kind and none could be made about a
+/// constant: "the idle pane draws no ember", "Stop stays its own red over any
+/// backdrop", and "the number of moments never moves Stop" (which needs the
+/// *drawn* leading edge of the red capsule, not a fitting size).
+///
+/// It deliberately offers no equality helper. The claim it once had one for —
+/// "Stop is drawn identically with and without Reduce Transparency" — is gone
+/// with the bar's opaque ember fill: Stop is now 62% over glass, so it varies
+/// with the ground **on purpose**, and an equality assertion here would fail by
+/// construction. `testStopStaysItsOwnRedOverAnyBackdrop` is what replaced it,
+/// and it asserts the colour survives rather than that the value does.
 @MainActor
 enum RenderProbe {
   static func bitmap<V: View>(_ view: V, size: CGSize) -> NSBitmapImageRep? {
@@ -827,23 +1044,4 @@ enum RenderProbe {
     return count
   }
 
-  /// The colour at one point, in the bitmap's own pixel space (which is the
-  /// backing scale times the point, on a Retina host).
-  static func color(_ rep: NSBitmapImageRep, at point: CGPoint) -> NSColor? {
-    let scaleX = CGFloat(rep.pixelsWide) / max(rep.size.width, 1)
-    let scaleY = CGFloat(rep.pixelsHigh) / max(rep.size.height, 1)
-    let x = min(max(Int(point.x * scaleX), 0), rep.pixelsWide - 1)
-    let y = min(max(Int(point.y * scaleY), 0), rep.pixelsHigh - 1)
-    return rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB)
-  }
-
-  static func matches(_ a: NSColor?, _ b: NSColor?, tolerance: CGFloat) -> Bool {
-    guard
-      let a = a?.usingColorSpace(.sRGB),
-      let b = b?.usingColorSpace(.sRGB)
-    else { return false }
-    return abs(a.redComponent - b.redComponent) <= tolerance
-      && abs(a.greenComponent - b.greenComponent) <= tolerance
-      && abs(a.blueComponent - b.blueComponent) <= tolerance
-  }
 }

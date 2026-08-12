@@ -198,10 +198,12 @@ struct LiveMeetingView: View {
   /// hairline under a floating capsule would be a rule between a surface and
   /// itself.
   ///
-  /// A `ZStack` and not a `VStack`: the cluster costs the transcript no layout
-  /// height at all. What it does cost is the bottom of the *scroll content*,
-  /// reserved by `transcriptBottomReserve` — an overlay alone would sit on the
-  /// newest line, which is precisely the line `scrollToNewest` pins to `.bottom`.
+  /// A `ZStack` and not a `VStack`: the cluster is not in the transcript's
+  /// layout and takes none of its width. What the transcript does give up is
+  /// the bottom of its own *scroll view frame*, by `transcriptBottomReserve` —
+  /// an overlay alone would sit on the newest line, which is precisely the line
+  /// `scrollToNewest` pins to `.bottom`, and content padding does not move
+  /// where that anchor lands (see `LiveTranscriptView.bottomReserve`).
   private var recordingPane: some View {
     ZStack(alignment: .bottom) {
       transcript(bottomReserve: RecordingPaneMetrics.transcriptBottomReserve)
@@ -244,13 +246,14 @@ struct LiveMeetingView: View {
   /// thing — the microphone is open — and idle is the state every owner sees
   /// before every recording, so it is the state that teaches them what the
   /// colour means. A breathing ember ring over a closed microphone would be the
-  /// same lie `showsRecordingPane` withholds the bar from a failed session to
-  /// avoid, told to more people more often.
+  /// same lie `showsRecordingPane` withholds the cluster from a failed session
+  /// to avoid, told to more people more often.
   ///
   /// The buttons here and on the failed banner keep `.liquidGlassButton()`
-  /// deliberately: the ghost/solid-ember pair is the *recording pane's*
-  /// vocabulary, and these are not recording surfaces. "All of it goes" was
-  /// only ever true of the pane.
+  /// deliberately: the tinted capsule vocabulary (`RecordingCapsuleButtonStyle`,
+  /// the one style the cluster's four pills share) is the *recording surface's*,
+  /// and these are not recording surfaces. "All of it goes" was only ever true
+  /// of the pane.
   private var idleView: some View {
     centeredState {
       Text(RecordingPaneCopy.kindLine(kind: kind, controls: .start))

@@ -1394,9 +1394,15 @@ vary with the ground. What it may not do is stop being red.
 
 ### The cluster (XIA-445, replacing XIA-444's bar; `macos/Nota/UI/RecordingPane.swift`)
 
-Three Liquid Glass capsules — **timer, Mark, Stop** — horizontally centred near
-the bottom of the live-meeting view, floating **over** the transcript rather
-than sitting in the layout above it. The transcript takes the whole window.
+Four Liquid Glass capsules — **timer, Mark, Moments, Stop** — horizontally
+centred near the bottom of the live-meeting view, floating **over** the
+transcript rather than sitting in the layout above it. The transcript takes the
+whole window.
+
+It shipped as three, and the fourth is a fix rather than a flourish: see
+"Mark and Moments are two capsules" below. The owner's constraints —
+one button per pill, icons only — are what a fourth capsule *keeps*, and what
+three could not.
 
 It was a ~288pt trailing column (XIA-432), then a full-width bar (XIA-444), and
 each step handed the transcript back an axis the indicator had been charging it
@@ -1423,17 +1429,24 @@ What went with the bar, and each removal took a class of arithmetic with it:
 - **The ghost/solid button pair.** `RecordingGhostButtonStyle` and
   `RecordingStopButtonStyle` were shaped for a full-width row with text labels.
   One `RecordingCapsuleButtonStyle` replaces both — icon only, one tint
-  parameter — so Mark and Stop differ by a colour and nothing else.
+  parameter — so the action capsules differ by a colour and a glyph and nothing
+  else.
 
-Left to right: the clock (with the meter), Mark, Stop. The column's
-top-to-bottom order, laid on its side, for the third time.
+Left to right: the clock (with the meter), Mark, Moments, Stop. The column's
+top-to-bottom order, laid on its side, for the third time. The three action
+capsules are `SessionClusterAction.allCases` — glyph, label, tooltip, tint,
+whether the tally rides on it, whether a stopped session refuses it — and the
+cluster draws that table with a `ForEach` and dispatches on the case in one
+`perform(_:)`. That is not tidiness: "which control does what" is exactly what
+shipped wrong, and as a table it is a fact a test reads rather than three
+closures a rendered window would have to be driven to discover.
 
 - **They are SIBLINGS, never nested.** Apple's guidance is that Liquid Glass
   inside Liquid Glass is silently auto-converted to a vibrant fill — so a
   capsule drawn inside a capsule is not a *doubled* rim (the toolbar-pill
   failure one section up), it is a rim quietly **overridden**, with nothing on
-  screen to announce it. One `GlassEffectContainer` holds the three so their
-  lensing merges instead of refracting three times, and it is given the **same**
+  screen to announce it. One `GlassEffectContainer` holds them all so their
+  lensing merges instead of refracting once per plate, and it is given the **same**
   spacing the `HStack` uses (`RecordingPaneMetrics.capsuleGap`): the container's
   spacing *is* the merge distance, and two numbers would merge the plates at a
   gap the eye does not see or fail to merge at the one it does.
@@ -1444,7 +1457,7 @@ top-to-bottom order, laid on its side, for the third time.
   surfaces need `NSGlassEffectView`. This cluster is inside the main window and
   the morphing field it refracts **is** in its hierarchy. Do not reach for
   AppKit here.
-- **All three capsules are exactly the same height, and the number is measured.**
+- **Every capsule is exactly the same height, and the number is measured.**
   `RecordingPaneMetrics.capsuleHeight` is `capsuleContentHeight + 2 *
   capsulePaddingV`, and the content height is the max of the 30pt clock's
   reserved line box, the compact meter's tallest bar, and the action glyph's
@@ -1457,8 +1470,11 @@ top-to-bottom order, laid on its side, for the third time.
   `testTheCapsuleHeightIsDerivedFromTheTallestThingACapsuleHolds` for the
   derivation and `testEveryCapsuleDrawsExactlyTheHeightTheClusterReserves` for
   the laid-out view, plus
-  `testTheThreeCapsulesAreTheSameHeightAsEachOther`, because three capsules
-  could each agree with the same wrong constant.
+  `testTheThreeCapsulesAreTheSameHeightAsEachOther`, because capsules
+  could each agree with the same wrong constant. That one measures the three
+  distinct *faces* — the timer capsule and the two tints of
+  `RecordingCapsuleButtonStyle` — and Moments is a fourth capsule drawn by the
+  same style as Mark, so it can differ from them in nothing but its glyph.
 - **The timer capsule is clear glass: the meter and the clock, and nothing
   else.** That is the owner's "C · Essential", chosen over three fuller variants
   on the same day, and each omission has a reason. The ember **dot** went
@@ -1470,19 +1486,45 @@ top-to-bottom order, laid on its side, for the third time.
   and never does anything. The clock is 30pt through `SessionTimerMetrics`,
   which still reserves the wider of `mm:ss` / `hh:mm:ss` up front, so the step at
   the hour re-sizes glyphs inside a box that never moves (XIA-431, unchanged).
-- **Mark is blue, icon only, and carries the tally.**
+- **Mark and Moments are two capsules, because they are two jobs.** Both are
   `CraftTokens.primaryBlue` at `RecordingCapsuleTint.strength` (62%) over the
-  glass — the app's existing "confident action" colour, used for an action, at
-  ΔE 132 from the ember where no confusion is possible. A press opens the
-  moments popover (`SessionMarkerList`, which keeps its own `ScrollView`); the
-  count appears past zero and never as "0" (`RecordingPaneCopy.markerCount`),
-  because a control that appeared on the first mark would move under the
-  pointer. **The same rule one digit later** is why the count sits on a reserved
-  two-digit plate (`markerCountWidth`): unreserved, the tenth moment widens Mark
-  and steps *Stop* right, under the pointer most likely to be aiming at it.
-  **⌘K still flags a moment** and lives on a zero-sized button behind the row,
-  not on the capsule — a press there opens the list, so the shortcut on that
-  button would open a list instead of marking.
+  glass — the app's existing "confident action" colour, used for actions, at
+  ΔE 132 from the ember where no confusion is possible — and they differ by
+  glyph (`bookmark.fill` / `list.bullet`) and by the tally, which rides on the
+  capsule that counts it. **Mark flags a moment and carries ⌘K; Moments opens
+  the popover** (`SessionMarkerList`, which keeps its own `ScrollView`).
+
+  It shipped as one capsule doing both and that capsule did the **wrong** one:
+  the visible, Mark-looking control opened the list, and `onMark` survived only
+  on a zero-sized, fully transparent, `accessibilityHidden(true)` button tucked
+  into the row's `.background`. So a mouse or trackpad user could not flag a
+  moment at all, a VoiceOver user could not either (the only element that marked
+  was removed from the tree), and ⌘K was named in no label, no tooltip and no
+  hint anywhere on the surface. The rejected alternative was keeping three pills
+  and hanging the list off a long-press or right-click of Mark: that hides a
+  whole affordance behind a gesture nothing on screen names, on the one surface
+  whose other rules are that nothing moves and nothing is hidden. A fourth
+  capsule honours "one button per pill" exactly — four pills, four buttons, one
+  job each, every one of them named by `SessionClusterAction.label` and
+  tooltipped by `.help`, with Mark's tooltip reading `Mark ⌘K`
+  (`RecordingPaneCopy.markHelp`). `testEachCapsuleRunsItsOwnJobAndNoOtherCapsulesJob`
+  drives `perform(_:)` — the same call every capsule's button makes — because
+  walking the accessibility tree cannot answer it: SwiftUI publishes no tree for
+  a hosting view in an unhosted test bundle, with or without a window (measured
+  2026-08-11, every label came back empty, Stop's included).
+
+  **The tally is reserved from zero**, not past the first mark. The count itself
+  is nil at zero and never "0" (`RecordingPaneCopy.markerCount`), and the plate
+  it sits on (`markerCountWidth`, two digits) is drawn empty until there is one.
+  Both halves are the same rule — a control may not move under the pointer — and
+  only the second half shipped: the plate and its `spacing4` used to appear out
+  of nothing on the first ⌘K, and because the cluster is *centred* that widening
+  splits across both sides and stepped **Stop** ~11pt right, under the pointer
+  most likely to be aiming at it. Master's full-width bar was immune by
+  accident, through a `Spacer(minLength:)` that pinned the trailing edge; a
+  centred cluster has no such spacer and has to reserve instead.
+  `testTheNumberOfMomentsNeverMovesStop` renders the cluster at 0, 1, 9 and 10
+  moments and compares the drawn leading edge of the red capsule.
 - **Stop is red, icon only, and the loudest thing on the surface.** The owner
   chose red over the ember **with the measurement in hand**: CIE76 ΔE from
   `systemRed` to the ember is 38.5 dark / 33.1 light, closer than the moving
@@ -1496,26 +1538,46 @@ top-to-bottom order, laid on its side, for the third time.
   "Reserve space", over reading through the refraction (which would bet the
   ink solve covers ink *under glass* on the ground, and it does not) and over
   the cluster fading while text arrives (a moving thing at the edge of vision
-  during the one activity that should feel calm). It is **scroll content**
-  padding and not a frame inset, which is the half that matters:
-  `scrollToNewest` pins the newest row to `.bottom`, i.e. to exactly the point
-  the cluster covers, so an overlay alone would leave the line being read
-  permanently behind glass. `transcriptBottomReserve` is composed from the
-  constants the cluster is *placed* with (`capsuleHeight + clusterBottomInset +
-  clusterTranscriptGap`) rather than typed a second time, and
-  `testTheTranscriptReservesTheClustersWholeFootprint` asserts both the
-  composition and that the laid-out transcript really grows by it. A failed
-  session's transcript reserves nothing: nothing floats over it.
+  during the one activity that should feel calm). It comes off the **scroll
+  view's own frame**, and that is the half that matters — it shipped as scroll
+  *content* padding on the `LazyVStack`, which buys nothing at all here.
+  `scrollToNewest` pins the newest row with `anchor: .bottom`, i.e. aligns that
+  row's bottom with the bottom of the **visible region**, and 83pt of padding
+  that follows the last row in content space is simply offset the scroll view
+  never needs to reach: the newest line came to rest flush against the window's
+  bottom edge and the one before it sat behind the glass, every session, with a
+  green reservation constant beside it. Only a frame / safe-area /
+  `contentMargins` inset moves where that anchor lands.
+
+  A **frame** inset among those three, because the number has to be checkable:
+  measured 2026-08-11, `.safeAreaInset(edge: .bottom)` leaves the backing
+  `NSScrollView`'s frame, clip view and `contentInsets` all at full height, so
+  no test in this bundle can tell it from the padding that was the defect.
+  Shrinking the scroll view reads as 317 of 400 and is asserted as such — and it
+  is the more literal reading of "reserve space" anyway, since nothing is drawn
+  under the glass even mid-scroll. `transcriptBottomReserve` is composed from
+  the constants the cluster is *placed* with (`capsuleHeight +
+  clusterBottomInset + clusterTranscriptGap`) rather than typed a second time,
+  and `testTheTranscriptReservesTheClustersWholeFootprint` asserts the
+  composition **and** measures the laid-out scroll view's visible region. Its
+  predecessor compared `NSHostingView.fittingSize` with and without the reserve,
+  which content padding satisfies perfectly — a test adjacent to the thing that
+  mattered, which is how all of this stayed green. A failed session's transcript
+  reserves nothing: nothing floats over it.
 - **The kind reaches the surface as one word, in the idle state.** The cluster
   draws no kind at all now, so `RecordingPaneCopy.kindLine` is read only by
   `idleView` — and it stays in `all(kind:controls:)`, which
   `testAMemoAndAMeetingDifferByExactlyOneString` still walks unchanged. That
   promise is about the *pane* rather than about one of its states: the whole of
   the difference between a memo and a meeting is still one string, and it is
-  still that one. `markTitle` / `markShortcut` / `stopTitle` survive too, now as
-  the accessibility labels and tooltips of two icon-only capsules — still
-  strings the surface puts in front of someone, which is why they are still
-  covered.
+  still that one. `markTitle` / `markersHeading` / `stopTitle` survive as the
+  accessibility labels of the three icon-only action capsules, and
+  `markShortcut` / `markHelp` as Mark's hint and tooltip — still strings the
+  surface puts in front of someone, which is why they are still covered.
+  (That sentence used to claim all of `markTitle` / `markShortcut` / `stopTitle`
+  were labels and tooltips of *two* capsules; only `stopTitle` was true of the
+  code. `markTitle` was on a button hidden from accessibility, and `markShortcut`
+  was drawn nowhere at all.)
 - **The transcript lays out a speaker column the pipeline does not fill yet.**
   `LiveTranscriptLine.speaker` is nil today, `LiveTranscript.blocks` already
   groups consecutive lines by it, and a turn draws the name above its text when
