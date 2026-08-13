@@ -2002,6 +2002,126 @@ about **Moments**, a browsing affordance on a surface meant for recording.
   paused": a reserve that changed at the press would reflow the transcript under
   the owner at the moment the surface is promising to hold still.
 
+### The mini-recorder island and the menu bar (XIA-434)
+
+Nota's **third floating panel** (`macos/Nota/UI/MiniRecorderPanel.swift`,
+`MiniRecorderIsland.swift`, `MiniRecorderController.swift`,
+`MenuBarSession.swift`). One ~320×44 capsule — ember dot, compact
+`SessionMeter`, `SessionTimer`, Mark, Pause, Stop — up **only while a session
+runs and Nota is not frontmost**. Bringing Nota forward dismisses it: the
+window's own cluster says the same thing, and two live indicators for one
+microphone is the mistake `isReviewing` already taught us.
+
+**It carries no transcript, ever**, and that is a fact about the *type* rather
+than a discipline: a `MiniIslandPhase` holds only derived strings — never a
+transcript, never a segment — so there is nothing for a future edit to render.
+
+**`level = .statusBar` is assigned AFTER `isFloatingPanel`**, and this panel is
+the reason the trap matters. `isFloatingPanel = true` silently rewrites `level`
+to `.floating`, which sits *below* fullscreen apps. The HUD merely looks wrong
+when that happens; this surface exists to float over a fullscreen video call, so
+the same mistake makes it useless. The rest of the floating-panel inheritance is
+unchanged and non-negotiable: an AppKit `NSGlassEffectView` plate (SwiftUI glass
+in a transparent panel renders flat), `appearance = .darkAqua` on the panel
+itself, a **verified** `orderFrontRegardless` with one recreate then a visible
+failure, `.nonactivatingPanel` with nothing calling `NSApp.activate`, and **its
+own** `IslandPositionStore` — the HUD pins a bottom-center and the review card a
+top-left, so one shared point would mean dragging either surface moved the other
+through an anchor that means nothing on the far side.
+
+**A failure report may not feed the thing that reports it.** `reportIslandUnavailable`
+writes `NotaModel.status`, which is `@Published`, and the controller subscribes
+to `model.objectWillChange` and calls `refresh()` — so a failed `show` wrote a
+status, which republished, which refreshed, which failed to show again, **forever,
+allocating two `NSPanel`s per iteration**. The attempt is latched once per
+session (cleared when the phase goes nil) and the setter guards an unchanged
+notice. `testAnIslandThatCannotBeShownIsReportedOnceAndNotBuiltAgain` drives 25
+refreshes and asserts exactly one attempt. This is the XIA-432 trap in a new
+coat: the *rate* of a publisher and the *breadth* of its observers multiply.
+
+Four more defects found by review, each a lie the surface would have told:
+**Discard announced "Transcribing…"** (the controller read
+`isLiveSessionHandedOff`, which `discardLiveSession` also sets — hence
+`isLiveHandoffProcessing`, set only in `performStopLiveSession`); **the marker
+confirmation congratulated a write that failed** (it now reads "· not saved",
+fed from `markersUnsaved`); **Retry was both a dead button and a data-loss
+path** — `LiveSessionOwner.start` settles the leftover record and seals nothing,
+so Try Again alone discarded the transcript the window's Save Transcript would
+have kept, and `.failure` therefore offers `[.show, .retry]`; and **Show did
+nothing with the main window closed**, because the subscriber lived inside the
+`WindowGroup`'s content and did not exist when there was no window.
+
+The menu bar carries the ember dot and the elapsed time **in the bar itself**,
+resolved through `CraftTokens.ember(colorScheme)` rather than the island's
+pinned dark value — the island's panel is `.darkAqua`, the menu bar is not.
+
+### What Stop hands over (XIA-429)
+
+Stop routes to the **sealed record's document**, and a **receipt** rises in the
+capsule cluster's exact footprint holding the record's facts. This replaces
+XIA-429's original answer wholesale: all six of its sub-decisions placed things
+"in the rail" — the 288pt trailing session column that XIA-432 → XIA-444 →
+XIA-445 deleted — and its load-bearing argument ("the column does not leave, it
+changes subject") had no column left to make it about.
+
+**One `RecordFacts`, two renderings.** `RecordFacts.items` is the single ordered
+list (duration, kind, speakers, moments, audio, cost) with the single formatter;
+the receipt draws it and `RecordFactStripView` draws it, and `stripText` is
+defined *as* those items joined. Neither view owns a field list or a formatter,
+which is the whole reason this option was chosen — the moment and the document
+cannot drift.
+`testTheReceiptAndTheStripDrawTheSameFactsInTheSameOrder` asserts identity, not
+similarity. Duration goes through `LiveMeetingFormat.duration`, the one clock.
+
+**`durationSeconds` had to be added to the record.** It stored only
+`durationMinutes`, rounded **up**, so a receipt rebuilt from the record would
+have re-rendered an `18:42` clock as `19:00` — the one number on screen that did
+not change. `sealTranscript` writes both; the legacy fallback is
+`durationMinutes × 60`.
+
+**The morph in the brief was impossible, and the dead code was deleted rather
+than left looking implemented.** The specification asked for the timer capsule
+to survive the press and animate its width into the receipt, so "18:42" would be
+one continuous glyph run. XIA-435 unmounts the cluster *on the press*, so there
+is no capsule to morph. What is left is real: `factDelay` / `factDuration`
+handed to `.animation(_:value:)`, and Reduce Motion collapsing to one opacity
+swap. `controlOpacity`, `controlScale`, `meterWidthFraction` and `widthProgress`
+are gone.
+
+**The receipt is geometry composed from the cluster's, never typed.**
+`factRowHeight == capsuleHeight`; `statusRowHeight` is measured from the caption
+face and taken **out of** `clusterBottomInset` rather than added to it, so the
+fact row lands on the pixels the capsules occupied and
+`documentBottomReserve == transcriptBottomReserve` exactly. All three equalities
+are asserted. The reserve comes off the **scroll view's own frame**, which is
+the XIA-445 lesson. The cost slot reserves the field's **widest** spelling
+whether or not it has landed — "final width" cannot mean the landed width, since
+that is either `$0.0031` or "included w/ subscription", and reserving the narrow
+one still reflows.
+
+**The routing decision lives in exactly one place**, because the owner may
+reverse it after living with it: `StopLanding.routesToDocument` in
+`macos/Nota/App/BackgroundProcessing.swift`, beside `LivePhaseGate`. Setting it
+`false` restores XIA-435's "Stop goes home" and nothing else changes. Both
+seal-failure branches `return` above its single call site, so **a failed seal
+falls back to `.home` by control flow** rather than by a condition a later edit
+could get wrong; discard never reaches the path at all.
+
+**Markers draw as pips in the finished document's gutter** — the 48pt gutter
+`HoverTimestampTextView` already reserves. The mapping rule is deliberately
+*not* the live surface's: the exported `.md` prints segment **starts**, so a
+marker belongs to the last line that had already started. The strip's
+"N moments" is a button that walks the pips and wraps, which is the one thing a
+pip alone cannot do. No timeline, no list, no popover.
+
+**Kind relabeling is `RecordKindMenuItems`, a view builder and not a second
+`ViewModifier`** — two `.contextMenu` modifiers on one view do not merge, the
+later **replaces** the earlier, so a separate modifier would have silently
+removed Delete audio and Delete record from every drawer row. It writes `kind`
+and `summaryOutdated` in one merge-preserving atomic write and **never**
+re-summarizes: spending a model call on a mis-click is the failure mode that
+ruled out the alternative.
+
 ## Record Lifecycle
 
 A history record is created at **sample zero**, not built at the end (XIA-430).
