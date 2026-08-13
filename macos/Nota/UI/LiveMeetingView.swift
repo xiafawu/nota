@@ -39,7 +39,7 @@ enum LiveMeetingFormat {
     // app (XIA-447). A paused session may never look stopped: the owner walks
     // away, comes back to a quiet screen, assumes it ended and loses the
     // meeting. So it is worded everywhere, never a colour change alone.
-    case .paused: return RecordingPaneCopy.pausedBadge
+    case .paused: return RecordingPaneCopy.pausedTitle
     case .stopping: return "Finalizing…"
     case .failed: return "Recording failed"
     }

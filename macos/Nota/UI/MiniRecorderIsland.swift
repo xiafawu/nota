@@ -106,7 +106,7 @@ enum MiniIslandPhase: Equatable {
   var message: String? {
     switch self {
     case .recording: return nil
-    case .paused: return RecordingPaneCopy.pausedBadge
+    case .paused: return RecordingPaneCopy.pausedTitle
     case .markConfirmed(let time, let ordinal, let landed):
       return MiniIslandCopy.marked(time: time, ordinal: ordinal, landed: landed)
     case .handoff(let secondsAgo): return MiniIslandCopy.handoff(secondsAgo: secondsAgo)

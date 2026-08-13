@@ -418,13 +418,13 @@ final class SessionPauseTests: XCTestCase {
   /// not enough: the ember going out and the clock stopping are both absences,
   /// and an absence is what a stopped session looks like.
   func testEverySurfaceSaysTheWordPaused() {
-    XCTAssertEqual(LiveMeetingFormat.stateLabel(.paused), RecordingPaneCopy.pausedBadge)
-    XCTAssertEqual(RecordingPaneCopy.pausedBadge, "Paused")
+    XCTAssertEqual(LiveMeetingFormat.stateLabel(.paused), RecordingPaneCopy.pausedTitle)
+    XCTAssertEqual(RecordingPaneCopy.pausedTitle, "Paused")
     XCTAssertEqual(RecordingPaneCopy.activity(.paused), "paused")
 
     // The island.
-    XCTAssertEqual(MiniIslandPhase.paused.message, RecordingPaneCopy.pausedBadge)
-    XCTAssertTrue(MiniIslandCopy.all(.paused).contains(RecordingPaneCopy.pausedBadge))
+    XCTAssertEqual(MiniIslandPhase.paused.message, RecordingPaneCopy.pausedTitle)
+    XCTAssertTrue(MiniIslandCopy.all(.paused).contains(RecordingPaneCopy.pausedTitle))
 
     // The menu bar: the item itself, and the status row inside the popover.
     let presence = MenuBarSessionPresence.make(state: .paused, elapsed: 754)
@@ -433,14 +433,14 @@ final class SessionPauseTests: XCTestCase {
     XCTAssertEqual(presence?.accessibilityLabel, "Nota: paused, 12:34")
     XCTAssertTrue(
       MenuBarSessionCopy.status(state: .paused, elapsed: 754)
-        .contains(RecordingPaneCopy.pausedBadge)
+        .contains(RecordingPaneCopy.pausedTitle)
     )
 
     // And it is a string the copy promise covers, so it cannot drift out of
     // `all(kind:controls:)` unnoticed.
     XCTAssertTrue(
       RecordingPaneCopy.all(kind: .meeting, controls: .paused)
-        .contains(RecordingPaneCopy.pausedBadge)
+        .contains(RecordingPaneCopy.pausedTitle)
     )
   }
 
@@ -552,49 +552,58 @@ final class SessionPauseTests: XCTestCase {
   /// put blue somewhere else. That is independent of which way the bitmap's y
   /// axis runs, and it fails the moment the overlay stops being drawn.
   func testTheClusterActuallyDrawsTheWordPaused() {
-    func blueRows(_ controls: LiveMeetingControls) -> Set<Int>? {
+    // The word moved *into* the Pause capsule (owner, 2026-08-12), so the
+    // signal moved with it. It used to be blue pixels in rows the running
+    // cluster left empty — a badge floating above the row.
+    //
+    // The capsule is probed **alone**, not inside the cluster. Measuring the
+    // whole row was tried and is worthless here: the blue is identical in both
+    // states by construction (`pauseCapsuleWidth` reserves the wide form so the
+    // press cannot move Stop), so the only honest difference is the ink inside
+    // that one capsule — and a full-row probe reads the white page between the
+    // capsules and the timer's own glyphs, which swamp six letters by an order
+    // of magnitude. Measured: 8320 running against 4967 paused, i.e. the noise
+    // moved further than the signal and in the wrong direction.
+    func ink(_ controls: LiveMeetingControls) -> Int? {
+      let cluster = SessionCapsuleCluster(
+        elapsed: 754,
+        level: MicLevelFeed(level: 0.4),
+        controls: controls,
+        markers: [],
+        onMark: {},
+        onPause: {},
+        onStop: {}
+      )
       guard
         let bitmap = RenderProbe.bitmap(
-          ZStack {
-            Color.white
-            SessionCapsuleCluster(
-              elapsed: 754,
-              level: MicLevelFeed(level: 0.4),
-              controls: controls,
-              markers: [SessionMarker(at: 12)],
-              onMark: {},
-              onPause: {},
-              onStop: {}
-            )
-          }
-          .environment(\.colorScheme, .light),
-          size: CGSize(width: 700, height: 220)
+          cluster.capsule(.pause).environment(\.colorScheme, .light),
+          size: CGSize(width: 240, height: 80)
         )
       else { return nil }
-      guard
-        let target = NSColor(CraftTokens.primaryBlue).usingColorSpace(.sRGB)
-      else { return nil }
-      let targetHue = target.hueComponent
-      var rows: Set<Int> = []
-      for x in stride(from: 0, to: bitmap.pixelsWide, by: 2) {
-        for y in stride(from: 0, to: bitmap.pixelsHigh, by: 2) {
+      var white = 0
+      for x in 0..<bitmap.pixelsWide {
+        for y in 0..<bitmap.pixelsHigh {
           guard let pixel = bitmap.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
-          guard pixel.alphaComponent > 0.5, pixel.saturationComponent > 0.15 else { continue }
-          let dh = abs(pixel.hueComponent - targetHue)
-          if min(dh, 1 - dh) < 0.04 { rows.insert(y) }
+          // The glyph and the letters are white on the blue plate. Requiring
+          // alpha keeps the transparent surround out of the count.
+          if pixel.alphaComponent > 0.5, pixel.brightnessComponent > 0.8,
+            pixel.saturationComponent < 0.12
+          {
+            white += 1
+          }
         }
       }
-      return rows
+      return white
     }
 
-    guard let live = blueRows(.stop), let paused = blueRows(.paused) else {
+    guard let live = ink(.stop), let paused = ink(.paused) else {
       return XCTFail("the hosting view produced no bitmap")
     }
-    XCTAssertFalse(live.isEmpty, "the probe cannot see the blue it is looking for")
-    let badgeRows = paused.subtracting(live)
-    XCTAssertGreaterThanOrEqual(
-      badgeRows.count, 5,
-      "the cluster drew no 'Paused' badge clear of the capsule row"
+    XCTAssertGreaterThan(live, 0, "the probe cannot see the glyph it is looking for")
+    XCTAssertGreaterThan(
+      paused, live + 60,
+      "the Pause capsule carries \(paused) white pixels paused against \(live) running — the "
+        + "word 'Paused' is not being drawn on it"
     )
   }
 

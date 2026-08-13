@@ -153,7 +153,7 @@ enum MenuBarSessionCopy {
   /// the popover.
   static func itemText(_ presence: MenuBarSessionPresence) -> String {
     presence.isPaused
-      ? "\(presence.elapsed) · \(RecordingPaneCopy.pausedBadge)"
+      ? "\(presence.elapsed) · \(RecordingPaneCopy.pausedTitle)"
       : presence.elapsed
   }
 

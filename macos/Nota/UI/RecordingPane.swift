@@ -57,21 +57,12 @@ enum RecordingPaneMetrics {
   static let clusterBottomInset: CGFloat = CraftTokens.spacing24
   /// Between the cluster's top edge and the last line the transcript may draw.
   ///
-  /// **The paused badge lives in this gap, so the gap has to hold it**
-  /// (XIA-447). The badge is an overlay, which is what keeps it from moving
-  /// Stop — but an overlay is also outside the reserve, and lifted by
-  /// `pausedBadgeHeight + pausedBadgeGap` (≈31pt) above a 16pt gap it landed
-  /// on the last line or two of the live transcript, which is the surface the
-  /// owner is reading. So the gap is the larger of the two, and
-  /// `transcriptBottomReserve` inherits it: the badge is drawn in space no line
-  /// was ever going to use.
-  ///
-  /// Unconditional, not "wider while paused". A reserve that changed at the
-  /// press would reflow the transcript under the owner at exactly the moment
-  /// the whole surface is promising to hold still — the same rule that made
-  /// the moment tally an overlay.
-  static let clusterTranscriptGap: CGFloat =
-    max(CraftTokens.spacing16, pausedBadgeHeight + pausedBadgeGap)
+  /// Back to a plain `spacing16` (owner, 2026-08-12). It was briefly the larger
+  /// of this and the paused badge's lifted height, because that badge was an
+  /// overlay drawn ≈31pt above the row and landed on the last lines of the live
+  /// transcript. The word is on the Pause capsule now, so nothing is drawn
+  /// above the row and the transcript gets that space back.
+  static let clusterTranscriptGap: CGFloat = CraftTokens.spacing16
 
   /// The meter in the cluster. `.compact`, and named rather than passed at the
   /// call site because `capsuleContentHeight` has to measure the same one the
@@ -117,27 +108,41 @@ enum RecordingPaneMetrics {
   /// inside it (where the glyph is) or beside it (where nothing is).
   static let markerBadgeInset: CGFloat = 6
 
-  /// The "Paused" word above the row (XIA-447).
+  /// **The Pause capsule says the word itself** (owner, 2026-08-12: "instead of
+  /// adding a pill on top of the control, the pause button becomes ▶ Paused").
   ///
-  /// An **overlay**, like the moment tally and for the identical rule: no state
-  /// of the session may move Stop. Drawn inside the timer capsule it would
-  /// widen it, and a centred cluster splits any widening across both sides — so
-  /// pressing Pause would step Stop sideways, on the surface whose whole job is
-  /// to hold still. None of these numbers reaches `capsuleHeight`,
-  /// `transcriptBottomReserve` or any cluster width, by construction.
-  static let pausedBadgeFontSize: CGFloat = 12
-  static let pausedBadgePaddingH: CGFloat = CraftTokens.spacing12
-  static let pausedBadgePaddingV: CGFloat = CraftTokens.spacing4
-  /// Measured from the font, not typed — the same rule `capsuleContentHeight`
-  /// keeps, so the offset that lifts the badge clear of the row is derived from
-  /// the badge rather than guessed at.
-  static let pausedBadgeHeight: CGFloat = {
-    let line = ("Paused" as NSString)
-      .size(withAttributes: [.font: NSFont.systemFont(ofSize: pausedBadgeFontSize, weight: .semibold)])
-      .height
-    return line.rounded(.up) + 2 * pausedBadgePaddingV
+  /// It replaced a badge floating above the row, and it is the better answer
+  /// for a reason worth keeping: the control that will resume the session is
+  /// the one telling the owner it is paused, so the state and the way out of it
+  /// are the same object. The badge said the word *near* the row and could be
+  /// read as belonging to any capsule in it.
+  ///
+  /// What the badge bought was that an overlay is outside the layout, so no
+  /// state of the session could move Stop. A word *inside* the capsule is very
+  /// much in the layout, so that rule is kept the other way — the way
+  /// `SessionTimerMetrics.plateWidth` already keeps it for the hour: **the
+  /// widest form is reserved up front**. `pauseCapsuleWidth` is the glyph plus
+  /// the gap plus "Paused", and the capsule is that wide in *both* states, so
+  /// the press swaps content inside a box that never changes size and Stop does
+  /// not move. Reserving is what makes "the cluster holds still" a fact about
+  /// the geometry rather than a hope about the two states matching.
+  static let pausedTitleGap: CGFloat = CraftTokens.spacing8
+  /// The face the word is drawn in, and its AppKit twin for measuring. Smaller
+  /// than the glyph: it is a state, not a second label competing with it.
+  static let pausedTitleFontSize: CGFloat = 12
+  static var pausedTitleMeasuringFont: NSFont {
+    .systemFont(ofSize: pausedTitleFontSize, weight: .semibold)
+  }
+  /// Measured from the font rather than typed — `capsuleContentHeight`'s rule,
+  /// and XIA-444's warning: a typed width that disagrees with the laid-out one
+  /// is invisible until something moves under the pointer.
+  static let pauseCapsuleWidth: CGFloat = {
+    let word = (RecordingPaneCopy.pausedTitle as NSString)
+      .size(withAttributes: [.font: pausedTitleMeasuringFont]).width
+    let glyph = ("pause.fill" as NSString)
+      .size(withAttributes: [.font: actionMeasuringFont]).height
+    return (glyph + pausedTitleGap + word).rounded(.up) + 2 * actionPaddingH
   }()
-  static let pausedBadgeGap: CGFloat = CraftTokens.spacing8
 
   /// The tallest thing any capsule has to hold. **Measured, not typed** — this
   /// is the precedent XIA-444 got wrong: `controlRowHeight` was written as 40
@@ -426,7 +431,7 @@ enum RecordingPaneCopy {
   /// are both *absences*, and an absence is exactly what a stopped session
   /// looks like, so the state has to say its own name. The island and the menu
   /// bar say the same word, through `LiveMeetingFormat.stateLabel`.
-  static let pausedBadge = "Paused"
+  static let pausedTitle = "Paused"
 
   /// Shown over the transcript when a ⌘K did not reach the record (XIA-433).
   ///
@@ -475,7 +480,7 @@ enum RecordingPaneCopy {
       markHelp,
       pauseTitle,
       resumeTitle,
-      pausedBadge,
+      pausedTitle,
       stopTitle,
       listening,
       markersUnsaved,
@@ -1119,6 +1124,18 @@ enum SessionClusterAction: CaseIterable {
     }
   }
 
+  /// The word drawn *beside* the glyph, when there is one. Only Pause has one,
+  /// and only while paused.
+  ///
+  /// This is the state saying its own name on the control that will undo it
+  /// (owner, 2026-08-12). It is deliberately not a face every capsule has: a
+  /// title on Mark or Stop would be a second label competing with a glyph that
+  /// is already unambiguous, and the row is icon-only precisely so the three
+  /// controls read as one object.
+  func title(paused: Bool) -> String? {
+    self == .pause && paused ? RecordingPaneCopy.pausedTitle : nil
+  }
+
   /// The accessibility label — an icon-only control's only name.
   func label(paused: Bool) -> String {
     switch self {
@@ -1217,28 +1234,6 @@ struct SessionCapsuleCluster: View {
         ForEach(SessionClusterAction.allCases, id: \.self) { capsule($0) }
       }
     }
-    // **The word, and it costs the row nothing.** An overlay is outside the
-    // layout entirely — the same mechanism the moment tally uses, and for the
-    // same rule: no state of the session may move Stop under the pointer. A
-    // label drawn *inside* the timer capsule would widen it, and a centred row
-    // splits any widening across both sides.
-    .overlay(alignment: .top) { pausedBadge }
-  }
-
-  /// "Paused", above the row.
-  @ViewBuilder
-  private var pausedBadge: some View {
-    if isPaused {
-      Text(RecordingPaneCopy.pausedBadge)
-        .font(.system(size: RecordingPaneMetrics.pausedBadgeFontSize, weight: .semibold))
-        .foregroundStyle(.white)
-        .padding(.horizontal, RecordingPaneMetrics.pausedBadgePaddingH)
-        .padding(.vertical, RecordingPaneMetrics.pausedBadgePaddingV)
-        .background(CraftTokens.primaryBlue.opacity(RecordingCapsuleTint.strength),
-                    in: Capsule(style: .continuous))
-        .offset(y: -(RecordingPaneMetrics.pausedBadgeHeight + RecordingPaneMetrics.pausedBadgeGap))
-        .allowsHitTesting(false)
-    }
   }
 
   /// What each capsule does, in one place. This is the same call the button
@@ -1263,9 +1258,25 @@ struct SessionCapsuleCluster: View {
     Button {
       perform(action)
     } label: {
-      Image(systemName: action.symbol(paused: isPaused))
+      // The glyph, and — on Pause while paused — the word beside it. The label
+      // is what the state *says*; the reserved width below is what keeps it
+      // from costing the row anything.
+      HStack(spacing: RecordingPaneMetrics.pausedTitleGap) {
+        Image(systemName: action.symbol(paused: isPaused))
+        if let title = action.title(paused: isPaused) {
+          Text(title)
+            .font(.system(size: RecordingPaneMetrics.pausedTitleFontSize, weight: .semibold))
+        }
+      }
     }
     .buttonStyle(RecordingCapsuleButtonStyle(tint: action.tint))
+    // **Reserved in both states, so the press cannot move Stop.** Pause is the
+    // one capsule whose content changes width, and a centred row splits any
+    // widening across both sides — so an unreserved Pause would step Stop
+    // sideways at the exact moment the surface promises to hold still. This is
+    // `SessionTimerMetrics.plateWidth`'s trick: reserve the wider form up
+    // front and let the content change inside a box that never does.
+    .frame(width: action == .pause ? RecordingPaneMetrics.pauseCapsuleWidth : nil)
     .overlay(alignment: .topTrailing) {
       if action.carriesMarkerCount { markerCount }
     }

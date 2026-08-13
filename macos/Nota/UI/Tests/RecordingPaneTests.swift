@@ -325,17 +325,13 @@ final class RecordingPaneTests: XCTestCase {
     // 64 while the bar drew 65, which is how a whole file of geometry tests
     // stayed green against a reservation that never bound.
     XCTAssertEqual(RecordingPaneMetrics.capsuleHeight, 43)
-    // 98 = 43 + 24 + 31. The gap grew from 16 to 31 with XIA-447, because the
-    // paused badge is drawn in it: an overlay is outside the reserve, so a 16pt
-    // gap put "Paused" on top of the last lines of the live transcript. It is
-    // unconditional — a reserve that widened at the press would reflow the
-    // transcript under the owner on the surface whose whole promise is that
-    // nothing moves.
-    XCTAssertEqual(
-      RecordingPaneMetrics.clusterTranscriptGap,
-      RecordingPaneMetrics.pausedBadgeHeight + RecordingPaneMetrics.pausedBadgeGap
-    )
-    XCTAssertEqual(RecordingPaneMetrics.transcriptBottomReserve, 98)
+    // 83 = 43 + 24 + 16. The gap went to 31 while "Paused" was a badge floating
+    // above the row — an overlay is outside the reserve, so a 16pt gap put the
+    // word on the last lines of the live transcript. The word is on the Pause
+    // capsule now (owner, 2026-08-12), nothing is drawn above the row, and the
+    // transcript gets those 15 points back.
+    XCTAssertEqual(RecordingPaneMetrics.clusterTranscriptGap, CraftTokens.spacing16)
+    XCTAssertEqual(RecordingPaneMetrics.transcriptBottomReserve, 83)
 
     // The accent is untouched by either setting; only the scheme moves it.
     XCTAssertEqual(CraftTokens.ember(.light), CraftTokens.emberLight)
@@ -1058,6 +1054,63 @@ final class RecordingPaneTests: XCTestCase {
       accuracy: 0.5,
       "the cluster draws \(drawn)pt against four capsules and three gaps at \(reserved)pt"
     )
+  }
+
+  /// **Pressing Pause may not move Stop.** The word "Paused" is drawn inside
+  /// the Pause capsule (owner, 2026-08-12) rather than on a badge above the
+  /// row, so unlike the moment tally it is genuinely in the layout — and a
+  /// centred row splits any widening across both sides, which would step Stop
+  /// sideways out from under the pointer resting on it.
+  ///
+  /// `pauseCapsuleWidth` reserves the wider of the two forms up front, exactly
+  /// as `SessionTimerMetrics.plateWidth` reserves `hh:mm:ss` for the hour. This
+  /// measures the *laid-out* capsule in both states rather than trusting the
+  /// constant: XIA-444 typed a height that disagreed with the row it described
+  /// and every geometry test in the file stayed green through it.
+  func testTheWordPausedNeverMovesStop() {
+    func drawnStopLeadingEdge(_ controls: LiveMeetingControls) -> (CGFloat, CGFloat) {
+      let cluster = SessionCapsuleCluster(
+        elapsed: 754,
+        level: MicLevelFeed(level: 0.4),
+        controls: controls,
+        markers: [],
+        onMark: {},
+        onPause: {},
+        onStop: {}
+      )
+      func laidOut<V: View>(_ view: V) -> CGFloat {
+        let host = NSHostingView(rootView: view)
+        host.layoutSubtreeIfNeeded()
+        return host.fittingSize.width
+      }
+      let row = laidOut(cluster)
+      // Stop is last, so its leading edge is the row's trailing edge less its
+      // own width — derived rather than typed, so it survives a fifth capsule.
+      return (row, row - laidOut(cluster.capsule(.stop)))
+    }
+
+    let (runningRow, runningStop) = drawnStopLeadingEdge(.stop)
+    let (pausedRow, pausedStop) = drawnStopLeadingEdge(.paused)
+
+    XCTAssertGreaterThan(runningRow, 0, "the hosting view produced no layout")
+    XCTAssertEqual(
+      pausedRow, runningRow, accuracy: 0.5,
+      "the row is \(pausedRow)pt paused against \(runningRow)pt running — the word widened it")
+    XCTAssertEqual(
+      pausedStop, runningStop, accuracy: 0.5,
+      "Stop's leading edge moved \(pausedStop - runningStop)pt when the session paused")
+  }
+
+  /// And the word really is drawn — otherwise the test above passes against a
+  /// Pause capsule that says nothing in either state, which is the failure the
+  /// reserved width makes easy to miss.
+  func testThePauseCapsuleSaysPausedOnlyWhilePaused() {
+    XCTAssertEqual(SessionClusterAction.pause.title(paused: true), RecordingPaneCopy.pausedTitle)
+    XCTAssertNil(SessionClusterAction.pause.title(paused: false))
+    for action in [SessionClusterAction.mark, .stop] {
+      XCTAssertNil(action.title(paused: true), "\(action) grew a label the row is icon-only to avoid")
+      XCTAssertNil(action.title(paused: false))
+    }
   }
 
   /// Crossing the hour re-sizes the glyphs and moves nothing around them —
