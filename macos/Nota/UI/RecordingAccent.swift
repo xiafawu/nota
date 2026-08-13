@@ -40,9 +40,25 @@ enum RecordingMotion {
   /// the word "Paused" is on screen either way, and the state it names is also
   /// on the menu bar and the island. What the animation buys is only that the
   /// two neighbours look pushed rather than teleported.
+  /// **The numbers are the owner's, picked off the running curves** (2026-08-13).
+  /// The first cut shipped `0.32 / 0.82` and read "too fast and rigid" — which
+  /// is what a tightly damped spring is: it arrives and stops dead, with no
+  /// settle for the eye to follow. Four candidates were rendered side by side
+  /// on the real cluster geometry, each solved as a damped harmonic so the
+  /// settle on the page was the settle the app draws, and this is the one
+  /// chosen: the longest open of the four, with visible give at the end.
   static func pauseAnimation(reduceMotion: Bool) -> Animation? {
     guard !reduceMotion else { return nil }
-    return .spring(response: 0.32, dampingFraction: 0.82)
+    return .spring(response: 0.70, dampingFraction: 0.62)
+  }
+
+  /// The word fades in over the first 70% of the growth rather than arriving at
+  /// full strength the instant the press lands. Half of what read as rigid was
+  /// the *content* being instantaneous while the box was not — the capsule
+  /// opened onto a word that was already finished.
+  static func pauseTitleAnimation(reduceMotion: Bool) -> Animation? {
+    guard !reduceMotion else { return nil }
+    return .easeInOut(duration: 0.70 * 0.7)
   }
 
   /// Nil under Reduce Motion: the ring holds at a steady scale and opacity.

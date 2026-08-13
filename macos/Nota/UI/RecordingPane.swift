@@ -1275,6 +1275,12 @@ struct SessionCapsuleCluster: View {
         if let title = action.title(paused: isPaused) {
           Text(title)
             .font(.system(size: RecordingPaneMetrics.pausedTitleFontSize, weight: .semibold))
+            // Faded in over the growth rather than switched on at the press.
+            // A word that is already finished inside a box that is still
+            // opening is the other half of what read as rigid.
+            .transition(
+              .opacity.animation(RecordingMotion.pauseTitleAnimation(reduceMotion: reduceMotion))
+            )
         }
       }
     }

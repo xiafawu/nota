@@ -1969,6 +1969,18 @@ about **Moments**, a browsing affordance on a surface meant for recording.
   the two widths are taken as a cut. That is the ring's answer, not the
   meter's, and the asymmetry holds — nothing is lost to a cut, since the word
   is on screen either way and the state is also on the island and the menu bar.
+
+  The curve is the **owner's, picked off the running candidates** (2026-08-13).
+  The first cut shipped `spring(0.32, 0.82)` and read "too fast and rigid",
+  which is what a tightly damped spring is — it arrives and stops dead, with no
+  settle for the eye to follow. Four springs were rendered side by side on the
+  real cluster geometry, each solved as a damped harmonic and sampled into a
+  CSS `linear()` easing so the page's settle *was* the app's, and `0.70 / 0.62`
+  was chosen: the longest open of the four, with visible give. Half of the
+  rigidity was not the box at all but the **content** — a word arriving at full
+  strength the instant the press landed, inside a capsule that was still
+  opening — so the `Text` carries `.transition(.opacity)` on its own, shorter
+  curve (`RecordingMotion.pauseTitleAnimation`).
 - **`showsRecordingPane` and `drawsMarkerRules` are no longer the same
   property.** The pane stays up while paused (removing it *is* the "looks
   stopped" failure); the ember rules in the transcript margin go, because
