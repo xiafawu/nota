@@ -36,7 +36,17 @@ struct MainPaneView: View {
           onRename: onRename,
           onAcceptSuggestion: onAcceptSuggestion,
           onDismissSuggestion: onDismissSuggestion,
-          enrichment: EnrichmentController.shared
+          enrichment: EnrichmentController.shared,
+          // XIA-429: the facts and the moments both come off the open record,
+          // through the model, so the strip and the gutter pips answer to the
+          // same scan the drawer row does.
+          facts: model.openRecordFacts,
+          markerSeconds: model.openRecordMomentSeconds,
+          // Reserved only while a receipt is really up. A document with nothing
+          // in flight owes it nothing, and reserving unconditionally would take
+          // a band off every transcript for a surface most of them never show.
+          bottomReserve: receiptIsUp ? RecordReceiptMetrics.documentBottomReserve : 0,
+          nextMomentToken: $nextMomentToken
         )
         // The ground reaches the two panes that never had one. It is attached
         // per branch rather than to this `ZStack`, because `.liveMeeting` draws
@@ -88,6 +98,28 @@ struct MainPaneView: View {
       if isRichContent {
         localCluster
       }
+
+      // WHAT STOP LOOKS LIKE (XIA-429). The receipt rises in the capsule
+      // cluster's exact footprint and IS the processing surface: it is up
+      // exactly while this document's record is still being worked on, and what
+      // it says survives it in the header's fact strip.
+      //
+      // The slot observes the ledger, not this pane: the ledger ticks once a
+      // second and `MainPaneView` is the whole document — the XIA-432 trap is
+      // that a publisher's rate and its observers' breadth multiply. What
+      // crosses back out is one Bool, changing at most twice a session.
+      if isRichContent, let facts = model.openRecordFacts, let output = model.lastOutputURL {
+        RecordReceiptSlot(
+          facts: facts,
+          outputPath: output.standardizedFileURL.path,
+          onRetry: { model.retryOpenDocumentSummary() },
+          onNextMoment: model.openRecordMomentSeconds.isEmpty ? nil : { nextMomentToken += 1 },
+          onVisibilityChange: { receiptIsUp = $0 }
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
+        .padding(.bottom, RecordReceiptMetrics.bottomInset)
+        .allowsHitTesting(true)
+      }
     }
     .animation(Tokens.animSnap, value: isDropTargeted)
     .animation(Tokens.animFast, value: isRichContent)
@@ -115,6 +147,14 @@ struct MainPaneView: View {
       return true
     }
   }
+
+  /// True while a receipt is on screen. Set by the slot (which is what watches
+  /// the ledger) and read by the transcript, which owes the receipt its
+  /// footprint while it is up and owes it nothing when it is not.
+  @State private var receiptIsUp = false
+  /// Bumped by the fact strip's "N moments" button; the transcript's text view
+  /// turns each bump into a scroll to the next pip.
+  @State private var nextMomentToken = 0
 
   private var isRichContent: Bool {
     if case .rich = content { return true }
@@ -269,6 +309,15 @@ private struct RichDocumentPane: View {
   var onAcceptSuggestion: (_ label: String) -> Void = { _ in }
   var onDismissSuggestion: (_ label: String) -> Void = { _ in }
   @ObservedObject var enrichment: EnrichmentController
+  /// The open record's facts (XIA-429), drawn as the header's fact strip.
+  var facts: RecordFacts?
+  /// The seconds its moments were flagged at — the gutter pips.
+  var markerSeconds: [TimeInterval] = []
+  /// What the receipt is occupying at the bottom, if one is up. Comes off the
+  /// **scroll view's own frame**, which is the only inset that moves where a
+  /// scroll comes to rest (the lesson `transcriptBottomReserve` is built on).
+  var bottomReserve: CGFloat = 0
+  @Binding var nextMomentToken: Int
 
   /// True once the rich-text body has scrolled beneath the header; drives the
   /// header collapse and the top fade on the body.
@@ -284,7 +333,9 @@ private struct RichDocumentPane: View {
           onRename: onRename,
           onAcceptSuggestion: onAcceptSuggestion,
           onDismissSuggestion: onDismissSuggestion,
-          tagEditing: tagEditing
+          tagEditing: tagEditing,
+          facts: facts,
+          onNextMoment: markerSeconds.isEmpty ? nil : { nextMomentToken += 1 }
         )
         Divider()
       }
@@ -296,9 +347,12 @@ private struct RichDocumentPane: View {
           let scrolled = offset > Metrics.docHeaderCompactThreshold
           guard scrolled != isBodyScrolled else { return }
           withAnimation(Tokens.animFast) { isBodyScrolled = scrolled }
-        }
+        },
+        markerSeconds: markerSeconds,
+        nextMomentToken: nextMomentToken
       )
       .mask(bodyFadeMask)
+      .padding(.bottom, bottomReserve)
     }
     .animation(Tokens.animFast, value: isBodyScrolled)
   }

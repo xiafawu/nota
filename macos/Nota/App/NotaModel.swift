@@ -763,6 +763,11 @@ final class NotaModel: ObservableObject {
     // Discard's identical `isLiveSessionHandedOff = true` does not mean.
     isLiveHandoffProcessing = true
     let historyDirectory = notaHistoryDirectory()
+    // What the window was showing when the press landed (XIA-429). The seal is
+    // up to the 5s watchdog away on the AssemblyAI path and the owner is free
+    // to open something else in the meantime; the routing below refuses if they
+    // did, rather than swapping the document out from under them.
+    let openAtPress = lastOutputURL?.standardizedFileURL.path
 
     // The job enters the ledger keyed by THIS record's id and nothing else.
     // That is the whole guard against a late result landing on the wrong
@@ -853,6 +858,30 @@ final class NotaModel: ObservableObject {
       // not started yet.
       backgroundJobs.advance(recordID: saved.historyID, to: .transcribed)
       refreshHistory()
+
+      // WHERE STOP LANDS (XIA-429). The decision itself is `StopLanding` — one
+      // pure helper, one flag, so the owner can flip it back after living with
+      // it. Everything about XIA-435 above is untouched: the handoff flag was
+      // set before any await, there is no length test, and this task is still
+      // detached from the press.
+      //
+      // Only a successful seal reaches this line — both failure branches
+      // returned above — which is exactly the "a seal that failed falls back to
+      // home" rule, kept by control flow rather than by a condition.
+      if StopLanding.opensSealedDocument(
+        sealed: true,
+        discarded: false,
+        isLiveSessionActive: liveRecords.isOwning || liveSession.state != .idle,
+        isTranscribingAFile: isRunning,
+        openDocumentChanged: lastOutputURL?.standardizedFileURL.path != openAtPress
+      ) {
+        // Through the rail's dismissal, like every other document switch: a
+        // dirty summary draft belongs to the record it was typed against, and
+        // decision 6/7 says it commits (or asks) before the pane moves on.
+        requestSummaryRailDismissal { [weak self] in
+          self?.openSealedSession(saved)
+        }
+      }
 
       // The stop path ENDS HERE, and the summary is a separate task on
       // purpose. `LiveSessionOwner.isStopping` refuses a Start press while it
@@ -1023,7 +1052,19 @@ final class NotaModel: ObservableObject {
     }
 
     announceCompletion(recordID: recordID, record: record, outputURL: outputURL)
-    backgroundJobs.forget(recordID: recordID)
+
+    // The job is let go only once the record's details have been re-read
+    // (XIA-429). `refreshHistory()` above kicks that scan off *detached*, and
+    // forgetting synchronously meant the receipt — which exists exactly while
+    // the ledger holds a job — came down before the cost it had reserved a slot
+    // for was ever published. The reservation could then never be seen to fill,
+    // which is the one behaviour it exists for. One extra hop of "there is
+    // still work" is harmless; ⌘Q simply prompts a moment longer.
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      await self.reloadHistoryDetails()
+      self.backgroundJobs.forget(recordID: recordID)
+    }
   }
 
   /// Post the record's one notification, if the policy says one is owed.
@@ -1388,13 +1429,26 @@ final class NotaModel: ObservableObject {
   /// (history records carry full transcripts, so parsing them inline would
   /// jank).
   private func refreshHistoryStatuses() {
-    let historyDir = notaHistoryDirectory()
     Task { @MainActor [weak self] in
-      let details = await Task.detached(priority: .utility) {
-        HistoryRecordInfo.detailsByOutputPath(historyDir: historyDir)
-      }.value
-      self?.historyDetails = details
+      await self?.reloadHistoryDetails()
     }
+  }
+
+  /// The same rescan, **awaitable**.
+  ///
+  /// The fire-and-forget form is a trap for anything that has to act on what
+  /// the scan found: `finishBackgroundJob` forgot the job (and so took the
+  /// receipt down) before the detached scan had published the cost the receipt
+  /// was holding a slot for, and `setKind` refreshed the details but not the
+  /// list built from them, so the row's kind chip kept its old word. Both are
+  /// ordering bugs that only an awaitable version can fix.
+  @MainActor
+  private func reloadHistoryDetails() async {
+    let historyDir = notaHistoryDirectory()
+    let details = await Task.detached(priority: .utility) {
+      HistoryRecordInfo.detailsByOutputPath(historyDir: historyDir)
+    }.value
+    historyDetails = details
   }
 
   func openHistory(_ entry: HistoryEntry) {
@@ -1422,6 +1476,125 @@ final class NotaModel: ObservableObject {
     } catch {
       status = "Could not open transcript"
     }
+  }
+
+  /// Open the document a Stop just sealed (XIA-429).
+  ///
+  /// It goes through the same bookkeeping `performOpenHistory` does — the
+  /// drawer's selection, the title, the chips — but takes the markdown from the
+  /// `SavedSession` in hand rather than re-reading the file that was written a
+  /// line ago. `refreshHistory()` has already listed it, so the matching entry
+  /// exists; a record whose entry somehow did not list still opens the document
+  /// (the markdown is what the phase gate reads) and simply has no drawer row
+  /// selected.
+  private func openSealedSession(_ saved: LiveSessionPersistence.SavedSession) {
+    markdown = saved.markdown
+    lastOutputURL = saved.outputURL
+    selectedURL = nil
+    let entry = history.first {
+      $0.url.standardizedFileURL == saved.outputURL.standardizedFileURL
+    }
+    selectedHistoryID = entry?.id
+    displayName = entry?.title ?? ProvisionalTitle.forKind(activeSessionKind)
+    displayPath = saved.outputURL.path
+    // …including the status line, which `performOpenHistory` sets and this
+    // omitted: without it the window sat on the sealed document still saying
+    // "Transcribing…" from the press, until something unrelated wrote over it.
+    status = displayName
+    loadChips(for: saved.outputURL)
+  }
+
+  /// Retry the summary of the document that is open — the receipt's Retry
+  /// (XIA-429 rule 5). It routes to the one retry the app already has, so a
+  /// press on the receipt and a press on the drawer row do exactly the same
+  /// thing. Manual, always: nothing on this path re-runs a summary on its own.
+  func retryOpenDocumentSummary() {
+    guard let url = lastOutputURL,
+          let recordID = historyDetails[url.standardizedFileURL.path]?.recordID,
+          !recordID.isEmpty
+    else {
+      return
+    }
+    retrySummary(recordID: recordID, outputURL: url)
+  }
+
+  /// The facts about the document that is open, for the header's fact strip
+  /// and the receipt (XIA-429). One model, so the two cannot drift.
+  ///
+  /// The speaker count comes off the record's own segments rather than off
+  /// `speakerChips`: the chips are a control that can be renamed and can be
+  /// empty for an imported `.md`, and the strip states what was recorded.
+  var openRecordFacts: RecordFacts? {
+    guard let url = lastOutputURL,
+          let detail = historyDetails[url.standardizedFileURL.path]
+    else {
+      return nil
+    }
+    let facts = RecordFacts(
+      duration: detail.durationSeconds,
+      kind: detail.kind,
+      speakerCount: detail.speakerCount,
+      momentCount: detail.momentSeconds.isEmpty ? nil : detail.momentSeconds.count,
+      audioBytes: detail.audioBytes,
+      // One pure rule, so "a figure is coming" and "this figure is not final"
+      // are decided in a place a test can reach: a record still being worked on
+      // has a pending slot when nothing is billed yet, and carries the `+` that
+      // says "at least" when something already is.
+      cost: RecordFacts.cost(
+        recorded: detail.cost,
+        workInFlight: backgroundJobs.job(outputPath: url.standardizedFileURL.path) != nil
+      )
+    )
+    return facts.isEmpty ? nil : facts
+  }
+
+  /// The seconds the open document's moments were flagged at, oldest first.
+  /// Empty for an imported `.md` and for any record with no markers — which is
+  /// what makes the fact strip's "N moments" button and the gutter pips appear
+  /// together or not at all.
+  var openRecordMomentSeconds: [TimeInterval] {
+    guard let url = lastOutputURL else { return [] }
+    return historyDetails[url.standardizedFileURL.path]?.momentSeconds ?? []
+  }
+
+  /// Persist a manual kind relabel from the drawer row's context menu
+  /// (XIA-429 rule 3), then re-read the details so the row's chip and the fact
+  /// strip both change. Nothing is re-summarized.
+  func setKind(_ kind: HistoryKind, for entry: HistoryEntry) {
+    // **Never against a record something else is writing.** `setKind` is a
+    // read-modify-write of the whole record JSON, and `nota history summarize`
+    // writes the same file from another process: a relabel that read the
+    // pre-summary JSON and wrote it back after the CLI landed would erase the
+    // summary and the `done` status together. The menu already refuses while a
+    // job is in the ledger (`RecordKindMenuItems.isEnabled`); this is the
+    // backstop, because the ledger can gain a job between the menu opening and
+    // the item being chosen.
+    guard backgroundJobs.job(outputPath: entry.url.standardizedFileURL.path) == nil else { return }
+    let historyDir = notaHistoryDirectory()
+    let outputPath = entry.url.standardizedFileURL.path
+    Task { @MainActor [weak self] in
+      guard let self else { return }
+      await Task.detached(priority: .utility) {
+        HistoryRecordInfo.setKind(kind, outputPath: outputPath, historyDir: historyDir)
+      }.value
+      // Details first, then the list: `HistoryEntry.kind` is **baked** in
+      // `refreshHistory()` off `historyDetails`, so refreshing only the details
+      // changed the header's fact strip and the menu's checkmark while the
+      // row's own kind chip went on saying "Memo" until the next full refresh.
+      await self.reloadHistoryDetails()
+      self.refreshHistory()
+      // The banner is driven by the record the enrichment controller holds, so
+      // it has to re-read one whose `summaryOutdated` just changed.
+      if self.lastOutputURL?.standardizedFileURL == entry.url.standardizedFileURL {
+        self.loadChips(for: entry.url)
+      }
+    }
+  }
+
+  /// Whether the drawer row's **Change kind** submenu may be used right now.
+  /// False while this record has work in flight — see `setKind`.
+  func canRelabelKind(for entry: HistoryEntry) -> Bool {
+    backgroundJobs.job(outputPath: entry.url.standardizedFileURL.path) == nil
   }
 
   func newTranscription() {
@@ -2330,12 +2503,96 @@ struct HistoryRecordInfo {
     var interrupted: Bool = false
     var kind: HistoryKind
     var durationMinutes: Int?
+    /// The session's real length, to the second. Written at the seal
+    /// (`durationSeconds`) so the receipt's clock and the document's fact strip
+    /// name the same instant — `durationMinutes` is rounded UP to whole minutes
+    /// and a receipt reading 19:00 for a session whose clock said 18:42 would
+    /// be the one number on screen that changed for no reason. Legacy records
+    /// have none and fall back to the rounded figure.
+    var durationSeconds: TimeInterval?
     var speakerCount: Int?
+    /// Moments flagged during the session (XIA-433's `markers`), and the
+    /// seconds they were flagged at — the gutter pips are drawn from these.
+    var momentSeconds: [TimeInterval] = []
+    /// Bytes of kept audio. Nil is **audio not kept**, never `0 B`.
+    var audioBytes: Int?
+    /// What this record cost, summed from its own `usage` entries.
+    var cost: RecordFacts.Cost = .absent
     var pinned: Bool = false
     /// The record's own id. Carried so a row can name the record a manual
     /// retry has to re-run (XIA-435); the drawer only ever holds the output
     /// path, and `nota history summarize` wants the id.
     var recordID: String = ""
+  }
+
+  /// What a record's own `usage` entries add up to.
+  ///
+  /// `costUSD` is **null for unknown, never zero** — "free" and "we could not
+  /// price it" are different facts, and the CLI has said so since usage
+  /// tracking shipped. So the four answers are kept apart here rather than
+  /// collapsed into a number:
+  ///
+  /// - no entries at all → `.absent`, and the fact is not drawn
+  /// - every entry priced → `.known(sum)`
+  /// - nothing priced → `.note("—")`, the CLI's own spelling for a gap
+  /// - some priced → `.note("$x.xx+")`, "at least" — the same `+` the CLI's
+  ///   totals line carries. A cost display that quietly understates the bill is
+  ///   the one failure mode it may not have.
+  static func recordCost(_ usage: [[String: Any]]) -> RecordFacts.Cost {
+    guard !usage.isEmpty else { return .absent }
+    var sum = 0.0
+    var unknown = 0
+    for entry in usage {
+      if let value = (entry["costUSD"] as? NSNumber)?.doubleValue {
+        sum += value
+      } else {
+        unknown += 1
+      }
+    }
+    if unknown == 0 { return .known(sum) }
+    if sum == 0 { return .note("—") }
+    return .note(CostCardViewModel.formatUSD(sum) + "+")
+  }
+
+  /// Persist a manually chosen `kind` on the record whose `outputPath` matches,
+  /// **and mark its summary outdated in the same write** (XIA-429 rule 3).
+  ///
+  /// Relabeling a memo as a meeting changes what a summary should say, so the
+  /// existing one is stale. It is marked and nothing else: the one-click
+  /// "Regenerate summary" banner is the path, and the existing
+  /// `enrichmentNeedsConfirm` alert guards a summary the owner has edited.
+  /// **It never auto-re-summarizes** — spending a model call on a mis-click in
+  /// a context menu is exactly the failure that ruled out the alternative.
+  ///
+  /// It is a direct merge-preserving JSON write (`setPinned`'s shape) rather
+  /// than a trip through `history apply-enrichment`, deliberately: the CLI's
+  /// stdin payload parser copies `summary`/`tags`/`summaryEdited`/`tagsEdited`
+  /// and drops everything else, so both fields this verb writes would be
+  /// silently lost on that route. `kind` is a field the CLI writes too, which
+  /// is why it is written explicitly rather than left to legacy inference.
+  static func setKind(_ kind: HistoryKind, outputPath: String, historyDir: URL) {
+    guard let info = find(outputPath: outputPath, historyDir: historyDir),
+          let data = try? Data(contentsOf: info.recordURL),
+          let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+    else {
+      return
+    }
+    var updated = json
+    updated["kind"] = kind.rawValue
+    // Only a record that HAS a summary can have a stale one. Marking a
+    // transcript-only record outdated would put a "Regenerate summary" banner
+    // on a document that has never had one.
+    if let summary = json["summary"] as? String, !summary.isEmpty {
+      updated["summaryOutdated"] = true
+    }
+    updated["updatedAt"] = ISO8601DateFormatter().string(from: Date())
+    guard let out = try? JSONSerialization.data(
+      withJSONObject: updated,
+      options: [.prettyPrinted]
+    ) else {
+      return
+    }
+    try? out.write(to: info.recordURL, options: .atomic)
   }
 
   /// outputPath (standardized) → `HistoryDetail` for every history record.
@@ -2368,12 +2625,24 @@ struct HistoryRecordInfo {
           speakers.insert(speaker)
         }
       }
+      let minutes = json["durationMinutes"] as? Int
+      let seconds = (json["durationSeconds"] as? NSNumber)?.doubleValue
+      let markers = json["markers"] as? [[String: Any]] ?? []
       details[key] = HistoryDetail(
         status: HistoryStatus.normalized(fromRecord: json),
         interrupted: json["interrupted"] as? Bool ?? false,
         kind: kind(from: json),
-        durationMinutes: json["durationMinutes"] as? Int,
+        durationMinutes: minutes,
+        durationSeconds: seconds ?? minutes.map { TimeInterval($0) * 60 },
         speakerCount: speakers.isEmpty ? nil : speakers.count,
+        momentSeconds: markers
+          .compactMap { ($0["atSeconds"] as? NSNumber)?.doubleValue }
+          .sorted(),
+        // `0` bytes is a recording that exists and is empty; the field being
+        // absent is a record that keeps none. Both are real, and only one of
+        // them may be rendered as a size.
+        audioBytes: (json["audioBytes"] as? NSNumber)?.intValue,
+        cost: recordCost(json["usage"] as? [[String: Any]] ?? []),
         pinned: json["pinned"] as? Bool ?? false,
         recordID: json["id"] as? String ?? ""
       )

@@ -150,7 +150,7 @@ private func appendTranscriptLine(
       .foregroundColor: NSColor.labelColor,
       .paragraphStyle: paragraph
     ]))
-    attachTimestamp(prettyTimestamp(groups[1]), from: start, to: output)
+    attachTimestamp(groups[1], from: start, to: output)
     output.append(NSAttributedString(string: "\n"))
     return true
   }
@@ -164,7 +164,7 @@ private func appendTranscriptLine(
       .foregroundColor: NSColor.labelColor,
       .paragraphStyle: paragraph
     ]))
-    attachTimestamp(prettyTimestamp(groups[1]), from: start, to: output)
+    attachTimestamp(groups[1], from: start, to: output)
     output.append(NSAttributedString(string: "\n"))
     return true
   }
@@ -194,11 +194,28 @@ private func matchTranscript(_ pattern: String, in line: String) -> [String]? {
 /// Tag the just-appended speaker+text range with its timestamp so the hover
 /// gutter can reveal it. The caller appends the trailing newline, which is left
 /// untagged so hovering line breaks reveals nothing.
-private func attachTimestamp(_ timestamp: String, from start: Int, to output: NSMutableAttributedString) {
+private func attachTimestamp(_ raw: String, from start: Int, to output: NSMutableAttributedString) {
   guard output.length > start else {
     return
   }
-  output.addAttribute(.notaTimestamp, value: timestamp, range: NSRange(location: start, length: output.length - start))
+  let range = NSRange(location: start, length: output.length - start)
+  output.addAttribute(.notaTimestamp, value: prettyTimestamp(raw), range: range)
+  // …and the same instant as a number, for the moment pips (XIA-429). Both come
+  // off the one raw capture, so the label in the gutter and the pip beside it
+  // can never name different seconds.
+  output.addAttribute(
+    .notaTimestampSeconds,
+    value: NSNumber(value: timestampSeconds(raw)),
+    range: range
+  )
+}
+
+/// "01:02:03" becomes 3723, "0:51" becomes 51. Read off the raw capture rather
+/// than the prettified string: this is the numeric half of the same fact.
+func timestampSeconds(_ raw: String) -> TimeInterval {
+  raw.split(separator: ":")
+    .map { TimeInterval(Int($0) ?? 0) }
+    .reduce(0) { $0 * 60 + $1 }
 }
 
 /// "00:14" → "0:14", "01:02:03" → "1:02:03": drop a single leading zero from the

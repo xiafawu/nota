@@ -26,6 +26,17 @@ struct RecordingDeletionMenu: ViewModifier {
   let locate: () -> RecordingStore.LocatedRecord?
   let onDeleteAudio: (RecordingStore.LocatedRecord) -> Void
   let onDeleteRecord: (RecordingStore.LocatedRecord) -> Void
+  /// The row's kind relabel (XIA-429), placed in **this** menu rather than in a
+  /// second `.contextMenu` of its own: two context menus on one view do not
+  /// merge, the later one replaces the earlier, so a separate modifier would
+  /// have quietly taken the two deletion verbs off every row. The items
+  /// themselves live in `RecordKindMenuItems`, in that lane's own file.
+  /// Optional so previews and the deletion tests keep their existing shape.
+  var currentKind: HistoryKind?
+  var onChangeKind: ((HistoryKind) -> Void)?
+  /// True while this record has work in flight; the submenu is offered but
+  /// refuses, rather than vanishing from a menu the owner has open.
+  var kindRelabelIsBusy: Bool = false
 
   @State private var pendingAudio: RecordingStore.LocatedRecord?
   @State private var pendingRecord: RecordingStore.LocatedRecord?
@@ -49,6 +60,15 @@ struct RecordingDeletionMenu: ViewModifier {
         // route to it — non-destructive, and it opens on the file itself.
         Button("Reveal in Finder") {
           NSWorkspace.shared.activateFileViewerSelecting([entry.url])
+        }
+        // Non-destructive, so it sits with Reveal above the first divider —
+        // never among the verbs that take something away.
+        if let currentKind, let onChangeKind {
+          RecordKindMenuItems(
+            currentKind: currentKind,
+            isBusy: kindRelabelIsBusy,
+            onChangeKind: onChangeKind
+          )
         }
         Divider()
         Button("Delete recording audio…") {
@@ -148,14 +168,20 @@ extension View {
     entry: HistoryEntry,
     locate: @escaping () -> RecordingStore.LocatedRecord?,
     onDeleteAudio: @escaping (RecordingStore.LocatedRecord) -> Void,
-    onDeleteRecord: @escaping (RecordingStore.LocatedRecord) -> Void
+    onDeleteRecord: @escaping (RecordingStore.LocatedRecord) -> Void,
+    currentKind: HistoryKind? = nil,
+    onChangeKind: ((HistoryKind) -> Void)? = nil,
+    kindRelabelIsBusy: Bool = false
   ) -> some View {
     modifier(
       RecordingDeletionMenu(
         entry: entry,
         locate: locate,
         onDeleteAudio: onDeleteAudio,
-        onDeleteRecord: onDeleteRecord
+        onDeleteRecord: onDeleteRecord,
+        currentKind: currentKind,
+        onChangeKind: onChangeKind,
+        kindRelabelIsBusy: kindRelabelIsBusy
       )
     )
   }

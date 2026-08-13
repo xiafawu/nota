@@ -407,7 +407,16 @@ struct HistoryDrawerView: View {
       // No `onClose()` on an empty history here, unlike the trash button's
       // path: rows are built from the exported `.md` files, and this verb
       // never deletes one — so the row stays and the list cannot empty.
-      onDeleteRecord: { model.deleteRecording($0, entry: entry) }
+      onDeleteRecord: { model.deleteRecording($0, entry: entry) },
+      // XIA-429: the kind relabel rides the SAME menu — a second `.contextMenu`
+      // replaces this one rather than adding to it.
+      currentKind: model.recordDetail(for: entry)?.kind ?? entry.kind,
+      onChangeKind: { model.setKind($0, for: entry) },
+      // Refused while this record has work in flight. `.disabled(model.isRunning)`
+      // below is about a *file* transcription and says nothing about the
+      // background summary Stop just started — the exact window in which a
+      // relabel's read-modify-write can lose the summary that lands mid-write.
+      kindRelabelIsBusy: !model.canRelabelKind(for: entry)
     )
     .disabled(model.isRunning)
   }

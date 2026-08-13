@@ -38,6 +38,15 @@ struct RichTextViewer: NSViewRepresentable {
   /// Reports the vertical scroll offset (0 = at top) so the host can collapse
   /// the document header once content scrolls beneath it.
   var onScroll: ((CGFloat) -> Void)? = nil
+  /// The seconds this document's flagged moments were taken at (XIA-429).
+  /// Handed straight to the text view, which draws one pip per marked line in
+  /// the gutter it already owns.
+  var markerSeconds: [TimeInterval] = []
+  /// A press counter, not a position: every increment means "go to the next
+  /// pip". A token rather than a line index because the *view* owns where it
+  /// got to — SwiftUI would otherwise have to hold a cursor it cannot compute,
+  /// since which line a marker lands on is a question about the laid-out text.
+  var nextMomentToken: Int = 0
 
   func makeCoordinator() -> Coordinator {
     Coordinator()
@@ -106,6 +115,26 @@ struct RichTextViewer: NSViewRepresentable {
     // updates re-invoke this and a wholesale reset would re-layout mid-scroll.
     if textView.textStorage?.isEqual(to: attributedString) != true {
       textView.textStorage?.setAttributedString(attributedString)
+      // The pip scan is memoized against the storage, and a programmatic
+      // `setAttributedString` sends no `didChangeText`. Told explicitly here,
+      // because "the length changed" is a heuristic and two documents can be
+      // the same length.
+      (textView as? HoverTimestampTextView)?.invalidateTimestampCache()
+    }
+
+    // …and the moments **after** the text they index into. Setting the markers
+    // first meant a press arriving in the same update ran `revealNextMarker`
+    // against the previous document's lines.
+    if let hoverView = textView as? HoverTimestampTextView {
+      hoverView.markerSeconds = markerSeconds
+      // Strictly greater, so the first evaluation (both zero) does not scroll a
+      // freshly-opened document to its first moment.
+      if nextMomentToken > context.coordinator.momentToken {
+        context.coordinator.momentToken = nextMomentToken
+        hoverView.revealNextMarker()
+      } else {
+        context.coordinator.momentToken = nextMomentToken
+      }
     }
   }
 
@@ -113,6 +142,8 @@ struct RichTextViewer: NSViewRepresentable {
     var onScroll: ((CGFloat) -> Void)?
     var observer: NSObjectProtocol?
     var layoutRevision = 0
+    /// The last "next moment" press this coordinator has acted on.
+    var momentToken = 0
 
     func restoreScrollPosition(in scrollView: NSScrollView, preservingY y: CGFloat, revision: Int) {
       guard RichTextScrollRestore.shouldApply(revision: revision, latestRevision: layoutRevision) else {

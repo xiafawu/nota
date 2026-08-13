@@ -495,6 +495,15 @@ enum LiveSessionPersistence {
     // that says less than it holds, never one that says more.
     guard mutateRecord(id: started.historyID, historyDirectory: historyDirectory, [
       "durationMinutes": durationMinutes,
+      // The session's real length, to the second (XIA-429). `durationMinutes`
+      // is the CLI's schema field and rounds UP to whole minutes, which is the
+      // right shape for a header line and the wrong one for a clock: the
+      // receipt that rises at Stop draws the same glyph run the live timer
+      // ended on, and re-rendering 18:42 as 19:00 would flicker the one number
+      // on screen that did not change. Written *alongside*, never instead — the
+      // CLI's field keeps its meaning, and a legacy record with no seconds
+      // falls back to it.
+      "durationSeconds": result.duration,
       "transcriptText": transcript,
       "segments": Self.segmentDictionaries(result.segments),
       "outputPath": outputURL.path,

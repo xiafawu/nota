@@ -475,20 +475,26 @@ enum ProcessingMenuBar {
 
 // MARK: - The completion notice
 
-/// The facts under a completion notification's title: `41 min · 2 speakers ·
-/// 3 markers`. Absent and zero parts are dropped rather than printed as zero —
+/// The facts under a completion notification's title: `18:42 · 2 speakers ·
+/// 3 moments`. Absent and zero parts are dropped rather than printed as zero —
 /// "0 speakers" is not a fact about a meeting, it is a gap in the record.
+///
+/// **It is not a fact list of its own** (XIA-429). It builds a `RecordFacts`
+/// and prints that model's strip, so the notification, the receipt that rises
+/// at Stop and the document's own header say the same things in the same words.
+/// It used to say `19 min` and `4 markers` where the other two said `18:42` and
+/// `4 moments` — one record, three formats of the duration and two nouns for the
+/// same object, reachable by simply not being frontmost when a meeting landed.
+///
+/// What it leaves out of the strip is the kind, the audio size and the cost: a
+/// notification is a glance, and those three are what a *document* owes.
 enum CompletionFacts {
-  static func line(durationMinutes: Int?, speakerCount: Int?, markerCount: Int?) -> String {
-    var parts: [String] = []
-    if let minutes = durationMinutes, minutes > 0 { parts.append("\(minutes) min") }
-    if let speakers = speakerCount, speakers > 0 {
-      parts.append("\(speakers) speaker\(speakers == 1 ? "" : "s")")
-    }
-    if let markers = markerCount, markers > 0 {
-      parts.append("\(markers) marker\(markers == 1 ? "" : "s")")
-    }
-    return parts.joined(separator: " · ")
+  static func line(duration: TimeInterval?, speakerCount: Int?, markerCount: Int?) -> String {
+    RecordFacts(
+      duration: (duration ?? 0) > 0 ? duration : nil,
+      speakerCount: speakerCount,
+      momentCount: markerCount
+    ).stripText
   }
 
   /// The same line, read straight off a decoded record.
@@ -496,6 +502,11 @@ enum CompletionFacts {
   /// Speakers are **counted from the segments**, not taken from a field: the
   /// record carries no speaker count of its own, and a name that appears in
   /// twenty segments is one speaker. Blank labels are not people.
+  ///
+  /// The length comes from `durationSeconds`, falling back to the rounded
+  /// `durationMinutes` for records written before it existed — the same
+  /// preference `HistoryRecordInfo.detailsByOutputPath` makes, for the same
+  /// reason: the seconds are what the clock said.
   static func line(fromRecord record: [String: Any]?) -> String {
     guard let record else { return "" }
     let segments = record["segments"] as? [[String: Any]] ?? []
@@ -503,8 +514,10 @@ enum CompletionFacts {
     for segment in segments {
       if let speaker = segment["speaker"] as? String, !speaker.isEmpty { speakers.insert(speaker) }
     }
+    let minutes = record["durationMinutes"] as? Int
+    let seconds = (record["durationSeconds"] as? NSNumber)?.doubleValue
     return line(
-      durationMinutes: record["durationMinutes"] as? Int,
+      duration: seconds ?? minutes.map { TimeInterval($0) * 60 },
       speakerCount: speakers.isEmpty ? nil : speakers.count,
       markerCount: (record["markers"] as? [Any])?.count
     )
@@ -701,5 +714,71 @@ enum LivePhaseGate {
     if handedOff { return false }
     if isStarting { return true }
     return !sessionIsIdle
+  }
+}
+
+// MARK: - Where Stop lands
+
+/// **THE ONE PLACE STOP'S DESTINATION IS DECIDED** (XIA-429).
+///
+/// XIA-435 made Stop hand the record off and come home; the window then fell
+/// through to `.home` for the ordinary reason that `markdown` was still empty.
+/// XIA-429 routes a *successfully sealed* session to `.document` on that record
+/// instead, so Stop lands on what was just recorded rather than on the front
+/// door. The receipt then rises over that document.
+///
+/// **The owner may reverse this after living with it for a day.** Flipping
+/// `routesToDocument` to `false` restores XIA-435's behaviour exactly — Stop
+/// goes home — and nothing else in the app has to change: the gate above is
+/// untouched, `isLiveSessionHandedOff` is still set before any `await`, there
+/// is still no length test, and all the work still runs detached.
+///
+/// Three things this may never do, each of which is a real failure mode:
+///
+/// - **A seal that failed routes nowhere.** There is no document, so opening
+///   one would be opening nothing; the owner goes home and the orphan toolbar
+///   pill says what happened (`NotaModel.backgroundFailure`).
+/// - **A discarded session routes nowhere.** Discard sets the same
+///   `isLiveSessionHandedOff` flag Stop does (XIA-434 already found the two
+///   sharing it) and deletes the whole record; routing on that flag rather than
+///   on a sealed session would open a document for a session the owner said
+///   they did not want.
+/// - **A session that is already recording again wins.** The seal completes
+///   asynchronously, so a Start press that beat it must not have the window
+///   yanked out from under it. Same rule `CompletionEffect.decide` keeps.
+/// - **Whatever the owner has since opened wins too**, and this is the rule the
+///   first cut did not have. Stop comes home *immediately* (XIA-435) while the
+///   seal can take up to the 5s AssemblyAI watchdog, so there is a real window
+///   in which the owner opens yesterday's meeting from the drawer, or starts a
+///   file transcription — and a routing decision made without asking would
+///   overwrite the document under them seconds later. `CompletionEffect.decide`
+///   already compares the job's output path against the open one for exactly
+///   this reason; this asks the same question by comparing what was open when
+///   the press landed against what is open now.
+enum StopLanding {
+  /// The owner-facing switch. `false` restores "Stop goes home".
+  ///
+  /// A **parameter with this as its default**, not a constant read inside, so
+  /// the off state is a case a test can drive: asserting `routesToDocument`
+  /// is true proves nothing about the switch and turns flipping it into a red
+  /// suite, which is the opposite of an escape hatch.
+  static let routesToDocument = true
+
+  static func opensSealedDocument(
+    routes: Bool = routesToDocument,
+    sealed: Bool,
+    discarded: Bool,
+    isLiveSessionActive: Bool,
+    isTranscribingAFile: Bool = false,
+    openDocumentChanged: Bool = false
+  ) -> Bool {
+    guard routes else { return false }
+    guard sealed, !discarded, !isLiveSessionActive else { return false }
+    // A file transcription that started in the gap owns the pane: `ContentView`
+    // tests `hasContent` before `isRunning`, so writing markdown here would take
+    // its `.running` phase away outright.
+    guard !isTranscribingAFile else { return false }
+    guard !openDocumentChanged else { return false }
+    return true
   }
 }

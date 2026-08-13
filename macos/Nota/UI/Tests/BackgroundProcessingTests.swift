@@ -352,18 +352,39 @@ final class BackgroundProcessingTests: XCTestCase {
 
   func testCompletionFacts_dropAbsentAndZeroParts() {
     XCTAssertEqual(
-      CompletionFacts.line(durationMinutes: 41, speakerCount: 2, markerCount: 3),
-      "41 min · 2 speakers · 3 markers"
+      CompletionFacts.line(duration: 2460, speakerCount: 2, markerCount: 3),
+      "41:00 · 2 speakers · 3 moments"
     )
     XCTAssertEqual(
-      CompletionFacts.line(durationMinutes: 1, speakerCount: 1, markerCount: nil),
-      "1 min · 1 speaker"
+      CompletionFacts.line(duration: 60, speakerCount: 1, markerCount: nil),
+      "01:00 · 1 speaker"
     )
     XCTAssertEqual(
-      CompletionFacts.line(durationMinutes: 12, speakerCount: 0, markerCount: 0),
-      "12 min"
+      CompletionFacts.line(duration: 720, speakerCount: 0, markerCount: 0),
+      "12:00"
     )
-    XCTAssertEqual(CompletionFacts.line(durationMinutes: nil, speakerCount: nil, markerCount: nil), "")
+    XCTAssertEqual(CompletionFacts.line(duration: nil, speakerCount: nil, markerCount: nil), "")
+  }
+
+  /// **The notification is not a third fact list** (XIA-429). It says the same
+  /// words in the same order as the receipt that rises at Stop and the strip
+  /// under the document header; one record may not be described three ways
+  /// depending on where the owner happens to read it.
+  func testCompletionFactsSaysWhatTheStripSays() {
+    let record: [String: Any] = [
+      "durationSeconds": 1122,
+      "durationMinutes": 19,
+      "segments": [["speaker": "A"], ["speaker": "B"], ["speaker": "C"]],
+      "markers": [["at": 1], ["at": 2], ["at": 3], ["at": 4]]
+    ]
+    // …and the seconds win over the rounded-up minutes, or the banner says
+    // 19 min for a session whose clock ended on 18:42.
+    XCTAssertEqual(CompletionFacts.line(fromRecord: record), "18:42 · 3 speakers · 4 moments")
+    XCTAssertEqual(
+      CompletionFacts.line(fromRecord: record),
+      RecordFacts(duration: 1122, speakerCount: 3, momentCount: 4).stripText,
+      "the notification and the document's own strip disagree about one record"
+    )
   }
 
   // MARK: - ⌘Q
@@ -586,8 +607,9 @@ final class BackgroundProcessingTests: XCTestCase {
       ],
       "markers": [["at": 1], ["at": 2], ["at": 3]]
     ]
-    XCTAssertEqual(CompletionFacts.line(fromRecord: record), "41 min · 2 speakers · 3 markers")
-    XCTAssertEqual(CompletionFacts.line(fromRecord: ["durationMinutes": 12]), "12 min")
+    XCTAssertEqual(CompletionFacts.line(fromRecord: record), "41:00 · 2 speakers · 3 moments")
+    // A record written before `durationSeconds` existed still has a length.
+    XCTAssertEqual(CompletionFacts.line(fromRecord: ["durationMinutes": 12]), "12:00")
     XCTAssertEqual(CompletionFacts.line(fromRecord: nil), "")
   }
 
@@ -620,5 +642,102 @@ final class BackgroundProcessingTests: XCTestCase {
     ledger.begin(recordID: "a", kind: .meeting, outputPath: nil, status: .transcribed)
     XCTAssertNil(ProcessingMenuBar.stageText(inFlight: ledger.inFlight))
     XCTAssertFalse(ledger.inFlight.isEmpty, "still work, even with no stage to name")
+  }
+}
+
+// MARK: - Where Stop lands (XIA-429)
+
+/// The routing decision lives in **one** pure helper so the owner can reverse
+/// it after living with it; these are the three things it may never do,
+/// asserted against that helper rather than against a rendered window.
+final class StopLandingTests: XCTestCase {
+  /// The ordinary case: a clean Stop lands on the document it just sealed.
+  func testASealedSessionOpensItsOwnDocument() {
+    XCTAssertTrue(
+      StopLanding.opensSealedDocument(sealed: true, discarded: false, isLiveSessionActive: false)
+    )
+  }
+
+  /// **A seal that failed falls back to home.** There is no document, so
+  /// routing to one would be routing to nothing; the orphan toolbar pill is
+  /// what acknowledges the record instead.
+  func testAFailedSealNeverRoutesToADocument() {
+    XCTAssertFalse(
+      StopLanding.opensSealedDocument(sealed: false, discarded: false, isLiveSessionActive: false)
+    )
+  }
+
+  /// **A discarded session must not route either.** Discard sets the same
+  /// `isLiveSessionHandedOff` flag Stop does — XIA-434 already found the two
+  /// sharing it — and deletes the whole record, so a decision made on that flag
+  /// would open a document for a session the owner said they did not want.
+  func testADiscardedSessionNeverRoutesToADocument() {
+    XCTAssertFalse(
+      StopLanding.opensSealedDocument(sealed: true, discarded: true, isLiveSessionActive: false)
+    )
+  }
+
+  /// A Start press that beat the seal keeps the window. The seal completes
+  /// asynchronously and a session that is already recording must not have the
+  /// window yanked out from under it — the rule `CompletionEffect.decide` keeps.
+  func testASessionThatIsRecordingAgainKeepsTheWindow() {
+    XCTAssertFalse(
+      StopLanding.opensSealedDocument(sealed: true, discarded: false, isLiveSessionActive: true)
+    )
+  }
+
+  /// **A file transcription started in the gap owns the pane.** Stop comes home
+  /// on the press and the seal lands seconds later; `ContentView.phase` tests
+  /// `hasContent` before `isRunning`, so writing a document here would take the
+  /// running pane away outright.
+  func testAFileTranscriptionStartedInTheGapKeepsThePane() {
+    XCTAssertFalse(
+      StopLanding.opensSealedDocument(
+        sealed: true,
+        discarded: false,
+        isLiveSessionActive: false,
+        isTranscribingAFile: true
+      )
+    )
+  }
+
+  /// **Whatever the owner opened in the meantime wins.** The AssemblyAI stop
+  /// waits on the final transcript up to a 5s watchdog, which is more than long
+  /// enough to press ⌘L and open yesterday's meeting; the seal must not then
+  /// swap the document out from under them.
+  func testADocumentTheOwnerOpenedInTheMeantimeIsNotReplaced() {
+    XCTAssertFalse(
+      StopLanding.opensSealedDocument(
+        sealed: true,
+        discarded: false,
+        isLiveSessionActive: false,
+        openDocumentChanged: true
+      )
+    )
+  }
+
+  /// The switch is one flag, and **flipping it turns the whole feature off** —
+  /// asserted by driving the off state, not by asserting the constant is true.
+  /// The latter proves nothing about the switch and makes using the escape
+  /// hatch a red suite, which is the opposite of an escape hatch.
+  func testTheOwnerCanTurnTheWholeThingOffInOnePlace() {
+    for active in [false, true] {
+      for running in [false, true] {
+        for changed in [false, true] {
+          XCTAssertFalse(
+            StopLanding.opensSealedDocument(
+              routes: false,
+              sealed: true,
+              discarded: false,
+              isLiveSessionActive: active,
+              isTranscribingAFile: running,
+              openDocumentChanged: changed
+            ),
+            "one flag has to be enough to restore \"Stop goes home\""
+          )
+        }
+      }
+    }
+    XCTAssertTrue(StopLanding.routesToDocument, "shipped on; flip this to go back")
   }
 }

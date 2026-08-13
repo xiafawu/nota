@@ -23,6 +23,32 @@ struct DocumentHeaderView: View {
   /// always-visible "+ add tag" chip). Nil keeps the static pills for
   /// imported markdown without a record.
   var tagEditing: EnrichmentTagEditing?
+  /// The record's facts, drawn as a dot-separated strip under the chips
+  /// (XIA-429). The **same** `RecordFacts` the receipt drew at Stop — one
+  /// model, two renderings, so the moment and the document cannot drift.
+  var facts: RecordFacts?
+  /// Scroll the transcript to the next moment pip. Nil when there are no pips,
+  /// which makes "N moments" plain text rather than a dead button.
+  var onNextMoment: (() -> Void)?
+
+  /// **One duration per header.** The parsed subtitle keeps the capture date
+  /// always, and keeps the markdown's `**Duration:**` figure only when the fact
+  /// strip is not about to state the same length itself.
+  ///
+  /// The two disagree by construction, which is why this is a rule and not a
+  /// tidy-up: `durationMinutes` is `max(1, ceil(seconds / 60))`, so an 18 min
+  /// 42 s meeting exports `**Duration:** 19 minutes` while `durationSeconds`
+  /// (1122) drives the strip's `18:42`. Rendering both put "May 20 · 19 min"
+  /// four points above "18:42 · Meeting · 3 speakers", inside a single header,
+  /// on a feature chosen specifically so the moment and the document could not
+  /// disagree about how long the recording was.
+  ///
+  /// Pure, so the rule is asserted without laying anything out.
+  static func subtitle(meta: DocMeta, facts: RecordFacts?) -> String {
+    let stripStatesDuration = facts?.text(for: .duration) != nil
+    let parts = stripStatesDuration ? [meta.dateText] : [meta.dateText, meta.durationText]
+    return parts.filter { !$0.isEmpty }.joined(separator: " · ")
+  }
 
   var body: some View {
     VStack(alignment: .leading, spacing: Metrics.docHeaderSpacing) {
@@ -34,8 +60,8 @@ struct DocumentHeaderView: View {
         .textSelection(.enabled)
 
       if !compact {
-        if !meta.subtitle.isEmpty {
-          Text(meta.subtitle)
+        if !Self.subtitle(meta: meta, facts: facts).isEmpty {
+          Text(Self.subtitle(meta: meta, facts: facts))
             .font(Tokens.docSubtitleFont)
             .foregroundStyle(.secondary)
         }
@@ -49,6 +75,20 @@ struct DocumentHeaderView: View {
             onDismissSuggestion: onDismissSuggestion
           )
           .padding(.top, Metrics.tagTopPadding)
+        }
+
+        // Under the title and the speaker chips, above the tags: the facts are
+        // about the recording, and the tags are about its content.
+        //
+        // It folds with the rest of the header on scroll, deliberately. The
+        // compact header is a single headline line by design, and a strip that
+        // survived alone while the chips and tags it sits between folded away
+        // would read as a row that had come loose. "Permanent" here means the
+        // document keeps these facts forever, not that they are pinned to the
+        // top of the window.
+        if let facts, !facts.isEmpty {
+          RecordFactStripView(facts: facts, onNextMoment: onNextMoment)
+            .padding(.top, Metrics.tagTopPadding)
         }
 
         if let tagEditing {
