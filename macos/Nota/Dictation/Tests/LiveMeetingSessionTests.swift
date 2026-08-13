@@ -49,13 +49,24 @@ final class LiveMeetingSessionTests: XCTestCase {
     XCTAssertEqual(session.segments.map(\.text), ["First sentence.", "Second sentence."])
   }
 
-  func testEmptyFinalTurnIsAppended() {
-    // Contract behavior: every final Turn appends, even an empty one.
+  /// **An empty final Turn is dropped** (changed by XIA-447; it used to append,
+  /// on the reasoning that every final Turn is a segment).
+  ///
+  /// A pause holds the socket open by streaming zeroed frames for as long as it
+  /// lasts, and silence is exactly the input that closes a turn — so the old
+  /// rule put a blank segment in the live transcript and a blank line in the
+  /// sealed `.md` at every pause, all stamped at the same frozen `elapsed`.
+  /// There is nothing to lose on the far side: a turn with no words is not a
+  /// turn, and `partialText` is still cleared either way.
+  func testAnEmptyFinalTurnIsNotASegment() {
     let session = LiveMeetingSession()
     session.handleMessageJSON(Self.beginJSON)
+    session.handleMessageJSON(Self.turnJSON("Hello world.", endOfTurn: false))
     session.handleMessageJSON(Self.turnJSON("", endOfTurn: true))
-    XCTAssertEqual(session.segments.count, 1)
-    XCTAssertEqual(session.segments[0].text, "")
+    XCTAssertTrue(session.segments.isEmpty)
+    XCTAssertNil(session.partialText, "a blank end-of-turn still closes the partial")
+    session.handleMessageJSON(Self.turnJSON("   ", endOfTurn: true))
+    XCTAssertTrue(session.segments.isEmpty, "whitespace is not words either")
   }
 
   func testSegmentEndTimeUsesElapsedClock() {

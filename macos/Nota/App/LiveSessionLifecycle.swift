@@ -163,6 +163,24 @@ final class LiveSessionOwner {
     )
   }
 
+  // MARK: - Pause
+
+  /// Write the paused flag onto the record this session owns (XIA-447).
+  ///
+  /// The same three properties `recordMarkers` has and for the same reasons:
+  /// ownership-checked (no owned record is no live session to pause), at press
+  /// time rather than at the seal, and on the main actor like every other write
+  /// to this record. Not `@discardableResult`: a caller that cannot tell the
+  /// record it is paused has to say so rather than assume.
+  func setPaused(_ paused: Bool) -> Bool {
+    guard let started = record else { return false }
+    return LiveSessionPersistence.recordPaused(
+      id: started.historyID,
+      paused: paused,
+      historyDirectory: historyDirectory()
+    )
+  }
+
   // MARK: - Ownership-checked cleanup
 
   /// Give up ownership of `started`, but only if it is still the record that

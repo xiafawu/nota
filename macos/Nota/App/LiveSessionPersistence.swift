@@ -306,6 +306,17 @@ enum LiveSessionPersistence {
     }
     var changes: [String: Any] = ["status": status.rawValue]
     if interrupted { changes["interrupted"] = true }
+    // **A record that has left `recording` is not paused** (XIA-447). The flag
+    // is written at press time and only Resume clears it, so without this a
+    // session stopped *from* a pause seals as `{"status": "done", …,
+    // "paused": true}` — forever, on the surface `nota history show` calls
+    // scriptable. It is masked today only because both `describeHistoryStatus`
+    // and `presentation` gate the word on `recording`; a record that is wrong
+    // while its display happens to hide it is exactly the shape the
+    // flag-not-a-status design was chosen to avoid. Cleared here rather than at
+    // each call site because *every* way out of a live stage — the seal,
+    // `settleAsFailed`, the launch sweep — comes through this one function.
+    if status != .recording { changes["paused"] = false }
     return mutateRecord(id: id, historyDirectory: historyDirectory, changes)
   }
 
@@ -626,6 +637,41 @@ enum LiveSessionPersistence {
       historyDirectory: historyDirectory,
       ["markers": markerDictionaries(markers)]
     )
+  }
+
+  /// Write whether the live session is paused (XIA-447).
+  ///
+  /// **A flag beside `status`, never a new status**, and both halves of the
+  /// contract agree on that. `status` stays `recording`, because to every
+  /// consumer a paused session *is* recording: it owns a record, it holds the
+  /// audio file open, and nothing about the lifecycle machine has changed.
+  ///
+  /// A `"paused"` status would have needed a new value in both vocabularies and
+  /// in every total function over them — and, worse, it would have been unsafe
+  /// in the one direction the decoders cannot defend. `normalizeHistoryStatus`
+  /// resolves an unrecognized value by what the record HAS, so an older build
+  /// (or the shipped `dist/index.js` the app shells out to) would read
+  /// `"paused"` as `transcribed` — a *rest* state, which `isInFlight` refuses
+  /// and the launch sweep therefore skips forever. A paused session whose
+  /// process went away would have become a finished transcript with no
+  /// transcript in it, which is exactly what XIA-430's tolerant decoding exists
+  /// to prevent.
+  ///
+  /// With a flag the sweep is untouched: the record still says `recording`, so
+  /// an interrupted paused session still resolves to `failed(recording)` +
+  /// `interrupted` and still presents as "Interrupted" — the correct fact,
+  /// because nobody chose that outcome. An older reader ignores the key and
+  /// says "Recording": under-informative, never wrong, never terminal.
+  ///
+  /// It rides through `mutateRecord`, which merges rather than rebuilds, so it
+  /// cannot clobber a field the CLI owns. Not `@discardableResult`, for the
+  /// reason nothing else here is.
+  static func recordPaused(
+    id: String,
+    paused: Bool,
+    historyDirectory: URL
+  ) -> Bool {
+    mutateRecord(id: id, historyDirectory: historyDirectory, ["paused": paused])
   }
 
   /// CLI's TranscriptSegment shape: `{ start, end, text }`. Live segments

@@ -56,7 +56,22 @@ enum RecordingPaneMetrics {
   /// The cluster's own clearance from the bottom of the pane.
   static let clusterBottomInset: CGFloat = CraftTokens.spacing24
   /// Between the cluster's top edge and the last line the transcript may draw.
-  static let clusterTranscriptGap: CGFloat = CraftTokens.spacing16
+  ///
+  /// **The paused badge lives in this gap, so the gap has to hold it**
+  /// (XIA-447). The badge is an overlay, which is what keeps it from moving
+  /// Stop — but an overlay is also outside the reserve, and lifted by
+  /// `pausedBadgeHeight + pausedBadgeGap` (≈31pt) above a 16pt gap it landed
+  /// on the last line or two of the live transcript, which is the surface the
+  /// owner is reading. So the gap is the larger of the two, and
+  /// `transcriptBottomReserve` inherits it: the badge is drawn in space no line
+  /// was ever going to use.
+  ///
+  /// Unconditional, not "wider while paused". A reserve that changed at the
+  /// press would reflow the transcript under the owner at exactly the moment
+  /// the whole surface is promising to hold still — the same rule that made
+  /// the moment tally an overlay.
+  static let clusterTranscriptGap: CGFloat =
+    max(CraftTokens.spacing16, pausedBadgeHeight + pausedBadgeGap)
 
   /// The meter in the cluster. `.compact`, and named rather than passed at the
   /// call site because `capsuleContentHeight` has to measure the same one the
@@ -101,6 +116,28 @@ enum RecordingPaneMetrics {
   /// Half the badge, so it straddles the capsule's rim rather than sitting
   /// inside it (where the glyph is) or beside it (where nothing is).
   static let markerBadgeInset: CGFloat = 6
+
+  /// The "Paused" word above the row (XIA-447).
+  ///
+  /// An **overlay**, like the moment tally and for the identical rule: no state
+  /// of the session may move Stop. Drawn inside the timer capsule it would
+  /// widen it, and a centred cluster splits any widening across both sides — so
+  /// pressing Pause would step Stop sideways, on the surface whose whole job is
+  /// to hold still. None of these numbers reaches `capsuleHeight`,
+  /// `transcriptBottomReserve` or any cluster width, by construction.
+  static let pausedBadgeFontSize: CGFloat = 12
+  static let pausedBadgePaddingH: CGFloat = CraftTokens.spacing12
+  static let pausedBadgePaddingV: CGFloat = CraftTokens.spacing4
+  /// Measured from the font, not typed — the same rule `capsuleContentHeight`
+  /// keeps, so the offset that lifts the badge clear of the row is derived from
+  /// the badge rather than guessed at.
+  static let pausedBadgeHeight: CGFloat = {
+    let line = ("Paused" as NSString)
+      .size(withAttributes: [.font: NSFont.systemFont(ofSize: pausedBadgeFontSize, weight: .semibold)])
+      .height
+    return line.rounded(.up) + 2 * pausedBadgePaddingV
+  }()
+  static let pausedBadgeGap: CGFloat = CraftTokens.spacing8
 
   /// The tallest thing any capsule has to hold. **Measured, not typed** — this
   /// is the precedent XIA-444 got wrong: `controlRowHeight` was written as 40
@@ -302,9 +339,13 @@ final class MicLevelFeed: ObservableObject {
 struct SessionMeterFeedView: View {
   @ObservedObject var feed: MicLevelFeed
   var variant: SessionMeterMetrics.Variant
+  /// Passed straight through to `SessionMeter.isLive` (XIA-447): the level
+  /// falls to zero at a pause, and the meter's *floor* is drawn at zero, so
+  /// without this the paused cluster kept ember bars over a closed microphone.
+  var isLive: Bool = true
 
   var body: some View {
-    SessionMeter(level: feed.level, variant: variant)
+    SessionMeter(level: feed.level, variant: variant, isLive: isLive)
   }
 }
 
@@ -330,6 +371,7 @@ enum RecordingPaneCopy {
     case .start: return "ready"
     case .starting: return "starting"
     case .stop: return "listening"
+    case .paused: return "paused"
     case .finalizing: return "finishing"
     case .saveOrDiscard, .retryOrDiscard: return "stopped"
     }
@@ -370,6 +412,21 @@ enum RecordingPaneCopy {
   static var markHelp: String { "\(markTitle) \(markShortcut)" }
   static let stopTitle = "Stop"
   static let listening = "Listening…"
+
+  /// The pause capsule's two faces (XIA-447). One capsule, one job — stop
+  /// capturing without ending the session, and start again — so it is one case
+  /// in the table with a face that depends on whether the session is paused,
+  /// rather than two cases only one of which is ever drawable.
+  static let pauseTitle = "Pause"
+  static let resumeTitle = "Resume"
+
+  /// **The literal word, on the cluster.** A paused session may never look
+  /// stopped — the owner walks away, comes back to a quiet screen, assumes it
+  /// ended, and loses the meeting. The ember going out and the clock stopping
+  /// are both *absences*, and an absence is exactly what a stopped session
+  /// looks like, so the state has to say its own name. The island and the menu
+  /// bar say the same word, through `LiveMeetingFormat.stateLabel`.
+  static let pausedBadge = "Paused"
 
   /// Shown over the transcript when a ⌘K did not reach the record (XIA-433).
   ///
@@ -416,6 +473,9 @@ enum RecordingPaneCopy {
       markTitle,
       markShortcut,
       markHelp,
+      pauseTitle,
+      resumeTitle,
+      pausedBadge,
       stopTitle,
       listening,
       markersUnsaved,
@@ -990,10 +1050,18 @@ struct SessionTimerCapsule: View {
   /// The meter's own object. Passed rather than a `Float` so the level's ~15 Hz
   /// feed is observed by `SessionMeterFeedView` alone — see `MeterPublishGate`.
   let level: MicLevelFeed
+  /// Whether the microphone is open (XIA-447). Only the meter's colour depends
+  /// on it — the clock keeps its own (frozen) value, and nothing about the
+  /// capsule's geometry moves.
+  var isLive: Bool = true
 
   var body: some View {
     HStack(spacing: RecordingPaneMetrics.timerContentGap) {
-      SessionMeterFeedView(feed: level, variant: RecordingPaneMetrics.meterVariant)
+      SessionMeterFeedView(
+        feed: level,
+        variant: RecordingPaneMetrics.meterVariant,
+        isLive: isLive
+      )
       SessionTimer(elapsed: elapsed, base: RecordingPaneMetrics.clockBase)
     }
     .padding(.horizontal, RecordingPaneMetrics.timerPaddingH)
@@ -1022,36 +1090,73 @@ struct SessionTimerCapsule: View {
 /// There is no `moments` case any more (owner, 2026-08-11): reviewing what has
 /// been flagged is not something a recording surface does. See the cluster's
 /// own comment for what went with it.
+/// (XIA-447 added `pause`. The 2026-08-11 ruling against a fourth capsule was
+/// about **Moments**, a browsing affordance on a surface meant for recording;
+/// pause is a *capture control*, and that reasoning does not carry. XIA-422's
+/// older rejection does not either: it found that people reaching for pause
+/// wanted "this bit matters" and shipped Mark, which is a real need and not the
+/// only one. Mark is an annotation and never stops capture; pause stops capture
+/// and says nothing about importance. No reading of Mark serves "I want to use
+/// the restroom for two minutes and then hit continue".)
 enum SessionClusterAction: CaseIterable {
   /// Flag this instant, and carry the tally of what has been flagged.
   case mark
+  /// Stop capturing without ending the session, and start again. **Stop stays
+  /// terminal** — there is no resume after Stop, ever — which is why this is a
+  /// separate control and not a mode of that one.
+  case pause
   case stop
 
-  var symbol: String {
+  /// The faces that depend on whether the session is paused take it as a
+  /// parameter rather than the table splitting into two cases, one of which is
+  /// undrawable at any given moment. The row is `allCases` in order, so a case
+  /// that cannot be drawn is a hole in the row.
+  func symbol(paused: Bool) -> String {
     switch self {
     case .mark: return "bookmark.fill"
+    case .pause: return paused ? "play.fill" : "pause.fill"
     case .stop: return "stop.fill"
     }
   }
 
   /// The accessibility label — an icon-only control's only name.
-  var label: String {
+  func label(paused: Bool) -> String {
     switch self {
     case .mark: return RecordingPaneCopy.markTitle
+    case .pause: return paused ? RecordingPaneCopy.resumeTitle : RecordingPaneCopy.pauseTitle
     case .stop: return RecordingPaneCopy.stopTitle
     }
   }
 
   /// The tooltip. Mark's names its shortcut, because icon-only leaves nowhere
   /// else on the surface for ⌘K to be written.
-  var help: String {
-    self == .mark ? RecordingPaneCopy.markHelp : label
+  func help(paused: Bool) -> String {
+    self == .mark ? RecordingPaneCopy.markHelp : label(paused: paused)
   }
 
-  /// Blue for the one that flags a moment, red for the one that ends the
-  /// session. `CraftTokens.primaryBlue` is the app's "confident action" colour
-  /// and sits at ΔE 132 from the ember, where no confusion is possible; Stop's
-  /// red is the owner's call with the measurement in hand (`CraftTokens.stopRed`).
+  /// Which states this capsule may be pressed in.
+  ///
+  /// It is back as a per-action question — XIA-445 removed it because every
+  /// capsule then belonged to a running session and a property that can only
+  /// say `true` reads as a question the surface is still asking. Pause makes it
+  /// a real question again, and the answer is not uniform: **Mark is refused
+  /// while paused**, because `NotaModel.markCurrentMoment` gates on the open
+  /// microphone and a moment flagged into a paused session is a timestamp
+  /// pointing at audio nobody kept. Pause and Stop are live in both.
+  func isEnabled(_ controls: LiveMeetingControls) -> Bool {
+    switch self {
+    case .mark: return controls == .stop
+    case .pause, .stop: return controls == .stop || controls == .paused
+    }
+  }
+
+  /// Blue for the two confident actions (Mark and Pause), red for the one that
+  /// ends the session. `CraftTokens.primaryBlue` is the app's "confident
+  /// action" colour and sits at ΔE 132 from the ember, where no confusion is
+  /// possible; Stop's red is the owner's call with the measurement in hand
+  /// (`CraftTokens.stopRed`). Pause is deliberately **not** red and not ember:
+  /// red is Stop and nothing else on this surface, and the ember means the
+  /// microphone is open — which is the one thing pause is turning off.
   var tint: Color {
     self == .stop ? CraftTokens.stopRed : CraftTokens.primaryBlue
   }
@@ -1097,16 +1202,42 @@ struct SessionCapsuleCluster: View {
   let controls: LiveMeetingControls
   let markers: [SessionMarker]
   let onMark: () -> Void
+  var onPause: () -> Void = {}
   let onStop: () -> Void
 
-  private var isStoppable: Bool { controls == .stop }
+  /// Whether the session this cluster is drawing is paused. Read off the one
+  /// decision every surface reads, so the capsule faces, the word and the
+  /// enablement cannot disagree with each other.
+  private var isPaused: Bool { controls == .paused }
 
   var body: some View {
     GlassEffectContainer(spacing: RecordingPaneMetrics.capsuleGap) {
       HStack(spacing: RecordingPaneMetrics.capsuleGap) {
-        SessionTimerCapsule(elapsed: elapsed, level: level)
+        SessionTimerCapsule(elapsed: elapsed, level: level, isLive: !isPaused)
         ForEach(SessionClusterAction.allCases, id: \.self) { capsule($0) }
       }
+    }
+    // **The word, and it costs the row nothing.** An overlay is outside the
+    // layout entirely — the same mechanism the moment tally uses, and for the
+    // same rule: no state of the session may move Stop under the pointer. A
+    // label drawn *inside* the timer capsule would widen it, and a centred row
+    // splits any widening across both sides.
+    .overlay(alignment: .top) { pausedBadge }
+  }
+
+  /// "Paused", above the row.
+  @ViewBuilder
+  private var pausedBadge: some View {
+    if isPaused {
+      Text(RecordingPaneCopy.pausedBadge)
+        .font(.system(size: RecordingPaneMetrics.pausedBadgeFontSize, weight: .semibold))
+        .foregroundStyle(.white)
+        .padding(.horizontal, RecordingPaneMetrics.pausedBadgePaddingH)
+        .padding(.vertical, RecordingPaneMetrics.pausedBadgePaddingV)
+        .background(CraftTokens.primaryBlue.opacity(RecordingCapsuleTint.strength),
+                    in: Capsule(style: .continuous))
+        .offset(y: -(RecordingPaneMetrics.pausedBadgeHeight + RecordingPaneMetrics.pausedBadgeGap))
+        .allowsHitTesting(false)
     }
   }
 
@@ -1119,6 +1250,7 @@ struct SessionCapsuleCluster: View {
   func perform(_ action: SessionClusterAction) {
     switch action {
     case .mark: onMark()
+    case .pause: onPause()
     case .stop: onStop()
     }
   }
@@ -1131,19 +1263,19 @@ struct SessionCapsuleCluster: View {
     Button {
       perform(action)
     } label: {
-      Image(systemName: action.symbol)
+      Image(systemName: action.symbol(paused: isPaused))
     }
     .buttonStyle(RecordingCapsuleButtonStyle(tint: action.tint))
     .overlay(alignment: .topTrailing) {
       if action.carriesMarkerCount { markerCount }
     }
-    // Both capsules belong to a session that is running, so there is no longer
-    // a per-action question to ask: the table's `requiresALiveSession` is gone
-    // with the one case that answered it differently.
-    .disabled(!isStoppable)
-    .accessibilityLabel(action.label)
+    // Per-action again since XIA-447: Mark is refused while paused (a moment
+    // flagged into a session whose audio is not being kept is a timestamp
+    // pointing at nothing), while Pause and Stop are live in both states.
+    .disabled(!action.isEnabled(controls))
+    .accessibilityLabel(action.label(paused: isPaused))
     .accessibilityHint(action == .mark ? RecordingPaneCopy.markShortcut : "")
-    .help(action.help)
+    .help(action.help(paused: isPaused))
     // ⌘K lives on the button that marks, now that the button that marks is the
     // one the owner can see. It went on a hidden zero-sized button only because
     // the visible capsule's press opened the list.

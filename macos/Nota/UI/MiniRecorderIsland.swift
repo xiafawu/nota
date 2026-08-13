@@ -38,6 +38,12 @@ enum MiniIslandPhase: Equatable {
   /// through `NotaModel.markersUnsaved`, and the pane is by construction not on
   /// screen whenever the island is.
   case markConfirmed(time: String, ordinal: String, landed: Bool)
+  /// The owner pressed Pause (XIA-447). The session is still theirs and the
+  /// card **says so in words** — the dot goes grey, the meter goes, the clock
+  /// holds at the audio time it reached, and the card reads "Paused". A card
+  /// that only went quiet is a card that reads as a session that ended, which
+  /// is the whole failure this state is worded to prevent.
+  case paused
   /// Stop has been pressed and the record is being worked on somewhere else.
   case handoff(secondsAgo: Int)
   /// The session dropped. Names what failed and that the audio is being kept.
@@ -52,13 +58,20 @@ enum MiniIslandPhase: Equatable {
   var showsEmber: Bool {
     switch self {
     case .recording, .markConfirmed: return true
-    case .handoff, .failure: return false
+    case .paused, .handoff, .failure: return false
     }
   }
 
-  /// Whether the clock is drawn. Same two phases: an elapsed time beside a
-  /// stopped session is a number that has stopped meaning anything.
-  var showsClock: Bool { showsEmber }
+  /// Whether the clock is drawn. **Not** the same set as the ember any more:
+  /// a paused session's clock is the length of the recording so far, which is
+  /// still true and still the owner's — it has simply stopped moving. What has
+  /// stopped meaning anything is an elapsed time beside a session that is over.
+  var showsClock: Bool {
+    switch self {
+    case .recording, .markConfirmed, .paused: return true
+    case .handoff, .failure: return false
+    }
+  }
 
   /// What the owner may do from here. A table rather than branches in a view
   /// builder, for the reason `SessionClusterAction` is one: which control does
@@ -66,7 +79,13 @@ enum MiniIslandPhase: Equatable {
   /// a fact a test reads.
   var actions: [MiniIslandAction] {
     switch self {
-    case .recording: return [.mark, .stop]
+    case .recording: return [.mark, .pause, .stop]
+    // Mark is gone rather than disabled, for the reason the confirmation's list
+    // is empty rather than disabled: `NotaModel.markCurrentMoment` refuses a
+    // paused session, so a Mark capsule here would be a control that does
+    // nothing at all. Resume and Stop are both live — Stop is terminal from
+    // here too, and the owner may not have to resume in order to end.
+    case .paused: return [.resume, .stop]
     // The confirmation *replaces* the controls; that is the whole of what
     // "replacing" means and it is why this list is empty rather than disabled.
     case .markConfirmed: return []
@@ -87,6 +106,7 @@ enum MiniIslandPhase: Equatable {
   var message: String? {
     switch self {
     case .recording: return nil
+    case .paused: return RecordingPaneCopy.pausedBadge
     case .markConfirmed(let time, let ordinal, let landed):
       return MiniIslandCopy.marked(time: time, ordinal: ordinal, landed: landed)
     case .handoff(let secondsAgo): return MiniIslandCopy.handoff(secondsAgo: secondsAgo)
@@ -99,7 +119,16 @@ enum MiniIslandPhase: Equatable {
 enum MiniIslandAction: CaseIterable {
   /// Flag this instant — the same press ⌘K makes in the window.
   case mark
-  /// End the session and hand it off.
+  /// Stop capturing, keep the session (XIA-447).
+  case pause
+  /// Continue into the same recording.
+  ///
+  /// Two cases rather than one with a face that changes, unlike the window
+  /// cluster's single `.pause`: the island's row is built per **phase**, so
+  /// exactly one of these is ever offered and "which control does what" stays
+  /// one verb per case — the property `IslandVerbs` exists to keep.
+  case resume
+  /// End the session and hand it off. Terminal: no resume follows a Stop.
   case stop
   /// Bring Nota forward onto the record that is being worked on.
   case show
@@ -110,6 +139,8 @@ enum MiniIslandAction: CaseIterable {
   var symbol: String {
     switch self {
     case .mark: return "bookmark.fill"
+    case .pause: return "pause.fill"
+    case .resume: return "play.fill"
     case .stop: return "stop.fill"
     case .show: return "arrow.up.forward.app.fill"
     case .retry: return "arrow.clockwise"
@@ -120,6 +151,8 @@ enum MiniIslandAction: CaseIterable {
   var label: String {
     switch self {
     case .mark: return RecordingPaneCopy.markTitle
+    case .pause: return RecordingPaneCopy.pauseTitle
+    case .resume: return RecordingPaneCopy.resumeTitle
     case .stop: return RecordingPaneCopy.stopTitle
     case .show: return MiniIslandCopy.showTitle
     case .retry: return MiniIslandCopy.retryTitle
@@ -297,6 +330,15 @@ enum MiniIslandVisibility {
 
     if case .failed(let message) = inputs.sessionState {
       return .failure(message)
+    }
+
+    // **Above the microphone gate, deliberately** (XIA-447). Everything below
+    // is gated on `meterFollowsMicrophone`, which a paused session fails — so
+    // resolved down there the island would go off screen entirely the moment
+    // the owner pressed Pause, in the one situation where they are looking at
+    // another app and the window cannot tell them anything.
+    if inputs.sessionState == .paused {
+      return .paused
     }
 
     // The ember phases, and the only gate on them: the microphone is open.

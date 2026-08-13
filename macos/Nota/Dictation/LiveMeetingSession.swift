@@ -66,6 +66,16 @@ final class LiveMeetingSession: ObservableObject {
   enum SessionState: Equatable {
     case idle
     case recording
+    /// The owner pressed Pause (XIA-447). The session is **not over**: the tap
+    /// is still installed, the socket is still open, the record is still owned,
+    /// and Resume continues into the same `recording.caf`. What stops is
+    /// everything that would be a claim about a live microphone — buffers reach
+    /// neither the socket nor the file, the meter falls to its floor, the ember
+    /// goes out on all three surfaces, and the clock stops.
+    ///
+    /// **A pause lasts forever** (owner, 2026-08-12). There is no timeout, no
+    /// auto-stop and no "still there?" — Nota never ends a session on its own.
+    case paused
     case stopping
     case failed(String)
   }
@@ -214,17 +224,14 @@ final class LiveMeetingSession: ObservableObject {
     openWatchdog = nil
 
     // 5. Begin received — session is live. Start the clock, audio file, capture.
-    startedAt = Date()
+    // The clock is normally already installed: `Begin` is what flips `state` to
+    // `.recording`, and the surface's Pause capsule is live from that instant,
+    // so the clock has to exist by then too (see `handleMessageJSON`). This is
+    // the fallback for a path that reached here without one.
+    if clock == nil { clock = SessionClock(startedAt: Date()) }
     startElapsedTicker()
     prepareAudioFile()
-    capture.onPCMBuffer = { [weak self] buffer in
-      // MicCapture delivers converted 16 kHz mono Float32 buffers on main.
-      Task { @MainActor in
-        guard let self else { return }
-        self.publishLevel()
-        self.handlePCMBuffer(buffer)
-      }
-    }
+    installCaptureHandler()
     do {
       try capture.start()
     } catch {
@@ -240,15 +247,93 @@ final class LiveMeetingSession: ObservableObject {
     logger.info("live meeting session started")
   }
 
+  // MARK: - Pause / resume (XIA-447)
+
+  /// Stop capturing without ending the session.
+  ///
+  /// Three things it owes, and each is a hazard rather than a nicety:
+  ///
+  /// - **The pre-press tail is not lost.** `capture.flushPending()` runs
+  ///   *before* the state flips, because `handlePCMBuffer`'s guard is evaluated
+  ///   on the main actor at drain time: whatever is queued at the press is audio
+  ///   that was captured while the microphone was live, and judging it against
+  ///   `.paused` is the same defect `PendingPCMBuffers` was written to fix,
+  ///   arriving at a boundary that happens many times a session. The drain is
+  ///   worth nothing unless the buffer callback is **synchronous** — the first
+  ///   cut of this ticket wrapped it in `Task { @MainActor }`, which deferred
+  ///   every drained buffer past the flip and dropped exactly the audio the
+  ///   flush exists to keep.
+  /// - **The clock stops, and it stops as audio time.** `SessionClock` accrues
+  ///   the pause, and the ticker is left running deliberately: it publishes
+  ///   `clock.elapsed(now:)`, which is pinned to the instant of the press while
+  ///   `pausedAt` is set, so it costs one assignment a quarter-second and there
+  ///   is no second lifecycle to keep in step at resume.
+  /// - **The socket is kept.** See `startPauseKeepAlive`.
+  ///
+  /// The capture engine is deliberately **not** stopped. `stopCapture()` nils
+  /// `onPCMBuffer` and nothing but `start()` reinstalls it, and
+  /// `MicCapture.start()` re-negotiates the device format and can throw — a
+  /// resume that can fail with a `MicCaptureError` is a new failure class on a
+  /// session that is already recording. The shape "tap installed, buffers
+  /// dropped by the state guard" is exactly what `.stopping` already is; pause
+  /// is that discipline without the teardown.
+  ///
+  /// The cost of that is worth naming rather than glossing: **macOS keeps its
+  /// own microphone indicator lit for the whole pause**, because the tap really
+  /// is installed. Nothing Nota keeps, sends or writes comes from it — that is
+  /// `capturesAudio`, and the file proves it — but nowhere may claim the
+  /// *device* is closed. Everything that used to say so has been reworded.
+  ///
+  /// **A clock is required, not optional.** On the WS path `Begin` is what
+  /// flips `state` to `.recording`, and the rest of `start()` runs as a
+  /// separate main-actor job after the continuation resumes — so there is a
+  /// window in which a Pause press would find a live state and no clock.
+  /// `handleMessageJSON` installs the clock at `Begin` to close it, and this
+  /// guard is the backstop: pausing a clockless session would show "Paused"
+  /// over a *ticking* clock and bank the whole pause into `elapsed` as audio
+  /// time, which is the one substitution the ticket forbids.
+  func pause(now: Date = Date()) {
+    guard state == .recording, clock != nil else { return }
+    capture.flushPending()
+    clock?.pause(now: now)
+    state = .paused
+    publishElapsed(now: now)
+    level.silence()
+    startPauseKeepAlive()
+    logger.info("live meeting session paused")
+  }
+
+  /// Continue into the same recording. Same file, same socket, same record.
+  ///
+  /// `capture.discardPending()` runs *before* the state flips, and it is the
+  /// mirror of the flush at the far end: a buffer converted during the pause is
+  /// drained by a later main-thread hop, so without this it would be judged
+  /// against `.recording` and written into the file the owner was told does not
+  /// hold it.
+  func resume(now: Date = Date()) {
+    guard state == .paused else { return }
+    stopPauseKeepAlive()
+    capture.discardPending()
+    clock?.resume(now: now)
+    state = .recording
+    publishElapsed(now: now)
+    logger.info("live meeting session resumed")
+  }
+
   /// Stop the live meeting: send `Terminate`, wait for `Termination` (or the
   /// 5 s watchdog), stop capture, close the socket, finalize the audio file,
   /// and settle `state` to `.idle` before returning the accumulated result.
+  ///
+  /// **Stop is terminal, from `.paused` too.** There is no resume after Stop,
+  /// ever; a paused session is stoppable precisely so the owner never has to
+  /// resume in order to end.
   func stop() async throws -> LiveMeetingResult {
     if let result = lastResult { return result }
     let isFailed: Bool = if case .failed(_) = state { true } else { false }
-    guard state == .recording || isFailed else {
+    guard state == .recording || state == .paused || isFailed else {
       throw LiveMeetingSessionError.notRecording
     }
+    stopPauseKeepAlive()
 
     // Apple engine: no WS termination dance — stop capture, finalize the
     // recognizer, and build the result from what streamed in.
@@ -305,7 +390,14 @@ final class LiveMeetingSession: ObservableObject {
     let result = LiveMeetingResult(
       segments: segments,
       transcriptText: transcriptText,
-      duration: duration ?? elapsed,
+      // The server's `audio_duration_seconds` counts every frame we sent, and a
+      // paused session's keep-alive frames are silence — so it is wall clock
+      // for exactly the sessions where wall clock is wrong. `SessionDurationChoice`.
+      duration: SessionDurationChoice.duration(
+        serverReported: duration,
+        elapsed: elapsed,
+        everPaused: clock?.everPaused ?? false
+      ),
       audioURL: finalizeAudioFile()
     )
     lastResult = result
@@ -333,6 +425,7 @@ final class LiveMeetingSession: ObservableObject {
     // Stop I/O.
     elapsedTask?.cancel()
     elapsedTask = nil
+    stopPauseKeepAlive()
     receiveTask?.cancel()
     receiveTask = nil
     stopCapture()
@@ -348,7 +441,7 @@ final class LiveMeetingSession: ObservableObject {
     segments = []
     partialText = nil
     elapsed = 0
-    startedAt = nil
+    clock = nil
     didReceiveTermination = false
     finalDuration = nil
     audioDestination = nil
@@ -369,6 +462,12 @@ final class LiveMeetingSession: ObservableObject {
 
     switch parsed {
     case .begin:
+      // The clock is installed **here**, with the state, and not only in the
+      // remainder of `start()` (XIA-447). Resuming the continuation below does
+      // not run that remainder inline — it enqueues it — so a Pause press in
+      // between would otherwise find `.recording` with no clock. `pause()`
+      // refuses that case as a backstop; this is what makes it unreachable.
+      if clock == nil { clock = SessionClock(startedAt: Date()) }
       state = .recording
       let begin = beginContinuation
       beginContinuation = nil
@@ -380,7 +479,16 @@ final class LiveMeetingSession: ObservableObject {
 
     case .turn(let transcript, let endOfTurn):
       if endOfTurn {
-        segments.append(LiveSegment(id: UUID(), text: transcript, endTime: elapsed))
+        // An **empty** end-of-turn is dropped rather than appended (XIA-447).
+        // A pause streams zeroed frames for as long as it lasts, and silence is
+        // exactly the input that ends a turn — so without this a five-minute
+        // break adds a blank segment to the live transcript and a blank line to
+        // the sealed `.md`, stamped at the frozen `elapsed`. There is nothing
+        // to lose: a turn with no words is not a turn.
+        let spoken = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !spoken.isEmpty {
+          segments.append(LiveSegment(id: UUID(), text: transcript, endTime: elapsed))
+        }
         partialText = nil
         logger.debug("Final turn: \"\(transcript.prefix(60), privacy: .public)\"")
       } else {
@@ -393,7 +501,10 @@ final class LiveMeetingSession: ObservableObject {
       if let duration { finalDuration = duration }
       resolveFinish(duration: finalDuration)
       // Server-initiated end while still recording: finalize the whole session.
-      if state == .recording {
+      // `.paused` counts — the session is not over, so a server that ends it
+      // ends it, and the record must not be left claiming a live stage because
+      // the owner happened to be away from the desk.
+      if state == .recording || state == .paused {
         finalizeSession()
       }
     }
@@ -445,6 +556,9 @@ final class LiveMeetingSession: ObservableObject {
 
   private let logger = Logger(subsystem: "com.xiafawu.nota", category: "dictation.livemeeting")
   private let capture = MicCapture()
+  #if DEBUG
+  private var keptBufferCount = 0
+  #endif
 
   private static let openTimeoutNanoseconds: UInt64 = 10_000_000_000
 
@@ -455,6 +569,7 @@ final class LiveMeetingSession: ObservableObject {
   private var openWatchdog: Task<Void, Never>?
   private var finishWatchdog: Task<Void, Never>?
   private var elapsedTask: Task<Void, Never>?
+  private var pauseKeepAliveTask: Task<Void, Never>?
 
   private var openContinuation: CheckedContinuation<Void, any Error>?
   private var beginContinuation: CheckedContinuation<Void, any Error>?
@@ -463,7 +578,10 @@ final class LiveMeetingSession: ObservableObject {
   private var didSendTerminate = false
   private var didReceiveTermination = false
   private var finalDuration: TimeInterval?
-  private var startedAt: Date?
+  /// The session's clock. It replaced a bare `startedAt` when pause arrived
+  /// (XIA-447): elapsed is audio time, so "when did this start" is no longer
+  /// enough to compute it. See `SessionClock`.
+  private var clock: SessionClock?
 
   private var audioFile: AVAudioFile?
   private var audioURL: URL?
@@ -529,13 +647,19 @@ final class LiveMeetingSession: ObservableObject {
     }
 
     // Session is live — same clock/audio/capture plumbing as the WS path.
-    startedAt = Date()
+    clock = SessionClock(startedAt: Date())
     startElapsedTicker()
     prepareAudioFile()
     capture.onPCMBuffer = { [weak self] buffer in
-      Task { @MainActor in
+      // Synchronous, for the reason the WS path's is. See `MicCapture
+      // .flushPending`.
+      MainActor.assumeIsolated {
         guard let self else { return }
         self.publishLevel()
+        // The same gate the WS path applies to its socket send and its file
+        // write (XIA-447): a paused session feeds the analyzer nothing, so the
+        // words spoken while it was paused are not in the transcript either.
+        guard Self.capturesAudio(self.state) else { return }
         try? self.appleSpeech?.feed(buffer)
       }
     }
@@ -556,7 +680,17 @@ final class LiveMeetingSession: ObservableObject {
 
   /// Route AppleSpeechStream hypotheses into the shared segment/partial state.
   private func handleAppleHypothesis(_ hypothesis: Hypothesis) {
-    guard state == .recording else { return }
+    /// **`.paused` counts, and that is XIA-447's correction here.** The
+    /// analyzer finalizes asynchronously: audio fed at t−0.5s routinely
+    /// resolves at t+0.3s, so the sentence spoken *just before* the press lands
+    /// after it. Gated on `.recording` alone that result was dropped and never
+    /// re-emitted — Apple's finalized results are deltas — so a mid-meeting
+    /// pause silently lost the last turn before it from the sealed transcript
+    /// and the summary. The WS path's `.turn` handler has never had a state
+    /// guard at all, which is why the two engines disagreed about one boundary.
+    /// It is stamped with `elapsed`, which is pinned at the press, so it names
+    /// the right second of the audio.
+    guard state == .recording || state == .paused else { return }
     if hypothesis.isFinal {
       segments.append(LiveSegment(id: UUID(), text: hypothesis.text, endTime: elapsed))
       partialText = nil
@@ -593,7 +727,7 @@ final class LiveMeetingSession: ObservableObject {
       resolveFinish(duration: nil)
     } else if openContinuation != nil || beginContinuation != nil {
       failOpen(error)
-    } else if state == .recording {
+    } else if state == .recording || state == .paused {
       failSession(error.localizedDescription)
     }
     // state == .idle/.failed → teardown in progress or already failed; ignore.
@@ -656,6 +790,10 @@ final class LiveMeetingSession: ObservableObject {
     state = .failed(message)
     elapsedTask?.cancel()
     elapsedTask = nil
+    // Both terminal paths reachable from `.paused` cancel it (XIA-447): the
+    // keep-alive is a task that sends on a socket `teardownWS()` is about to
+    // cancel, and it must not outlive the session that owns it.
+    stopPauseKeepAlive()
     stopCapture()
     receiveTask?.cancel()
     receiveTask = nil
@@ -667,6 +805,7 @@ final class LiveMeetingSession: ObservableObject {
     guard state != .idle else { return }
     elapsedTask?.cancel()
     elapsedTask = nil
+    stopPauseKeepAlive()
     stopCapture()
     receiveTask?.cancel()
     receiveTask = nil
@@ -675,7 +814,11 @@ final class LiveMeetingSession: ObservableObject {
     lastResult = LiveMeetingResult(
       segments: segments,
       transcriptText: transcriptText,
-      duration: finalDuration ?? elapsed,
+      duration: SessionDurationChoice.duration(
+        serverReported: finalDuration,
+        elapsed: elapsed,
+        everPaused: clock?.everPaused ?? false
+      ),
       audioURL: finalizeAudioFile()
     )
     state = .idle
@@ -725,6 +868,111 @@ final class LiveMeetingSession: ObservableObject {
     state == .recording
   }
 
+  /// Whether a delivered buffer is kept — i.e. whether it reaches the socket
+  /// **and** `recording.caf`.
+  ///
+  /// The same predicate for both destinations, deliberately, and it is what
+  /// makes audio continuity a fact about the file rather than a hope: the CAF
+  /// is a concatenation of exactly the buffers that got past this, so a paused
+  /// span is *absent* from it — not a gap of silence, not a second file — and
+  /// what the socket received matches what was written, frame for frame, apart
+  /// from the keep-alive silence (`startPauseKeepAlive`, which is the one thing
+  /// sent that is not from the microphone and is why the server's own duration
+  /// is no longer trusted for a paused session).
+  ///
+  /// It is `nonisolated static` and separate from `meterFollowsMicrophone`
+  /// because they answer different questions and only happen to agree today:
+  /// this one is about the *bytes*, that one is about what may be *claimed* on
+  /// screen.
+  nonisolated static func capturesAudio(_ state: SessionState) -> Bool {
+    state == .recording
+  }
+
+  // MARK: - Keeping the socket across a pause
+
+  /// How often a paused session sends a frame, and how much audio each carries.
+  ///
+  /// **The socket decision: one socket for the whole session, kept alive with
+  /// zeroed frames.** The alternative — close at pause, reopen at resume — was
+  /// rejected on the code as it stands, and each reason is independent:
+  ///
+  /// - There is no reopen path. `webSocketTask` is assigned in `start()` alone,
+  ///   and `start()` begins by calling `cancel()`, which wipes `segments`,
+  ///   `partialText`, `elapsed` and the audio file. Reopening mid-session
+  ///   destroys the meeting.
+  /// - A new socket is a new AssemblyAI session, so its `Termination` covers
+  ///   only the last leg — and that value is what a record is sealed with.
+  /// - Doing nothing at all is not available either: an idle realtime stream is
+  ///   disconnected by the server, and this file's close-code table has no idle
+  ///   case, so it would land in `failSession` — a pause that silently kills a
+  ///   meeting. Capping the pause would answer that, and the owner's second
+  ///   decision forbids it: **a pause lasts forever.**
+  ///
+  /// What it costs is honest and worth naming: AssemblyAI is streamed (and
+  /// billed for) silence for as long as the pause lasts, and its reported
+  /// `audio_duration_seconds` becomes wall clock rather than audio time — which
+  /// is exactly why `SessionDurationChoice` stops trusting it once a session has
+  /// been paused. Nothing about the keep-alive reaches `recording.caf`: this
+  /// writes to the socket only.
+  static let pauseKeepAliveInterval: TimeInterval = 1
+
+  /// One second of 16 kHz mono Int16 silence — the frame shape
+  /// `handlePCMBuffer` sends, with every sample zero. Pure, so its size is
+  /// asserted without a socket.
+  nonisolated static func silentFrame(seconds: TimeInterval = pauseKeepAliveInterval) -> Data {
+    let samples = max(0, Int((16_000 * seconds).rounded()))
+    return Data(count: samples * MemoryLayout<Int16>.stride)
+  }
+
+  /// Where a keep-alive frame goes, and how often. Nil is production: the
+  /// socket, at `pauseKeepAliveInterval`.
+  ///
+  /// The seam exists because this is the one part of pause that spends the
+  /// owner's money, and `URLSessionWebSocketTask.send` is not something a test
+  /// can observe — so without it the loop's guard, and every exit's
+  /// `stopPauseKeepAlive()`, were unasserted by construction. What the tests
+  /// actually need to hold is not "it sends" but "every way out of a pause
+  /// stops it": resume, stop, cancel, a mid-pause failure and a
+  /// server-initiated end.
+  var pauseKeepAliveSink: ((Data) -> Void)?
+  var pauseKeepAliveIntervalOverride: TimeInterval?
+
+  /// Whether a paused session is currently holding the stream open.
+  var isPauseKeepAliveRunning: Bool { pauseKeepAliveTask != nil }
+
+  private func startPauseKeepAlive() {
+    guard webSocketTask != nil || pauseKeepAliveSink != nil else { return }
+    stopPauseKeepAlive()
+    let interval = pauseKeepAliveIntervalOverride ?? Self.pauseKeepAliveInterval
+    pauseKeepAliveTask = Task { @MainActor [weak self] in
+      while !Task.isCancelled {
+        try? await Task.sleep(nanoseconds: UInt64(interval * 1_000_000_000))
+        guard let self, !Task.isCancelled, self.state == .paused else { return }
+        self.sendPauseKeepAlive()
+      }
+    }
+  }
+
+  private func sendPauseKeepAlive() {
+    let frame = Self.silentFrame()
+    if let pauseKeepAliveSink {
+      pauseKeepAliveSink(frame)
+      return
+    }
+    webSocketTask?.send(.data(frame)) { [weak self] error in
+      if let error {
+        self?.logger.warning(
+          "pause keep-alive send failed: \(error.localizedDescription, privacy: .public)"
+        )
+      }
+    }
+  }
+
+  private func stopPauseKeepAlive() {
+    pauseKeepAliveTask?.cancel()
+    pauseKeepAliveTask = nil
+  }
+
   private func publishLevel() {
     if LiveMeetingSession.meterFollowsMicrophone(state) {
       level.publish(capture.rmsLevel)
@@ -733,8 +981,39 @@ final class LiveMeetingSession: ObservableObject {
     }
   }
 
+  /// Wire the tap's delivery for the AssemblyAI path.
+  ///
+  /// **Synchronous, and that is load-bearing rather than a style choice.**
+  /// `MicCapture` delivers converted 16 kHz mono Float32 buffers on the main
+  /// thread, and `pause()` drains before it flips the state precisely so the
+  /// pre-press tail is judged as live audio. A `Task { @MainActor in … }` here
+  /// would defer every drained buffer past the flip and drop exactly the audio
+  /// the flush exists to keep — which is what the first cut of XIA-447 did.
+  /// See `MicCapture.flushPending`.
+  ///
+  /// One method rather than a closure literal at the call site so a test can
+  /// install the **production** handler and put a buffer in flight across a
+  /// real pause; a test that rebuilt this closure would be asserting its own
+  /// copy of the rule.
+  private func installCaptureHandler() {
+    capture.onPCMBuffer = { [weak self] buffer in
+      MainActor.assumeIsolated {
+        guard let self else { return }
+        self.publishLevel()
+        self.handlePCMBuffer(buffer)
+      }
+    }
+  }
+
   private func handlePCMBuffer(_ buffer: AVAudioPCMBuffer) {
-    guard state == .recording else { return }
+    guard Self.capturesAudio(state) else { return }
+    #if DEBUG
+    // How many buffers got past the gate. The only observable a test has for
+    // "the pre-press tail was kept and the paused span was not": both
+    // destinations below need a socket or an open file, and a unit test has
+    // neither. See `keptBufferCountForTesting`.
+    keptBufferCount += 1
+    #endif
 
     guard let int16Buffer = convertToInt16(buffer) else { return }
     let count = Int(int16Buffer.frameLength)
@@ -805,10 +1084,20 @@ final class LiveMeetingSession: ObservableObject {
     elapsedTask = Task { @MainActor [weak self] in
       while !Task.isCancelled {
         try? await Task.sleep(nanoseconds: 250_000_000)
-        guard let self, !Task.isCancelled, let startedAt = self.startedAt else { return }
-        self.elapsed = Date().timeIntervalSince(startedAt)
+        guard let self, !Task.isCancelled, self.clock != nil else { return }
+        self.publishElapsed(now: Date())
       }
     }
+  }
+
+  /// The one place `elapsed` is written from the clock. It is **audio time**:
+  /// while paused, `SessionClock.elapsed` is pinned to the instant of the
+  /// press, so the ticker keeps running and keeps publishing the same number
+  /// rather than there being a second lifecycle to cancel and restart.
+  private func publishElapsed(now: Date) {
+    guard let clock else { return }
+    let value = clock.elapsed(now: now)
+    if elapsed != value { elapsed = value }
   }
 
   /// Open the 16 kHz mono CAF this session records into. Since XIA-430 the
@@ -915,6 +1204,40 @@ extension LiveMeetingSession {
   /// Drive the elapsed clock without a real recording (tests only).
   func setElapsedForTesting(_ value: TimeInterval) {
     elapsed = value
+  }
+
+  /// Put the session into a state without a microphone or a socket, so the
+  /// pause/resume transitions can be driven (tests only). It installs a clock
+  /// too when one is asked for, because everything pause does is arithmetic on
+  /// that clock.
+  func beginForTesting(startedAt: Date) {
+    clock = SessionClock(startedAt: startedAt)
+    // The production handler, not a stand-in: the pause/resume ordering rules
+    // are about what *that* closure does at drain time.
+    installCaptureHandler()
+    state = .recording
+    publishElapsed(now: startedAt)
+  }
+
+  /// The session's own clock, so a test can assert audio time rather than only
+  /// the number the ticker last published.
+  var clockForTesting: SessionClock? { clock }
+
+  func setStateForTesting(_ value: SessionState) {
+    state = value
+  }
+
+  /// The capture engine, so a test can put a buffer in flight across a real
+  /// `pause()` / `resume()` — the thing the ordering rules are actually about.
+  var captureForTesting: MicCapture { capture }
+
+  /// How many delivered buffers got past `capturesAudio`.
+  var keptBufferCountForTesting: Int { keptBufferCount }
+
+  /// The Apple engine's hypothesis route, so the pause boundary can be driven
+  /// without an analyzer. The same call `appleHypothesesTask` makes.
+  func handleAppleHypothesisForTesting(_ hypothesis: Hypothesis) {
+    handleAppleHypothesis(hypothesis)
   }
 }
 #endif

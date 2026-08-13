@@ -427,6 +427,92 @@ final class LiveSessionPersistenceTests: XCTestCase {
     XCTAssertTrue(FileManager.default.fileExists(atPath: saved.outputURL.path))
   }
 
+  // MARK: - The paused flag (XIA-447)
+
+  /// **A record that has left `recording` is not paused.** The flag is written
+  /// at press time and only Resume clears it, so a session stopped *from* a
+  /// pause used to seal as `{"status": "done", …, "paused": true}` — forever,
+  /// on the surface `nota history show` calls scriptable. It was masked only
+  /// because both `describeHistoryStatus` and `presentation` gate the word on
+  /// `recording`: a record that is wrong while its display happens to hide it
+  /// is exactly the shape the flag-not-a-status design was chosen to avoid.
+  ///
+  /// Cleared in `updateStatus`, which is the one door every way out of a live
+  /// stage goes through — the seal, `settleAsFailed`, and the launch sweep, all
+  /// three asserted here.
+  func testTheStopThatSealsAPausedSessionClearsTheFlag() throws {
+    let started = try beginRecording()
+    try writeAudio(started, bytes: 512)
+    XCTAssertTrue(LiveSessionPersistence.recordPaused(
+      id: started.historyID, paused: true, historyDirectory: historyDirectory
+    ))
+    XCTAssertEqual(try recordJSON(started.historyID)["paused"] as? Bool, true)
+
+    _ = try LiveSessionPersistence.sealTranscript(
+      started: started,
+      result: makeResult(
+        segments: [LiveMeetingSession.LiveSegment(id: UUID(), text: "A note.", endTime: 2)],
+        transcript: "A note.",
+        duration: 2,
+        audioURL: started.audioURL
+      ),
+      outputDirectory: outputDirectory,
+      historyDirectory: historyDirectory
+    )
+    XCTAssertEqual(
+      try recordJSON(started.historyID)["paused"] as? Bool, false,
+      "a sealed record still claims to be paused"
+    )
+  }
+
+  /// The other two exits: a failure settled in the stage the record is in, and
+  /// the launch sweep. Both are `updateStatus`, so both clear it — and the
+  /// display is "Interrupted" either way, because nobody chose that outcome.
+  func testAFailedOrInterruptedPausedRecordIsNoLongerPaused() throws {
+    for interrupted in [false, true] {
+      let started = try beginRecording()
+      try writeAudio(started, bytes: 128)
+      XCTAssertTrue(LiveSessionPersistence.recordPaused(
+        id: started.historyID, paused: true, historyDirectory: historyDirectory
+      ))
+      if interrupted {
+        XCTAssertTrue(LiveSessionPersistence.updateStatus(
+          id: started.historyID,
+          to: .failed(stage: .recording),
+          interrupted: true,
+          historyDirectory: historyDirectory
+        ))
+      } else {
+        XCTAssertTrue(LiveSessionPersistence.settleAsFailed(
+          id: started.historyID, historyDirectory: historyDirectory
+        ))
+      }
+      let record = try recordJSON(started.historyID)
+      XCTAssertEqual(record["paused"] as? Bool, false)
+      XCTAssertEqual(try status(started.historyID), .failed(stage: .recording))
+    }
+  }
+
+  /// …and it survives a status write that leaves the record **in** `recording`,
+  /// which is the only stage a pause can exist in. Nothing advances there
+  /// today, so this is the guard against the clear being written too broadly.
+  func testAPausedRecordStaysPausedWhileItIsStillRecording() throws {
+    let started = try beginRecording()
+    XCTAssertTrue(LiveSessionPersistence.recordPaused(
+      id: started.historyID, paused: true, historyDirectory: historyDirectory
+    ))
+    XCTAssertTrue(LiveSessionPersistence.recordMarkers(
+      id: started.historyID, markers: [SessionMarker(at: 12)], historyDirectory: historyDirectory
+    ))
+    XCTAssertEqual(try recordJSON(started.historyID)["paused"] as? Bool, true)
+    XCTAssertEqual(
+      HistoryStatus.recording.presentation(
+        paused: try recordJSON(started.historyID)["paused"] as? Bool ?? false
+      ),
+      "Paused"
+    )
+  }
+
   // MARK: - A failed write is never reported as success
 
   func testAWriteThatCannotLandIsThrownRatherThanReportedAsSaved() throws {

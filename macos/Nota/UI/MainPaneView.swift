@@ -66,6 +66,9 @@ struct MainPaneView: View {
           // One verb for every surface that offers Mark (XIA-434): the pane's
           // capsule, the island's, and the menu bar's row all land here.
           onMark: { _ = model.markCurrentMoment() },
+          // One capsule, two verbs, resolved by the model off the session's own
+          // state (XIA-447) — for the reason Mark is one closure here.
+          onPause: { model.toggleLivePause() },
           markerLog: model.sessionMarkers,
           markersUnsaved: model.markersUnsaved
         )

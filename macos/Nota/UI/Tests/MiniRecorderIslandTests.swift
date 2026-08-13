@@ -200,22 +200,31 @@ final class MiniRecorderIslandTests: XCTestCase {
   /// capsule cluster, so it is a table a test reads rather than closures a
   /// rendered window would have to be driven to discover.
   func testEachPhaseOffersExactlyTheActionsItCanRun() {
-    XCTAssertEqual(MiniIslandPhase.recording.actions, [.mark, .stop])
+    XCTAssertEqual(MiniIslandPhase.recording.actions, [.mark, .pause, .stop])
     XCTAssertEqual(
       MiniIslandPhase.markConfirmed(time: "00:01", ordinal: "1st", landed: true).actions,
       []
     )
+    // Paused (XIA-447): Resume and Stop, and Mark GONE rather than disabled —
+    // the same reasoning the confirmation's empty list has, plus the one
+    // `NotaModel.markCurrentMoment` enforces (it refuses a paused session, so a
+    // Mark capsule here would do nothing at all).
+    XCTAssertEqual(MiniIslandPhase.paused.actions, [.resume, .stop])
+    XCTAssertFalse(MiniIslandPhase.paused.actions.contains(.mark))
     XCTAssertEqual(MiniIslandPhase.handoff(secondsAgo: 0).actions, [.show])
     XCTAssertEqual(MiniIslandPhase.failure("x").actions, [.show, .retry])
-    // Stop is never offered by a phase with no live microphone, and Mark never
-    // is either: a moment flagged into a session whose audio is not being kept
-    // is a timestamp pointing at nothing.
+    // Stop is never offered by a phase with no session left, and Mark never is
+    // either: a moment flagged into a session whose audio is not being kept is
+    // a timestamp pointing at nothing. A pause is deliberately not in this
+    // list — the session is still there, and Stop is terminal from it too.
     for phase in [
       MiniIslandPhase.handoff(secondsAgo: 0),
       MiniIslandPhase.failure("x"),
     ] {
       XCTAssertFalse(phase.actions.contains(.mark))
       XCTAssertFalse(phase.actions.contains(.stop))
+      XCTAssertFalse(phase.actions.contains(.pause))
+      XCTAssertFalse(phase.actions.contains(.resume))
     }
   }
 
@@ -274,6 +283,7 @@ final class MiniRecorderIslandTests: XCTestCase {
       .recording,
       .markConfirmed(time: "28:40", ordinal: "3rd", landed: true),
       .markConfirmed(time: "28:40", ordinal: "3rd", landed: false),
+      .paused,
       .handoff(secondsAgo: 3),
       .failure("Connection lost"),
       // The one input that is not ours: whatever the realtime path had to say.
@@ -365,6 +375,13 @@ final class MiniRecorderIslandTests: XCTestCase {
     XCTAssertFalse(
       Self.drawsEmber(.failure("Connection lost")),
       "the failure card draws the ember over a microphone that is closed"
+    )
+    // XIA-447: a paused session is still a session, and the card stays up and
+    // keeps its clock — but the microphone is closed, so the dot and the meter
+    // go with it.
+    XCTAssertFalse(
+      Self.drawsEmber(.paused),
+      "the paused card draws the ember over a microphone that is closed"
     )
   }
 
@@ -615,6 +632,16 @@ final class MiniRecorderIslandTests: XCTestCase {
       MenuBarSessionPresence.make(state: .failed("x"), elapsed: 12)?.isEmber,
       false
     )
+    // …and a paused one is not ember either, but it is not "stopped": the item
+    // says the word, which a grey dot beside a still clock cannot (XIA-447).
+    let paused = MenuBarSessionPresence.make(state: .paused, elapsed: 12)
+    XCTAssertEqual(paused?.isEmber, false)
+    XCTAssertEqual(paused?.isPaused, true)
+    XCTAssertEqual(
+      MenuBarSessionPresence.make(state: .stopping, elapsed: 12)?.isPaused,
+      false,
+      "a stopping session is not a paused one — one is over and the other is waiting"
+    )
   }
 
   /// The elapsed time is IN THE BAR, and past the hour it reads in hours —
@@ -641,9 +668,13 @@ final class MiniRecorderIslandTests: XCTestCase {
   /// session's decisions (Save Transcript / Try Again / Discard) belong to the
   /// window, where the transcript they are about is.
   func testTheMenuOffersMarkAndStopOnlyWhileASessionIsLive() {
-    XCTAssertEqual(SessionMenuRows.rows(state: .recording), [.mark, .stop])
+    XCTAssertEqual(SessionMenuRows.rows(state: .recording), [.mark, .pause, .stop])
     XCTAssertEqual(SessionMenuRows.rows(state: .stopping), [])
     XCTAssertEqual(SessionMenuRows.rows(state: .failed("x")), [])
+    // A paused session is live, so it keeps rows — Resume and Stop (XIA-447).
+    // It is the one state where `meterFollowsMicrophone` is the wrong question
+    // here: the microphone is closed and the session is not.
+    XCTAssertEqual(SessionMenuRows.rows(state: .paused), [.resume, .stop])
     XCTAssertTrue(SessionMenuRows.showsStatus(state: .failed("x")))
     // And each row runs the island's verb, so one press of ⌘K means one thing
     // wherever it is pressed.
@@ -930,6 +961,7 @@ final class MiniRecorderIslandTests: XCTestCase {
     .recording,
     .markConfirmed(time: "28:40", ordinal: "3rd", landed: true),
     .markConfirmed(time: "28:40", ordinal: "3rd", landed: false),
+    .paused,
     .handoff(secondsAgo: 3),
     // Deliberately longer than the card: it must truncate, not widen.
     .failure("The realtime connection dropped while the meeting was still running"),
@@ -1054,6 +1086,8 @@ private final class VerbSpy {
   var verbs: IslandVerbs {
     IslandVerbs(
       mark: { [self] in ran.append(.mark); return markResult },
+      pause: { [self] in ran.append(.pause) },
+      resume: { [self] in ran.append(.resume) },
       stop: { [self] in ran.append(.stop) },
       show: { [self] in ran.append(.show) },
       retry: { [self] in ran.append(.retry) },

@@ -172,16 +172,33 @@ export function normalizeHistoryStatus(
  * written by the launch sweep: a failure that happened because the process
  * went away reads as "Interrupted" rather than naming a stage that never got
  * a chance to fail on its own.
+ *
+ * `paused` is the record's other flag (XIA-447), and it is deliberately a FLAG
+ * rather than a status: a paused live session is still `recording` to every
+ * consumer — it owns a record and holds an audio file open — and the one thing
+ * a decoder cannot be tolerant about is the vocabulary itself.
+ * `normalizeHistoryStatus` resolves an unrecognized value by what the record
+ * HAS, so a `"paused"` status read by an older build would come back as
+ * `transcribed`: a *rest* state, which `isInFlight` refuses and the launch
+ * sweep therefore never revisits. A paused session whose process went away
+ * would have become a finished transcript with no transcript in it.
+ *
+ * So the machine is untouched, and a **failure wins over the flag**: an
+ * interrupted paused record resolves to `failed:recording` + `interrupted` and
+ * reads "Interrupted", which is what happened to it. `macos/Nota/App/
+ * HistoryStatus.swift`'s `presentation(interrupted:paused:)` is the same
+ * function on the other side.
  */
 export function describeHistoryStatus(
   status: HistoryStatus,
-  options?: { interrupted?: boolean },
+  options?: { interrupted?: boolean; paused?: boolean },
 ): string {
   const stage = failureStage(status);
   if (stage !== null) {
     if (options?.interrupted) return "Interrupted";
     return `Failed (${stage})`;
   }
+  if (options?.paused && status === "recording") return "Paused";
   switch (status) {
     case "recording":
       return "Recording";

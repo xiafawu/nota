@@ -169,6 +169,54 @@ final class MicCapture: ObservableObject {
     }
   }
 
+  /// Hand every buffer captured so far on, without stopping anything (XIA-447).
+  ///
+  /// The pause boundary has the identical hazard `stop()` drains for, and it is
+  /// worse because it happens many times a session instead of once: the guard
+  /// that drops a buffer while a session is paused runs on the **main actor at
+  /// drain time**, not at capture time, so whatever is sitting in `pending` (or
+  /// in an already-scheduled hop) when Pause is pressed is audio captured while
+  /// the microphone was live — the last word before the press — and it would be
+  /// judged against the paused state and thrown away.
+  ///
+  /// So `LiveMeetingSession.pause()` calls this **before** it flips the state,
+  /// exactly as `stop()` drains before it clears `isCapturing`.
+  ///
+  /// **Draining is only half of it; the other half is that `onPCMBuffer` must
+  /// not hop.** `drainPending` calls the callback synchronously, but if the
+  /// callback's own body opens a `Task { @MainActor in … }` then nothing it
+  /// does happens before `pause()` returns — the state has already flipped by
+  /// the time the guard inside runs, and this method is inert. That is exactly
+  /// what shipped in the first cut of XIA-447. `LiveMeetingSession` therefore
+  /// handles buffers under `MainActor.assumeIsolated`, which is sound because
+  /// every route into `drainPending` is already the main thread.
+  func flushPending() {
+    drainPending()
+  }
+
+  /// Throw away everything captured while nothing was being kept (XIA-447).
+  ///
+  /// The mirror image of `flushPending`, owed for the same reason read from the
+  /// other end: a buffer captured during a pause is appended by the tap and
+  /// drained by a **later** main-thread hop, so one converted a millisecond
+  /// before Resume is judged against `.recording` and written into
+  /// `recording.caf` *and* sent to the socket. That is audio from a span the
+  /// owner was told is absent — the worse direction of the two, because a pause
+  /// is often taken for privacy.
+  ///
+  /// `resume()` calls this **before** it flips the state back.
+  func discardPending() {
+    _ = pending.take()
+  }
+
+  #if DEBUG
+  /// Put a buffer in the same queue the tap appends to, so a test can drive a
+  /// real pause boundary without an audio device.
+  func enqueueForTesting(_ buffer: AVAudioPCMBuffer) {
+    pending.append(buffer)
+  }
+  #endif
+
   /// Hand every buffer captured so far to the recognizer, on the main thread.
   ///
   /// Deliberately not gated on `isCapturing`: this audio was recorded while the

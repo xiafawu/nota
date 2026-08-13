@@ -163,11 +163,24 @@ enum HistoryStatus: Equatable, Hashable {
   /// is the record's own flag, written by the launch sweep: a failure that
   /// happened because the process went away reads as "Interrupted" rather
   /// than naming a stage that never got the chance to fail on its own.
-  func presentation(interrupted: Bool = false) -> String {
+  ///
+  /// `paused` is the record's other flag (XIA-447), and it is deliberately a
+  /// flag rather than a status: a paused session is still `recording` to every
+  /// consumer, and the vocabulary a record is written in is the one thing an
+  /// older reader cannot be tolerant about. See
+  /// `LiveSessionPersistence.recordPaused` for why a new status would have been
+  /// unsafe rather than merely expensive.
+  ///
+  /// **A failure wins over it, and that is the launch sweep's whole answer**: a
+  /// paused session whose process went away resolves to `failed(recording)` +
+  /// `interrupted` and reads "Interrupted", which is what happened to it.
+  /// Nobody is coming back to that one, so it is not still paused.
+  func presentation(interrupted: Bool = false, paused: Bool = false) -> String {
     if let stage = failureStage {
       if interrupted { return "Interrupted" }
       return "Failed (\(stage.rawValue))"
     }
+    if paused, self == .recording { return "Paused" }
     switch self {
     case .recording: return "Recording"
     case .transcribing: return "Transcribing"

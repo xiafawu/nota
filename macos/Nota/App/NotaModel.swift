@@ -666,7 +666,12 @@ final class NotaModel: ObservableObject {
       kind: kind,
       diarize: activeSessionDiarize,
       identify: activeSessionDiarize,
-      sessionIsLive: liveSession.state == .recording || liveSession.state == .stopping
+      // `.paused` counts as live (XIA-447): a Start press while paused would
+      // otherwise settle the record out from under a session that is still
+      // holding the microphone and the audio file — XIA-430's rule 1, restated.
+      sessionIsLive: liveSession.state == .recording
+        || liveSession.state == .paused
+        || liveSession.state == .stopping
     )
     syncLiveSessionFlags()
     let started: LiveSessionPersistence.StartedRecord
@@ -1214,6 +1219,64 @@ final class NotaModel: ObservableObject {
   /// thing that can insist somebody looks.
   func recordLiveMarkers(_ markers: [SessionMarker]) -> Bool {
     liveRecords.recordMarkers(markers)
+  }
+
+  // MARK: - Pause / resume (XIA-447)
+
+  /// Pause the live session, and tell the record.
+  ///
+  /// The session's own `pause()` is what stops the audio; this is the model's
+  /// half — one place, called by the cluster's capsule, the island's and the
+  /// menu bar's row, so a pause means one thing wherever it is pressed. The
+  /// flag on the record is written at press time for the reason moments are:
+  /// while a live app holds this record, `nota history show` should be able to
+  /// say what is actually happening to it.
+  ///
+  /// A failed write is **not** a refusal to pause. The audio has already
+  /// stopped by the time it runs, and a record that says `recording` while the
+  /// session is paused is exactly what an older Nota would say anyway — under-
+  /// informative rather than wrong, and the launch sweep resolves it either
+  /// way.
+  /// The record is told only once the session **actually** paused
+  /// (`liveSession.pause()` refuses a press that arrives before the clock
+  /// exists), so `paused: true` can never describe a session that is still
+  /// capturing.
+  ///
+  /// The window's own status line moves too, through the same
+  /// `HistoryStatus.presentation(paused:)` the CLI's `describeHistoryStatus`
+  /// mirrors — otherwise the one function the contract is written in would have
+  /// no caller in the app, and the drawer would read "Recording" for a session
+  /// `nota history list` calls Paused.
+  func pauseLiveSession() {
+    guard liveSession.state == .recording else { return }
+    liveSession.pause()
+    guard liveSession.state == .paused else { return }
+    status = HistoryStatus.recording.presentation(paused: true)
+    if !liveRecords.setPaused(true) {
+      NSLog("Nota: live session paused but the record could not be told")
+    }
+  }
+
+  /// Continue into the same recording.
+  func resumeLiveSession() {
+    guard liveSession.state == .paused else { return }
+    liveSession.resume()
+    status = HistoryStatus.recording.presentation()
+    if !liveRecords.setPaused(false) {
+      NSLog("Nota: live session resumed but the record could not be told")
+    }
+  }
+
+  /// The window cluster's one pause capsule, whose face changes. Which of the
+  /// two verbs it means is read off the session rather than kept on the view:
+  /// a surface with its own idea of whether a session is paused is a second
+  /// answer to a question that has one.
+  func toggleLivePause() {
+    if liveSession.state == .paused {
+      resumeLiveSession()
+    } else {
+      pauseLiveSession()
+    }
   }
 
   /// ⌘K, from **every** surface that offers it — the pane's Mark capsule, the

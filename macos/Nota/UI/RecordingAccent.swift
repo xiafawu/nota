@@ -133,6 +133,16 @@ enum SessionMeterMetrics {
 struct SessionMeter: View {
   let level: Float
   var variant: SessionMeterMetrics.Variant = .tall
+  /// Whether the microphone this meter is drawing is **open** (XIA-447).
+  ///
+  /// It changes the colour and nothing else. The bars stay — the meter is a
+  /// fixed frame and the floor is drawn whatever the level, because a blank
+  /// meter and an absent meter look the same — but a paused session's floor may
+  /// not be **ember**: that colour means the microphone is open, and the floor
+  /// is drawn even at silence, so leaving it warm would have the one reserved
+  /// signal on screen over a closed microphone for the whole of a pause. Grey
+  /// bars at the floor read as what they are: the meter, with nothing to say.
+  var isLive: Bool = true
 
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   @Environment(\.colorScheme) private var colorScheme
@@ -141,7 +151,7 @@ struct SessionMeter: View {
     HStack(spacing: variant.barSpacing) {
       ForEach(Array(heights.enumerated()), id: \.offset) { _, height in
         Capsule(style: .continuous)
-          .fill(CraftTokens.ember(colorScheme))
+          .fill(barColor)
           .frame(width: variant.barWidth, height: height)
       }
     }
@@ -154,6 +164,10 @@ struct SessionMeter: View {
 
   private var heights: [CGFloat] {
     SessionMeterMetrics.barHeights(level: level, variant: variant)
+  }
+
+  private var barColor: Color {
+    isLive ? CraftTokens.ember(colorScheme) : Color.secondary
   }
 }
 

@@ -23,6 +23,10 @@ struct MenuBarSessionPresence: Equatable {
   /// one clock — so the bar, the island and the window can never disagree by a
   /// rounding change.
   let elapsed: String
+  /// Whether the session is paused. A third fact rather than "not ember",
+  /// because a stopping session is not ember either and means the opposite
+  /// thing — that one is over, this one is waiting for the owner.
+  var isPaused: Bool = false
 
   /// Nil when there is no session to be present about.
   static func make(
@@ -32,16 +36,25 @@ struct MenuBarSessionPresence: Equatable {
     switch state {
     case .idle:
       return nil
-    case .recording, .stopping, .failed:
+    case .recording, .paused, .stopping, .failed:
       return MenuBarSessionPresence(
         isEmber: LiveMeetingSession.meterFollowsMicrophone(state),
-        elapsed: LiveMeetingFormat.duration(elapsed)
+        elapsed: LiveMeetingFormat.duration(elapsed),
+        isPaused: state == .paused
       )
     }
   }
 
+  /// **The bar says the word too** (XIA-447). The menu bar is the one surface
+  /// on screen in every app and on every Space, so it is where an owner who has
+  /// walked away looks — and a grey dot beside a stopped clock is exactly what
+  /// a finished session looks like. So a paused session's item reads
+  /// "· Paused" beside the elapsed time, and its accessibility label says it
+  /// rather than "session stopped", which would be a lie about a session the
+  /// owner still has.
   var accessibilityLabel: String {
-    isEmber ? "Nota: recording, \(elapsed)" : "Nota: session stopped, \(elapsed)"
+    if isPaused { return "Nota: paused, \(elapsed)" }
+    return isEmber ? "Nota: recording, \(elapsed)" : "Nota: session stopped, \(elapsed)"
   }
 }
 
@@ -80,7 +93,7 @@ struct MenuBarPresenceLabel: View {
       Circle()
         .fill(presence.isEmber ? CraftTokens.ember(colorScheme) : Color.secondary)
         .frame(width: 7, height: 7)
-      Text(presence.elapsed)
+      Text(MenuBarSessionCopy.itemText(presence))
         .font(.caption)
         .monospacedDigit()
         .lineLimit(1)
@@ -99,11 +112,15 @@ struct MenuBarPresenceLabel: View {
 /// The rows the popover gains while a session is running, as a table.
 enum SessionMenuRow: CaseIterable, Equatable {
   case mark
+  case pause
+  case resume
   case stop
 
   var title: String {
     switch self {
     case .mark: return MenuBarSessionCopy.markTitle
+    case .pause: return MenuBarSessionCopy.pauseTitle
+    case .resume: return MenuBarSessionCopy.resumeTitle
     case .stop: return MenuBarSessionCopy.stopTitle
     }
   }
@@ -113,6 +130,8 @@ enum SessionMenuRow: CaseIterable, Equatable {
   var action: MiniIslandAction {
     switch self {
     case .mark: return .mark
+    case .pause: return .pause
+    case .resume: return .resume
     case .stop: return .stop
     }
   }
@@ -120,7 +139,23 @@ enum SessionMenuRow: CaseIterable, Equatable {
 
 enum MenuBarSessionCopy {
   static let markTitle = "Mark this moment"
+  static let pauseTitle = "Pause recording"
+  static let resumeTitle = "Resume recording"
   static let stopTitle = "Stop & summarize"
+
+  /// What the status **item itself** draws — the one string an owner reads from
+  /// another app without opening anything.
+  ///
+  /// A named function rather than an interpolation inside the view body
+  /// (XIA-447): the word "Paused" here is the whole of requirement 3 on this
+  /// surface, and built inline it could be deleted with nothing failing —
+  /// `MenuBarSessionCopy.status` is a *different* string, for the row inside
+  /// the popover.
+  static func itemText(_ presence: MenuBarSessionPresence) -> String {
+    presence.isPaused
+      ? "\(presence.elapsed) · \(RecordingPaneCopy.pausedBadge)"
+      : presence.elapsed
+  }
 
   /// The status row: what the session is doing, and for how long.
   static func status(state: LiveMeetingSession.SessionState, elapsed: TimeInterval) -> String {
@@ -136,8 +171,21 @@ enum MenuBarSessionCopy {
 /// failed one's decisions (Save Transcript / Try Again / Discard) are the
 /// window's, where the transcript they are about is.
 enum SessionMenuRows {
+  /// A **paused** session offers Resume and Stop, and it is the one place the
+  /// menu bar has to stop asking `meterFollowsMicrophone` (XIA-447): that
+  /// predicate is about whether anything is being *kept*, which a paused
+  /// session is not, and it is false for a session that is still very much
+  /// alive. Asked unchanged it would leave the owner
+  /// with a status row reading "Paused" and no way to resume anywhere on the
+  /// menu bar — the surface they are most likely to be looking at, since the
+  /// window is behind whatever they walked away to.
+  ///
+  /// Mark is refused while paused, matching the cluster and the island, and for
+  /// the same reason: `NotaModel.markCurrentMoment` gates on the open
+  /// microphone.
   static func rows(state: LiveMeetingSession.SessionState) -> [SessionMenuRow] {
-    LiveMeetingSession.meterFollowsMicrophone(state) ? SessionMenuRow.allCases : []
+    if state == .paused { return [.resume, .stop] }
+    return LiveMeetingSession.meterFollowsMicrophone(state) ? [.mark, .pause, .stop] : []
   }
 
   static func showsStatus(state: LiveMeetingSession.SessionState) -> Bool {

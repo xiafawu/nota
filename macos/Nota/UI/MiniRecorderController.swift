@@ -51,6 +51,11 @@ struct IslandSource {
 @MainActor
 struct IslandVerbs {
   var mark: () -> IslandMarkResult?
+  /// Stop capturing without ending the session, and start again (XIA-447).
+  /// Two closures rather than one toggle, so a swapped body is a test failure
+  /// rather than a surface that happens to still work.
+  var pause: () -> Void = {}
+  var resume: () -> Void = {}
   var stop: () -> Void
   var show: () -> Void
   var retry: () -> Void
@@ -71,6 +76,8 @@ struct IslandVerbs {
           landed: !model.markersUnsaved
         )
       },
+      pause: { model.pauseLiveSession() },
+      resume: { model.resumeLiveSession() },
       stop: { model.stopLiveSession() },
       // The ONE call on this path that brings Nota forward, and it is the owner
       // pressing a button labelled "Show". Nothing about *presenting* the island
@@ -310,6 +317,10 @@ final class MiniRecorderIslandController {
           pressedAt: clock()
         )
       }
+    case .pause:
+      verbs.pause()
+    case .resume:
+      verbs.resume()
     case .stop:
       verbs.stop()
     case .show:

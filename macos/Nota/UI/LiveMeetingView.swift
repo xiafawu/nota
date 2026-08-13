@@ -35,6 +35,11 @@ enum LiveMeetingFormat {
     switch state {
     case .idle: return "Ready"
     case .recording: return "Recording"
+    // The literal word, on the surface an owner reads at a glance from another
+    // app (XIA-447). A paused session may never look stopped: the owner walks
+    // away, comes back to a quiet screen, assumes it ended and loses the
+    // meeting. So it is worded everywhere, never a colour change alone.
+    case .paused: return RecordingPaneCopy.pausedBadge
     case .stopping: return "Finalizing…"
     case .failed: return "Recording failed"
     }
@@ -55,6 +60,10 @@ enum LiveMeetingControls: Equatable, CaseIterable {
   case starting
   /// Recording: Stop, enabled.
   case stop
+  /// Paused (XIA-447): the cluster stays, worded, with Resume and Stop live and
+  /// Mark refused. Not a variant of `.stop` — every rule below has to be able
+  /// to tell them apart, starting with the ember.
+  case paused
   /// Stopping: Stop, disabled.
   case finalizing
   /// Failed with something to keep: Save Transcript, Try Again, Discard.
@@ -69,6 +78,7 @@ enum LiveMeetingControls: Equatable, CaseIterable {
   ) -> LiveMeetingControls {
     switch state {
     case .recording: return .stop
+    case .paused: return .paused
     case .stopping: return .finalizing
     case .failed: return hasTranscript ? .saveOrDiscard : .retryOrDiscard
     case .idle: return isStarting ? .starting : .start
@@ -79,8 +89,12 @@ enum LiveMeetingControls: Equatable, CaseIterable {
   /// is deliberately **not** on it: the cluster is the indicator that a session
   /// is flowing, and nothing is. What that state needs is the transcript it
   /// heard and one decision about it, which is the banner.
+  /// A paused session is on it too, and loudly: taking the cluster away would
+  /// be exactly the "a paused session looks stopped" failure XIA-447 exists to
+  /// prevent. What the cluster does *while* paused is the capsule table's
+  /// business (`SessionClusterAction.isEnabled`).
   var showsRecordingPane: Bool {
-    self == .stop || self == .finalizing
+    self == .stop || self == .paused || self == .finalizing
   }
 
   /// Whether the transcript may wear the ember rule for a flagged moment
@@ -96,7 +110,14 @@ enum LiveMeetingControls: Equatable, CaseIterable {
   /// lie `showsRecordingPane` withholds the cluster to avoid and the one
   /// `testTheIdlePaneDrawsNoEmber` already pins for idle. The moments are not
   /// lost by it: they are on the record, written at press time.
-  var drawsMarkerRules: Bool { showsRecordingPane }
+  /// **No longer `showsRecordingPane`**, and the split is XIA-447's: the pane
+  /// stays up while paused (it must — a paused session may not look stopped),
+  /// but the microphone is closed, and the ember means the microphone is open.
+  /// A margin full of ember over a closed microphone is the same lie the pane
+  /// withholds the cluster from a failed session to avoid. The moments are not
+  /// lost by it: they are on the record, written at press time, and the rules
+  /// come back with the microphone at Resume.
+  var drawsMarkerRules: Bool { self == .stop || self == .finalizing }
 }
 
 /// Live dictation pane (XIA-423 / XIA-432, rearranged by XIA-444, rebuilt by
@@ -146,6 +167,11 @@ struct LiveMeetingView: View {
   /// the model owns the record on disk, and a view that reached for it would be
   /// a second writer of the same file.
   var onMark: () -> Void = {}
+  /// Pause, or resume — **one closure, because the capsule is one control**
+  /// whose face changes (XIA-447). The model resolves which it means from the
+  /// session's own state, the same way the island's two actions do, so no
+  /// surface has to keep its own idea of whether a session is paused.
+  var onPause: () -> Void = {}
 
   /// The session's flagged moments. **The model's log**, not this view's
   /// (XIA-434): the island and the menu bar can flag a moment while this view is
@@ -253,6 +279,7 @@ struct LiveMeetingView: View {
         controls: controls,
         markers: markerLog.markers,
         onMark: onMark,
+        onPause: onPause,
         onStop: onStop
       )
       .padding(.bottom, RecordingPaneMetrics.clusterBottomInset)

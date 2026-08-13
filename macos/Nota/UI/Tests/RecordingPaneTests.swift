@@ -61,19 +61,23 @@ final class RecordingPaneTests: XCTestCase {
     }
   }
 
-  /// **One height for all three**, which is what makes the row one object made
-  /// of parts rather than three things that happen to be near each other.
-  /// Asserted separately from the reservation, because three capsules could
+  /// **One height for all four**, which is what makes the row one object made
+  /// of parts rather than four things that happen to be near each other.
+  /// Asserted separately from the reservation, because four capsules could
   /// each agree with the same wrong constant.
-  func testTheThreeCapsulesAreTheSameHeightAsEachOther() {
+  func testTheFourCapsulesAreTheSameHeightAsEachOther() {
     let heights = Self.capsuleHeights().map(\.1)
-    XCTAssertEqual(heights.count, 3)
+    XCTAssertEqual(heights.count, 4)
     for height in heights {
       XCTAssertEqual(height, heights[0], accuracy: 0.5, "the capsules measure \(heights)")
     }
   }
 
-  /// Each capsule, laid out: the timer, Mark and Stop.
+  /// Each capsule, laid out: the timer, Mark, Pause and Stop. The pause face is
+  /// measured in its *resume* form deliberately — `play.fill` and `pause.fill`
+  /// are drawn at the same size by the same style, and taking the one the row
+  /// only wears in the state the tests otherwise never render is what would
+  /// catch a face that had been given its own frame.
   private static func capsuleHeights() -> [(String, CGFloat)] {
     func laidOut<V: View>(_ view: V) -> CGFloat {
       let host = NSHostingView(rootView: view)
@@ -89,6 +93,13 @@ final class RecordingPaneTests: XCTestCase {
         "the Mark capsule",
         laidOut(
           Button(action: {}) { Image(systemName: "bookmark.fill") }
+            .buttonStyle(RecordingCapsuleButtonStyle(tint: CraftTokens.primaryBlue))
+        )
+      ),
+      (
+        "the Pause capsule",
+        laidOut(
+          Button(action: {}) { Image(systemName: "play.fill") }
             .buttonStyle(RecordingCapsuleButtonStyle(tint: CraftTokens.primaryBlue))
         )
       ),
@@ -314,7 +325,17 @@ final class RecordingPaneTests: XCTestCase {
     // 64 while the bar drew 65, which is how a whole file of geometry tests
     // stayed green against a reservation that never bound.
     XCTAssertEqual(RecordingPaneMetrics.capsuleHeight, 43)
-    XCTAssertEqual(RecordingPaneMetrics.transcriptBottomReserve, 83)
+    // 98 = 43 + 24 + 31. The gap grew from 16 to 31 with XIA-447, because the
+    // paused badge is drawn in it: an overlay is outside the reserve, so a 16pt
+    // gap put "Paused" on top of the last lines of the live transcript. It is
+    // unconditional — a reserve that widened at the press would reflow the
+    // transcript under the owner on the surface whose whole promise is that
+    // nothing moves.
+    XCTAssertEqual(
+      RecordingPaneMetrics.clusterTranscriptGap,
+      RecordingPaneMetrics.pausedBadgeHeight + RecordingPaneMetrics.pausedBadgeGap
+    )
+    XCTAssertEqual(RecordingPaneMetrics.transcriptBottomReserve, 98)
 
     // The accent is untouched by either setting; only the scheme moves it.
     XCTAssertEqual(CraftTokens.ember(.light), CraftTokens.emberLight)
@@ -776,26 +797,36 @@ final class RecordingPaneTests: XCTestCase {
     )
   }
 
-  /// **The ember is withheld from every state that is not recording.** The
+  /// **The ember is withheld from every state whose microphone is closed.** The
   /// failed banner draws the same `LiveTranscriptView` over the same transcript,
   /// and the session's marks are still in the log when it does — so without this
   /// decision a stopped session would carry ember down its margin beside a dead
   /// microphone, no meter and no clock: the lie `showsRecordingPane` withholds
   /// the cluster to avoid, and the one `testTheIdlePaneDrawsNoEmber` pins for
   /// idle. Nothing is lost by it; the moments are on the record.
+  ///
+  /// It used to be expressed as `showsRecordingPane`, and **XIA-447 split the
+  /// two on purpose**: a paused session keeps the pane — taking it away is the
+  /// "a paused session looks stopped" failure the whole ticket is about — while
+  /// its microphone is closed, and the ember means the microphone is open. The
+  /// rules come back with the microphone at Resume.
   func testOnlyALiveSessionsTranscriptWearsTheEmberRule() {
     let log = [SessionMarker(at: 8)]
     for controls in LiveMeetingControls.allCases {
       let drawn = LiveMeetingView.drawnMarkers(controls: controls, log: log)
       XCTAssertEqual(
         drawn.isEmpty,
-        !controls.showsRecordingPane,
-        "\(controls) disagrees with the cluster about whether a session is flowing"
+        !controls.drawsMarkerRules,
+        "\(controls) disagrees with itself about whether the microphone is open"
       )
     }
     XCTAssertTrue(LiveMeetingView.drawnMarkers(controls: .saveOrDiscard, log: log).isEmpty)
     XCTAssertTrue(LiveMeetingView.drawnMarkers(controls: .retryOrDiscard, log: log).isEmpty)
     XCTAssertEqual(LiveMeetingView.drawnMarkers(controls: .stop, log: log), log)
+
+    // The split, stated: the pane stays and the ember goes.
+    XCTAssertTrue(LiveMeetingControls.paused.showsRecordingPane)
+    XCTAssertTrue(LiveMeetingView.drawnMarkers(controls: .paused, log: log).isEmpty)
   }
 
   /// And the pixels agree: the transcript a failed session shows carries no
@@ -986,19 +1017,19 @@ final class RecordingPaneTests: XCTestCase {
     )
   }
 
-  /// **The cluster is exactly three capsules and the two gaps between them.**
+  /// **The cluster is exactly four capsules and the three gaps between them.**
   ///
   /// The count is the claim. `SessionClusterAction.allCases` says what the row
   /// holds and a `ForEach` draws it, so the table and the drawing cannot
   /// disagree with each other — which is precisely why neither of them can
   /// answer "is there a capsule here that should not be". Only the laid-out
-  /// width can, so the reservation is composed from the three faces the row is
+  /// width can, so the reservation is composed from the four faces the row is
   /// allowed to have and compared against what the cluster draws.
   ///
   /// The faces come from `cluster.capsule(_:)`, the same builder the row uses:
   /// a test that rebuilt the label would measure its own copy of the markup and
   /// agree with itself about a capsule the cluster had stopped drawing.
-  func testTheClusterIsExactlyThreeCapsulesAndTwoGaps() {
+  func testTheClusterIsExactlyFourCapsulesAndThreeGaps() {
     func laidOut<V: View>(_ view: V) -> CGFloat {
       let host = NSHostingView(rootView: view)
       host.layoutSubtreeIfNeeded()
@@ -1015,8 +1046,9 @@ final class RecordingPaneTests: XCTestCase {
     let reserved =
       laidOut(SessionTimerCapsule(elapsed: 61, level: MicLevelFeed(level: 0.4)))
       + laidOut(cluster.capsule(.mark))
+      + laidOut(cluster.capsule(.pause))
       + laidOut(cluster.capsule(.stop))
-      + 2 * RecordingPaneMetrics.capsuleGap
+      + 3 * RecordingPaneMetrics.capsuleGap
 
     let drawn = clusterHost().fittingSize.width
     XCTAssertGreaterThan(drawn, 0, "the hosting view produced no layout")
@@ -1024,7 +1056,7 @@ final class RecordingPaneTests: XCTestCase {
       drawn,
       reserved,
       accuracy: 0.5,
-      "the cluster draws \(drawn)pt against three capsules and two gaps at \(reserved)pt"
+      "the cluster draws \(drawn)pt against four capsules and three gaps at \(reserved)pt"
     )
   }
 
@@ -1279,6 +1311,7 @@ final class RecordingPaneTests: XCTestCase {
   /// came back empty, Stop's included).
   func testEachCapsuleRunsItsOwnJobAndNoOtherCapsulesJob() {
     var marked = 0
+    var paused = 0
     var stopped = 0
     let cluster = SessionCapsuleCluster(
       elapsed: 61,
@@ -1286,41 +1319,105 @@ final class RecordingPaneTests: XCTestCase {
       controls: .stop,
       markers: [],
       onMark: { marked += 1 },
+      onPause: { paused += 1 },
       onStop: { stopped += 1 }
     )
 
     cluster.perform(.mark)
     XCTAssertEqual(marked, 1, "the Mark capsule does not flag a moment")
+    XCTAssertEqual(paused, 0)
     XCTAssertEqual(stopped, 0)
+
+    cluster.perform(.pause)
+    XCTAssertEqual(paused, 1, "the Pause capsule does not pause")
+    XCTAssertEqual(marked, 1)
+    XCTAssertEqual(stopped, 0, "the Pause capsule ended the session")
 
     cluster.perform(.stop)
     XCTAssertEqual(stopped, 1)
     XCTAssertEqual(marked, 1)
+    XCTAssertEqual(paused, 1)
   }
 
-  /// Three pills, two buttons, one job each — the owner's "one button per pill"
-  /// over a table with nothing left in it that the surface does not do. Every
-  /// one of them is named, since an icon-only control's label is the only name
-  /// it has.
+  /// Four pills, three buttons, one job each — the owner's "one button per
+  /// pill" over a table with nothing left in it that the surface does not do.
+  /// Every one of them is named, since an icon-only control's label is the only
+  /// name it has, and **in both of its faces**: the pause capsule has two, and
+  /// a face that collided with another capsule's would be a row with two
+  /// identically-named controls in exactly one state of the session.
+  ///
+  /// Stop stays **last**, which `testTheNumberOfMomentsNeverMovesStop` derives
+  /// its expected edge from.
   func testEveryJobOnTheClusterIsItsOwnNamedCapsule() {
     let actions = SessionClusterAction.allCases
-    XCTAssertEqual(actions, [.mark, .stop], "the row's order changed")
-    XCTAssertEqual(
-      Set(actions.map(\.label)).count,
-      actions.count,
-      "two capsules answer to the same name"
-    )
-    XCTAssertEqual(
-      Set(actions.map(\.symbol)).count,
-      actions.count,
-      "two capsules draw the same glyph"
-    )
-    XCTAssertEqual(SessionClusterAction.mark.label, RecordingPaneCopy.markTitle)
-    XCTAssertEqual(SessionClusterAction.stop.label, RecordingPaneCopy.stopTitle)
+    XCTAssertEqual(actions, [.mark, .pause, .stop], "the row's order changed")
+    XCTAssertEqual(actions.last, .stop, "Stop is no longer the last capsule in the row")
+    for paused in [false, true] {
+      XCTAssertEqual(
+        Set(actions.map { $0.label(paused: paused) }).count,
+        actions.count,
+        "two capsules answer to the same name (paused: \(paused))"
+      )
+      XCTAssertEqual(
+        Set(actions.map { $0.symbol(paused: paused) }).count,
+        actions.count,
+        "two capsules draw the same glyph (paused: \(paused))"
+      )
+    }
+    XCTAssertEqual(SessionClusterAction.mark.label(paused: false), RecordingPaneCopy.markTitle)
+    XCTAssertEqual(SessionClusterAction.stop.label(paused: false), RecordingPaneCopy.stopTitle)
 
     // The tally rides on the control that produces it, and on nothing else.
     // With no list left to open it is the only feedback ⌘K has.
     XCTAssertEqual(actions.filter(\.carriesMarkerCount), [.mark])
+  }
+
+  /// **The pause capsule says which of its two verbs it is about to run.** One
+  /// case with two faces rather than two cases, because the row is `allCases`
+  /// in order and a case that cannot be drawn in the current state would be a
+  /// hole in it — so the face is what carries the state, and it has to carry it
+  /// in the label, the glyph and the tooltip alike. An icon that changed with
+  /// no name change would leave a VoiceOver user pressing "Pause" to resume.
+  func testThePauseCapsuleNamesWhichVerbItWillRun() {
+    XCTAssertEqual(SessionClusterAction.pause.label(paused: false), RecordingPaneCopy.pauseTitle)
+    XCTAssertEqual(SessionClusterAction.pause.label(paused: true), RecordingPaneCopy.resumeTitle)
+    XCTAssertEqual(SessionClusterAction.pause.symbol(paused: false), "pause.fill")
+    XCTAssertEqual(SessionClusterAction.pause.symbol(paused: true), "play.fill")
+    XCTAssertEqual(SessionClusterAction.pause.help(paused: false), RecordingPaneCopy.pauseTitle)
+    XCTAssertEqual(SessionClusterAction.pause.help(paused: true), RecordingPaneCopy.resumeTitle)
+    XCTAssertNotEqual(RecordingPaneCopy.pauseTitle, RecordingPaneCopy.resumeTitle)
+
+    // The other two do not move with it: their whole point is that they mean
+    // the same thing in both states.
+    for action in [SessionClusterAction.mark, .stop] {
+      XCTAssertEqual(action.label(paused: false), action.label(paused: true))
+      XCTAssertEqual(action.symbol(paused: false), action.symbol(paused: true))
+    }
+  }
+
+  /// **Mark is refused while paused, and Pause and Stop are not.**
+  ///
+  /// `NotaModel.markCurrentMoment` gates on the open microphone, so a Mark
+  /// capsule left live during a pause would be a control that does nothing at
+  /// all — the tally is the whole of what a press says out loud, and it would
+  /// not move. Stop is live because Stop is terminal from a pause too: an owner
+  /// may not have to resume in order to end.
+  func testAPausedSessionRefusesMarkAndKeepsPauseAndStop() {
+    XCTAssertFalse(SessionClusterAction.mark.isEnabled(.paused))
+    XCTAssertTrue(SessionClusterAction.pause.isEnabled(.paused))
+    XCTAssertTrue(SessionClusterAction.stop.isEnabled(.paused))
+
+    for action in SessionClusterAction.allCases {
+      XCTAssertTrue(action.isEnabled(.stop), "\(action) is refused on a live session")
+      // Nothing on the cluster is pressable once the session is finalizing, or
+      // in either failed state — those wear the banner, not the cluster.
+      for controls in [LiveMeetingControls.finalizing, .saveOrDiscard, .retryOrDiscard, .start, .starting] {
+        XCTAssertFalse(
+          action.isEnabled(controls),
+          "\(action) is pressable in \(controls)"
+        )
+      }
+    }
   }
 
   /// **Reviewing moments is not something the recording surface does** (owner,
@@ -1333,11 +1430,16 @@ final class RecordingPaneTests: XCTestCase {
   /// rather than left to rot untouched.
   func testNoCapsuleOpensTheMarkerList() {
     XCTAssertFalse(
-      SessionClusterAction.allCases.contains { $0.symbol == "list.bullet" },
+      SessionClusterAction.allCases.contains {
+        $0.symbol(paused: false) == "list.bullet" || $0.symbol(paused: true) == "list.bullet"
+      },
       "a capsule is drawing the moments list's glyph again"
     )
     XCTAssertFalse(
-      SessionClusterAction.allCases.map(\.label).contains(RecordingPaneCopy.markersHeading),
+      SessionClusterAction.allCases.contains {
+        $0.label(paused: false) == RecordingPaneCopy.markersHeading
+          || $0.label(paused: true) == RecordingPaneCopy.markersHeading
+      },
       "a capsule is named for the moments list again"
     )
 
@@ -1354,9 +1456,9 @@ final class RecordingPaneTests: XCTestCase {
   /// reaches them nowhere: it used to be drawn in no label, no `.help`, and no
   /// hint anywhere, on a button that was itself hidden from accessibility.
   func testTheMarkControlNamesItsShortcut() {
-    XCTAssertEqual(SessionClusterAction.mark.help, RecordingPaneCopy.markHelp)
+    XCTAssertEqual(SessionClusterAction.mark.help(paused: false), RecordingPaneCopy.markHelp)
     XCTAssertEqual(
-      SessionClusterAction.stop.help,
+      SessionClusterAction.stop.help(paused: false),
       RecordingPaneCopy.stopTitle,
       "a capsule with no shortcut invented one"
     )

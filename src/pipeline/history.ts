@@ -160,6 +160,21 @@ export interface HistoryRecord {
    */
   markers?: HistoryMarker[];
   /**
+   * True while a live session is paused (XIA-447): the owner pressed Pause,
+   * nothing is being kept, and the session is still theirs to resume. The status
+   * stays `recording`, because to every consumer a paused session IS recording
+   * — this is a flag beside it, never a new value in the vocabulary, and
+   * `describeHistoryStatus` records why a status would have been unsafe rather
+   * than merely expensive.
+   *
+   * Managed by the app, which edits the JSON in place; the CLI never writes it.
+   * It survives every TS write path because they all rebuild through
+   * `{ ...record }` — the same deal `pinned` and `markers` have — and
+   * `tests/pipeline/history-paused.test.ts` drives those paths so that survival
+   * fails loudly rather than drifting. Absent means not paused.
+   */
+  paused?: boolean;
+  /**
    * Tentative-band speaker suggestions from the run that created this record
    * (decision 3 of the speaker-workflow spec): one entry per diarized label
    * whose best cosine landed in [0.50, 0.65), carrying its decision state.
@@ -758,6 +773,7 @@ export async function findHistoryByHash(
 export function historyStatusLabel(record: HistoryRecord): string {
   return describeHistoryStatus(record.status, {
     interrupted: record.interrupted === true,
+    paused: record.paused === true,
   });
 }
 

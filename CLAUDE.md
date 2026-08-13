@@ -1843,6 +1843,165 @@ as a question the surface is still asking.
   read `12:04  Moments` — rendered, and never looked at. `label` stays nil until
   XIA-433 gives markers a meaning to say.
 
+### Pause and resume (XIA-447)
+
+A **fourth capsule** — timer, Mark, Pause, Stop. Pause stops capturing and
+keeps the session; Resume continues into the **same** `recording.caf`. **Stop
+stays terminal: there is no resume after Stop, ever.**
+
+XIA-422 rejected pause after finding that people reaching for it wanted "this
+bit matters", and shipped Mark. That found one real need and wrongly concluded
+the other did not exist: Mark is an *annotation* and never stops capture, pause
+is a *capture control* and says nothing about importance, and no reading of Mark
+serves "I want to use the restroom for two minutes and then hit continue". The
+2026-08-11 ruling against a fourth capsule does not carry either — that was
+about **Moments**, a browsing affordance on a surface meant for recording.
+
+**A pause lasts forever** (owner, 2026-08-12). No auto-stop, no timeout, no
+"still there?". Nota never ends a session on its own.
+
+- **`elapsed` is audio time, not wall clock.** Pause two minutes inside a
+  twenty-minute meeting and the recording is eighteen minutes, because the CAF
+  is a concatenation of the audio that was *kept* with the paused spans simply
+  absent — not a gap of silence, not a second file. Every consumer names an
+  offset into that file (a marker's `atSeconds`, a segment's `endTime`, the
+  gutter timestamps, `durationMinutes`), so a wall-clock elapsed would put all
+  of them two minutes past the audio they name, silently, and worse the longer
+  the pause. The fix is at the **producer**: `SessionClock`
+  (`macos/Nota/Dictation/SessionPause.swift`) accrues `pausedTotal` and the
+  session's ticker publishes `clock.elapsed(now:)`, so not one of the ten
+  consumers had to learn that pause exists.
+- **One predicate stops the audio, and it stops both destinations.**
+  `LiveMeetingSession.capturesAudio(_:)` gates the socket send *and* the file
+  write, which is what makes audio continuity a fact about the file rather than
+  a hope. It is deliberately separate from `meterFollowsMicrophone`: one is
+  about bytes, the other about what may be claimed on screen.
+- **Pause drains before it flips the state, and resume discards before it flips
+  back.** `handlePCMBuffer`'s guard runs on the main actor at *drain* time, so
+  whatever is queued at the press is audio captured while the microphone was
+  live — the last word before it. Judging it against `.paused` is the
+  `PendingPCMBuffers` defect (XIA-430's "a session's last words") arriving at a
+  boundary that happens many times a session instead of once. Hence
+  `MicCapture.flushPending()`, called *before* `state = .paused`, exactly as
+  `stop()` drains before clearing `isCapturing`.
+
+  Two things that shipped wrong in the first cut and are the reason this is
+  written down. **A drain is worth nothing if the buffer callback hops**: the
+  session handed each buffer to `Task { @MainActor in … }`, which never runs
+  inline, so every drained buffer was judged against the state as it stood
+  *after* `pause()` returned and the whole flush was inert. The callback is now
+  synchronous under `MainActor.assumeIsolated` (`installCaptureHandler`), which
+  is sound because every route into `drainPending` is already the main thread.
+  And **the resume direction was not free either**: a buffer converted during
+  the pause is drained by a *later* main-thread hop, so one landing just after
+  Resume was written into the file and sent to the socket — audio from a span
+  the owner was told is absent, which is the worse direction of the two because
+  a pause is often taken for privacy. `MicCapture.discardPending()` runs before
+  `state = .recording`. `testAPauseKeepsThePrePressTailAndAResumeDropsThePausedSpan`
+  drives both across a real `pause()`/`resume()`; its predecessor asserted on a
+  hand-built queue and stayed green through both defects.
+- **The tap stays installed, and nothing may say the microphone is closed.**
+  `stopCapture()` nils `onPCMBuffer` and only `start()` reinstalls it, and
+  `MicCapture.start()` re-negotiates the device format and can throw — a resume
+  that fails with a `MicCaptureError` is a new failure class on a session that
+  is already recording. So pause is `.stopping`'s discipline (tap installed,
+  buffers dropped by the state guard) without the teardown. The cost is real
+  and is named rather than glossed: **macOS keeps its own microphone indicator
+  lit for the whole pause.** Nothing Nota keeps, sends or writes comes from it,
+  and the file proves that; but no comment, copy string or doc may claim the
+  *device* is closed.
+- **The socket: ONE socket for the whole session, kept alive with zeroed
+  frames.** Close-and-reopen was rejected on three independent grounds — there
+  is no reopen path (`webSocketTask` is assigned only in `start()`, which begins
+  by `cancel()`ing the session), a new socket is a new AssemblyAI session whose
+  `Termination` covers only the last leg, and a mid-pause close outside the stop
+  path runs `failSession`. Sending *nothing* is not available either: an idle
+  realtime stream is disconnected and this file's close-code table has no idle
+  case, so a pause would silently kill a meeting — and the fix for that
+  (capping the pause) is forbidden by "a pause lasts forever".
+  What it costs is named rather than hidden: AssemblyAI is streamed, and billed
+  for, silence, and its `audio_duration_seconds` becomes wall clock. So
+  `SessionDurationChoice` stops trusting the server's figure once a session has
+  been paused and seals on the paused-corrected clock instead — otherwise the
+  audio-time correction would be undone from the far side. A session that never
+  paused is completely unaffected.
+- **A paused session must never look stopped.** The owner walks away, comes
+  back to a quiet screen, assumes it ended, loses the meeting. The ember going
+  out and the clock stopping are both *absences*, and an absence is what a
+  stopped session looks like — so the state says its own name, in words, on all
+  three surfaces: the cluster (`RecordingPaneCopy.pausedBadge`), the island
+  (`MiniIslandPhase.paused`) and the menu bar (the item reads `12:34 · Paused`,
+  and its accessibility label says "paused", not "session stopped"). Never a
+  colour change alone.
+- **The word costs the row nothing.** It is an **overlay** above the cluster,
+  the mechanism the moment tally already uses and for the identical rule: no
+  state of the session may move Stop under the pointer, and a centred row
+  splits any widening across both sides. Drawn inside the timer capsule it
+  would have widened it. `testTheWordPausedNeverMovesTheCluster`.
+- **`showsRecordingPane` and `drawsMarkerRules` are no longer the same
+  property.** The pane stays up while paused (removing it *is* the "looks
+  stopped" failure); the ember rules in the transcript margin go, because
+  nothing is being captured and the ember means it is. They come back at Resume.
+- **Mark is refused while paused, on every surface.**
+  `NotaModel.markCurrentMoment` gates on the open microphone, so the capsule is
+  disabled (`SessionClusterAction.isEnabled`, back as a per-action question for
+  the first time since XIA-445) and the island and menu bar drop the row
+  entirely rather than showing a control that does nothing. Pause and Stop stay
+  live in both states — an owner may not have to resume in order to end.
+- **The status contract: `paused` is a FLAG on `recording`, never a status.**
+  To every consumer a paused session *is* recording — it owns a record and holds
+  a file open — so the machine is untouched: `isInFlight`, `canAdvance`,
+  `interruptedResolution` and the launch sweep all move not at all, and an
+  interrupted paused record still resolves to `failed:recording` + `interrupted`
+  and reads **"Interrupted"**, which is what happened to it. A new status would
+  have been *unsafe* rather than merely expensive: `normalizeHistoryStatus`
+  resolves an unrecognized value by what the record HAS, so an older build (or
+  the shipped `dist/index.js` the app shells out to) would read `"paused"` as
+  `transcribed` — a **rest** state the sweep never revisits — and a paused
+  session whose process died would become a finished transcript with no
+  transcript in it. Written by `LiveSessionPersistence.recordPaused` through
+  `mutateRecord`; declared as `HistoryRecord.paused` in TS so its survival
+  across every `{ ...record }` write path is a contract
+  (`tests/pipeline/history-paused.test.ts`), the deal `pinned` and `markers`
+  already have. Both `describeHistoryStatus(status, {paused})` and
+  `HistoryStatus.presentation(interrupted:paused:)` say "Paused", and only for
+  `recording`. Each has a **production caller**: `historyStatusLabel` on the CLI
+  side, `NotaModel.pauseLiveSession` on the app's, which moves the window's own
+  status line — a contract function with no caller in the app is a contract
+  only one side keeps.
+- **A record that has left `recording` is not paused.** The flag is written at
+  press time and only Resume clears it, so a session stopped *from* a pause
+  sealed as `{"status": "done", …, "paused": true}` — forever, on the surface
+  `nota history show` calls scriptable. It was masked only because both display
+  functions gate the word on `recording`, which is a record that is wrong while
+  its display happens to hide it: exactly the shape the flag-not-a-status design
+  was chosen to avoid. `LiveSessionPersistence.updateStatus` clears it whenever
+  the new status is not `recording`, because that one function is the door the
+  seal, `settleAsFailed` and the launch sweep all go through.
+- **A finalized turn that lands during a pause is kept, on both engines.** The
+  Apple analyzer finalizes asynchronously — audio fed at t−0.5s resolves at
+  t+0.3s — so the sentence spoken just before the press arrives after it.
+  `handleAppleHypothesis` was gated on `.recording` alone and dropped it, and
+  Apple's finalized results are deltas, so it was gone from the sealed
+  transcript and the summary for good; the WS path's `.turn` handler has never
+  had a state guard, so the two engines disagreed about one boundary. Both keep
+  it now, stamped with the pinned `elapsed`, which is the right second of the
+  audio. The mirror of that: an **empty** end-of-turn is dropped, because a
+  pause streams silence and silence is exactly what closes a turn — otherwise
+  every pause added a blank line to the transcript and the `.md`.
+- **The keep-alive is cancelled on every way out**, including the two the owner
+  cannot reach (a mid-pause receive error, and a server-initiated
+  `Termination`). It sends through `pauseKeepAliveSink`, a seam that exists
+  because `URLSessionWebSocketTask.send` is unobservable and this is the one
+  part of pause that spends the owner's money.
+- **The badge is drawn in space no line was going to use.** An overlay is
+  outside the layout, which is what keeps it from moving Stop — and also outside
+  the reserve, so lifted ≈31pt above a 16pt gap it landed on the last lines of
+  the live transcript. `clusterTranscriptGap` is now the larger of the two, and
+  `transcriptBottomReserve` inherits it. Unconditional, not "wider while
+  paused": a reserve that changed at the press would reflow the transcript under
+  the owner at the moment the surface is promising to hold still.
+
 ## Record Lifecycle
 
 A history record is created at **sample zero**, not built at the end (XIA-430).
