@@ -1056,20 +1056,29 @@ final class RecordingPaneTests: XCTestCase {
     )
   }
 
-  /// **Pressing Pause may not move Stop.** The word "Paused" is drawn inside
-  /// the Pause capsule (owner, 2026-08-12) rather than on a badge above the
-  /// row, so unlike the moment tally it is genuinely in the layout — and a
-  /// centred row splits any widening across both sides, which would step Stop
-  /// sideways out from under the pointer resting on it.
+  /// **Pause grows into the word, and it is the only capsule that moves a
+  /// pixel** (owner, 2026-08-13: "when not pause, same as before, when pause,
+  /// pill grows, pushes the neighbors to either direction").
   ///
-  /// `pauseCapsuleWidth` reserves the wider of the two forms up front, exactly
-  /// as `SessionTimerMetrics.plateWidth` reserves `hh:mm:ss` for the hour. This
-  /// measures the *laid-out* capsule in both states rather than trusting the
-  /// constant: XIA-444 typed a height that disagreed with the row it described
-  /// and every geometry test in the file stayed green through it.
-  func testTheWordPausedNeverMovesStop() {
-    func drawnStopLeadingEdge(_ controls: LiveMeetingControls) -> (CGFloat, CGFloat) {
-      let cluster = SessionCapsuleCluster(
+  /// This reverses the reservation the first cut shipped — `pauseCapsuleWidth`,
+  /// which held the wide form in both states so the press could not move Stop.
+  /// It kept that rule at a visible price: a round glyph adrift in a box sized
+  /// for a word it was not saying, so a row of four capsules drew three
+  /// different-looking gaps. Growth is the state change here, not a cost.
+  ///
+  /// What is asserted is therefore the *shape* of the growth rather than its
+  /// absence: the row widens by exactly what Pause widens by, and Mark, Stop
+  /// and the timer are untouched. Measured off the laid-out capsules rather
+  /// than a constant — XIA-444 typed a number that disagreed with the row it
+  /// described and every geometry test in the file stayed green through it.
+  func testOnlyThePauseCapsuleGrowsWhenTheSessionPauses() {
+    func laidOut<V: View>(_ view: V) -> CGFloat {
+      let host = NSHostingView(rootView: view)
+      host.layoutSubtreeIfNeeded()
+      return host.fittingSize.width
+    }
+    func cluster(_ controls: LiveMeetingControls) -> SessionCapsuleCluster {
+      SessionCapsuleCluster(
         elapsed: 754,
         level: MicLevelFeed(level: 0.4),
         controls: controls,
@@ -1078,32 +1087,31 @@ final class RecordingPaneTests: XCTestCase {
         onPause: {},
         onStop: {}
       )
-      func laidOut<V: View>(_ view: V) -> CGFloat {
-        let host = NSHostingView(rootView: view)
-        host.layoutSubtreeIfNeeded()
-        return host.fittingSize.width
-      }
-      let row = laidOut(cluster)
-      // Stop is last, so its leading edge is the row's trailing edge less its
-      // own width — derived rather than typed, so it survives a fifth capsule.
-      return (row, row - laidOut(cluster.capsule(.stop)))
     }
 
-    let (runningRow, runningStop) = drawnStopLeadingEdge(.stop)
-    let (pausedRow, pausedStop) = drawnStopLeadingEdge(.paused)
-
+    let running = cluster(.stop)
+    let paused = cluster(.paused)
+    let runningRow = laidOut(running)
+    let pausedRow = laidOut(paused)
     XCTAssertGreaterThan(runningRow, 0, "the hosting view produced no layout")
+
+    let pauseGrowth = laidOut(paused.capsule(.pause)) - laidOut(running.capsule(.pause))
+    XCTAssertGreaterThan(
+      pauseGrowth, 20,
+      "the Pause capsule grew \(pauseGrowth)pt — it is not drawing the word")
     XCTAssertEqual(
-      pausedRow, runningRow, accuracy: 0.5,
-      "the row is \(pausedRow)pt paused against \(runningRow)pt running — the word widened it")
-    XCTAssertEqual(
-      pausedStop, runningStop, accuracy: 0.5,
-      "Stop's leading edge moved \(pausedStop - runningStop)pt when the session paused")
+      pausedRow - runningRow, pauseGrowth, accuracy: 0.5,
+      "the row grew \(pausedRow - runningRow)pt against Pause's \(pauseGrowth)pt")
+
+    for action in [SessionClusterAction.mark, .stop] {
+      XCTAssertEqual(
+        laidOut(paused.capsule(action)), laidOut(running.capsule(action)), accuracy: 0.5,
+        "\(action) changed width when the session paused")
+    }
   }
 
-  /// And the word really is drawn — otherwise the test above passes against a
-  /// Pause capsule that says nothing in either state, which is the failure the
-  /// reserved width makes easy to miss.
+  /// And the word really is drawn — otherwise the test above measures a
+  /// widening with no cause, and every state string in the row is a no-op.
   func testThePauseCapsuleSaysPausedOnlyWhilePaused() {
     XCTAssertEqual(SessionClusterAction.pause.title(paused: true), RecordingPaneCopy.pausedTitle)
     XCTAssertNil(SessionClusterAction.pause.title(paused: false))

@@ -504,11 +504,18 @@ final class SessionPauseTests: XCTestCase {
     )
   }
 
-  /// **The word costs the row nothing.** It is an overlay, like the moment
-  /// tally, and for the identical rule: no state of the session may move Stop
-  /// under the pointer, and a centred cluster splits any widening across both
-  /// sides. Drawn *inside* the timer capsule it would have widened it.
-  func testTheWordPausedNeverMovesTheCluster() {
+  /// **The word costs the row no HEIGHT**, which is the half of "costs the row
+  /// nothing" that survived the owner's 2026-08-13 call. Width is now expected
+  /// to change — Pause grows into the word and pushes its neighbours apart,
+  /// asserted by `testOnlyThePauseCapsuleGrowsWhenTheSessionPauses`. Height may
+  /// not: `transcriptBottomReserve` is composed from `capsuleHeight`, so a row
+  /// that grew taller while paused would slide under the glass every time the
+  /// owner stepped away, on a surface whose promise is that it holds still.
+  ///
+  /// This is why the word went inside the capsule rather than above the row in
+  /// the first place: the badge it replaced was lifted ≈31pt and landed on the
+  /// last lines of the live transcript.
+  func testTheWordPausedNeverMovesTheClusterVertically() {
     func size(_ controls: LiveMeetingControls) -> CGSize {
       let host = NSHostingView(
         rootView: SessionCapsuleCluster(
@@ -527,43 +534,41 @@ final class SessionPauseTests: XCTestCase {
     let live = size(.stop)
     let paused = size(.paused)
     XCTAssertGreaterThan(live.width, 0, "the hosting view produced no layout")
-    XCTAssertEqual(paused.width, live.width, accuracy: 0.5, "the badge widened the row")
-    XCTAssertEqual(paused.height, live.height, accuracy: 0.5, "the badge grew the row")
+    XCTAssertEqual(paused.height, live.height, accuracy: 0.5, "pausing grew the row taller")
     XCTAssertEqual(
       live.height,
       RecordingPaneMetrics.capsuleHeight,
       accuracy: 0.5,
-      "the row is not one capsule tall, so this comparison is not about the badge"
+      "the row is not one capsule tall, so this comparison is not about the word"
     )
   }
 
   /// **The word is actually on the cluster**, not merely in a copy table.
   ///
-  /// `testEverySurfaceSaysTheWordPaused` asserts constants and
-  /// `testTheWordPausedNeverMovesTheCluster` compares `fittingSize`, which an
-  /// `.overlay` cannot change *by definition* — so both stayed green with the
-  /// badge deleted outright (verified by mutation). For the ticket whose thesis
-  /// is "a paused session must never look stopped", the badge is the
-  /// load-bearing pixel and it was the one thing unpinned.
+  /// `testEverySurfaceSaysTheWordPaused` asserts constants and the geometry
+  /// tests compare `fittingSize`, which the badge this replaced could not
+  /// change *by definition* — so both stayed green with it deleted outright
+  /// (verified by mutation). For the ticket whose thesis is "a paused session
+  /// must never look stopped", that word is the load-bearing pixel and it was
+  /// the one thing unpinned.
   ///
-  /// Asserted as **blue ink outside the row's own band**: the badge is
-  /// `primaryBlue` and sits clear of the capsules, so the live render fixes
-  /// where the row's blue lives (Mark's capsule) and the paused render has to
-  /// put blue somewhere else. That is independent of which way the bitmap's y
-  /// axis runs, and it fails the moment the overlay stops being drawn.
+  /// Asserted as **white ink on the Pause capsule's own plate**: the glyph is
+  /// there in both states, six letters are there in one, so the paused render
+  /// has strictly more of it.
   func testTheClusterActuallyDrawsTheWordPaused() {
     // The word moved *into* the Pause capsule (owner, 2026-08-12), so the
     // signal moved with it. It used to be blue pixels in rows the running
     // cluster left empty — a badge floating above the row.
     //
     // The capsule is probed **alone**, not inside the cluster. Measuring the
-    // whole row was tried and is worthless here: the blue is identical in both
-    // states by construction (`pauseCapsuleWidth` reserves the wide form so the
-    // press cannot move Stop), so the only honest difference is the ink inside
-    // that one capsule — and a full-row probe reads the white page between the
-    // capsules and the timer's own glyphs, which swamp six letters by an order
-    // of magnitude. Measured: 8320 running against 4967 paused, i.e. the noise
-    // moved further than the signal and in the wrong direction.
+    // whole row was tried and is worthless: a full-row probe reads the white
+    // page between the capsules and the timer's own glyphs, which swamp six
+    // letters by an order of magnitude. Measured: 8320 running against 4967
+    // paused, i.e. the noise moved further than the signal and in the wrong
+    // direction. The row's own width now differs between the two states
+    // (Pause grows into the word, owner 2026-08-13), which is asserted by
+    // `testOnlyThePauseCapsuleGrowsWhenTheSessionPauses` and would only add a
+    // second moving quantity to a probe that needs one.
     func ink(_ controls: LiveMeetingControls) -> Int? {
       let cluster = SessionCapsuleCluster(
         elapsed: 754,

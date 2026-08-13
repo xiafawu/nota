@@ -117,15 +117,25 @@ enum RecordingPaneMetrics {
   /// are the same object. The badge said the word *near* the row and could be
   /// read as belonging to any capsule in it.
   ///
-  /// What the badge bought was that an overlay is outside the layout, so no
-  /// state of the session could move Stop. A word *inside* the capsule is very
-  /// much in the layout, so that rule is kept the other way — the way
-  /// `SessionTimerMetrics.plateWidth` already keeps it for the hour: **the
-  /// widest form is reserved up front**. `pauseCapsuleWidth` is the glyph plus
-  /// the gap plus "Paused", and the capsule is that wide in *both* states, so
-  /// the press swaps content inside a box that never changes size and Stop does
-  /// not move. Reserving is what makes "the cluster holds still" a fact about
-  /// the geometry rather than a hope about the two states matching.
+  /// **The capsule grows, and the row gives way** (owner, 2026-08-13, on
+  /// seeing the reserved form: "when not pause, same as before, when pause,
+  /// pill grows, pushes the neighbors to either direction"). The first cut
+  /// reserved the wide form up front — `SessionTimerMetrics.plateWidth`'s
+  /// trick, which is what keeps the hour from moving Stop — and it kept that
+  /// rule at a cost the owner saw immediately: a round blue glyph floating in
+  /// the middle of an invisible box wide enough for a word it was not saying,
+  /// so the three gaps in a row of four capsules read as three different gaps.
+  /// That is the `markerCountWidth` lesson a second time: a reservation the
+  /// eye can measure is worse than the movement it prevents.
+  ///
+  /// So Pause is sized by its content in both states, and the widening is the
+  /// point rather than the cost — a capsule that visibly grows into the word is
+  /// the state change, and the centred row splits the growth evenly so both
+  /// neighbours slide rather than one. What the reservation protected is still
+  /// protected where it matters: **Stop is not the capsule that moves under a
+  /// press of Pause**, because the pointer that widened the row is on Pause.
+  /// The rule that survives untouched is the tally's — a moment count may never
+  /// move anything, which is why it is still an overlay.
   static let pausedTitleGap: CGFloat = CraftTokens.spacing8
   /// The face the word is drawn in, and its AppKit twin for measuring. Smaller
   /// than the glyph: it is a state, not a second label competing with it.
@@ -133,16 +143,6 @@ enum RecordingPaneMetrics {
   static var pausedTitleMeasuringFont: NSFont {
     .systemFont(ofSize: pausedTitleFontSize, weight: .semibold)
   }
-  /// Measured from the font rather than typed — `capsuleContentHeight`'s rule,
-  /// and XIA-444's warning: a typed width that disagrees with the laid-out one
-  /// is invisible until something moves under the pointer.
-  static let pauseCapsuleWidth: CGFloat = {
-    let word = (RecordingPaneCopy.pausedTitle as NSString)
-      .size(withAttributes: [.font: pausedTitleMeasuringFont]).width
-    let glyph = ("pause.fill" as NSString)
-      .size(withAttributes: [.font: actionMeasuringFont]).height
-    return (glyph + pausedTitleGap + word).rounded(.up) + 2 * actionPaddingH
-  }()
 
   /// The tallest thing any capsule has to hold. **Measured, not typed** — this
   /// is the precedent XIA-444 got wrong: `controlRowHeight` was written as 40
@@ -1222,6 +1222,11 @@ struct SessionCapsuleCluster: View {
   var onPause: () -> Void = {}
   let onStop: () -> Void
 
+  /// The cluster has one size no longer — Pause grows into "Paused" — so this
+  /// surface has a transition for an accessibility setting to reach for the
+  /// first time. See `RecordingMotion.pauseAnimation`.
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   /// Whether the session this cluster is drawing is paused. Read off the one
   /// decision every surface reads, so the capsule faces, the word and the
   /// enablement cannot disagree with each other.
@@ -1233,6 +1238,10 @@ struct SessionCapsuleCluster: View {
         SessionTimerCapsule(elapsed: elapsed, level: level, isLive: !isPaused)
         ForEach(SessionClusterAction.allCases, id: \.self) { capsule($0) }
       }
+      // The one thing on this surface that changes size. Driven from `isPaused`
+      // rather than from the whole `controls` value so a marker landing or a
+      // level tick cannot spring the row.
+      .animation(RecordingMotion.pauseAnimation(reduceMotion: reduceMotion), value: isPaused)
     }
   }
 
@@ -1258,9 +1267,9 @@ struct SessionCapsuleCluster: View {
     Button {
       perform(action)
     } label: {
-      // The glyph, and — on Pause while paused — the word beside it. The label
-      // is what the state *says*; the reserved width below is what keeps it
-      // from costing the row anything.
+      // The glyph, and — on Pause while paused — the word beside it. The
+      // capsule is sized by this, in both states: the growth into the word is
+      // the state change, not a cost to be engineered away (owner, 2026-08-13).
       HStack(spacing: RecordingPaneMetrics.pausedTitleGap) {
         Image(systemName: action.symbol(paused: isPaused))
         if let title = action.title(paused: isPaused) {
@@ -1270,13 +1279,6 @@ struct SessionCapsuleCluster: View {
       }
     }
     .buttonStyle(RecordingCapsuleButtonStyle(tint: action.tint))
-    // **Reserved in both states, so the press cannot move Stop.** Pause is the
-    // one capsule whose content changes width, and a centred row splits any
-    // widening across both sides — so an unreserved Pause would step Stop
-    // sideways at the exact moment the surface promises to hold still. This is
-    // `SessionTimerMetrics.plateWidth`'s trick: reserve the wider form up
-    // front and let the content change inside a box that never does.
-    .frame(width: action == .pause ? RecordingPaneMetrics.pauseCapsuleWidth : nil)
     .overlay(alignment: .topTrailing) {
       if action.carriesMarkerCount { markerCount }
     }

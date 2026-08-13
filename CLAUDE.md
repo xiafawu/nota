@@ -1523,8 +1523,10 @@ The capsules degrade to opaque system materials through the existing
 on `CraftTokens`, not properties of the glass. Nothing moves: every number in
 `RecordingPaneMetrics` is a constant or is measured once from a font, and
 neither kind reads an `@Environment` value, so there is nothing for an
-accessibility setting to reach. The cluster has exactly one size, so Reduce
-Motion has no transition to reach either. And the ember is untouched — it is a
+accessibility setting to reach. Reduce Motion reaches exactly one thing here
+and it arrived with XIA-447: the Pause capsule grows into the word "Paused", so
+`RecordingMotion.pauseAnimation` returns nil and the two widths are a cut. That
+is the only transition on the surface. And the ember is untouched — it is a
 function of the colour scheme alone.
 
 **Stop's red survives the degrade, and the mechanism is what makes that true.**
@@ -1933,11 +1935,40 @@ about **Moments**, a browsing affordance on a surface meant for recording.
   (`MiniIslandPhase.paused`) and the menu bar (the item reads `12:34 · Paused`,
   and its accessibility label says "paused", not "session stopped"). Never a
   colour change alone.
-- **The word costs the row nothing.** It is an **overlay** above the cluster,
-  the mechanism the moment tally already uses and for the identical rule: no
-  state of the session may move Stop under the pointer, and a centred row
-  splits any widening across both sides. Drawn inside the timer capsule it
-  would have widened it. `testTheWordPausedNeverMovesTheCluster`.
+- **The word is drawn INSIDE the Pause capsule, which grows into it** (owner,
+  2026-08-12 for the placement, 2026-08-13 for the growth). The control that
+  will resume the session is the one saying it is paused, so the state and the
+  way out of it are the same object; a badge said the word *near* the row and
+  could be read as belonging to any capsule in it.
+
+  Two answers were shipped in order and the second is the one in the tree. The
+  badge was an **overlay** — outside the layout entirely, the moment tally's
+  mechanism — and it was lifted ≈31pt above the row, where it landed on the
+  last lines of the live transcript. Moving the word into the capsule put it in
+  the layout, so the first cut kept "nothing moves Stop" by **reserving** the
+  wide form in both states (`pauseCapsuleWidth`, `SessionTimerMetrics
+  .plateWidth`'s trick for the hour) — and that is exactly the price
+  `markerCountWidth` charged and was deleted for: a round glyph adrift in a box
+  sized for a word it was not saying, so a row of four capsules drew three
+  different-looking gaps.
+
+  So Pause is sized by its content, the growth **is** the state change, and the
+  centred row splits it so both neighbours slide rather than one. Stop still
+  never moves under the pointer aimed at *it* — the pointer that widened the
+  row is on Pause. The tally's rule is untouched and is why it is still an
+  overlay: a moment count may move nothing.
+  `testOnlyThePauseCapsuleGrowsWhenTheSessionPauses` asserts the shape of the
+  growth (the row widens by exactly what Pause widens by; Mark, Stop and the
+  timer are unchanged), and **height** is still fixed —
+  `testTheWordPausedNeverMovesTheClusterVertically`, because
+  `transcriptBottomReserve` is composed from `capsuleHeight` and a taller
+  paused row would slide under the glass every time the owner stepped away.
+
+  It is the surface's **first** transition, so Reduce Motion reaches this row
+  for the first time: `RecordingMotion.pauseAnimation` returns nil there and
+  the two widths are taken as a cut. That is the ring's answer, not the
+  meter's, and the asymmetry holds — nothing is lost to a cut, since the word
+  is on screen either way and the state is also on the island and the menu bar.
 - **`showsRecordingPane` and `drawsMarkerRules` are no longer the same
   property.** The pane stays up while paused (removing it *is* the "looks
   stopped" failure); the ember rules in the transcript margin go, because

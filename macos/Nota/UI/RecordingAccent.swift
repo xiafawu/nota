@@ -32,6 +32,19 @@ enum RecordingMotion {
       : .spring(response: 0.28, dampingFraction: 0.55)
   }
 
+  /// Nil under Reduce Motion: the Pause capsule takes its two widths as a cut.
+  ///
+  /// This is the ring's answer rather than the meter's, and the reason is the
+  /// same asymmetry: the meter must keep moving because a frozen meter and a
+  /// wedged microphone look identical, whereas nothing here is lost to a cut —
+  /// the word "Paused" is on screen either way, and the state it names is also
+  /// on the menu bar and the island. What the animation buys is only that the
+  /// two neighbours look pushed rather than teleported.
+  static func pauseAnimation(reduceMotion: Bool) -> Animation? {
+    guard !reduceMotion else { return nil }
+    return .spring(response: 0.32, dampingFraction: 0.82)
+  }
+
   /// Nil under Reduce Motion: the ring holds at a steady scale and opacity.
   static func ringAnimation(reduceMotion: Bool) -> Animation? {
     guard !reduceMotion else { return nil }
