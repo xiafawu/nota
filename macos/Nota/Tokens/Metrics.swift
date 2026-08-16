@@ -51,12 +51,44 @@ enum Metrics {
   static let dropStrokeActive: CGFloat = 2
   static let dropTargetStrokeWidth: CGFloat = 3
 
+  // MARK: - The reading column (XIA-441)
+  //
+  // Every number below moved once, together, and the ones that did not exist
+  // before are the interesting half: nothing in the document path had ever set
+  // a measure cap or space *above* a heading, so the pane inherited whatever
+  // the window was and ran section titles straight into the paragraph above.
+
+  /// **The cap on line length**, in ems of the reading face, applied to the
+  /// text container rather than to the insets — a wider inset moves the column
+  /// left, a container width centres it.
+  ///
+  /// The pane had none: `widthTracksTextView` plus a 48pt inset means a
+  /// 1400pt window draws 140-character lines, which is most of what "it looks
+  /// like a text editor" was. 34em at 18.5pt is ~74 characters at the face's
+  /// average advance, inside the 45–75 band every reference in the study sits
+  /// in.
+  static let readingMeasureEms: CGFloat = 34
+  static var readingMeasure: CGFloat { readingMeasureEms * NSFonts.readingBody.pointSize }
+
   static let paraSpacingTight: CGFloat = 4
-  static let paraSpacingTranscript: CGFloat = 5
-  static let paraSpacingH2: CGFloat = 8
-  static let paraSpacingH1: CGFloat = 10
+  /// The gap between one speaker's turn and the next. Was 5 — barely more than
+  /// `lineSpacingDefault`, so a turn never visibly ended and the transcript
+  /// read as one wall.
+  static let paraSpacingTranscript: CGFloat = 15
+  static let paraSpacingH2: CGFloat = 12
+  static let paraSpacingH1: CGFloat = 14
+  /// Space **above** a heading, which had no representation at all: only
+  /// `paragraphSpacing` (after) was ever set, so `## Key Topics` sat on the
+  /// last line of the paragraph before it. A heading needs more room above than
+  /// below — that is what groups it with what it introduces.
+  static let paraSpacingBeforeH2: CGFloat = 34
+  static let paraSpacingBeforeH1: CGFloat = 38
+  /// Leading for the reading column: 18.5pt body at ~1.62 wants ~11pt of extra
+  /// lead over the font's own line height. The old value of 2 made 1.36, which
+  /// is tight for a page of prose and very tight over a moving ground.
+  static let lineSpacingReading: CGFloat = 11
   static let lineSpacingDefault: CGFloat = 2
-  static let bulletHeadIndent: CGFloat = 18
+  static let bulletHeadIndent: CGFloat = 22
 
   static let tightStackSpacing: CGFloat = 2
 

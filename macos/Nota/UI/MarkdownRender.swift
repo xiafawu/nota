@@ -46,7 +46,7 @@ func renderMarkdownAsRichText(
     }
 
     if isInCodeBlock {
-      appendPlainLine(rawLine, to: output, font: NSFonts.codeBlock, color: .secondaryLabelColor)
+      appendPlainLine(rawLine, to: output, font: NSFonts.codeBlock, color: GroundInk.nsColor(.timestamp))
       continue
     }
 
@@ -56,19 +56,27 @@ func renderMarkdownAsRichText(
     }
 
     if trimmedLine == "---" {
-      appendPlainLine("------------------------------", to: output, font: NSFonts.separator, color: .separatorColor)
+      appendPlainLine(
+        "------------------------------", to: output, font: NSFonts.separator,
+        color: GroundInk.nsColor(.rail))
       continue
     }
 
     if trimmedLine.hasPrefix("## ") {
       let title = String(trimmedLine.dropFirst(3))
-      appendPlainLine(title, to: output, font: NSFonts.h2, paragraphSpacing: Metrics.paraSpacingH2)
+      appendPlainLine(
+        title, to: output, font: NSFonts.readingH2,
+        paragraphSpacing: Metrics.paraSpacingH2,
+        paragraphSpacingBefore: Metrics.paraSpacingBeforeH2)
       continue
     }
 
     if trimmedLine.hasPrefix("# ") {
       let title = String(trimmedLine.dropFirst(2))
-      appendPlainLine(title, to: output, font: NSFonts.h1, paragraphSpacing: Metrics.paraSpacingH1)
+      appendPlainLine(
+        title, to: output, font: NSFonts.readingH1,
+        paragraphSpacing: Metrics.paraSpacingH1,
+        paragraphSpacingBefore: Metrics.paraSpacingBeforeH1)
       continue
     }
 
@@ -92,12 +100,14 @@ private func appendPlainLine(
   _ line: String,
   to output: NSMutableAttributedString,
   font: NSFont,
-  color: NSColor = .labelColor,
-  paragraphSpacing: CGFloat = Metrics.paraSpacingTight
+  color: NSColor = GroundInk.nsColor(.reading),
+  paragraphSpacing: CGFloat = Metrics.paraSpacingTight,
+  paragraphSpacingBefore: CGFloat = 0
 ) {
   let paragraph = NSMutableParagraphStyle()
   paragraph.paragraphSpacing = paragraphSpacing
-  paragraph.lineSpacing = Metrics.lineSpacingDefault
+  paragraph.paragraphSpacingBefore = paragraphSpacingBefore
+  paragraph.lineSpacing = Metrics.lineSpacingReading
   output.append(NSAttributedString(string: line, attributes: [
     .font: font,
     .foregroundColor: color,
@@ -111,14 +121,14 @@ private func appendBulletLine(_ line: String, to output: NSMutableAttributedStri
   paragraph.firstLineHeadIndent = 0
   paragraph.headIndent = Metrics.bulletHeadIndent
   paragraph.paragraphSpacing = Metrics.paraSpacingTight
-  paragraph.lineSpacing = Metrics.lineSpacingDefault
+  paragraph.lineSpacing = Metrics.lineSpacingReading
 
   output.append(NSAttributedString(string: "• ", attributes: [
-    .font: NSFonts.body,
-    .foregroundColor: NSColor.labelColor,
+    .font: NSFonts.readingBody,
+    .foregroundColor: GroundInk.nsColor(.reading),
     .paragraphStyle: paragraph
   ]))
-  appendInlineMarkdown(line, to: output, font: NSFonts.body, paragraphStyle: paragraph)
+  appendInlineMarkdown(line, to: output, font: NSFonts.readingBody, paragraphStyle: paragraph)
   output.append(NSAttributedString(string: "\n"))
 }
 
@@ -129,7 +139,7 @@ private func appendTranscriptLine(
 ) -> Bool {
   let paragraph = NSMutableParagraphStyle()
   paragraph.paragraphSpacing = Metrics.paraSpacingTranscript
-  paragraph.lineSpacing = Metrics.lineSpacingDefault
+  paragraph.lineSpacing = Metrics.lineSpacingReading
 
   // [MM:SS] **Speaker:** text — render speaker + text, drop the visible timestamp,
   // and carry it as a `.notaTimestamp` attribute for the hover gutter.
@@ -141,13 +151,13 @@ private func appendTranscriptLine(
     let displayLabel = overrides[rawLabel] ?? rawLabel
     let start = output.length
     output.append(NSAttributedString(string: "\(displayLabel): ", attributes: [
-      .font: NSFonts.speaker,
-      .foregroundColor: NSColor.labelColor,
+      .font: NSFonts.readingSpeaker,
+      .foregroundColor: GroundInk.nsColor(.speaker),
       .paragraphStyle: paragraph
     ]))
     output.append(NSAttributedString(string: groups[3], attributes: [
-      .font: NSFonts.body,
-      .foregroundColor: NSColor.labelColor,
+      .font: NSFonts.readingBody,
+      .foregroundColor: GroundInk.nsColor(.reading),
       .paragraphStyle: paragraph
     ]))
     attachTimestamp(groups[1], from: start, to: output)
@@ -160,8 +170,8 @@ private func appendTranscriptLine(
   if let groups = matchTranscript(plainPattern, in: line) {
     let start = output.length
     output.append(NSAttributedString(string: groups[2], attributes: [
-      .font: NSFonts.body,
-      .foregroundColor: NSColor.labelColor,
+      .font: NSFonts.readingBody,
+      .foregroundColor: GroundInk.nsColor(.reading),
       .paragraphStyle: paragraph
     ]))
     attachTimestamp(groups[1], from: start, to: output)
@@ -231,8 +241,8 @@ private func prettyTimestamp(_ raw: String) -> String {
 private func appendInlineMarkdownLine(_ line: String, to output: NSMutableAttributedString) {
   let paragraph = NSMutableParagraphStyle()
   paragraph.paragraphSpacing = Metrics.paraSpacingTight
-  paragraph.lineSpacing = Metrics.lineSpacingDefault
-  appendInlineMarkdown(line, to: output, font: NSFonts.body, paragraphStyle: paragraph)
+  paragraph.lineSpacing = Metrics.lineSpacingReading
+  appendInlineMarkdown(line, to: output, font: NSFonts.readingBody, paragraphStyle: paragraph)
   output.append(NSAttributedString(string: "\n"))
 }
 
@@ -249,10 +259,12 @@ private func appendInlineMarkdown(
       continue
     }
 
-    let segmentFont = index.isMultiple(of: 2) ? font : NSFont.boldSystemFont(ofSize: font.pointSize)
+    let segmentFont = index.isMultiple(of: 2)
+      ? font
+      : NSFont.systemFont(ofSize: font.pointSize, weight: .semibold)
     output.append(NSAttributedString(string: part, attributes: [
       .font: segmentFont,
-      .foregroundColor: NSColor.labelColor,
+      .foregroundColor: GroundInk.nsColor(.reading),
       .paragraphStyle: paragraphStyle
     ]))
   }

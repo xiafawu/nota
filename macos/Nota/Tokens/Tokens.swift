@@ -74,4 +74,25 @@ enum NSFonts {
   static let timestamp: NSFont = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
   static let speaker: NSFont = .boldSystemFont(ofSize: 14)
   static let gutterTimestamp: NSFont = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+
+  // MARK: - The reading column (XIA-441)
+  //
+  // A separate scale rather than a change to the four above, because those are
+  // read elsewhere and the document is the only surface that grew. **18.5 is
+  // the owner's number**, dialled against the real ground on 2026-08-16, and it
+  // is load-bearing beyond taste: at 18pt and up WCAG calls the text *large*,
+  // which is what lets `GroundInk.Tier.reading` draw at 0.80 against a 4.5:1
+  // bar instead of 7.0. Taking the size back down without taking the alpha up
+  // puts the body under its bar.
+  static let readingBody: NSFont = .systemFont(ofSize: 18.5)
+  /// 1.4× the body, where the old pair was 18/14 — a 1.29 step that left
+  /// section titles barely announcing themselves.
+  static let readingH2: NSFont = .systemFont(ofSize: 26, weight: .semibold)
+  static let readingH1: NSFont = .systemFont(ofSize: 32, weight: .bold)
+  /// The speaker name is a **label**, not reading, so it stays small, semibold
+  /// and set in the interface face even as the body grows. It is the row's
+  /// structure rather than part of the sentence.
+  static let readingSpeaker: NSFont = .systemFont(ofSize: 14, weight: .semibold)
+  /// Mono, because the gutter is a column of times and they have to align.
+  static let readingGutter: NSFont = .monospacedDigitSystemFont(ofSize: 13, weight: .regular)
 }

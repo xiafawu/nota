@@ -700,6 +700,12 @@ final class RecordFactsTests: XCTestCase {
       )
       view.textStorage?.setAttributedString(body)
       view.markerSeconds = markers
+      // The gutter is the text container's inset (XIA-441 centres the reading
+      // column by growing it), so the pip has nowhere to land until the column
+      // is applied. A bare NSTextView insets by zero and the pip drew at a
+      // negative x — off the left edge, invisible, in a test that had been
+      // asserting it was there.
+      RichTextViewer.layout(view, in: view.bounds.width)
       view.layoutManager?.ensureLayout(for: view.textContainer!)
       return view
     }
@@ -712,24 +718,41 @@ final class RecordFactsTests: XCTestCase {
       "a document with no moments answered a press it cannot honour"
     )
 
-    // …and the gutter really has pips in it. Measured as the **difference**
-    // between the same document with and without moments, inside the gutter
-    // lane: an `NSTextView` paints its own background, so "is there any ink
-    // here" is true of every pixel and would pass whatever `draw(_:)` did.
-    let lane = NSRect(x: 0, y: 0, width: Metrics.gutterWidth, height: marked.bounds.height)
-    let bare = textView(markers: [])
-    XCTAssertGreaterThan(
-      Self.differingPixels(marked, bare, in: lane),
-      0,
-      "the gutter drew no pip at all — the strip advertises moments nothing marks"
-    )
-    // The negative control: two documents that both have no moments differ
-    // nowhere, so the count above is the pips and not rendering noise.
+    // …and the gutter really has pips in it, **asserted as geometry rather than
+    // as pixels** (changed 2026-08-16, XIA-441).
+    //
+    // The pixel version could not see a pip and never could: measured, a
+    // `cacheDisplay` bitmap of an unhosted `NSTextView` contains none of this
+    // view's custom `draw(_:)` output — a solid red fill in the pip loop
+    // produces **zero** differing pixels. What it was really reading is one
+    // frame to the side: `revealNextMarker` above scrolls `marked` and nothing
+    // scrolls `bare`, so the two bitmaps differed wherever the text moved. It
+    // stayed green against a pip drawn at x = -13, off the left edge, which is
+    // exactly what the reading column's growing inset produced before
+    // `pipRects` started reading the inset instead of the constant.
+    //
+    // `pipRects()` is what `draw(_:)` fills, so this is the drawn value and not
+    // a second copy of the arithmetic.
+    let pips = marked.pipRects()
+    XCTAssertEqual(pips.count, 2, "the strip advertises 2 moments and the gutter marks \(pips.count)")
+    for (index, pip) in pips.enumerated() {
+      XCTAssertGreaterThanOrEqual(pip.minX, 0, "pip \(index) is off the left edge at \(pip.minX)")
+      XCTAssertLessThanOrEqual(
+        pip.maxX, marked.textContainerInset.width,
+        "pip \(index) runs past the gutter into the text at \(pip.maxX)")
+      // Beside its OWN line, not merely somewhere in the gutter.
+      guard let line = marked.lineFragmentForPip(at: index) else {
+        return XCTFail("pip \(index) belongs to no line")
+      }
+      XCTAssertGreaterThanOrEqual(pip.midY, line.minY)
+      XCTAssertLessThanOrEqual(pip.midY, line.maxY)
+    }
+    // The negative control, and it is a real one now: a document with no
+    // moments produces no pips at all, so the two above are the markers rather
+    // than something the view draws regardless.
     XCTAssertEqual(
-      Self.differingPixels(bare, textView(markers: []), in: lane),
-      0,
-      "the probe reports differences between two identical renderings"
-    )
+      textView(markers: []).pipRects(), [],
+      "a document with no moments still drew pips")
   }
 
   // MARK: - Fixtures
@@ -770,42 +793,6 @@ final class RecordFactsTests: XCTestCase {
     return nil
   }
 
-  /// How many pixels inside `rect` differ between two renderings of the same
-  /// view. A difference is the only usable signal here: an `NSTextView` paints
-  /// its own background, so "is anything drawn at this pixel" is true
-  /// everywhere and would be green whatever `draw(_:)` did.
-  private static func differingPixels(_ a: NSView, _ b: NSView, in rect: NSRect) -> Int {
-    func bitmap(_ view: NSView) -> NSBitmapImageRep? {
-      guard let rep = view.bitmapImageRepForCachingDisplay(in: view.bounds) else { return nil }
-      view.cacheDisplay(in: view.bounds, to: rep)
-      return rep
-    }
-    guard let left = bitmap(a), let right = bitmap(b), a.bounds.width > 0 else { return 0 }
-    // `cacheDisplay` gives a backing-scale bitmap (2× on this display), so a
-    // rect in points has to be scaled before it indexes pixels — sampling
-    // points against a 2× store reads the top-left quarter of the view and
-    // misses the gutter entirely.
-    let scale = CGFloat(left.pixelsWide) / a.bounds.width
-    let px = NSRect(
-      x: rect.minX * scale,
-      y: rect.minY * scale,
-      width: rect.width * scale,
-      height: rect.height * scale
-    )
-    var count = 0
-    for x in Int(px.minX)..<min(Int(px.maxX), min(left.pixelsWide, right.pixelsWide)) {
-      for y in Int(px.minY)..<min(Int(px.maxY), min(left.pixelsHigh, right.pixelsHigh)) {
-        guard let one = left.colorAt(x: x, y: y)?.usingColorSpace(.sRGB),
-              let two = right.colorAt(x: x, y: y)?.usingColorSpace(.sRGB)
-        else { continue }
-        let dr = one.redComponent - two.redComponent
-        let dg = one.greenComponent - two.greenComponent
-        let db = one.blueComponent - two.blueComponent
-        if (dr * dr + dg * dg + db * db).squareRoot() > 0.05 { count += 1 }
-      }
-    }
-    return count
-  }
 
   /// The size a view really takes when a **pane** of `pane` is proposed to it.
   ///

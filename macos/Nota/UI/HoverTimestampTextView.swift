@@ -132,21 +132,56 @@ final class HoverTimestampTextView: NSTextView {
   /// Drawn rather than hung off subviews — there is one per marked line, they
   /// move on every relayout, and a pool of `NSView`s to invalidate is
   /// bookkeeping this view does not otherwise carry.
-  override func draw(_ dirtyRect: NSRect) {
-    super.draw(dirtyRect)
-    guard !markerSeconds.isEmpty, let layoutManager, textContainer != nil else { return }
+  /// Where the pips go, as rects — **the same values `draw(_:)` fills**, split
+  /// out so they can be asserted.
+  ///
+  /// A pixel probe cannot check this. Measured 2026-08-16: a `cacheDisplay`
+  /// bitmap of an unhosted `NSTextView` contains none of this view's custom
+  /// `draw(_:)` output at all — a solid red fill in the loop below produces
+  /// zero differing pixels. The test that claimed to see a pip was reading an
+  /// adjacent effect instead (`revealNextMarker` scrolls the marked view and
+  /// not the bare one), so it stayed green through a pip drawn at x = -13.
+  func pipRects() -> [NSRect] {
+    guard !markerSeconds.isEmpty, let layoutManager, textContainer != nil else { return [] }
     let (lines, marked) = pipLines()
-    guard !marked.isEmpty else { return }
-
     let inset = textContainerInset
-    NSColor.controlAccentColor.withAlphaComponent(0.85).setFill()
-    for index in marked where index < lines.count {
+    return marked.compactMap { index in
+      guard index < lines.count else { return nil }
       let glyph = layoutManager.glyphIndexForCharacter(at: lines[index].characterIndex)
       let fragment = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
-      let x = Metrics.gutterWidth - Metrics.tsGutterTrailingGap - Self.pipDiameter
-      let y = fragment.minY + inset.height + (fragment.height - Self.pipDiameter) / 2
-      let rect = NSRect(x: x, y: y, width: Self.pipDiameter, height: Self.pipDiameter)
-      guard rect.intersects(dirtyRect) else { continue }
+      // The gutter is whatever space is to the LEFT OF THE TEXT, which is the
+      // inset — not `Metrics.gutterWidth`, which is only its floor. XIA-441
+      // centres the reading column by growing that inset on a wide window, and
+      // a pip pinned to the constant would sit adrift in the left margin while
+      // the line it marks started 200pt further right.
+      return NSRect(
+        x: inset.width - Metrics.tsGutterTrailingGap - Self.pipDiameter,
+        y: fragment.minY + inset.height + (fragment.height - Self.pipDiameter) / 2,
+        width: Self.pipDiameter,
+        height: Self.pipDiameter)
+    }
+  }
+
+  /// The line fragment a pip belongs to, for the assertion that it is beside
+  /// its own line rather than merely somewhere in the gutter.
+  func lineFragmentForPip(at markedIndex: Int) -> NSRect? {
+    guard let layoutManager, textContainer != nil else { return nil }
+    let (lines, marked) = pipLines()
+    guard markedIndex < marked.count, marked[markedIndex] < lines.count else { return nil }
+    let glyph = layoutManager.glyphIndexForCharacter(
+      at: lines[marked[markedIndex]].characterIndex)
+    var rect = layoutManager.lineFragmentRect(forGlyphAt: glyph, effectiveRange: nil)
+    rect.origin.y += textContainerInset.height
+    return rect
+  }
+
+  override func draw(_ dirtyRect: NSRect) {
+    super.draw(dirtyRect)
+    guard !markerSeconds.isEmpty else { return }
+    let rects = pipRects()
+    guard !rects.isEmpty else { return }
+    NSColor.controlAccentColor.withAlphaComponent(0.85).setFill()
+    for rect in rects where rect.intersects(dirtyRect) {
       NSBezierPath(ovalIn: rect).fill()
     }
   }
@@ -156,8 +191,8 @@ final class HoverTimestampTextView: NSTextView {
     guard gutterLabel.superview == nil else {
       return
     }
-    gutterLabel.font = NSFonts.gutterTimestamp
-    gutterLabel.textColor = .secondaryLabelColor
+    gutterLabel.font = NSFonts.readingGutter
+    gutterLabel.textColor = GroundInk.nsColor(.timestamp)
     gutterLabel.alignment = .right
     gutterLabel.lineBreakMode = .byClipping
     gutterLabel.alphaValue = 0
@@ -232,9 +267,11 @@ final class HoverTimestampTextView: NSTextView {
     // are right-aligned to the same trailing edge on the same line box, so
     // without it hovering a marked line drew the timestamp over its own pip.
     let lane = markerSeconds.isEmpty ? 0 : Self.pipLane
-    let available = Metrics.gutterWidth - Metrics.tsGutterTrailingGap - lane
+    // Right-aligned to the text's own leading edge (see the pip comment above):
+    // the inset is the gutter, and it grows when the column is centred.
+    let available = inset.width - Metrics.tsGutterTrailingGap - lane
     let width = min(size.width, available)
-    let x = Metrics.gutterWidth - Metrics.tsGutterTrailingGap - lane - width
+    let x = inset.width - Metrics.tsGutterTrailingGap - lane - width
     let y = lineRect.minY + inset.height + (lineRect.height - size.height) / 2
     gutterLabel.frame = NSRect(x: x, y: y, width: width, height: size.height)
     setGutter(visible: true)

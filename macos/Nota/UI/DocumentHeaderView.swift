@@ -63,7 +63,7 @@ struct DocumentHeaderView: View {
         if !Self.subtitle(meta: meta, facts: facts).isEmpty {
           Text(Self.subtitle(meta: meta, facts: facts))
             .font(Tokens.docSubtitleFont)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.ground(.speaker))
         }
 
         // Speaker chip strip — injected between subtitle and tags
@@ -99,7 +99,7 @@ struct DocumentHeaderView: View {
             ForEach(meta.tags, id: \.self) { tag in
               Text(tag)
                 .font(Tokens.historyTagFont)
-                .foregroundStyle(.secondary)
+                .foregroundStyle(.ground(.speaker))
                 .padding(.horizontal, Metrics.tagPillH)
                 .padding(.vertical, Metrics.tagPillV)
                 .background(Tokens.tagPillFill, in: Capsule())
@@ -178,7 +178,7 @@ private struct SpeakerChipButton: View {
         .frame(width: Metrics.speakerDotSize, height: Metrics.speakerDotSize)
       Text("\(chip.label) → \(suggestion.suggestedName)? \(suggestion.scoreText)")
         .font(Tokens.historyTagFont)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.ground(.speaker))
         .lineLimit(1)
       Button {
         onAcceptSuggestion(chip.label)
@@ -197,7 +197,7 @@ private struct SpeakerChipButton: View {
           .font(.system(size: 8, weight: .bold))
       }
       .buttonStyle(.plain)
-      .foregroundStyle(.secondary)
+      .foregroundStyle(.ground(.speaker))
       .help("Dismiss this suggestion")
       .accessibilityLabel("Dismiss suggestion")
     }
@@ -227,7 +227,7 @@ private struct SpeakerChipButton: View {
           .frame(width: Metrics.speakerDotSize, height: Metrics.speakerDotSize)
         Text(displayName)
           .font(Tokens.historyTagFont)
-          .foregroundStyle(chip.name.isEmpty ? .tertiary : .secondary)
+          .foregroundStyle(chip.name.isEmpty ? .ground(.timestamp) : .ground(.speaker))
           .lineLimit(1)
         statusAccessory
       }
@@ -242,7 +242,7 @@ private struct SpeakerChipButton: View {
           .strokeBorder(
             style: StrokeStyle(lineWidth: 1, dash: [3, 2])
           )
-          .foregroundStyle(.secondary.opacity(0.5))
+          .foregroundStyle(.ground(.timestamp))
       }
     }
     .help(helpText)
@@ -302,14 +302,14 @@ private struct SpeakerChipButton: View {
     VStack(alignment: .leading, spacing: 8) {
       Text(chip.label)
         .font(.caption)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.ground(.speaker))
       TextField("Speaker name", text: $draft)
         .frame(width: Metrics.speakerPopoverFieldWidth)
         .onSubmit { commit() }
       if let tooltip = chip.indicator.tooltip {
         Text(tooltip)
           .font(.caption2)
-          .foregroundStyle(.secondary)
+          .foregroundStyle(.ground(.speaker))
           .frame(maxWidth: Metrics.speakerPopoverFieldWidth, alignment: .leading)
       }
     }
@@ -402,13 +402,13 @@ private struct EditableTagRow: View {
       }
     }
     .buttonStyle(.plain)
-    .foregroundStyle(.secondary)
+    .foregroundStyle(.ground(.speaker))
     .padding(.horizontal, Metrics.tagPillH)
     .padding(.vertical, Metrics.tagPillV)
     .background(
       Capsule()
         .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
-        .foregroundStyle(.secondary.opacity(0.5))
+        .foregroundStyle(.ground(.timestamp))
     )
     .help("Generate tags")
     .accessibilityLabel(state.tags.isEmpty ? "Generate tags" : "Generate more tags")
@@ -426,12 +426,12 @@ private struct RemovableTagChip: View {
     HStack(spacing: 3) {
       Text(tag)
         .font(Tokens.historyTagFont)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.ground(.speaker))
       if isHovering {
         Button(action: onRemove) {
           Image(systemName: "xmark")
             .font(.system(size: 7, weight: .bold))
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.ground(.speaker))
         }
         .buttonStyle(.plain)
         .help("Remove tag")
@@ -470,7 +470,7 @@ private struct AddTagChip: View {
           .padding(.horizontal, Metrics.tagPillH)
           .padding(.vertical, Metrics.tagPillV)
           .background(
-            Capsule().strokeBorder(.secondary.opacity(0.4), lineWidth: 1)
+            Capsule().strokeBorder(.ground(.timestamp), lineWidth: 1)
           )
           .onAppear { fieldFocused = true }
       } else {
@@ -484,7 +484,7 @@ private struct AddTagChip: View {
             Text("add tag")
               .font(Tokens.historyTagFont)
           }
-          .foregroundStyle(.secondary)
+          .foregroundStyle(.ground(.speaker))
           .padding(.horizontal, Metrics.tagPillH)
           .padding(.vertical, Metrics.tagPillV)
         }
@@ -492,7 +492,7 @@ private struct AddTagChip: View {
         .background(
           Capsule()
             .strokeBorder(style: StrokeStyle(lineWidth: 1, dash: [3, 2]))
-            .foregroundStyle(.secondary.opacity(0.5))
+            .foregroundStyle(.ground(.timestamp))
         )
         .help("Add a tag")
       }

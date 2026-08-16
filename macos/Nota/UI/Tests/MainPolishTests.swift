@@ -136,15 +136,18 @@ final class MainPolishTests: XCTestCase {
     let colored = MainPaneView.applySpeakerColors(to: body, chips: chips)
     let text = colored.string as NSString
 
-    // The spoken text after the speaker prefix keeps the label color.
+    // The spoken text after the speaker prefix keeps the reading ink — the
+    // claim is that this pass touches only the NAME. XIA-441 changed what the
+    // body is drawn in (`labelColor` until it adopted `GroundInk`); it did not
+    // change what `applySpeakerColors` is allowed to recolour.
     let spoken = text.range(of: "hello")
     let spokenColor = colored.attribute(.foregroundColor, at: spoken.location, effectiveRange: nil) as? NSColor
-    XCTAssertEqual(spokenColor, .labelColor)
+    XCTAssertEqual(spokenColor, GroundInk.nsColor(.reading))
 
     // Generic bold outside a transcript line is untouched.
     let bold = text.range(of: "bold")
     let boldColor = colored.attribute(.foregroundColor, at: bold.location, effectiveRange: nil) as? NSColor
-    XCTAssertEqual(boldColor, .labelColor)
+    XCTAssertEqual(boldColor, GroundInk.nsColor(.reading))
   }
 
   func testApplySpeakerColors_noChipsReturnsBodyUnchanged() {

@@ -45,12 +45,13 @@ enum GroundInk {
   static func ink(light isLight: Bool) -> FieldColor.RGB { isLight ? light : dark }
 
   enum Tier: String, CaseIterable {
-    case body, speaker, timestamp, rail
+    case body, reading, speaker, timestamp, rail
 
     /// What the tier is drawn at.
     var alpha: Double {
       switch self {
       case .body: return 1.00
+      case .reading: return 0.80
       case .speaker: return 0.78
       case .timestamp: return 0.56
       case .rail: return 0.12
@@ -58,9 +59,21 @@ enum GroundInk {
     }
 
     /// The contrast ratio it has to clear against every cell of every ground.
+    ///
+    /// **`reading` carries a different bar because it is a different size**, not
+    /// because it was allowed to fail body's. WCAG's large-text threshold is
+    /// 18pt (or 14pt bold), where AAA is 4.5:1 rather than 7.0:1 and AA is 3.0
+    /// rather than 4.5 — and the transcript body is 18.5pt
+    /// (`NSFonts.readingBody`), so it qualifies outright. Drawn at 0.80 it
+    /// measures 5.69:1 at its worst over all sixteen palettes, which clears
+    /// large-AAA with margin and would have been AA at body's size. The tier
+    /// exists rather than `Tier.body` moving because the live transcript draws
+    /// `.body` at 14pt on the same grounds: one alpha cannot answer two sizes,
+    /// and lowering the shared one would silently take the small text with it.
     var minimumContrast: Double {
       switch self {
       case .body: return 7.0
+      case .reading: return 4.5
       case .speaker: return 4.5
       case .timestamp: return 3.0
       case .rail: return 1.2
@@ -90,6 +103,11 @@ enum GroundInk {
     var promoted: Tier {
       switch self {
       case .body: return .body
+      // Reading promotes to full opacity rather than to `speaker`, which is
+      // *below* it: the table is ordered by alpha and promotion means one step
+      // up it. An owner asking for more contrast on 18.5pt body text wants the
+      // ink, and body is the only thing above 0.80.
+      case .reading: return .body
       case .speaker: return .body
       case .timestamp: return .speaker
       case .rail: return .timestamp
@@ -193,6 +211,45 @@ enum GroundInk {
 /// time. Fixed alphas took that setting away from every label on the ground
 /// (see `GroundInk.Tier.promoted`); this is the one place that could give it
 /// back, and every call site gets it without knowing it exists.
+extension GroundInk {
+  /// The tier as an `NSColor`, for the AppKit half of the app.
+  ///
+  /// `MarkdownRender` builds `NSAttributedString` attributes rather than SwiftUI
+  /// views, so `.foregroundStyle(.ground(_:))` cannot reach the document pane at
+  /// all — which is exactly why that pane spent XIA-442 through XIA-446 drawing
+  /// with `NSColor.labelColor` while `RecordingPane` drew the same words in the
+  /// solved ink. One accessor closes the gap; without it "adopt GroundInk" is
+  /// not a thing the document path can do.
+  ///
+  /// **Dynamic, never resolved at build time.** The obvious version reads a
+  /// `ColorScheme` and returns a flat `NSColor`, and it is wrong in a way that
+  /// only shows up later: the attributed string is built once and handed to a
+  /// text view that lives across theme changes, so baked light ink would stay
+  /// dark-on-dark the moment the owner switched appearance — a regression
+  /// against `labelColor`, which has always been dynamic. `NSColor(name:
+  /// dynamicProvider:)` is resolved by AppKit at *draw* time, per appearance,
+  /// which is the same contract the semantic colours were honouring.
+  ///
+  /// It answers Increase contrast for the same reason the `ShapeStyle` does:
+  /// the appearance carries the accessibility variants, so `Tier.promoted` is
+  /// still reachable from a surface that has no SwiftUI environment.
+  static func nsColor(_ tier: Tier) -> NSColor {
+    NSColor(name: NSColor.Name("ground.\(tier.rawValue)")) { appearance in
+      let increased = appearance.bestMatch(from: [
+        .aqua, .accessibilityHighContrastAqua, .accessibilityHighContrastDarkAqua,
+      ]).map { $0 == .accessibilityHighContrastAqua || $0 == .accessibilityHighContrastDarkAqua }
+        ?? false
+      let light = appearance.bestMatch(from: [.aqua, .darkAqua]) != .darkAqua
+      let rgb = ink(light: light)
+      return NSColor(
+        srgbRed: rgb.x / 255,
+        green: rgb.y / 255,
+        blue: rgb.z / 255,
+        alpha: tier.alpha(increased ? .increased : .standard))
+    }
+  }
+}
+
 struct GroundInkStyle: ShapeStyle {
   let tier: GroundInk.Tier
 

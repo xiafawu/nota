@@ -62,11 +62,17 @@ struct RichTextViewer: NSViewRepresentable {
     textView.isEditable = false
     textView.isSelectable = true
     textView.drawsBackground = false
-    // Left inset doubles as the hover-timestamp gutter (symmetric, so the right
-    // margin matches for a balanced reading column).
-    textView.textContainerInset = NSSize(width: Metrics.gutterWidth, height: Metrics.richTextInsetY)
-    textView.textContainer?.widthTracksTextView = true
-    textView.textContainer?.containerSize = NSSize(width: scrollView.contentSize.width, height: CGFloat.greatestFiniteMagnitude)
+    // **The measure is capped, and the column is centred** (XIA-441). This used
+    // to track the text view outright, so the line length was whatever the
+    // window was — a 1400pt window drew ~140-character lines, and that is most
+    // of what "it looks like a text editor" meant.
+    //
+    // `widthTracksTextView` has to go off for a cap to hold at all: it forces
+    // the container to the view's width on every resize and would overwrite the
+    // size set here. `layout(in:)` re-applies both numbers, because the cap is a
+    // function of the current width and nothing else recomputes it.
+    textView.textContainer?.widthTracksTextView = false
+    RichTextViewer.layout(textView, in: scrollView.contentSize.width)
     // Zero out the container's default 5pt padding so body text shares the
     // header's leading edge exactly (both start at the gutter width).
     textView.textContainer?.lineFragmentPadding = 0
@@ -86,6 +92,21 @@ struct RichTextViewer: NSViewRepresentable {
     ) { [weak coordinator = context.coordinator] note in
       guard let clipView = note.object as? NSClipView else { return }
       coordinator?.onScroll?(clipView.bounds.origin.y)
+    }
+
+    // The column is a function of the current width, and with
+    // `widthTracksTextView` off nothing re-derives it on a resize — the text
+    // would keep the width the window happened to have when it opened.
+    // `updateNSView` does not fire for a window resize either, so the width has
+    // to be watched directly.
+    scrollView.contentView.postsFrameChangedNotifications = true
+    context.coordinator.frameObserver = NotificationCenter.default.addObserver(
+      forName: NSView.frameDidChangeNotification,
+      object: scrollView.contentView,
+      queue: .main
+    ) { [weak textView] note in
+      guard let textView, let clipView = note.object as? NSClipView else { return }
+      RichTextViewer.layout(textView, in: clipView.bounds.width)
     }
 
     return scrollView
@@ -138,9 +159,49 @@ struct RichTextViewer: NSViewRepresentable {
     }
   }
 
+  /// Where the reading column sits, given the width it has to sit in.
+  ///
+  /// Pure arithmetic, for the reason `SessionTimerMetrics` and
+  /// `HUDPillMetrics` are: the column can then be asserted at a dozen window
+  /// widths without a window server, and the two numbers are checked against
+  /// each other rather than eyeballed on one screen.
+  ///
+  /// Two rules. The measure never exceeds `Metrics.readingMeasure` — that is
+  /// the cap the whole change is about. And the leftover is **split evenly**,
+  /// so the column is centred rather than pinned to a fat left inset: a
+  /// 1400pt window otherwise draws a 640pt column with 700pt of white on its
+  /// right, which reads worse than the uncapped line it replaced. The inset
+  /// never falls below `Metrics.gutterWidth`, because the hover timestamps and
+  /// the moment pips are drawn in it.
+  enum Column {
+    static func containerWidth(available: CGFloat) -> CGFloat {
+      let usable = max(0, available - 2 * Metrics.gutterWidth)
+      return min(Metrics.readingMeasure, usable)
+    }
+
+    static func inset(available: CGFloat) -> CGFloat {
+      let container = containerWidth(available: available)
+      return max(Metrics.gutterWidth, (available - container) / 2)
+    }
+  }
+
+  /// Apply the column to a text view. Called at creation and on every width
+  /// change — `widthTracksTextView` is off, so nothing else recomputes it.
+  static func layout(_ textView: NSTextView, in available: CGFloat) {
+    guard available > 0 else { return }
+    let inset = Column.inset(available: available)
+    textView.textContainerInset = NSSize(width: inset, height: Metrics.richTextInsetY)
+    textView.textContainer?.containerSize = NSSize(
+      width: Column.containerWidth(available: available),
+      height: .greatestFiniteMagnitude)
+  }
+
   final class Coordinator {
     var onScroll: ((CGFloat) -> Void)?
     var observer: NSObjectProtocol?
+    /// Separate from `observer`: bounds changes are scrolls, frame changes are
+    /// resizes, and only the second one re-derives the reading column.
+    var frameObserver: NSObjectProtocol?
     var layoutRevision = 0
     /// The last "next moment" press this coordinator has acted on.
     var momentToken = 0
@@ -171,6 +232,9 @@ struct RichTextViewer: NSViewRepresentable {
     deinit {
       if let observer {
         NotificationCenter.default.removeObserver(observer)
+      }
+      if let frameObserver {
+        NotificationCenter.default.removeObserver(frameObserver)
       }
     }
   }

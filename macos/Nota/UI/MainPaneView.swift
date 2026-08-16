@@ -286,7 +286,9 @@ struct MainPaneView: View {
       guard
         attributes[.notaTimestamp] != nil,
         let font = attributes[.font] as? NSFont,
-        font == NSFonts.speaker
+        // The reading scale (XIA-441) renamed this face; the run is still
+        // found by matching the font the renderer used for a speaker name.
+        font == NSFonts.readingSpeaker
       else {
         return
       }
