@@ -99,14 +99,29 @@ struct RichTextViewer: NSViewRepresentable {
     // would keep the width the window happened to have when it opened.
     // `updateNSView` does not fire for a window resize either, so the width has
     // to be watched directly.
+    //
+    // **Only when the WIDTH changed**, and that guard is not an optimisation —
+    // without it the transcript shakes while you scroll it. The loop:
+    // scrolling reports an offset, the host collapses the document header on
+    // it, the collapse changes the scroll view's *height*, the clip view's
+    // frame changes, and this observer rewrote `textContainerInset` and the
+    // container size — which invalidates the whole text layout, moves the
+    // document under the scroller, and reports another offset. The column
+    // depends on width alone, so a height-only frame change has no business
+    // touching it.
     scrollView.contentView.postsFrameChangedNotifications = true
+    context.coordinator.lastLaidOutWidth = scrollView.contentSize.width
     context.coordinator.frameObserver = NotificationCenter.default.addObserver(
       forName: NSView.frameDidChangeNotification,
       object: scrollView.contentView,
       queue: .main
-    ) { [weak textView] note in
-      guard let textView, let clipView = note.object as? NSClipView else { return }
-      RichTextViewer.layout(textView, in: clipView.bounds.width)
+    ) { [weak textView, weak coordinator = context.coordinator] note in
+      guard let textView, let coordinator, let clipView = note.object as? NSClipView else { return }
+      let width = clipView.bounds.width
+      guard RichTextViewer.Column.needsRelayout(from: coordinator.lastLaidOutWidth, to: width)
+      else { return }
+      coordinator.lastLaidOutWidth = width
+      RichTextViewer.layout(textView, in: width)
     }
 
     return scrollView
@@ -183,6 +198,23 @@ struct RichTextViewer: NSViewRepresentable {
       let container = containerWidth(available: available)
       return max(Metrics.gutterWidth, (available - container) / 2)
     }
+
+    /// Whether a new available width is worth re-laying the column out for.
+    ///
+    /// Pure, and separate from the observer, because what it protects is a
+    /// *behaviour* rather than a number: re-applying the column writes
+    /// `textContainerInset`, which invalidates the entire text layout. Doing
+    /// that from a frame change that only altered the height is what made the
+    /// transcript shake under a scroll (the document header collapses on
+    /// scroll, which changes the height, which fired this observer).
+    ///
+    /// Sub-half-point drift is refused for the reason
+    /// `RichTextScrollRestore.needsRestore` refuses it: the correction costs
+    /// more than the error.
+    static func needsRelayout(from old: CGFloat, to new: CGFloat) -> Bool {
+      guard new > 0 else { return false }
+      return abs(new - old) > 0.5
+    }
   }
 
   /// Apply the column to a text view. Called at creation and on every width
@@ -202,6 +234,9 @@ struct RichTextViewer: NSViewRepresentable {
     /// Separate from `observer`: bounds changes are scrolls, frame changes are
     /// resizes, and only the second one re-derives the reading column.
     var frameObserver: NSObjectProtocol?
+    /// The width the column was last built for. A frame change that leaves it
+    /// alone is a height change, and the column does not depend on height.
+    var lastLaidOutWidth: CGFloat = 0
     var layoutRevision = 0
     /// The last "next moment" press this coordinator has acted on.
     var momentToken = 0

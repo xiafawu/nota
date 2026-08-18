@@ -191,6 +191,31 @@ final class ReadingColumnTests: XCTestCase {
       RichTextViewer.Column.inset(available: 1440), accuracy: 0.5)
   }
 
+  /// **A height-only frame change must not re-lay out the column**, because
+  /// re-applying it writes `textContainerInset`, which invalidates the whole
+  /// text layout.
+  ///
+  /// This is a regression test with a symptom: the transcript visibly shook
+  /// while being scrolled (owner, 2026-08-17). Scrolling reports an offset, the
+  /// host collapses the document header on it, the collapse changes the scroll
+  /// view's height, the clip view's frame changes — and the frame observer
+  /// rebuilt the column, moved the document under the scroller, and produced
+  /// another offset. The column is a function of width alone.
+  func testAHeightOnlyFrameChangeDoesNotRebuildTheColumn() {
+    XCTAssertFalse(
+      RichTextViewer.Column.needsRelayout(from: 900, to: 900),
+      "an unchanged width asked for a relayout — this is the scroll shake")
+    XCTAssertFalse(
+      RichTextViewer.Column.needsRelayout(from: 900, to: 900.4),
+      "sub-half-point drift is not worth invalidating the text layout for")
+    XCTAssertTrue(
+      RichTextViewer.Column.needsRelayout(from: 900, to: 1200),
+      "a real resize was ignored, so the column would keep the old width")
+    // A clip view can report zero mid-teardown; rebuilding to nothing would
+    // collapse the column and there is nothing to show anyway.
+    XCTAssertFalse(RichTextViewer.Column.needsRelayout(from: 900, to: 0))
+  }
+
   // MARK: - The type
 
   /// Headings get room **above** them, which the pane never had: only
