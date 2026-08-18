@@ -29,15 +29,57 @@ enum RichTextScrollRestore {
   }
 }
 
+/// Whether the document header is collapsed, as a pure decision.
+///
+/// **The header collapse changes the height of the thing whose scroll offset
+/// decides it**, which is a feedback loop wearing a disguise. Collapsing hides
+/// the subtitle, the speaker chips, the fact strip and the tags — easily 200pt
+/// — so the scroll view gets that much taller and the document needs that much
+/// less scrolling. On a document only a little longer than the window, that
+/// clamps the offset back toward zero, which expands the header, which restores
+/// the offset, which collapses it again. The owner saw it as the transcript
+/// shaking, and saw it *only on short documents* (2026-08-17), which is the
+/// signature: a long document has scroll range to spare and never clamps.
+///
+/// Two defences, and the second is the one that actually closes it:
+///
+/// 1. **Hysteresis.** One 4pt threshold meant collapse and expand were the same
+///    line, so any jitter across it flipped the state. Collapsing and expanding
+///    are now different lines.
+/// 2. **A range floor.** Hysteresis alone cannot help when the collapse clamps
+///    the offset to *zero* — below any expand threshold there could be. So the
+///    header may only collapse when the document has more scroll range than the
+///    collapse will consume. Short documents simply keep their header, which is
+///    what should happen: nothing is scrolling underneath it worth hiding.
+enum DocumentHeaderCollapse {
+  /// - Parameters:
+  ///   - offset: the current scroll offset, 0 at the top.
+  ///   - range: how far the document can scroll (`documentHeight - viewportHeight`).
+  ///   - isCollapsed: what the header is doing now — this is a hysteresis, so
+  ///     the answer depends on where it is coming from.
+  static func isCollapsed(offset: CGFloat, range: CGFloat, isCollapsed: Bool) -> Bool {
+    guard range > Metrics.docHeaderCollapseReserve else { return false }
+    if isCollapsed {
+      return offset >= Metrics.docHeaderExpandThreshold
+    }
+    return offset > Metrics.docHeaderCompactThreshold
+  }
+}
+
 struct RichTextViewer: NSViewRepresentable {
   let attributedString: NSAttributedString
   /// Changes when a sibling above the transcript changes its height. The
   /// coordinator uses this lightweight revision to restore the same visible
   /// transcript offset after the NSScrollView is relaid out.
   var layoutRevision: Int = 0
-  /// Reports the vertical scroll offset (0 = at top) so the host can collapse
-  /// the document header once content scrolls beneath it.
-  var onScroll: ((CGFloat) -> Void)? = nil
+  /// Reports the vertical scroll offset (0 = at top) **and how far the document
+  /// can scroll**, so the host can collapse the document header once content
+  /// scrolls beneath it.
+  ///
+  /// The range is not decoration: collapsing the header changes the viewport
+  /// height, so a host deciding on the offset alone builds an oscillator. See
+  /// `DocumentHeaderCollapse`.
+  var onScroll: ((_ offset: CGFloat, _ range: CGFloat) -> Void)? = nil
   /// The seconds this document's flagged moments were taken at (XIA-429).
   /// Handed straight to the text view, which draws one pip per marked line in
   /// the gutter it already owns.
@@ -89,9 +131,12 @@ struct RichTextViewer: NSViewRepresentable {
       forName: NSView.boundsDidChangeNotification,
       object: scrollView.contentView,
       queue: .main
-    ) { [weak coordinator = context.coordinator] note in
+    ) { [weak scrollView, weak coordinator = context.coordinator] note in
       guard let clipView = note.object as? NSClipView else { return }
-      coordinator?.onScroll?(clipView.bounds.origin.y)
+      let documentHeight = scrollView?.documentView?.frame.height ?? 0
+      coordinator?.onScroll?(
+        clipView.bounds.origin.y,
+        max(0, documentHeight - clipView.bounds.height))
     }
 
     // The column is a function of the current width, and with
@@ -229,7 +274,7 @@ struct RichTextViewer: NSViewRepresentable {
   }
 
   final class Coordinator {
-    var onScroll: ((CGFloat) -> Void)?
+    var onScroll: ((CGFloat, CGFloat) -> Void)?
     var observer: NSObjectProtocol?
     /// Separate from `observer`: bounds changes are scrolls, frame changes are
     /// resizes, and only the second one re-derives the reading column.

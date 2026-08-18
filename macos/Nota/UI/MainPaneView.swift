@@ -345,8 +345,13 @@ private struct RichDocumentPane: View {
       // the enrichment slot is gone, the summary lives in the rail overlay.
       RichTextViewer(
         attributedString: MainPaneView.applySpeakerColors(to: document.body, chips: speakerChips),
-        onScroll: { offset in
-          let scrolled = offset > Metrics.docHeaderCompactThreshold
+        onScroll: { offset, range in
+          // The decision is a hysteresis with a range floor, and it lives in
+          // `DocumentHeaderCollapse` because collapsing this header changes the
+          // height that produced `offset` — see that type for the loop it
+          // closes.
+          let scrolled = DocumentHeaderCollapse.isCollapsed(
+            offset: offset, range: range, isCollapsed: isBodyScrolled)
           guard scrolled != isBodyScrolled else { return }
           withAnimation(Tokens.animFast) { isBodyScrolled = scrolled }
         },

@@ -216,6 +216,77 @@ final class ReadingColumnTests: XCTestCase {
     XCTAssertFalse(RichTextViewer.Column.needsRelayout(from: 900, to: 0))
   }
 
+  // MARK: - The header collapse
+
+  /// **A short document never collapses the header**, because collapsing it
+  /// would make the document fit and clamp the offset that decided to collapse.
+  ///
+  /// The owner reported the transcript shaking under a scroll, and reported it
+  /// only on short documents (2026-08-17) — which is the signature of this loop
+  /// rather than of a rendering glitch.
+  func testAShortDocumentNeverCollapsesTheHeader() {
+    let range = Metrics.docHeaderCollapseReserve - 1
+    XCTAssertFalse(
+      DocumentHeaderCollapse.isCollapsed(offset: 400, range: range, isCollapsed: false),
+      "a document with less scroll range than the collapse frees still collapsed")
+    // …and one that somehow got collapsed lets go rather than staying stuck.
+    XCTAssertFalse(
+      DocumentHeaderCollapse.isCollapsed(offset: 400, range: range, isCollapsed: true))
+  }
+
+  /// **The loop, simulated.** Feed the decision its own consequence: collapsing
+  /// frees `docHeaderCollapseReserve` of height, which takes that much off the
+  /// scroll range and pulls the offset down with it. Run it and it has to settle
+  /// rather than alternate.
+  func testTheHeaderSettlesInsteadOfOscillating() {
+    let documentHeight: CGFloat = 1400
+    let viewport: CGFloat = 1300   // barely scrollable: the case that shook
+    var collapsed = false
+    var offset: CGFloat = 60
+    var history: [Bool] = []
+
+    for _ in 0..<24 {
+      let visible = viewport + (collapsed ? Metrics.docHeaderCollapseReserve : 0)
+      let range = max(0, documentHeight - visible)
+      offset = min(offset, range)          // AppKit clamps, which is the whole bug
+      collapsed = DocumentHeaderCollapse.isCollapsed(
+        offset: offset, range: range, isCollapsed: collapsed)
+      history.append(collapsed)
+    }
+
+    let settled = Array(history.suffix(6))
+    XCTAssertEqual(
+      Set(settled).count, 1,
+      "the header is still oscillating: \(history.map { $0 ? "C" : "e" }.joined())")
+  }
+
+  /// A long document still collapses, or the fix would have been "delete the
+  /// feature".
+  func testALongDocumentStillCollapsesAndStaysCollapsed() {
+    let range: CGFloat = 4000
+    XCTAssertTrue(
+      DocumentHeaderCollapse.isCollapsed(offset: 60, range: range, isCollapsed: false))
+    XCTAssertTrue(
+      DocumentHeaderCollapse.isCollapsed(offset: 12, range: range, isCollapsed: true),
+      "12pt is between the two thresholds, so a collapsed header stays collapsed")
+    XCTAssertFalse(
+      DocumentHeaderCollapse.isCollapsed(offset: 2, range: range, isCollapsed: true),
+      "back at the top, the header comes back")
+  }
+
+  /// The two thresholds are genuinely two, and the right way round.
+  func testCollapsingAndExpandingAreNotTheSameLine() {
+    XCTAssertGreaterThan(
+      Metrics.docHeaderCompactThreshold, Metrics.docHeaderExpandThreshold,
+      "one threshold is a switch that flips on any jitter across it")
+    let range: CGFloat = 4000
+    // In the band between them, whatever the header is doing, it keeps doing.
+    for offset in [10.0, 16.0, 23.0] as [CGFloat] {
+      XCTAssertTrue(DocumentHeaderCollapse.isCollapsed(offset: offset, range: range, isCollapsed: true))
+      XCTAssertFalse(DocumentHeaderCollapse.isCollapsed(offset: offset, range: range, isCollapsed: false))
+    }
+  }
+
   // MARK: - The type
 
   /// Headings get room **above** them, which the pane never had: only

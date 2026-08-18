@@ -109,7 +109,22 @@ enum Metrics {
 
   // Document header collapse + body top fade.
   static let docBodyTopFadeHeight: CGFloat = 28
-  static let docHeaderCompactThreshold: CGFloat = 4
+  /// Collapse the header above this offset, and expand again below
+  /// `docHeaderExpandThreshold` — **two numbers, not one** (XIA-441,
+  /// 2026-08-17). A single 4pt threshold made the header a bistable switch on
+  /// short documents: see `DocumentHeaderCollapse`.
+  static let docHeaderCompactThreshold: CGFloat = 24
+  static let docHeaderExpandThreshold: CGFloat = 8
+  /// How much scroll range a document needs before collapsing the header is
+  /// allowed at all.
+  ///
+  /// It stands for the height the collapse frees — the subtitle, the speaker
+  /// chips, the fact strip, the tags and the difference between the two title
+  /// faces. Deliberately **generous**: overestimating costs a short document
+  /// its header collapse, which is the right outcome anyway (nothing is
+  /// scrolling underneath it worth hiding), while underestimating brings the
+  /// oscillation back.
+  static let docHeaderCollapseReserve: CGFloat = 220
   static let docHeaderCompactVerticalPadding: CGFloat = 8
 
   // The live meeting pane's own numbers now live in `RecordingPaneMetrics`
