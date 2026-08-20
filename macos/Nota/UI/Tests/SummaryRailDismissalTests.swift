@@ -65,6 +65,62 @@ final class SummaryRailDismissalDecisionTests: XCTestCase {
   }
 }
 
+// MARK: - What the merged Details panel draws below the hairline (2026-08-19)
+
+/// The panel merged the info card into the summary rail, and the two rules
+/// below are the ones that merge could get wrong. Both are pure, so they are
+/// asserted without a window: SwiftUI publishes no accessibility tree for a
+/// hosting view in an unhosted test bundle (`RecordingPaneTests` records the
+/// measurement), so a rendered panel could not answer either question anyway.
+final class SummaryRailContentTests: XCTestCase {
+  /// **A tag run does not take the summary off the screen.**
+  ///
+  /// The fork that replaces the summary half with the in-flight row branched
+  /// on `activity != .idle`, and the tags row that starts a *tag* run now sits
+  /// four rows above it in the same panel. One press made the narrative — or
+  /// an open editor holding an unsaved draft — vanish behind a progress row
+  /// reading "Generating tags", under a heading reading SUMMARY.
+  func testOnlyASummaryRunTakesOverTheSummaryHalf() {
+    XCTAssertTrue(SummaryRailView.summaryIsInFlight(.summarizing))
+    XCTAssertFalse(
+      SummaryRailView.summaryIsInFlight(.tagging),
+      "a tag run replaced the summary with its own progress row")
+    XCTAssertFalse(SummaryRailView.summaryIsInFlight(.idle))
+  }
+
+  /// **The panel does not state a document has no record while it is still
+  /// looking.**
+  ///
+  /// `NotaModel.loadChips` clears the record synchronously and reads the real
+  /// one off disk in a detached task, so every recorded transcript passes
+  /// through `record == nil` on open. Two states would print the notice there
+  /// — a positive claim about the document, during a race the owner reaches by
+  /// pressing Details right after opening one.
+  func testTheNoRecordNoticeWaitsForTheLookup() {
+    XCTAssertEqual(
+      SummaryRailView.summaryHalf(hasRecord: true, isResolvingRecord: false), .summary)
+    XCTAssertEqual(
+      SummaryRailView.summaryHalf(hasRecord: false, isResolvingRecord: false),
+      .noRecordNotice)
+    XCTAssertEqual(
+      SummaryRailView.summaryHalf(hasRecord: false, isResolvingRecord: true),
+      .waitingForRecord,
+      "a recorded transcript was told it had no history record mid-lookup")
+    // A record that landed wins over a lookup flag nobody cleared.
+    XCTAssertEqual(
+      SummaryRailView.summaryHalf(hasRecord: true, isResolvingRecord: true), .summary)
+  }
+
+  /// **The notice states an absence, not a provenance.** `record == nil` is
+  /// also true of a failure document, whose owner recorded a meeting and would
+  /// be told they had opened a file.
+  func testTheNoRecordNoticeClaimsNothingAboutWhereTheFileCameFrom() {
+    XCTAssertFalse(SummaryRailView.noRecordNotice.lowercased().contains("imported"))
+    XCTAssertTrue(
+      SummaryRailView.noRecordNotice.lowercased().contains("no history record"))
+  }
+}
+
 // MARK: - History drawer tab (decision 14)
 
 final class HistoryDrawerTabTests: XCTestCase {

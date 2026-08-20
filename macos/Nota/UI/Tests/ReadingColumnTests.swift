@@ -216,75 +216,117 @@ final class ReadingColumnTests: XCTestCase {
     XCTAssertFalse(RichTextViewer.Column.needsRelayout(from: 900, to: 0))
   }
 
-  // MARK: - The header collapse
+  // MARK: - The header and the Details button
 
-  /// **A short document never collapses the header**, because collapsing it
-  /// would make the document fit and clamp the offset that decided to collapse.
+  /// **The header cannot change height, so it cannot oscillate.**
   ///
-  /// The owner reported the transcript shaking under a scroll, and reported it
-  /// only on short documents (2026-08-17) — which is the signature of this loop
-  /// rather than of a rendering glitch.
-  func testAShortDocumentNeverCollapsesTheHeader() {
-    let range = Metrics.docHeaderCollapseReserve - 1
-    XCTAssertFalse(
-      DocumentHeaderCollapse.isCollapsed(offset: 400, range: range, isCollapsed: false),
-      "a document with less scroll range than the collapse frees still collapsed")
-    // …and one that somehow got collapsed lets go rather than staying stuck.
-    XCTAssertFalse(
-      DocumentHeaderCollapse.isCollapsed(offset: 400, range: range, isCollapsed: true))
-  }
-
-  /// **The loop, simulated.** Feed the decision its own consequence: collapsing
-  /// frees `docHeaderCollapseReserve` of height, which takes that much off the
-  /// scroll range and pulls the offset down with it. Run it and it has to settle
-  /// rather than alternate.
-  func testTheHeaderSettlesInsteadOfOscillating() {
-    let documentHeight: CGFloat = 1400
-    let viewport: CGFloat = 1300   // barely scrollable: the case that shook
-    var collapsed = false
-    var offset: CGFloat = 60
-    var history: [Bool] = []
-
-    for _ in 0..<24 {
-      let visible = viewport + (collapsed ? Metrics.docHeaderCollapseReserve : 0)
-      let range = max(0, documentHeight - visible)
-      offset = min(offset, range)          // AppKit clamps, which is the whole bug
-      collapsed = DocumentHeaderCollapse.isCollapsed(
-        offset: offset, range: range, isCollapsed: collapsed)
-      history.append(collapsed)
+  /// The owner reported the transcript shaking under a scroll, only on short
+  /// documents (2026-08-17) — the signature of a feedback loop, not a rendering
+  /// glitch: collapsing the header freed ~200pt, which made the document fit,
+  /// which clamped the offset that had decided to collapse it. Two thresholds
+  /// and a range floor made it settle. Moving everything but the title out of
+  /// the header removed the loop instead of damping it, and this is the
+  /// assertion that holds that.
+  ///
+  /// It is a stronger claim than it used to make. The header once took an
+  /// `isInfoPresented` and a `hasPendingDecision`, and this test varied those;
+  /// it now takes a `DocMeta` and draws one field of it, so what is varied is
+  /// the **metadata itself** — the very thing that used to stack up under the
+  /// title and change its height. The title is deliberately held constant
+  /// across the three: it is `lineLimit(2)`, so a longer one is *allowed* to
+  /// change the height, and varying it would make this test lie.
+  @MainActor
+  func testTheHeaderIsOneHeightWhateverTheDocumentCarries() {
+    func height(_ view: DocumentHeaderView) -> CGFloat {
+      let host = NSHostingView(rootView: view.frame(width: 800))
+      host.layoutSubtreeIfNeeded()
+      return host.fittingSize.height
     }
+    let bare = height(DocumentHeaderView(meta: DocMeta(title: "Team Sync")))
+    let full = height(DocumentHeaderView(
+      meta: DocMeta(title: "Team Sync", subtitle: "May 20 · 30 min", tags: ["a", "b", "c"])))
+    let heavy = height(DocumentHeaderView(
+      meta: DocMeta(
+        title: "Team Sync",
+        subtitle: "May 20 · 51 min",
+        tags: Array(repeating: "tag", count: 20))))
 
-    let settled = Array(history.suffix(6))
-    XCTAssertEqual(
-      Set(settled).count, 1,
-      "the header is still oscillating: \(history.map { $0 ? "C" : "e" }.joined())")
+    XCTAssertEqual(bare, full, accuracy: 0.5,
+      "a subtitle and tags resized the header — the shake's loop is back")
+    XCTAssertEqual(bare, heavy, accuracy: 0.5,
+      "the header grew with the document's metadata; that loop is what shook")
   }
 
-  /// A long document still collapses, or the fix would have been "delete the
-  /// feature".
-  func testALongDocumentStillCollapsesAndStaysCollapsed() {
-    let range: CGFloat = 4000
-    XCTAssertTrue(
-      DocumentHeaderCollapse.isCollapsed(offset: 60, range: range, isCollapsed: false))
-    XCTAssertTrue(
-      DocumentHeaderCollapse.isCollapsed(offset: 12, range: range, isCollapsed: true),
-      "12pt is between the two thresholds, so a collapsed header stays collapsed")
+  /// **A speaker suggestion is the only chip state that asks anything.**
+  ///
+  /// Putting the chips behind a button costs exactly one thing: they are the
+  /// naming workflow, not metadata. A chip holding a suggestion is Nota asking
+  /// "Speaker 2 → Kenny Kim? 0.62", and it asks once, when the transcription
+  /// lands. Behind a panel nobody opens, that question is never seen. An
+  /// unnamed speaker is not a question — nothing is waiting on an answer.
+  ///
+  /// This is now the speaker HALF of the merged dot rule below.
+  func testASpeakerSuggestionIsTheOnlyChipStateThatAsksAnything() {
+    let pending = SpeakerSuggestion(
+      label: "Speaker 2", suggestedName: "Kenny Kim", score: 0.62, state: "pending")
+
+    XCTAssertFalse(DocumentInfoBadge.hasPendingDecision(chips: []))
     XCTAssertFalse(
-      DocumentHeaderCollapse.isCollapsed(offset: 2, range: range, isCollapsed: true),
-      "back at the top, the header comes back")
+      DocumentInfoBadge.hasPendingDecision(chips: [
+        SpeakerChip(label: "Speaker 1", name: "", indicator: .none),
+        SpeakerChip(label: "Speaker 2", name: "Alice", indicator: .enrolled),
+      ]),
+      "an unnamed speaker is not a question — nothing is waiting on an answer")
+    XCTAssertTrue(
+      DocumentInfoBadge.hasPendingDecision(chips: [
+        SpeakerChip(label: "Speaker 1", name: "Alice", indicator: .enrolled),
+        SpeakerChip(label: "Speaker 2", name: "", indicator: .none, suggestion: pending),
+      ]),
+      "a pending suggestion went unannounced behind a closed panel")
   }
 
-  /// The two thresholds are genuinely two, and the right way round.
-  func testCollapsingAndExpandingAreNotTheSameLine() {
-    XCTAssertGreaterThan(
-      Metrics.docHeaderCompactThreshold, Metrics.docHeaderExpandThreshold,
-      "one threshold is a switch that flips on any jitter across it")
-    let range: CGFloat = 4000
-    // In the band between them, whatever the header is doing, it keeps doing.
-    for offset in [10.0, 16.0, 23.0] as [CGFloat] {
-      XCTAssertTrue(DocumentHeaderCollapse.isCollapsed(offset: offset, range: range, isCollapsed: true))
-      XCTAssertFalse(DocumentHeaderCollapse.isCollapsed(offset: offset, range: range, isCollapsed: false))
-    }
+  /// **One dot, two claimants, and the label says which.**
+  ///
+  /// The Summary button carried a stale-summary dot and the info toggle carried
+  /// a speaker-suggestion dot; merging them into one Details button must not
+  /// merge away either question. So the dot lights for both and the string the
+  /// tooltip and VoiceOver share names whichever is waiting — both, when both
+  /// are.
+  ///
+  /// Asserted on the rule rather than on a rendered control, for the reason
+  /// `RecordingPaneTests` already records: SwiftUI publishes no accessibility
+  /// tree for a hosting view in an unhosted test bundle, so walking it cannot
+  /// answer this. `DocumentInfoBadge` is pure, so there is nothing to walk.
+  func testTheDetailsDotNamesWhichDecisionIsWaiting() {
+    let pending = SpeakerSuggestion(
+      label: "Speaker 2", suggestedName: "Kenny Kim", score: 0.62, state: "pending")
+    let quiet = [SpeakerChip(label: "Speaker 1", name: "Alice", indicator: .enrolled)]
+    let asking = quiet + [
+      SpeakerChip(label: "Speaker 2", name: "", indicator: .none, suggestion: pending),
+    ]
+
+    // Nothing waiting: no dot, and the button says only what it is.
+    XCTAssertNil(DocumentInfoBadge.waiting(chips: quiet, isSummaryOutdated: false))
+    XCTAssertEqual(DocumentInfoBadge.label(nil), "Details")
+
+    // Each claimant alone lights the one dot and names ITSELF.
+    XCTAssertEqual(DocumentInfoBadge.waiting(chips: asking, isSummaryOutdated: false), .speaker)
+    XCTAssertEqual(DocumentInfoBadge.waiting(chips: quiet, isSummaryOutdated: true), .summary)
+    XCTAssertTrue(DocumentInfoBadge.label(.speaker).contains("speaker"))
+    XCTAssertTrue(DocumentInfoBadge.label(.summary).contains("summary"))
+    XCTAssertFalse(DocumentInfoBadge.label(.speaker).contains("summary"),
+      "the dot named the wrong waiting decision")
+
+    // Both: still one dot, and the label names BOTH — a merged button that
+    // reports only the first thing waiting hides the second one for good.
+    XCTAssertEqual(DocumentInfoBadge.waiting(chips: asking, isSummaryOutdated: true), .both)
+    XCTAssertTrue(DocumentInfoBadge.label(.both).contains("speaker"))
+    XCTAssertTrue(DocumentInfoBadge.label(.both).contains("summary"))
+
+    // An unnamed speaker with no suggestion is not a question either.
+    XCTAssertNil(DocumentInfoBadge.waiting(
+      chips: [SpeakerChip(label: "Speaker 1", name: "", indicator: .none)],
+      isSummaryOutdated: false))
   }
 
   // MARK: - The type

@@ -115,10 +115,12 @@ enum EnrichmentField: Equatable {
   case tags
 }
 
-/// The state the summary rail renders from: hidden (no record) → in-flight
-/// row → summary content (decisions 9/10/29). The old dashed "No summary yet"
-/// placeholder is retired: the Summary button starts generation AND opens the
-/// rail, so there is no path to an empty rail.
+/// The state the summary half of the Details panel renders from: hidden (no
+/// record, or a record with no narrative) → in-flight row → summary content
+/// (decisions 9/10/29). `hidden` is the ordinary resting state of a
+/// transcript-only meeting, and the panel fills it with the Generate summary
+/// button — the one control that starts a run, since the Details button that
+/// opens the panel starts nothing (ADR 0006).
 enum EnrichmentSlotState: Equatable {
   case hidden
   case generating(kind: EnrichmentActivity, modelID: String)
@@ -352,11 +354,31 @@ final class EnrichmentController: ObservableObject {
   @Published private(set) var generatingModelID = ""
   @Published private(set) var isSavingEdit = false
   @Published var errorMessage: String?
-  /// Which kind of generation the current `errorMessage` belongs to (nil for
-  /// edit-save failures and no error). Two surfaces consume one error
-  /// channel now — the tag row (decision 28) and the summary rail — so the
-  /// failure must know its kind to be shown in the right place.
-  @Published private(set) var errorActivity: EnrichmentActivity?
+  /// **Which half of the Details panel owns the current `errorMessage`.**
+  ///
+  /// One error channel, two surfaces: the tag row (decision 28) and the
+  /// summary slot, now a few points apart inside one panel. Each shows only
+  /// its own failures, so the failure has to name the field it happened to.
+  ///
+  /// It is a `EnrichmentField` and not the *activity* it used to be, because
+  /// an edit is not a generation and there were three of them with nowhere to
+  /// go: `addTag` / `removeTag` (tags) and `saveSummaryEdit` /
+  /// `dismissSummaryOutdated` (summary) all run through `applyEdit`, which
+  /// left the kind nil — and nil passed the summary slot's `!= .tagging`
+  /// filter. So a failed tag add printed under the summary and relabelled its
+  /// button "Try Again", whose press spends a model call on a summary nobody
+  /// asked for, while the tag row that failed stayed silent.
+  @Published private(set) var errorField: EnrichmentField?
+
+  /// **Whether the open document's record has been looked up yet.**
+  ///
+  /// `NotaModel.loadChips` clears the record synchronously and reads the real
+  /// one off disk in a detached task, so `record == nil` means "none" *or*
+  /// "not read yet". The panel says something about the document in that slot
+  /// — an absent record is why there is no summary half — and a sentence about
+  /// where a file came from may not be printed during a race that every
+  /// recorded transcript goes through on open.
+  @Published private(set) var isResolvingRecord = false
 
   /// Fired after any successful CLI mutation so the app model can reload the
   /// rewritten `.md`, refresh the dashboard pill, and (for generations)
@@ -393,8 +415,17 @@ final class EnrichmentController: ObservableObject {
     // not install its result over the new document's record.
     generationID += 1
     record = newRecord
+    isResolvingRecord = false
     errorMessage = nil
-    errorActivity = nil
+    errorField = nil
+  }
+
+  /// Said when a document has been opened and its record is still being looked
+  /// up. Clears the previous document's record — nothing here belongs to the
+  /// new one — without letting the panel claim the new one has none.
+  func beginRecordLookup() {
+    setRecord(nil)
+    isResolvingRecord = true
   }
 
   // MARK: Generation (summarize / tag verbs)
@@ -422,7 +453,7 @@ final class EnrichmentController: ObservableObject {
   private func generate(_ kind: EnrichmentActivity, arguments: [String]) -> Task<Void, Never>? {
     guard activity == .idle else { return nil }
     errorMessage = nil
-    errorActivity = nil
+    errorField = nil
     activity = kind
     generatingModelID = summaryModelResolver()
     generationID += 1
@@ -440,7 +471,7 @@ final class EnrichmentController: ObservableObject {
       } catch {
         guard self.generationID == id else { return }
         self.errorMessage = error.localizedDescription
-        self.errorActivity = kind
+        self.errorField = kind == .tagging ? .tags : .summary
       }
       if self.generationID == id {
         self.activity = .idle
@@ -458,7 +489,7 @@ final class EnrichmentController: ObservableObject {
   func saveSummaryEdit(_ narrative: String) -> Task<Void, Never>? {
     let trimmed = narrative.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !trimmed.isEmpty else { return nil }
-    return applyEdit(EnrichmentEditPayload(summary: trimmed, summaryEdited: true))
+    return applyEdit(EnrichmentEditPayload(summary: trimmed, summaryEdited: true), field: .summary)
   }
 
   /// Dismiss the "Regenerate summary" affordance (decision 5): writes
@@ -466,7 +497,7 @@ final class EnrichmentController: ObservableObject {
   /// record keeps its stale summary — the user chose not to regenerate.
   @discardableResult
   func dismissSummaryOutdated() -> Task<Void, Never>? {
-    applyEdit(EnrichmentEditPayload(summaryOutdated: false))
+    applyEdit(EnrichmentEditPayload(summaryOutdated: false), field: .summary)
   }
 
   /// Append a manual tag (lowercase-normalized, case-insensitive dedup).
@@ -479,7 +510,7 @@ final class EnrichmentController: ObservableObject {
       return nil
     }
     tags.append(tag)
-    return applyEdit(EnrichmentEditPayload(tags: tags, tagsEdited: true))
+    return applyEdit(EnrichmentEditPayload(tags: tags, tagsEdited: true), field: .tags)
   }
 
   @discardableResult
@@ -487,13 +518,20 @@ final class EnrichmentController: ObservableObject {
     guard let record else { return nil }
     let tags = record.tags.filter { $0.caseInsensitiveCompare(tag) != .orderedSame }
     guard tags.count != record.tags.count else { return nil }
-    return applyEdit(EnrichmentEditPayload(tags: tags, tagsEdited: true))
+    return applyEdit(EnrichmentEditPayload(tags: tags, tagsEdited: true), field: .tags)
   }
 
-  private func applyEdit(_ payload: EnrichmentEditPayload) -> Task<Void, Never>? {
+  /// `field` is which half of the panel the edit belongs to, and it is a
+  /// parameter rather than something inferred from the payload because the
+  /// payload is a bag of optionals: a failure has to land under the row the
+  /// owner pressed, and only the caller knows which that was.
+  private func applyEdit(
+    _ payload: EnrichmentEditPayload,
+    field: EnrichmentField
+  ) -> Task<Void, Never>? {
     guard let record, !isSavingEdit else { return nil }
     errorMessage = nil
-    errorActivity = nil
+    errorField = nil
     isSavingEdit = true
     let id = generationID
 
@@ -514,6 +552,7 @@ final class EnrichmentController: ObservableObject {
       } catch {
         if self.generationID == id {
           self.errorMessage = error.localizedDescription
+          self.errorField = field
         }
       }
       self.isSavingEdit = false

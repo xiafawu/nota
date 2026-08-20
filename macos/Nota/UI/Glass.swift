@@ -149,8 +149,8 @@ extension View {
   }
 
   /// Circular glass button for the bottom-right local cluster (ADR 0005).
-  /// `prominent` is the accent-filled variant — used for the Summary button
-  /// once a summary exists.
+  /// `prominent` is the accent-filled variant — used for the Details button
+  /// exactly while the panel it opens is on screen (ADR 0006).
   func localClusterButton(prominent: Bool = false) -> some View {
     modifier(LocalClusterButtonModifier(prominent: prominent))
   }

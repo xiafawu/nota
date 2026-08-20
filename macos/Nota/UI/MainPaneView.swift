@@ -6,18 +6,17 @@ struct MainPaneView: View {
   /// The live dictation session lives on the model (single owner); the pane
   /// reads it from the environment and never owns session state itself.
   @EnvironmentObject private var model: NotaModel
-  /// Observed directly (not via the model) so the local cluster's four-state
-  /// Summary button re-renders on generation progress and failures without
+  /// Observed directly (not via the model) so the local cluster's Details
+  /// button re-renders on generation progress and failures without
   /// re-rendering the whole pane.
   @ObservedObject private var enrichment = EnrichmentController.shared
   let content: MainPaneContent
   @Binding var isDropTargeted: Bool
+  /// Still here after the chips moved into the Details panel: the transcript
+  /// echoes each chip's identity hue onto its speaker runs
+  /// (`applySpeakerColors`), and the Details button's dot reads them.
   @Binding var speakerChips: [SpeakerChip]
   let onDropURL: (URL) -> Void
-  let onRename: (_ label: String, _ newName: String) -> Void
-  /// Accept/dismiss a chip's pending speaker suggestion (decision 4).
-  var onAcceptSuggestion: (_ label: String) -> Void = { _ in }
-  var onDismissSuggestion: (_ label: String) -> Void = { _ in }
 
   var body: some View {
     ZStack {
@@ -33,20 +32,14 @@ struct MainPaneView: View {
         RichDocumentPane(
           document: document,
           speakerChips: $speakerChips,
-          onRename: onRename,
-          onAcceptSuggestion: onAcceptSuggestion,
-          onDismissSuggestion: onDismissSuggestion,
-          enrichment: EnrichmentController.shared,
-          // XIA-429: the facts and the moments both come off the open record,
-          // through the model, so the strip and the gutter pips answer to the
-          // same scan the drawer row does.
-          facts: model.openRecordFacts,
+          // XIA-429: the moments come off the open record, through the model,
+          // so the gutter pips answer to the same scan the drawer row does.
           markerSeconds: model.openRecordMomentSeconds,
           // Reserved only while a receipt is really up. A document with nothing
           // in flight owes it nothing, and reserving unconditionally would take
           // a band off every transcript for a surface most of them never show.
           bottomReserve: receiptIsUp ? RecordReceiptMetrics.documentBottomReserve : 0,
-          nextMomentToken: $nextMomentToken
+          nextMomentToken: model.nextMomentToken
         )
         // The ground reaches the two panes that never had one. It is attached
         // per branch rather than to this `ZStack`, because `.liveMeeting` draws
@@ -93,8 +86,11 @@ struct MainPaneView: View {
 
       // Bottom-right local cluster (ADR 0005): per-transcript actions float
       // over the content area, inset from its trailing and bottom edges —
-      // never pinned to the window frame. Summary + Share; no record (imported
-      // markdown) hides the Summary button, which is meaningless without one.
+      // never pinned to the window frame. Details + Share, and Details shows
+      // for every rich document — an imported `.md` with no history record
+      // included. Nothing about a document may silently disappear because it
+      // was opened from a different source; the panel says what it has and
+      // states, in a line, that this file has no record behind it.
       if isRichContent {
         localCluster
       }
@@ -113,7 +109,7 @@ struct MainPaneView: View {
           facts: facts,
           outputPath: output.standardizedFileURL.path,
           onRetry: { model.retryOpenDocumentSummary() },
-          onNextMoment: model.openRecordMomentSeconds.isEmpty ? nil : { nextMomentToken += 1 },
+          onNextMoment: model.openRecordMomentSeconds.isEmpty ? nil : { model.nextMomentToken += 1 },
           onVisibilityChange: { receiptIsUp = $0 }
         )
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
@@ -152,16 +148,13 @@ struct MainPaneView: View {
   /// the ledger) and read by the transcript, which owes the receipt its
   /// footprint while it is up and owes it nothing when it is not.
   @State private var receiptIsUp = false
-  /// Bumped by the fact strip's "N moments" button; the transcript's text view
-  /// turns each bump into a scroll to the next pip.
-  @State private var nextMomentToken = 0
 
   private var isRichContent: Bool {
     if case .rich = content { return true }
     return false
   }
 
-  /// The bottom-right local cluster: Summary (four states, decision 9) and
+  /// The bottom-right local cluster: Details (one button, 2026-08-19) and
   /// Share (decision 11 — the toolbar's ShareMenu reused as-is, host only).
   /// Two individual round glass buttons, icon-only with tooltips (ADR 0005),
   /// floating over the content, inset from its trailing and bottom edges.
@@ -181,9 +174,7 @@ struct MainPaneView: View {
     // this for free; a hand-placed pair has to ask.
     GlassEffectContainer(spacing: CraftTokens.spacing8) {
       HStack(spacing: CraftTokens.spacing8) {
-        if enrichment.record != nil {
-          summaryClusterButton
-        }
+        detailsClusterButton
         ShareMenu(model: model, style: .localCluster)
       }
     }
@@ -192,40 +183,44 @@ struct MainPaneView: View {
     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottomTrailing)
   }
 
-  /// The four-state Summary button (decisions 9/10):
-  /// - no summary → outlined circle with a plus, "Generate summary"
-  /// - summary exists → filled circle, "Summary"
-  /// - generating → progress ring; clicking opens the rail (Cancel lives
-  ///   inside the rail, not on the button)
-  /// - stale (`summaryOutdated`) → filled with a small warning dot —
-  ///   staleness is marked here and nowhere else (decision 12)
+  /// **One button, called Details** (2026-08-19). It opens the one panel that
+  /// holds everything about this document — the subtitle, the speaker chips,
+  /// the record's facts, the tags, and the summary.
   ///
-  /// Dual-purpose (decision 10): with no summary one click starts generation
-  /// AND opens the rail showing the in-flight row; with a summary it opens
-  /// the rail. There is no path to an empty rail, so the dashed
-  /// "No summary yet" placeholder card is retired.
-  private var summaryClusterButton: some View {
+  /// What went with the merge is the *dual-purpose click* (the old decision
+  /// 10): with no summary, one press used to start a generation AND open the
+  /// rail to watch it. Opening is free now. A press costs nothing, reverses
+  /// with a second press, and spends no model call — which is what a control
+  /// has to be before the whole of a document's metadata can be put behind it.
+  /// Generation moved *inside* the panel, into the slot where the narrative
+  /// would be, so the one thing that spends money is a button that says so.
+  ///
+  /// The `plus` glyph went with it: it was the promise of that click. The ring
+  /// stays and still means a **summary** generation specifically (a tag run is
+  /// another lane and must not spin it), because the panel it opens is where
+  /// the Cancel for it lives.
+  ///
+  /// `.disabled` went too, and that is the one deletion nobody asked for by
+  /// name: it existed because the click could start a summary. A tag run is no
+  /// reason to lock the owner out of their own speaker chips.
+  private var detailsClusterButton: some View {
     let isGenerating = enrichment.activity == .summarizing
-    let hasSummary = enrichment.record?.hasSummaryNarrative == true
-    let isStale = enrichment.record?.isSummaryOutdated == true
-    // While a tag generation runs the summary verb is unavailable; the ring
-    // is reserved for summary generation.
-    let isEnabled = enrichment.activity == .idle || isGenerating
+    let waiting = DocumentInfoBadge.waiting(
+      chips: speakerChips,
+      isSummaryOutdated: enrichment.record?.isSummaryOutdated == true
+    )
 
     return Button {
       model.isSummaryRailPresented = true
-      if !isGenerating && !hasSummary {
-        enrichment.generateSummary()
-      }
     } label: {
       // One glyph-sized label in every state, so the glass button style keeps
-      // one size across all four (decision 9) — the ring in particular must
-      // not resize the control mid-generation.
+      // one size — the ring in particular must not resize the control
+      // mid-generation.
       ZStack {
         if isGenerating {
           ProgressView().controlSize(.small)
         } else {
-          Image(systemName: hasSummary ? "text.alignleft" : "plus")
+          Image(systemName: "info.circle")
             .imageScale(.medium)
         }
       }
@@ -235,18 +230,17 @@ struct MainPaneView: View {
     // `Circle().fill(.thinMaterial)`: a material is a blur, glass refracts,
     // and only the style carries the hover and pressed states.
     //
-    // Prominent means the rail is OPEN, not that a summary exists. Keying the
-    // accent fill to "has a summary" made the button permanently blue for
-    // every record that had one — a colour that answered a question nobody
-    // was asking and tracked nothing the owner did. As a selected state it is
-    // the ordinary toolbar-toggle idiom: the control is lit while the thing
-    // it opens is on screen. Which of the four states the button is in is
-    // still carried by the glyph and the dot (decision 9).
+    // Prominent means the panel is OPEN — the ordinary toolbar-toggle idiom,
+    // and now literally true of one surface: the control is lit exactly while
+    // the thing it opens is on screen.
     .localClusterButton(prominent: model.isSummaryRailPresented)
-    // The stale dot rides OUTSIDE the style's shape so the glass does not
-    // blur it and the button's own size is unchanged by it (decision 12).
+    // ONE dot, for two claimants (`DocumentInfoBadge`): a waiting speaker
+    // suggestion, a stale summary, or both. It rides OUTSIDE the style's shape
+    // so the glass does not blur it and the button's own size is unchanged by
+    // it — the rule the old stale dot and the old info toggle's dot both kept,
+    // with the same 9pt geometry, because they are now the same dot.
     .overlay(alignment: .topTrailing) {
-      if isStale {
+      if waiting != nil {
         Circle()
           .fill(.yellow)
           .frame(width: 9, height: 9)
@@ -256,11 +250,16 @@ struct MainPaneView: View {
       }
     }
     .animation(Tokens.animFast, value: isGenerating)
-    .animation(Tokens.animFast, value: hasSummary)
+    .animation(Tokens.animFast, value: waiting)
     .animation(Tokens.animFast, value: model.isSummaryRailPresented)
-    .disabled(!isEnabled)
-    .help(hasSummary ? "Summary" : "Generate summary")
-    .accessibilityLabel(hasSummary ? "Summary" : "Generate summary")
+    // One string for both, so the tooltip and VoiceOver can never disagree
+    // about which decision is waiting — and it names the ring too. The
+    // `accessibilityLabel` here replaces the `ProgressView` child's own
+    // announcement, so without the generating clause a non-sighted owner is
+    // told "Details" whether or not the summary they started is still running:
+    // the ring would be the sole feedback for the press, and it is pixels.
+    .help(DocumentInfoBadge.label(waiting, isGeneratingSummary: isGenerating))
+    .accessibilityLabel(DocumentInfoBadge.label(waiting, isGeneratingSummary: isGenerating))
   }
 
   /// Echo each chip's identity hue onto its transcript speaker runs. Speaker
@@ -306,52 +305,44 @@ struct MainPaneView: View {
 
 private struct RichDocumentPane: View {
   let document: DocumentRender
+  /// Read only to colour the transcript's speaker runs. The chips themselves
+  /// are drawn by the Details panel now, so nothing here renames them.
   @Binding var speakerChips: [SpeakerChip]
-  let onRename: (_ label: String, _ newName: String) -> Void
-  var onAcceptSuggestion: (_ label: String) -> Void = { _ in }
-  var onDismissSuggestion: (_ label: String) -> Void = { _ in }
-  @ObservedObject var enrichment: EnrichmentController
-  /// The open record's facts (XIA-429), drawn as the header's fact strip.
-  var facts: RecordFacts?
   /// The seconds its moments were flagged at — the gutter pips.
   var markerSeconds: [TimeInterval] = []
   /// What the receipt is occupying at the bottom, if one is up. Comes off the
   /// **scroll view's own frame**, which is the only inset that moves where a
   /// scroll comes to rest (the lesson `transcriptBottomReserve` is built on).
   var bottomReserve: CGFloat = 0
-  @Binding var nextMomentToken: Int
+  /// Bumped by the fact strip's "N moments" button, which now lives in the
+  /// Details panel — a sibling overlay in ContentView, not this view tree, so
+  /// the token is on `NotaModel` and arrives here as a plain value.
+  var nextMomentToken: Int
 
-  /// True once the rich-text body has scrolled beneath the header; drives the
-  /// header collapse and the top fade on the body.
+  /// True once the rich-text body has scrolled under the header; drives the
+  /// top fade on the body and **nothing else**.
+  ///
+  /// It used to drive the header's collapse too, which is where the shake came
+  /// from: collapsing changed the header's height, which changed the scroll
+  /// range that had decided to collapse it. A fade changes no layout, so this
+  /// offset can no longer feed back into itself.
   @State private var isBodyScrolled = false
 
   var body: some View {
     VStack(spacing: 0) {
       if let meta = document.meta {
-        DocumentHeaderView(
-          meta: meta,
-          chips: $speakerChips,
-          compact: isBodyScrolled,
-          onRename: onRename,
-          onAcceptSuggestion: onAcceptSuggestion,
-          onDismissSuggestion: onDismissSuggestion,
-          tagEditing: tagEditing,
-          facts: facts,
-          onNextMoment: markerSeconds.isEmpty ? nil : { nextMomentToken += 1 }
-        )
+        // The title, and nothing else. Everything that used to sit under it —
+        // and then sat in an overlay card hung off this body — is in the
+        // Details panel, one press away in the local cluster.
+        DocumentHeaderView(meta: meta)
         Divider()
       }
       // Decision 29: nothing sits between the header and the transcript —
       // the enrichment slot is gone, the summary lives in the rail overlay.
       RichTextViewer(
         attributedString: MainPaneView.applySpeakerColors(to: document.body, chips: speakerChips),
-        onScroll: { offset, range in
-          // The decision is a hysteresis with a range floor, and it lives in
-          // `DocumentHeaderCollapse` because collapsing this header changes the
-          // height that produced `offset` — see that type for the loop it
-          // closes.
-          let scrolled = DocumentHeaderCollapse.isCollapsed(
-            offset: offset, range: range, isCollapsed: isBodyScrolled)
+        onScroll: { offset in
+          let scrolled = offset > Metrics.docBodyFadeThreshold
           guard scrolled != isBodyScrolled else { return }
           withAnimation(Tokens.animFast) { isBodyScrolled = scrolled }
         },
@@ -381,23 +372,6 @@ private struct RichDocumentPane: View {
       Rectangle().fill(Color.black)
     }
   }
-
-  /// Tags become editable chips only when the document has a history record —
-  /// the record is truth for tag content; imported markdown keeps static pills.
-  /// The generate-tags affordance rides the row (decision 28), carrying its
-  /// progress, its failure, and the edited-tags confirm gate.
-  private var tagEditing: EnrichmentTagEditing? {
-    guard let record = enrichment.record else { return nil }
-    return EnrichmentTagEditing(
-      tags: record.tags,
-      isGenerating: enrichment.activity == .tagging,
-      errorMessage: enrichment.errorActivity == .tagging ? enrichment.errorMessage : nil,
-      needsConfirm: enrichmentNeedsConfirm(record: record, target: .tags),
-      onAdd: { enrichment.addTag($0) },
-      onRemove: { enrichment.removeTag($0) },
-      onGenerate: { enrichment.generateTags() }
-    )
-  }
 }
 
 #if DEBUG
@@ -406,8 +380,7 @@ private struct RichDocumentPane: View {
     content: .empty(PreviewMocks.emptyMainIdle),
     isDropTargeted: .constant(false),
     speakerChips: .constant([]),
-    onDropURL: { _ in },
-    onRename: { _, _ in }
+    onDropURL: { _ in }
   )
   .environmentObject(NotaModel())
   .frame(width: 720, height: 540)
@@ -418,8 +391,7 @@ private struct RichDocumentPane: View {
     content: .empty(PreviewMocks.emptyMainIdle),
     isDropTargeted: .constant(true),
     speakerChips: .constant([]),
-    onDropURL: { _ in },
-    onRename: { _, _ in }
+    onDropURL: { _ in }
   )
   .environmentObject(NotaModel())
   .frame(width: 720, height: 540)
@@ -430,8 +402,7 @@ private struct RichDocumentPane: View {
     content: .rich(PreviewMocks.sampleDocument),
     isDropTargeted: .constant(false),
     speakerChips: .constant([]),
-    onDropURL: { _ in },
-    onRename: { _, _ in }
+    onDropURL: { _ in }
   )
   .environmentObject(NotaModel())
   .frame(width: 720, height: 540)
@@ -442,8 +413,7 @@ private struct RichDocumentPane: View {
     content: .liveMeeting,
     isDropTargeted: .constant(false),
     speakerChips: .constant([]),
-    onDropURL: { _ in },
-    onRename: { _, _ in }
+    onDropURL: { _ in }
   )
   .environmentObject(NotaModel())
   .frame(width: 720, height: 540)

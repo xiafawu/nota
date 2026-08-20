@@ -1,119 +1,112 @@
 import SwiftUI
 
-/// Pinned header above the scrollable rich-text body: title, a muted
-/// "date · duration" subtitle, speaker chips (when present), and tag pills.
-/// Replaces the old wall of bold-label metadata lines (`**Captured:** …`) that
-/// used to render inline in the text. Left padding matches the body's gutter so
-/// the title aligns with the transcript text below.
+/// Pinned above the scrollable rich-text body: **the title, and nothing else**
+/// (XIA-441; reduced to the title alone on 2026-08-19).
 ///
-/// `compact` collapses the header while the body is scrolled: the title drops
-/// to a single headline line and the subtitle/chips/tags fold away, giving the
-/// transcript back most of the window.
+/// Everything that used to stack under it — the "date · duration" subtitle, the
+/// speaker chips, the record's fact strip and the tags — lives in the Details
+/// panel (`SummaryRailView`), opened by the one Details button in the local
+/// cluster beside Share. That is not a tidy-up. Those five parts folded away on
+/// scroll, so the header changed height, so it changed the scroll range that had
+/// decided it should fold: a state change driven by a value it alters. Two
+/// thresholds and a range floor (`DocumentHeaderCollapse`, deleted) made the
+/// resulting oscillation settle on short documents. The header now has nothing
+/// left to fold, so the loop cannot start — the fix is structural, and it got
+/// *more* structural when the info card became a panel: this view reads one
+/// string and draws it.
+///
+/// Left padding matches the body's gutter so the title aligns with the
+/// transcript text below.
 struct DocumentHeaderView: View {
   let meta: DocMeta
-  @Binding var chips: [SpeakerChip]
-  var compact: Bool = false
-  let onRename: (_ label: String, _ newName: String) -> Void
-  /// Accept/dismiss a chip's pending speaker suggestion (decision 4). No-ops
-  /// when the caller doesn't surface suggestions (previews, imported docs).
-  var onAcceptSuggestion: (_ label: String) -> Void = { _ in }
-  var onDismissSuggestion: (_ label: String) -> Void = { _ in }
-  /// Non-nil when the open document has a history record: tags render as
-  /// editable chips driven by the record (×-on-hover removal plus an
-  /// always-visible "+ add tag" chip). Nil keeps the static pills for
-  /// imported markdown without a record.
-  var tagEditing: EnrichmentTagEditing?
-  /// The record's facts, drawn as a dot-separated strip under the chips
-  /// (XIA-429). The **same** `RecordFacts` the receipt drew at Stop — one
-  /// model, two renderings, so the moment and the document cannot drift.
-  var facts: RecordFacts?
-  /// Scroll the transcript to the next moment pip. Nil when there are no pips,
-  /// which makes "N moments" plain text rather than a dead button.
-  var onNextMoment: (() -> Void)?
-
-  /// **One duration per header.** The parsed subtitle keeps the capture date
-  /// always, and keeps the markdown's `**Duration:**` figure only when the fact
-  /// strip is not about to state the same length itself.
-  ///
-  /// The two disagree by construction, which is why this is a rule and not a
-  /// tidy-up: `durationMinutes` is `max(1, ceil(seconds / 60))`, so an 18 min
-  /// 42 s meeting exports `**Duration:** 19 minutes` while `durationSeconds`
-  /// (1122) drives the strip's `18:42`. Rendering both put "May 20 · 19 min"
-  /// four points above "18:42 · Meeting · 3 speakers", inside a single header,
-  /// on a feature chosen specifically so the moment and the document could not
-  /// disagree about how long the recording was.
-  ///
-  /// Pure, so the rule is asserted without laying anything out.
-  static func subtitle(meta: DocMeta, facts: RecordFacts?) -> String {
-    let stripStatesDuration = facts?.text(for: .duration) != nil
-    let parts = stripStatesDuration ? [meta.dateText] : [meta.dateText, meta.durationText]
-    return parts.filter { !$0.isEmpty }.joined(separator: " · ")
-  }
 
   var body: some View {
-    VStack(alignment: .leading, spacing: Metrics.docHeaderSpacing) {
-      Text(meta.title)
-        .font(compact ? Tokens.docTitleCompactFont : Tokens.docTitleFont)
-        .fontWeight(.bold)
-        .lineLimit(compact ? 1 : 2)
-        .truncationMode(.tail)
-        .textSelection(.enabled)
+    Text(meta.title)
+      .font(Tokens.docTitleFont)
+      .fontWeight(.bold)
+      .lineLimit(2)
+      .truncationMode(.tail)
+      .textSelection(.enabled)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .padding(.leading, Metrics.gutterWidth)
+      .padding(.trailing, Metrics.richTextInsetX)
+      .padding(.top, Metrics.docHeaderTopPadding)
+      .padding(.bottom, Metrics.docHeaderBottomPadding)
+  }
+}
 
-      if !compact {
-        if !Self.subtitle(meta: meta, facts: facts).isEmpty {
-          Text(Self.subtitle(meta: meta, facts: facts))
-            .font(Tokens.docSubtitleFont)
-            .foregroundStyle(.ground(.speaker))
-        }
+// MARK: - What the Details button announces
 
-        // Speaker chip strip — injected between subtitle and tags
-        if !chips.isEmpty {
-          SpeakerChipStrip(
-            chips: $chips,
-            onRename: onRename,
-            onAcceptSuggestion: onAcceptSuggestion,
-            onDismissSuggestion: onDismissSuggestion
-          )
-          .padding(.top, Metrics.tagTopPadding)
-        }
+/// **When the Details button announces something, and when it stays quiet.**
+///
+/// Putting the document's metadata behind a button costs one thing, and only
+/// one: some of what is back there *asks* rather than tells, and a question
+/// nobody sees is a question that is never answered.
+///
+/// Two things ask, and they are the only two.
+///
+/// A speaker chip holding a suggestion is Nota asking — "Speaker 2 → Kenny
+/// Kim? 0.62", accept or dismiss — and it asks exactly once, when a
+/// transcription lands. Behind a panel nobody opens, that question is never
+/// seen and the speaker stays unnamed forever.
+///
+/// A `summaryOutdated` record is Nota asking too: a rename landed on a summary
+/// that still names the old speaker, and one click regenerates it. That
+/// question used to have a dot of its own on the Summary button; merging the
+/// two buttons must not merge away the question.
+///
+/// Nothing else earns one. The subtitle, the fact strip and the tags state,
+/// they do not ask, and an unnamed speaker with no suggestion is not waiting on
+/// an answer either. A badge lit for every document would be lit permanently
+/// and would say nothing.
+///
+/// **One dot, and the label says which.** A merged button that lights for two
+/// claimants and names only the first hides the second for good, so `label`
+/// names both when both are waiting, and `.help` and `.accessibilityLabel` read
+/// the same string — the two can never disagree about what is waiting.
+///
+/// Pure, so the rule is asserted without laying anything out.
+enum DocumentInfoBadge {
+  static func hasPendingDecision(chips: [SpeakerChip]) -> Bool {
+    chips.contains { $0.suggestion != nil }
+  }
 
-        // Under the title and the speaker chips, above the tags: the facts are
-        // about the recording, and the tags are about its content.
-        //
-        // It folds with the rest of the header on scroll, deliberately. The
-        // compact header is a single headline line by design, and a strip that
-        // survived alone while the chips and tags it sits between folded away
-        // would read as a row that had come loose. "Permanent" here means the
-        // document keeps these facts forever, not that they are pinned to the
-        // top of the window.
-        if let facts, !facts.isEmpty {
-          RecordFactStripView(facts: facts, onNextMoment: onNextMoment)
-            .padding(.top, Metrics.tagTopPadding)
-        }
+  /// What, if anything, is waiting on the owner behind the Details button.
+  enum Waiting: Equatable {
+    case speaker
+    case summary
+    case both
+  }
 
-        if let tagEditing {
-          EditableTagRow(state: tagEditing)
-            .padding(.top, Metrics.tagTopPadding)
-        } else if !meta.tags.isEmpty {
-          FlowLayout(spacing: Metrics.tagSpacing, lineSpacing: Metrics.tagSpacing) {
-            ForEach(meta.tags, id: \.self) { tag in
-              Text(tag)
-                .font(Tokens.historyTagFont)
-                .foregroundStyle(.ground(.speaker))
-                .padding(.horizontal, Metrics.tagPillH)
-                .padding(.vertical, Metrics.tagPillV)
-                .background(Tokens.tagPillFill, in: Capsule())
-            }
-          }
-          .padding(.top, Metrics.tagTopPadding)
-        }
-      }
+  static func waiting(chips: [SpeakerChip], isSummaryOutdated: Bool) -> Waiting? {
+    switch (hasPendingDecision(chips: chips), isSummaryOutdated) {
+    case (true, true): return .both
+    case (true, false): return .speaker
+    case (false, true): return .summary
+    case (false, false): return nil
     }
-    .frame(maxWidth: .infinity, alignment: .leading)
-    .padding(.leading, Metrics.gutterWidth)
-    .padding(.trailing, Metrics.richTextInsetX)
-    .padding(.top, compact ? Metrics.docHeaderCompactVerticalPadding : Metrics.docHeaderTopPadding)
-    .padding(.bottom, compact ? Metrics.docHeaderCompactVerticalPadding : Metrics.docHeaderBottomPadding)
+  }
+
+  /// The one string the button's `.help` AND `.accessibilityLabel` both read.
+  ///
+  /// `isGeneratingSummary` is the ring's state, and it is here rather than left
+  /// to the `ProgressView` inside the button because the button's own
+  /// `accessibilityLabel` replaces its children: a run in flight was drawn and
+  /// never said, so the only feedback for a press that spends a model call was
+  /// a spinning glyph.
+  static func label(_ waiting: Waiting?, isGeneratingSummary: Bool = false) -> String {
+    let base: String
+    switch waiting {
+    case nil:
+      base = "Details"
+    case .speaker:
+      base = "Details — a speaker suggestion is waiting"
+    case .summary:
+      base = "Details — the summary is out of date"
+    case .both:
+      base = "Details — a speaker suggestion is waiting and the summary is out of date"
+    }
+    return isGeneratingSummary ? base + " — generating the summary" : base
   }
 }
 
@@ -122,7 +115,11 @@ struct DocumentHeaderView: View {
 /// One chip per speaker: an identity-colored dot plus the final display name.
 /// The diarization mapping ("Speaker 1 → Kenny Kim") is implementation detail —
 /// it lives in the tooltip and the rename popover, never on the chip face.
-private struct SpeakerChipStrip: View {
+///
+/// Internal rather than file-private: the Details panel (`SummaryRailView`) is
+/// what draws it now. Its parts below stay private — only the strip crosses the
+/// file boundary.
+struct SpeakerChipStrip: View {
   @Binding var chips: [SpeakerChip]
   let onRename: (_ label: String, _ newName: String) -> Void
   var onAcceptSuggestion: (_ label: String) -> Void = { _ in }
@@ -344,7 +341,8 @@ struct EnrichmentTagEditing {
   var onGenerate: () -> Void
 }
 
-private struct EditableTagRow: View {
+/// Internal for the reason `SpeakerChipStrip` is: the Details panel draws it.
+struct EditableTagRow: View {
   let state: EnrichmentTagEditing
 
   @State private var showGenerateConfirm = false
@@ -518,47 +516,15 @@ private struct AddTagChip: View {
 }
 
 #if DEBUG
-#Preview("header – no chips") {
-  DocumentHeaderView(
-    meta: DocMeta(
-      title: "Reflecting on Self and Confidence",
-      subtitle: "May 20 · 51 min",
-      tags: ["self-awareness", "confidence", "personal-growth", "empathy"]
-    ),
-    chips: .constant([]),
-    onRename: { _, _ in }
-  )
-  .frame(width: 600)
-}
-
-#Preview("header – with chips") {
-  @Previewable @State var chips: [SpeakerChip] = [
-    SpeakerChip(label: "Speaker 1", name: "", indicator: .none),
-    SpeakerChip(label: "Speaker 2", name: "Alice", indicator: .enrolled),
-  ]
-  DocumentHeaderView(
-    meta: DocMeta(
-      title: "Team Sync",
-      subtitle: "May 20 · 30 min",
-      tags: ["product", "sync"]
-    ),
-    chips: $chips,
-    onRename: { _, _ in }
-  )
-  .frame(width: 600)
-}
-
-#Preview("header – compact") {
+#Preview("header") {
   DocumentHeaderView(
     meta: DocMeta(
       title: "Reflecting on Self and Confidence",
       subtitle: "May 20 · 51 min",
       tags: ["self-awareness", "confidence"]
-    ),
-    chips: .constant([]),
-    compact: true,
-    onRename: { _, _ in }
+    )
   )
   .frame(width: 600)
 }
+
 #endif

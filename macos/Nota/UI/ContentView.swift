@@ -246,10 +246,7 @@ struct ContentView: View {
       )),
       isDropTargeted: $model.isDropTargeted,
       speakerChips: $model.speakerChips,
-      onDropURL: { url in model.accept(url) },
-      onRename: { label, newName in model.renameChip(label: label, newName: newName) },
-      onAcceptSuggestion: { label in model.acceptSuggestion(label: label) },
-      onDismissSuggestion: { label in model.dismissSuggestion(label: label) }
+      onDropURL: { url in model.accept(url) }
     )
   }
 
@@ -265,8 +262,7 @@ struct ContentView: View {
       )),
       isDropTargeted: $model.isDropTargeted,
       speakerChips: $model.speakerChips,
-      onDropURL: { url in model.accept(url) },
-      onRename: { label, newName in model.renameChip(label: label, newName: newName) }
+      onDropURL: { url in model.accept(url) }
     )
   }
 
@@ -277,10 +273,7 @@ struct ContentView: View {
       content: .liveMeeting,
       isDropTargeted: $model.isDropTargeted,
       speakerChips: $model.speakerChips,
-      onDropURL: { url in model.accept(url) },
-      onRename: { label, newName in model.renameChip(label: label, newName: newName) },
-      onAcceptSuggestion: { label in model.acceptSuggestion(label: label) },
-      onDismissSuggestion: { label in model.dismissSuggestion(label: label) }
+      onDropURL: { url in model.accept(url) }
     )
   }
 
@@ -309,7 +302,7 @@ struct ShareMenu: View {
   /// Liquid Glass capsule around the item itself, so the menu supplies only a
   /// label. In the **local cluster** it is a free-floating control over the
   /// content and has to draw its own glass — as a circle, icon-only, matching
-  /// the Summary button beside it (ADR 0005).
+  /// the Details button beside it (ADR 0005, ADR 0006).
   ///
   /// This enum exists because moving the view between hosts silently changed
   /// what its own `.liquidGlassButton()` did: harmless under a toolbar that

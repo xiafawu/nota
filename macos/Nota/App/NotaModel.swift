@@ -328,9 +328,21 @@ final class NotaModel: ObservableObject {
 
   // MARK: - Summary rail
 
-  /// Whether the summary rail overlay is presented (decision 1). Owned here
-  /// so the Summary button (MainPaneView), the overlay host (ContentView),
-  /// and the record/phase transitions share one source of truth.
+  /// Bumped by the fact strip's "N moments" button; the transcript's text view
+  /// turns each bump into a scroll to the next pip.
+  ///
+  /// It lived on `MainPaneView` as `@State` until the fact strip moved into the
+  /// Details panel, which is mounted in `ContentView`'s overlay — a sibling of
+  /// the pane, not a descendant, so a `@State` there is unreachable from it and
+  /// the button would have drawn underlined and clickable and done nothing.
+  /// This is not the XIA-432 trap in disguise: that trap is a publisher's
+  /// **rate** multiplied by its observers' breadth, and this one changes on a
+  /// click.
+  @Published var nextMomentToken = 0
+
+  /// Whether the Details panel is presented (decision 1). Owned here so the
+  /// Details button (MainPaneView), the overlay host (ContentView), and the
+  /// record/phase transitions share one source of truth.
   @Published var isSummaryRailPresented = false
   /// True while the rail's summary editor is active. The draft below is that
   /// record's text, so ANY close — click-outside, Escape, Close, record
@@ -2138,7 +2150,11 @@ final class NotaModel: ObservableObject {
     // The same lookup loads the enrichment slice of the record, which drives
     // the summary slot and editable tag chips for the open document.
     cachedHistoryRecord = nil
-    enrichment.setRecord(nil)
+    // Not `setRecord(nil)`: the lookup below is detached, and between here and
+    // its result `record == nil` would otherwise be indistinguishable from a
+    // document that genuinely has no record — which is what the Details panel
+    // prints a sentence about.
+    enrichment.beginRecordLookup()
     let historyDir = notaHistoryDirectory()
     let docPath = documentURL.path
     Task { @MainActor [weak self] in

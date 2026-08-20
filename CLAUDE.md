@@ -1438,6 +1438,153 @@ The engine is a `static let` **nobody else observes**, refcounted by viewers
 left running all day), and **inert under XCTest**, so view tests see the wash
 they were written against rather than whichever ground the process drew.
 
+## The Document Surface
+
+What a finished transcript looks like (XIA-441, merged with the Details panel
+2026-08-19, ADR 0006). `macos/Nota/UI/MainPaneView.swift`,
+`DocumentHeaderView.swift`, `SummaryRailView.swift`, `RichTextViewer.swift`,
+`MarkdownRender.swift`.
+
+**The pane is the transcript, and everything else is behind one button.** Top
+to bottom it is a header holding the **title alone**, a hairline, and the
+reading column. The subtitle, the speaker chips, the record's fact strip, the
+tags and the summary all live in **one panel** — `SummaryRailView`, opened by
+the one **Details** button (`info.circle`) in the bottom-right local cluster
+beside Share. Not two surfaces, not tabs, not a second card: the details block
+is the first thing inside the panel's existing `ScrollView`, above a hairline,
+above the summary half.
+
+The panel is taller for it, and it still clears the cluster by construction:
+its bottom padding is the cluster's own diameter plus a gap plus the ordinary
+inset, so the surface can never land on the button that opened it however much
+it holds.
+
+The intermediate design is worth naming because it is what the merge deleted:
+for two days the header carried an info *toggle* opening a `DocumentInfoCard`
+overlay while a separate Summary button opened the rail. `DocumentInfoCard` and
+`DocumentInfoToggle` are **gone**; `DocMeta.subtitle(facts:)` outlived them
+(the one-duration-per-surface rule, below).
+
+**A header that cannot change height cannot oscillate.** The metadata used to
+fold away on scroll, so the header changed height, so it changed the scroll
+range that had decided it should fold — a state change driven by a value it
+alters. The owner saw it as the transcript **shaking**, and only on short
+documents, which is the signature: a long document has range to spare and never
+clamps. Two thresholds plus a range floor (`DocumentHeaderCollapse`) damped it;
+moving everything but the title out of the header **removed** it, and all of
+that arithmetic is deleted. `RichTextViewer.onScroll` reports the offset alone
+now; the range existed for the collapse and has no reader.
+`testTheHeaderIsOneHeightWhateverTheDocumentCarries` lays the header out bare,
+with a subtitle and tags, and with twenty tags, and requires one height.
+
+**Opening is free; generating is not.** The Details button starts nothing — the
+old dual-purpose click (a press with no summary used to spend a model call
+*and* open the rail to watch it) is gone with the `plus` glyph that promised
+it, and so is its `.disabled`: a tag run is no reason to lock the owner out of
+their own speaker chips. The only way to start a summary is the **Generate
+summary** button *inside* the panel, in the slot where the narrative would be.
+A record with no narrative is the ordinary resting state of a transcript-only
+meeting, so that slot is a state and not a failure; a failed generation lands
+in the same slot with the message above a button reading **Try Again**, rather
+than in a second block with a second retry one state apart. Edit and Regenerate
+are **absent** there rather than greyed out — two dead controls above the live
+one, one of them naming an object that never existed, read as a summary that
+was tried and failed.
+
+**One dot, two claimants.** `DocumentInfoBadge.waiting(chips:isSummaryOutdated:)`
+lights the button's amber dot when a speaker chip holds a suggestion **or** the
+summary is stale, and `DocumentInfoBadge.label(_:isGeneratingSummary:)` is the
+one string `.help` and `.accessibilityLabel` both read, naming whichever is
+waiting — both, when both are. A chip holding a suggestion is Nota *asking*
+("Speaker 2 → Kenny Kim? 0.62"), and it asks once, when the transcription
+lands; behind a button nobody opens, that question is never seen. The subtitle,
+the fact strip and the tags never earn a dot — they state, they do not ask —
+and an **unnamed** speaker does not either, since nothing is waiting on an
+answer. The label also carries the in-flight summary, because the button's own
+`accessibilityLabel` replaces the `ProgressView` inside it: the ring is pixels,
+and without the clause a non-sighted owner is told "Details" whether or not the
+run they started is still going. The dot rides outside the button's shape —
+the glass would blur it, and a badge may not resize the control it is on.
+
+**A document with no history record keeps its button and its panel.** The
+cluster used to draw the button only when `enrichment.record != nil`, so an
+imported `.md` had no way in at all and its own subtitle, chips and tags were
+unreachable. That gate is deleted. The panel draws what the document has and
+omits what it does not: the fact strip is a record's facts and is absent with
+the record, the summary half is replaced by one line saying there is nothing
+behind this document to summarize, and `hasDetails` keeps the hairline from
+being drawn under nothing. Nothing about a document may disappear because of
+where it was opened from.
+
+**The panel may not say anything it cannot support.** Three rules, each of them
+a false statement the merge made reachable:
+
+- **A tag run is not a summary run.** The fork that swaps the summary half for
+  the in-flight row branches on `activity == .summarizing`
+  (`SummaryRailView.summaryIsInFlight`), never on `!= .idle`: the tags row is
+  four rows above it in the same panel now, so one press on Generate tags used
+  to replace the narrative — or an open editor holding an unsaved draft — with
+  a progress row reading "Generating tags" under a heading reading SUMMARY,
+  while the tag row drew its own spinner. It is the same predicate the Details
+  button's ring uses, so the button and the panel agree about what is running.
+- **"No record" and "not read yet" are different answers.**
+  `SummaryRailView.summaryHalf(hasRecord:isResolvingRecord:)` is three states.
+  `NotaModel.loadChips` clears the record synchronously and reads the real one
+  off disk in a detached task (`EnrichmentController.beginRecordLookup`), so
+  every recorded transcript passes through `record == nil` on open. The notice
+  waits for the lookup, and it states the **absence** only — it opened
+  "Imported file —" for one day, which is a claim about provenance that
+  `record == nil` does not support: a failed transcription leaves a document in
+  the pane with no record behind it either.
+- **A failure belongs to the row it happened in.** The controller has one error
+  channel and both halves of the panel draw out of it, so the failure carries
+  `EnrichmentController.errorField` (an `EnrichmentField`, not the *activity*
+  it used to be). `addTag` / `removeTag` go through the same `applyEdit` a
+  summary edit does, which left the kind nil, which passed the summary slot's
+  `!= .tagging` filter — so a failed tag add printed under the summary and
+  relabelled its button "Try Again", one press from a model call for an
+  operation that was not a summary.
+
+**One duration per surface.** `DocMeta.subtitle(facts:)` drops the markdown's
+`**Duration:**` figure whenever a fact strip beneath it states the same length.
+The two disagree by construction — `durationMinutes` is rounded up, so an
+18 min 42 s meeting exports "19 minutes" while the strip reads `18:42` off
+`durationSeconds` — and drawing both put two roundings of one fact four points
+apart on the feature chosen so the moment and the document could not disagree.
+The rule lives on `DocMeta` because the surface has moved three times (header,
+info card, panel) and the rule never moved with it.
+
+**The dismissal policy governs the whole panel and may not be weakened.**
+Someone who opened it to read a speaker's name must not be able to lose an
+in-progress summary edit on the way out: every close — the ×, click-outside,
+Escape, a record switch, a phase leave — runs `requestSummaryRailDismissal`.
+The panel is visually modal (an invisible full-window backdrop makes the window
+inert to clicks), so it carries `.accessibilityAddTraits(.isModal)` and the
+backdrop is `.accessibilityHidden` — otherwise the assistive cursor goes on
+walking a transcript and a Details button nothing can reach. Generate summary
+takes `.defaultAction`, since it is the one control that spends money and the
+panel takes no initial focus.
+
+**The reading column.** The document path had no measure cap at all —
+`widthTracksTextView` plus a 48pt inset means a 1400pt window draws
+140-character lines. The cap is on the **text container**, not the insets (a
+wider inset moves the column left; a container width centres it): 34em of the
+reading face, ~74 characters, inside the 45–75 band. Body is 18.5pt at
+`GroundInk.Tier.reading` (alpha 0.80) — the owner's pick, and defensible
+because ≥18pt is WCAG **large** text, which drops AAA from 7.0:1 to 4.5:1.
+Every colour in `MarkdownRender` comes from `GroundInk.nsColor(_:)`, a dynamic
+`NSColor` resolved per appearance at draw time; a baked colour would strand the
+document on a theme switch. Zero `labelColor`/`separatorColor` remain, and
+`testTheRenderedDocumentUsesNoSemanticColours` fails on any that come back.
+
+`parseDocumentMeta` **stops at the first `## `** and enumerates lines rather
+than splitting the document into an array first. That is not tidiness: the
+panel reads it two to four times per body evaluation and its own `TextEditor`
+writes an `@Published` on the model it observes, so a parse that materialized
+the whole `.md` would re-split a long meeting on every keystroke of a summary
+edit — the publisher-rate × observer-breadth trap this file already records
+three times, arriving as parse cost rather than view cost.
+
 ## The Recording Surface
 
 What a live session looks like while it is running (XIA-431 the accent,

@@ -501,15 +501,18 @@ final class RecordFactsTests: XCTestCase {
     XCTAssertEqual(found.map(\.1), [65, 120], "the numeric half disagrees with the label")
   }
 
-  // MARK: - One duration per header
+  // MARK: - One duration per surface
 
-  /// **The header states the length once.** The exported markdown's
+  /// **The Details panel states the length once.** The exported markdown's
   /// `**Duration:**` line is rounded UP to whole minutes by the writer, while
   /// the fact strip reads `durationSeconds` — so drawing both put "May 20 ·
   /// 19 min" four points above "18:42 · Meeting · 3 speakers", inside a single
-  /// header, on the one feature chosen so the moment and the document could not
-  /// disagree about how long the recording was.
-  func testTheHeaderNeverStatesTheDurationTwice() {
+  /// surface, on the one feature chosen so the moment and the document could
+  /// not disagree about how long the recording was.
+  ///
+  /// The surface has moved twice — header, info card, now the panel — and the
+  /// rule never moved with it, which is why it lives on `DocMeta`.
+  func testTheDetailsPanelNeverStatesTheDurationTwice() {
     let markdown = """
       # Standup
       **Captured:** 2026-05-20
@@ -525,17 +528,17 @@ final class RecordFactsTests: XCTestCase {
 
     // With a strip: the date only, and the strip says 18:42.
     let facts = RecordFacts(duration: 1122, kind: .meeting, speakerCount: 3)
-    XCTAssertEqual(DocumentHeaderView.subtitle(meta: meta, facts: facts), "May 20")
+    XCTAssertEqual(meta.subtitle(facts: facts), "May 20")
     XCTAssertFalse(
-      DocumentHeaderView.subtitle(meta: meta, facts: facts).contains("min"),
-      "the header states the length twice, in two roundings"
+      meta.subtitle(facts: facts).contains("min"),
+      "the panel states the length twice, in two roundings"
     )
 
     // Without one — an imported `.md` with no record — the parsed figure is the
     // only duration the document has, so it stays.
-    XCTAssertEqual(DocumentHeaderView.subtitle(meta: meta, facts: nil), "May 20 · 19 min")
+    XCTAssertEqual(meta.subtitle(facts: nil), "May 20 · 19 min")
     XCTAssertEqual(
-      DocumentHeaderView.subtitle(meta: meta, facts: RecordFacts(kind: .file)),
+      meta.subtitle(facts: RecordFacts(kind: .file)),
       "May 20 · 19 min",
       "a strip with no duration in it is not a reason to drop the only one there is"
     )

@@ -172,9 +172,9 @@ final class EnrichmentSlotStateTests: XCTestCase {
   }
 
   func testTranscribedNoSummary_hidden() {
-    // The placeholder case is retired (decisions 9/10): the Summary button
-    // starts generation AND opens the rail, so the rail never shows a
-    // "No summary yet" card — with no narrative there is nothing to render.
+    // The placeholder case is retired (decisions 9/10): with no narrative
+    // this state renders nothing, and the panel puts its Generate summary
+    // button in the slot instead of a "No summary yet" card (ADR 0006).
     let record = makeRecord(status: "transcribed")
     XCTAssertEqual(
       enrichmentSlotState(record: record, activity: .idle, modelID: "m"),
@@ -552,25 +552,25 @@ final class EnrichmentControllerTests: XCTestCase {
     await controller.generateSummary()?.value
 
     XCTAssertEqual(controller.errorMessage, "summary was edited; pass --force")
-    // The error knows its kind: the tag row and the summary rail share one
+    // The error knows whose it is: the tag row and the summary slot share one
     // error channel and each shows only its own failures (decision 28).
-    XCTAssertEqual(controller.errorActivity, .summarizing)
+    XCTAssertEqual(controller.errorField, .summary)
     XCTAssertEqual(controller.record, before)
     XCTAssertEqual(controller.activity, .idle)
   }
 
-  func testGenerateTagsFailure_errorActivityIsTagging() async {
+  func testGenerateTagsFailure_errorFieldIsTags() async {
     let runner = MockEnrichmentRunner()
     runner.result = .failure(EnrichmentCLIError.cliFailed(2, stderr: "boom"))
     let controller = makeController(runner: runner)
 
     await controller.generateTags()?.value
 
-    XCTAssertEqual(controller.errorActivity, .tagging)
+    XCTAssertEqual(controller.errorField, .tags)
     XCTAssertNotNil(controller.errorMessage)
   }
 
-  func testEditSaveFailure_errorActivityCleared() async {
+  func testSummaryEditFailure_belongsToTheSummary() async {
     let runner = MockEnrichmentRunner()
     runner.result = .failure(EnrichmentCLIError.cliFailed(2, stderr: "nope"))
     let controller = makeController(
@@ -581,7 +581,29 @@ final class EnrichmentControllerTests: XCTestCase {
     await controller.saveSummaryEdit("New text.")?.value
 
     XCTAssertNotNil(controller.errorMessage)
-    XCTAssertNil(controller.errorActivity, "edit failures belong to no generation kind")
+    XCTAssertEqual(controller.errorField, .summary)
+  }
+
+  /// **A failed tag edit belongs to the tag row, not to the summary.**
+  ///
+  /// `addTag` / `removeTag` go through the same `applyEdit` a summary edit
+  /// does, and that path used to leave the kind nil — which passed the summary
+  /// slot's `!= .tagging` filter. On a transcript-only record the failure was
+  /// therefore printed under the summary and relabelled its button "Try
+  /// Again": one press, one model call, for an operation that was not a
+  /// summary. The tag row, where it happened, showed nothing.
+  func testTagEditFailure_belongsToTheTagRow() async {
+    let runner = MockEnrichmentRunner()
+    runner.result = .failure(EnrichmentCLIError.cliFailed(2, stderr: "nope"))
+    let controller = makeController(
+      runner: runner,
+      record: makeRecord(status: "completed", narrative: "Old text.")
+    )
+
+    await controller.addTag("planning")?.value
+
+    XCTAssertNotNil(controller.errorMessage)
+    XCTAssertEqual(controller.errorField, .tags)
   }
 
   func testNextGeneration_clearsPreviousErrorKind() async throws {
@@ -590,13 +612,13 @@ final class EnrichmentControllerTests: XCTestCase {
     let controller = makeController(runner: runner)
 
     await controller.generateTags()?.value
-    XCTAssertEqual(controller.errorActivity, .tagging)
+    XCTAssertEqual(controller.errorField, .tags)
 
     runner.result = .success(try recordJSON(status: "completed", narrative: "Fresh."))
     await controller.generateSummary()?.value
 
     XCTAssertNil(controller.errorMessage)
-    XCTAssertNil(controller.errorActivity)
+    XCTAssertNil(controller.errorField)
   }
 
   func testGenerate_undecodableStdout_surfacesError() async {
@@ -698,6 +720,27 @@ final class EnrichmentControllerTests: XCTestCase {
 
     XCTAssertEqual(controller.activity, .idle)
     XCTAssertEqual(controller.record?.id, "rec-2")
+  }
+
+  /// **"No record" and "not read yet" are different answers.** The document
+  /// open path clears the record synchronously and reads the real one off disk
+  /// in a detached task; the Details panel prints a sentence about the
+  /// document in that slot, so the race has to be visible to it.
+  func testBeginRecordLookup_isNotTheSameAsHavingNoRecord() {
+    let controller = makeController(runner: MockEnrichmentRunner(), record: makeRecord())
+
+    controller.beginRecordLookup()
+    XCTAssertNil(controller.record)
+    XCTAssertTrue(controller.isResolvingRecord)
+
+    // A landed record — or a landed *absence* — ends the lookup either way.
+    controller.setRecord(makeRecord(id: "rec-2"))
+    XCTAssertFalse(controller.isResolvingRecord)
+
+    controller.beginRecordLookup()
+    controller.setRecord(nil)
+    XCTAssertFalse(controller.isResolvingRecord)
+    XCTAssertNil(controller.record)
   }
 }
 

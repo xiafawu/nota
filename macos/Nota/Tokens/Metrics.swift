@@ -107,25 +107,13 @@ enum Metrics {
   static let speakerDotSize: CGFloat = 6
   static let speakerPopoverFieldWidth: CGFloat = 180
 
-  // Document header collapse + body top fade.
+  // Body top fade.
   static let docBodyTopFadeHeight: CGFloat = 28
-  /// Collapse the header above this offset, and expand again below
-  /// `docHeaderExpandThreshold` — **two numbers, not one** (XIA-441,
-  /// 2026-08-17). A single 4pt threshold made the header a bistable switch on
-  /// short documents: see `DocumentHeaderCollapse`.
-  static let docHeaderCompactThreshold: CGFloat = 24
-  static let docHeaderExpandThreshold: CGFloat = 8
-  /// How much scroll range a document needs before collapsing the header is
-  /// allowed at all.
-  ///
-  /// It stands for the height the collapse frees — the subtitle, the speaker
-  /// chips, the fact strip, the tags and the difference between the two title
-  /// faces. Deliberately **generous**: overestimating costs a short document
-  /// its header collapse, which is the right outcome anyway (nothing is
-  /// scrolling underneath it worth hiding), while underestimating brings the
-  /// oscillation back.
-  static let docHeaderCollapseReserve: CGFloat = 220
-  static let docHeaderCompactVerticalPadding: CGFloat = 8
+  /// Where the body's top fade turns on. One threshold, and it may stay one:
+  /// the fade changes no layout, so unlike the header collapse it replaced
+  /// (XIA-441 — two thresholds and a range floor, all deleted with the card)
+  /// it cannot move the offset that decides it.
+  static let docBodyFadeThreshold: CGFloat = 4
 
   // The live meeting pane's own numbers now live in `RecordingPaneMetrics`
   // (XIA-432): the pane is a two-column arrangement with a derived ring and a

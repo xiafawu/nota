@@ -38,7 +38,31 @@ struct DocMeta: Equatable {
 
   /// The subtitle as it reads with no fact strip under it.
   var subtitle: String {
-    [dateText, durationText].filter { !$0.isEmpty }.joined(separator: " · ")
+    subtitle(facts: nil)
+  }
+
+  /// **One duration per surface.** The subtitle keeps the capture date always,
+  /// and keeps the markdown's `**Duration:**` figure only when the fact strip
+  /// beneath it is not about to state the same length itself.
+  ///
+  /// The two disagree by construction, which is why this is a rule and not a
+  /// tidy-up: `durationMinutes` is `max(1, ceil(seconds / 60))`, so an 18 min
+  /// 42 s meeting exports `**Duration:** 19 minutes` while `durationSeconds`
+  /// (1122) drives the strip's `18:42`. Rendering both put "May 20 · 19 min"
+  /// four points above "18:42 · Meeting · 3 speakers", inside a single surface,
+  /// on a feature chosen specifically so the moment and the document could not
+  /// disagree about how long the recording was.
+  ///
+  /// It lives on `DocMeta` because it is a statement about the parsed document,
+  /// and because this type already owns the two disagreeing spellings. It has
+  /// moved surface twice — header, then the info card, now the Details panel —
+  /// and the rule has never moved with them, so it belongs to neither.
+  ///
+  /// Pure, so the rule is asserted without laying anything out.
+  func subtitle(facts: RecordFacts?) -> String {
+    let stripStatesDuration = facts?.text(for: .duration) != nil
+    let parts = stripStatesDuration ? [dateText] : [dateText, durationText]
+    return parts.filter { !$0.isEmpty }.joined(separator: " · ")
   }
 
   init(title: String, dateText: String = "", durationText: String = "", tags: [String] = []) {
@@ -67,10 +91,17 @@ func parseDocumentMeta(_ markdown: String) -> DocMeta? {
   var durationRaw: String?
   var tags: [String] = []
 
-  for rawLine in markdown.components(separatedBy: "\n") {
+  // `enumerateLines` rather than `components(separatedBy:)`, and the `stop`
+  // flag is the whole reason: splitting first materializes every line of the
+  // document as a `String` before this loop breaks at the first `## `, and the
+  // Details panel reads this parse two to four times per body evaluation while
+  // an `@Published` summary draft is being typed into it. What is documented
+  // as costing a header block now costs one.
+  markdown.enumerateLines { rawLine, stop in
     let line = rawLine.trimmingCharacters(in: .whitespaces)
     if line.hasPrefix("## ") {
-      break // reached the body; the header block lives above it
+      stop = true // reached the body; the header block lives above it
+      return
     }
 
     if title == nil, line.hasPrefix("# ") {

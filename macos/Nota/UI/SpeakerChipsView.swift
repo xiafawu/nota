@@ -69,7 +69,7 @@ struct SpeakerChip: Identifiable, Equatable {
 /// in the document body. Each chip shows `<label> → <name>` (or `?` when
 /// unmapped). Clicking a chip reveals an inline text field for renaming.
 ///
-/// Injected into `DocumentHeaderView` between the subtitle and tags.
+/// Injected into the Details panel between the subtitle and the fact strip.
 struct SpeakerChipsView: View {
   /// Current chips — caller maintains and drives this binding.
   @Binding var chips: [SpeakerChip]
