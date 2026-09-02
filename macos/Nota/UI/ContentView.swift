@@ -2,6 +2,30 @@ import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// How the window's four phases (home, running, live meeting, document) swap.
+///
+/// Fade plus an 8pt rise in, plain fade out — the HUD show motion. Under
+/// Reduce Motion the rise goes and the fade stays (P-B6/P-B1): the drawer and
+/// the summary rail in the very same `body` already collapse their `.move` to
+/// `.opacity` for that owner, and the field engine paints a role switch once
+/// instead of morphing under the same phase change. `Metrics.mainSwapRise` is
+/// untouched — only whether it is applied.
+///
+/// A type rather than a `private static let` on `ContentView` because the rise
+/// is now a decision, and `rises(reduceMotion:)` is what a test can read —
+/// the same shape as `SessionRingMetrics.breathes(reduceMotion:)`.
+enum PhaseSwapTransition {
+  static func rises(reduceMotion: Bool) -> Bool { !reduceMotion }
+
+  static func transition(reduceMotion: Bool) -> AnyTransition {
+    guard rises(reduceMotion: reduceMotion) else { return .opacity }
+    return .asymmetric(
+      insertion: .opacity.combined(with: .offset(y: Metrics.mainSwapRise)),
+      removal: .opacity
+    )
+  }
+}
+
 struct ContentView: View {
   @ObservedObject var model: NotaModel
   /// The dictation controller, passed through for the history drawer's
@@ -87,24 +111,21 @@ struct ContentView: View {
     return nil
   }
 
-  /// Home/document swap matches the HUD show motion: fade + 8pt rise in,
-  /// plain fade out.
-  private static let swapTransition: AnyTransition = .asymmetric(
-    insertion: .opacity.combined(with: .offset(y: Metrics.mainSwapRise)),
-    removal: .opacity
-  )
+  private var swapTransition: AnyTransition {
+    PhaseSwapTransition.transition(reduceMotion: reduceMotion)
+  }
 
   var body: some View {
     ZStack {
       switch phase {
       case .document:
-        documentView.transition(Self.swapTransition)
+        documentView.transition(swapTransition)
       case .running:
-        runningView.transition(Self.swapTransition)
+        runningView.transition(swapTransition)
       case .home:
-        homeView.transition(Self.swapTransition)
+        homeView.transition(swapTransition)
       case .liveMeeting:
-        liveMeetingView.transition(Self.swapTransition)
+        liveMeetingView.transition(swapTransition)
       }
     }
     .overlay {
