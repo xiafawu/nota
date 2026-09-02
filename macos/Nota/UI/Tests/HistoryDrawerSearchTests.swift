@@ -1,5 +1,53 @@
+import SwiftUI
 import XCTest
 @testable import Nota
+
+// MARK: - One empty-state grammar (P-D4)
+
+/// Six empty states used to draw at six scales (72 / 28 / no icon; `.title` /
+/// `.callout` / 13pt medium / no title; centered and leading). They are one
+/// view now, so what is worth pinning is that neither of the two axes it does
+/// expose — alignment and ink — can move the type scale: a Settings pane and a
+/// glass panel must lay the same content out at the same height.
+final class EmptyStateGrammarTests: XCTestCase {
+  private func height(_ view: some View) -> CGFloat {
+    let host = NSHostingView(rootView: view.frame(width: 260))
+    host.layoutSubtreeIfNeeded()
+    return host.fittingSize.height
+  }
+
+  func testAlignmentAndInkDoNotChangeTheEmptyStateScale() {
+    let settings = height(
+      EmptyStateView(
+        icon: "person.wave.2",
+        title: "No enrolled speakers",
+        helpers: ["A helper line that says what is missing."]
+      )
+    )
+    let panel = height(
+      EmptyStateView(
+        icon: "tray",
+        title: "No enrolled speakers",
+        helpers: ["A helper line that says what is missing."],
+        alignment: .leading,
+        ink: .field
+      )
+    )
+
+    XCTAssertGreaterThan(settings, 0)
+    XCTAssertEqual(settings, panel, accuracy: 0.5)
+  }
+
+  /// The trio the view draws is the one the token table declared for exactly
+  /// this and nothing read: if someone retires a token, this goes red beside
+  /// the view that needs it.
+  func testTheEmptyStateGrammarIsTheDeclaredTrio() {
+    XCTAssertEqual(Tokens.emptyHistoryIconFont, .system(size: 26, weight: .regular))
+    XCTAssertEqual(Tokens.emptyHistoryLabelFont, .callout)
+    XCTAssertEqual(Tokens.emptyHistoryHelperFont, .caption)
+    XCTAssertEqual(Metrics.emptyHistoryStackSpacing, 8)
+  }
+}
 
 // MARK: - Dictation search predicate (decision 17)
 

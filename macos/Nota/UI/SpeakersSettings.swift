@@ -177,20 +177,15 @@ struct SpeakersSettingsView: View {
     VStack(spacing: 0) {
       if model.entries.isEmpty {
         Spacer()
-        VStack(spacing: 8) {
-          Image(systemName: "person.wave.2")
-            .font(.system(size: 28))
-            .foregroundStyle(.secondary)
-          Text("No enrolled speakers")
-            .font(.callout)
-            .foregroundStyle(.secondary)
-          Text("Speakers are remembered when you transcribe with speaker identification turned on.")
-            .font(.caption)
-            .foregroundStyle(.tertiary)
-            .multilineTextAlignment(.center)
-            .padding(.horizontal, 12)
-            .help("Voices can also be enrolled from the command line with nota --identify")
-        }
+        EmptyStateView(
+          icon: "person.wave.2",
+          title: "No enrolled speakers",
+          helpers: [
+            "Speakers are remembered when you transcribe with speaker identification turned on.",
+          ]
+        )
+        .padding(.horizontal, 12)
+        .help("Voices can also be enrolled from the command line with nota --identify")
         Spacer()
       } else {
         List(selection: Binding(

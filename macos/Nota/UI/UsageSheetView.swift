@@ -82,11 +82,12 @@ struct UsageSheetView: View {
       } else {
         let rows = usageProvider.summary?.rows ?? []
         if rows.isEmpty {
-          Text("No usage \(usageWindow == "7d" ? "in the last 7 days" : "in the last 30 days") — costs appear after your first transcription")
-            .font(.system(size: 12))
-            .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, alignment: .center)
-            .padding(.top, 40)
+          EmptyStateView(
+            icon: "dollarsign.circle",
+            title: "No usage \(usageWindow == "7d" ? "in the last 7 days" : "in the last 30 days")",
+            helpers: ["Costs appear after your first transcription."]
+          )
+          .padding(.top, 40)
         } else {
           loadedContent(viewModel: UsageSheetViewModel(rows: rows))
         }
@@ -197,10 +198,14 @@ struct UsageSheetView: View {
   private func modelRow(_ row: ModelUsageRow) -> some View {
     HStack(spacing: CraftTokens.spacing8) {
       VStack(alignment: .leading, spacing: 2) {
+        // `.middle`, not `.tail` (P-D7): in a 440pt sheet a namespaced id
+        // truncates to `openrouter/anthropic/clau…` — every surviving
+        // character is the namespace, and the model the money was spent on is
+        // the half that goes.
         Text(row.modelId)
           .font(.system(size: 13, weight: .medium))
           .lineLimit(1)
-          .truncationMode(.tail)
+          .truncationMode(.middle)
         Text("\(row.provider) · \(row.runs) run\(row.runs == 1 ? "" : "s")")
           .font(.caption)
           .foregroundStyle(.secondary)

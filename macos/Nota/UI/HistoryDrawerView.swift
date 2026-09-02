@@ -309,49 +309,61 @@ struct HistoryDrawerView: View {
 
   @ViewBuilder
   private func emptyState(_ kind: DrawerEmptyState) -> some View {
-    VStack(alignment: .leading, spacing: CraftTokens.spacing8) {
+    Group {
       switch kind {
       case .noDictations:
-        Text("No dictations yet")
-          .font(.system(size: 13, weight: .medium))
-        Text(dictationStartHint)
-          .font(.system(size: 12))
-          .foregroundStyle(.secondary)
-        Text("Completed dictation stays here if insertion needs to be retried.")
-          .font(.system(size: 12))
-          .foregroundStyle(.secondary)
+        EmptyStateView(
+          icon: "mic",
+          title: "No dictations yet",
+          helpers: [
+            dictationStartHint,
+            "Completed dictation stays here if insertion needs to be retried.",
+          ],
+          alignment: .leading,
+          ink: .field
+        )
       case .noTranscripts:
-        Text("No transcripts yet")
-          .font(.system(size: 13, weight: .medium))
-        Text("Drop an audio file into the window, or share audio to Nota.")
-          .font(.system(size: 12))
-          .foregroundStyle(.secondary)
-        Text("\(dictationController.dictationHistory.count) dictations in the Dictation tab")
-          .font(.system(size: 12))
-          .foregroundStyle(.secondary)
+        EmptyStateView(
+          icon: "tray",
+          title: "No transcripts yet",
+          helpers: [
+            "Drop an audio file into the window, or share audio to Nota.",
+            "\(dictationController.dictationHistory.count) dictations in the Dictation tab",
+          ],
+          alignment: .leading,
+          ink: .field
+        )
       case .queryNoMatchOnActive(let otherTab, let otherCount):
-        Text("No matches for \"\(searchText.trimmingCharacters(in: .whitespacesAndNewlines))\"")
-          .font(.system(size: 13, weight: .medium))
-          .lineLimit(2)
-        Button {
-          model.historyDrawerTab = otherTab
-        } label: {
-          Text("\(otherCount) matches in \(otherTab.title) →")
-            .font(.system(size: 12))
-        }
-        .buttonStyle(.plain)
-        .foregroundStyle(Color.accentColor)
-      case .queryNoMatchAnywhere:
-        Text("No matches for \"\(searchText.trimmingCharacters(in: .whitespacesAndNewlines))\"")
-          .font(.system(size: 13, weight: .medium))
-          .lineLimit(2)
-        Text("Not in \(model.history.count) transcripts or \(dictationController.dictationHistory.count) dictations.")
-          .font(.system(size: 12))
-          .foregroundStyle(.secondary)
-        Button("Clear Search") { searchText = "" }
-          .font(.system(size: 12))
+        EmptyStateView(
+          icon: "magnifyingglass",
+          title: "No matches for \"\(searchText.trimmingCharacters(in: .whitespacesAndNewlines))\"",
+          alignment: .leading,
+          ink: .field
+        ) {
+          Button {
+            model.historyDrawerTab = otherTab
+          } label: {
+            Text("\(otherCount) matches in \(otherTab.title) →")
+              .font(Tokens.emptyHistoryHelperFont)
+          }
           .buttonStyle(.plain)
           .foregroundStyle(Color.accentColor)
+        }
+      case .queryNoMatchAnywhere:
+        EmptyStateView(
+          icon: "magnifyingglass",
+          title: "No matches for \"\(searchText.trimmingCharacters(in: .whitespacesAndNewlines))\"",
+          helpers: [
+            "Not in \(model.history.count) transcripts or \(dictationController.dictationHistory.count) dictations.",
+          ],
+          alignment: .leading,
+          ink: .field
+        ) {
+          Button("Clear Search") { searchText = "" }
+            .font(Tokens.emptyHistoryHelperFont)
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+        }
       }
     }
     .frame(maxWidth: .infinity, alignment: .leading)
@@ -373,10 +385,10 @@ struct HistoryDrawerView: View {
     }
   }
 
+  /// One section-header style across the two sibling 380pt panels (P-D9) — the
+  /// drawer's own padding stays. See `CraftSectionLabel`.
   private func sectionHeader(_ title: String) -> some View {
-    Text(title)
-      .font(CraftTokens.metadataFont)
-      .foregroundStyle(.secondary)
+    CraftSectionLabel(title)
       .frame(maxWidth: .infinity, alignment: .leading)
       .padding(.horizontal, CraftTokens.spacing16)
       .padding(.top, CraftTokens.spacing8)

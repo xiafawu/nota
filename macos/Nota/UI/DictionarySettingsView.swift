@@ -64,9 +64,10 @@ struct DictionarySettingsView: View {
   private var termsSection: some View {
     Section {
       if dictionary.terms.isEmpty {
-        Text("No custom terms yet.")
-          .font(Tokens.settingsCaptionFont)
-          .foregroundStyle(.secondary)
+        EmptyStateView(
+          icon: "character.book.closed",
+          title: "No custom terms yet"
+        )
       } else {
         ForEach(dictionary.terms, id: \.term) { term in
           row(term)
