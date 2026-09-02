@@ -410,4 +410,15 @@ final class HomeDashboardStateTests: XCTestCase {
     XCTAssertEqual(NotaModel.engine(for: .memo, hasAssemblyAIKey: false), .apple)
     XCTAssertEqual(NotaModel.engine(for: .memo, hasAssemblyAIKey: true), .assemblyAI)
   }
+
+  // MARK: - One drop stroke for every phase (P-C10)
+
+  /// The home phase binds `model.isDropTargeted` and drew nothing for it, so
+  /// the only visible target was the 1/3-width Transcribe File card — under a
+  /// subtitle promising "Drop audio anywhere in the window". Both call sites
+  /// draw `DropTargetStroke` now, so the same gesture cannot acquire two radii.
+  func testTheHomeAndPaneDropStrokesAreOneShape() {
+    XCTAssertEqual(DropTargetStroke.cornerRadius, Metrics.dropFullBleedCornerRadius)
+    XCTAssertEqual(DropTargetStroke.strokeWidth, Metrics.dropTargetStrokeWidth)
+  }
 }

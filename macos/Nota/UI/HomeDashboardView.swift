@@ -158,7 +158,18 @@ struct HomeDashboardView: View {
         .padding(CraftTokens.spacing32)
         .frame(maxWidth: .infinity, alignment: .leading)
       }
+
+      // P-C10: the home phase binds `model.isDropTargeted` (ContentView's
+      // `.onDrop`) and used to draw nothing for it, so dragging audio anywhere
+      // but onto the 1/3-width Transcribe File card showed no target at all —
+      // under a card whose own subtitle reads "Drop audio anywhere in the
+      // window". The same stroke every other phase draws, suppressed while the
+      // card draws its own so the two are never doubled.
+      if model.isDropTargeted, !fileCardTargeted {
+        DropTargetStroke()
+      }
     }
+    .animation(Tokens.animSnap, value: model.isDropTargeted)
     .onAppear {
       if !model.history.isEmpty {
         UserDefaults.standard.set(true, forKey: Self.firstRunWelcomeKey)
