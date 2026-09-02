@@ -1083,6 +1083,13 @@ struct DictationReviewView: View {
         .monospacedDigit()
         .foregroundStyle(.secondary)
     }
+    // The `.transition(.opacity)` on the listening cluster only plays inside an
+    // animated transaction, and `model.isListening` is written plainly on every
+    // path that sets it — so without this the dot and the word cut in and out
+    // while the code reads as if they fade (P-B3). Scoped to this row and keyed
+    // on the one flag: the card's size is decided when it is presented and
+    // never changes, so this cannot race the panel's own frame.
+    .animation(Tokens.animFast, value: model.isListening)
   }
 
   private var wordCountLabel: String {
