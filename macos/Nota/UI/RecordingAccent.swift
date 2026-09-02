@@ -396,12 +396,22 @@ struct SessionTimer: View {
   let elapsed: TimeInterval
   /// The `mm:ss` size. The hour form derives from it — callers never pass two.
   var base: CGFloat = 58
+  /// The ground-ink tier the digits take, or nil for `.primary`.
+  ///
+  /// The **receipt** hands it `.body`: it sits in the main window beside facts
+  /// that come from `GroundInk`, and a clock in `labelColor` four points from
+  /// facts in ground ink is one row drawn out of two colour systems. The
+  /// recording cluster and the island keep `.primary` — the island's panel is
+  /// forced `.darkAqua`, where `.primary` is exactly the white it wants.
+  var tier: GroundInk.Tier?
 
   var body: some View {
     Text(SessionTimerMetrics.text(elapsed: elapsed))
       .font(SessionTimerMetrics.font(base: base, elapsed: elapsed))
       .monospacedDigit()
-      .foregroundStyle(.primary)
+      .foregroundStyle(
+        tier.map { AnyShapeStyle(GroundInkStyle(tier: $0)) }
+          ?? AnyShapeStyle(HierarchicalShapeStyle.primary))
       .lineLimit(1)
       .fixedSize(horizontal: true, vertical: false)
       // Reserved once for the widest form, so crossing the hour re-sizes the

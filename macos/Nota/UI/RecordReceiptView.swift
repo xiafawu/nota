@@ -194,7 +194,14 @@ struct RecordReceiptView: View {
   private var factRow: some View {
     HStack(spacing: RecordReceiptMetrics.factGap) {
       if let duration = facts.duration {
-        SessionTimer(elapsed: duration, base: RecordingPaneMetrics.clockBase)
+        // `.speaker`, not `.body`: the tier is what puts the clock in the same
+        // colour system as the facts four points to its right, and full-alpha
+        // ink is a **warm** near-black (`#1C1A16`) that the ember pixel probe
+        // counts as the accent — `testTheReceiptDrawsNoEmber` reads 333 ember
+        // pixels at `.body` and none at `.speaker`, where the composite falls
+        // under the probe's saturation floor. A 30pt clock is WCAG large text,
+        // so 0.78 is measured against 4.5:1 and clears it.
+        SessionTimer(elapsed: duration, base: RecordingPaneMetrics.clockBase, tier: .speaker)
       }
       ForEach(Array(Self.trailingItems(facts).enumerated()), id: \.element.id) { index, item in
         fact(item, index: index, count: Self.trailingItems(facts).count)
@@ -220,18 +227,18 @@ struct RecordReceiptView: View {
             Text(text).font(.system(size: RecordFacts.factFontSize)).underline()
           }
           .buttonStyle(.plain)
-          .foregroundStyle(.white.opacity(0.85))
+          .foregroundStyle(.ground(.speaker))
           .help(RecordFactsCopy.momentsAccessibilityHint)
         } else {
           Text(text)
             .font(.system(size: RecordFacts.factFontSize))
-            .foregroundStyle(.white.opacity(0.85))
+            .foregroundStyle(.ground(.speaker))
         }
       } else {
         // A fact that is coming: its final width, dimmed, so nothing reflows
         // when it lands.
         Capsule()
-          .fill(.white.opacity(0.12))
+          .fill(.ground(.rail))
           .frame(width: item.reservedWidth, height: RecordFacts.factFontSize)
           .accessibilityHidden(true)
       }
@@ -269,7 +276,10 @@ struct RecordReceiptView: View {
       if let status {
         Text(status.text)
           .font(.caption2)
-          .foregroundStyle(status.tone == .failure ? CraftTokens.failure : Color.white.opacity(0.6))
+          .foregroundStyle(
+            status.tone == .failure
+              ? AnyShapeStyle(CraftTokens.failure) : AnyShapeStyle(GroundInkStyle(tier: .timestamp))
+          )
           .lineLimit(1)
           .truncationMode(.tail)
         if status.retry == .summary, let onRetry {

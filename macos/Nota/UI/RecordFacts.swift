@@ -256,6 +256,14 @@ enum RecordFactsCopy {
 /// scrolls the transcript to the next marker pip, which is what keeps the marks
 /// enumerable now that nothing lists them (XIA-429 rule 4: pips in the gutter,
 /// no timeline, no list, no popover).
+///
+/// **And in the same ink.** The two renderings shared a list and a formatter
+/// from the day they shipped and did not share a colour: this one drew
+/// `secondaryLabelColor` while the receipt drew 85% white, so the owner read
+/// one sentence twice — once at Stop, once in the Details panel — in two
+/// visibly different inks. Both are `GroundInk` tiers now (`.speaker` for a
+/// fact, `.timestamp` for the separator), which is what the shared-data rule
+/// was for.
 struct RecordFactStripView: View {
   let facts: RecordFacts
   /// Advance to the next moment pip. Nil when the document has no pips to
@@ -277,7 +285,7 @@ struct RecordFactStripView: View {
         if index > 0 {
           Text(" · ")
             .font(.system(size: RecordFacts.factFontSize))
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(.ground(.timestamp))
         }
         factView(item)
       }
@@ -294,13 +302,13 @@ struct RecordFactStripView: View {
           .underline()
       }
       .buttonStyle(.plain)
-      .foregroundStyle(.secondary)
+      .foregroundStyle(.ground(.speaker))
       .help(RecordFactsCopy.momentsAccessibilityHint)
       .accessibilityHint(RecordFactsCopy.momentsAccessibilityHint)
     } else {
       Text(item.text ?? "")
         .font(.system(size: RecordFacts.factFontSize))
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.ground(.speaker))
     }
   }
 }

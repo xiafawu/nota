@@ -47,7 +47,48 @@ final class RecordFactsTests: XCTestCase {
       facts.stripText
     )
     XCTAssertEqual(facts.stripText, "18:42 · Meeting · 3 speakers · 4 moments · 17.5 MB · $0.0031")
+
+    // **The colour arm of the same identity.** The list and the formatter were
+    // shared from the day these shipped and the *ink* was not: the strip drew
+    // `secondaryLabelColor` while the receipt drew 85% white, so the owner read
+    // one sentence twice — at Stop and in the Details panel — in two visibly
+    // different inks. Both files are read rather than rendered, because these
+    // are plain modifiers with no function to ask and an adoption gap is
+    // invisible to a test that only checks the values that are there. (Same
+    // mechanism `testTheRunningPaneIsInkedAndNotLabelled` uses.)
+    let banned = [
+      ".foregroundStyle(.primary", ".foregroundStyle(.secondary", ".foregroundStyle(.tertiary",
+      ".white.opacity(", "Color.white",
+    ]
+    var offenders: [String] = []
+    for name in ["RecordFacts.swift", "RecordReceiptView.swift"] {
+      for (index, line) in Self.uiSource(name).split(
+        separator: "\n", omittingEmptySubsequences: false
+      ).enumerated() {
+        let text = line.trimmingCharacters(in: .whitespaces)
+        guard !text.hasPrefix("//"), !text.hasPrefix("///") else { continue }
+        if banned.contains(where: { text.contains($0) }) {
+          offenders.append("\(name):\(index + 1) \(text)")
+        }
+      }
+    }
+    XCTAssertEqual(
+      offenders, [],
+      "one RecordFacts, two colour systems — the thing the shared-data rule exists to "
+        + "prevent: \(offenders)")
   }
+
+  // **Why this rule is read off the source and not rendered.**
+  //
+  // The obvious assertion — put the receipt over a light ground under
+  // `.light` and measure the fact glyphs — cannot be written: every fact is
+  // drawn at `.opacity(arrived ? 1 : 0)` and `arrived` flips in `.onAppear`,
+  // which an unhosted `NSHostingView` never fires. A probe therefore sees a
+  // receipt with no facts in it at all (darkest pixel 255.0, measured), so it
+  // would have been green against white text, against ink, and against no
+  // text — the adjacent-assertion trap this file already carries a warning
+  // about in `testTheTranscriptReservesTheReceiptsFootprintOnItsOwnFrame`.
+  // The colour arm of the identity test above reads both files instead.
 
   /// The **strip** drops a pending fact entirely; the **receipt** keeps its
   /// slot. Both are the same rule read from two sides: the receipt has promised
@@ -759,6 +800,18 @@ final class RecordFactsTests: XCTestCase {
   }
 
   // MARK: - Fixtures
+
+  /// A UI source file, found relative to this test's own path. The test target
+  /// copies no resources, so a bundle lookup would silently resolve to nil.
+  private static func uiSource(_ name: String) -> String {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent(name)
+    let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    XCTAssertFalse(text.isEmpty, "could not read \(name) beside this test")
+    return text
+  }
 
   private static let full = RecordFacts(
     duration: 1122,
