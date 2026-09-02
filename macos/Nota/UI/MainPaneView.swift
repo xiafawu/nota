@@ -351,7 +351,14 @@ private struct RichDocumentPane: View {
         onScroll: { offset in
           let scrolled = offset > Metrics.docBodyFadeThreshold
           guard scrolled != isBodyScrolled else { return }
-          withAnimation(Tokens.animFast) { isBodyScrolled = scrolled }
+          // A plain assignment: `.animation(Tokens.animFast, value:
+          // isBodyScrolled)` below is the one authority for this change. A
+          // `withAnimation` here duplicated it and, worse, leaked its
+          // transaction to everything else re-evaluated in the same update —
+          // the receipt, the drop border, the local cluster — so a surface
+          // arriving at the moment the reader scrolls would fade on the
+          // scroll's curve rather than its own (P-B5).
+          isBodyScrolled = scrolled
         },
         markerSeconds: markerSeconds,
         nextMomentToken: nextMomentToken
