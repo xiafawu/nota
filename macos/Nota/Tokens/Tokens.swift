@@ -15,7 +15,6 @@ enum Tokens {
   static let primaryActionTint: Color = .accentColor.opacity(primaryActionTintOpacity)
   static let dropAccent: Color = .accentColor
   static let dropFallbackStrokeIdle: Color = .secondary.opacity(dropFallbackStrokeIdleOpacity)
-  static let emptyIconColor: Color = .primary.opacity(emptyIconColorOpacity)
   static let tagPillFill: Color = .secondary.opacity(tagPillFillOpacity)
 
   static let statusFont: Font = .callout

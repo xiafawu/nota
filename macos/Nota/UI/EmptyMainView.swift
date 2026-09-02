@@ -30,7 +30,7 @@ struct EmptyMainView: View {
 
       Image(systemName: state.isRunning ? "waveform" : "tray.and.arrow.down")
         .font(Tokens.emptyMainIconFont)
-        .foregroundStyle(isDropTargeted ? Tokens.dropAccent : Tokens.emptyIconColor)
+        .foregroundStyle(iconStyle)
         .symbolEffect(
           .pulse,
           isActive: state.isRunning && RecordingMotion.decorationPulses(reduceMotion: reduceMotion)
@@ -40,7 +40,7 @@ struct EmptyMainView: View {
         Text(state.displayName)
           .font(Tokens.emptyMainTitleFont)
           .fontWeight(.bold)
-          .foregroundStyle(.primary)
+          .foregroundStyle(.ground(.body))
           .multilineTextAlignment(.center)
 
         if state.isRunning {
@@ -52,7 +52,7 @@ struct EmptyMainView: View {
         } else {
           Text(state.displayPath)
             .font(Tokens.emptyMainPathFont)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.ground(.speaker))
             .multilineTextAlignment(.center)
             .padding(.horizontal, Metrics.emptySubtextHorizontalPadding)
         }
@@ -62,6 +62,17 @@ struct EmptyMainView: View {
     }
     .frame(maxWidth: .infinity, maxHeight: .infinity)
     .padding(Metrics.emptyMainOuterPadding)
+  }
+
+  /// **This pane is drawn straight on the `.transcript` ground**, with no glass
+  /// and no card between its glyphs and the moving field — `MainPaneView` hangs
+  /// `FieldBackground(role: .transcript)` behind it and nothing else. So every
+  /// piece of text on it takes a measured `GroundInk` tier, exactly as the
+  /// transcript that replaces it a moment later does. The drop accent is the one
+  /// exception, and it is not ink: it is an action colour saying the file will
+  /// land here.
+  private var iconStyle: AnyShapeStyle {
+    isDropTargeted ? AnyShapeStyle(Tokens.dropAccent) : AnyShapeStyle(.ground(.body))
   }
 
   // MARK: - Staged progress
@@ -96,15 +107,18 @@ struct EmptyMainView: View {
     } else {
       Image(systemName: "circle")
         .font(.system(size: Metrics.stageIndicatorSize - 1))
-        .foregroundStyle(.tertiary)
+        .foregroundStyle(.ground(.timestamp))
         .transition(.opacity)
     }
   }
 
-  private func stageTextStyle(for index: Int) -> HierarchicalShapeStyle {
-    guard let current = stageIndex else { return .tertiary }
-    if index == current { return .primary }
-    return index < current ? .secondary : .tertiary
+  /// The stage labels' three states, as ground-ink tiers rather than
+  /// `.primary`/`.secondary`/`.tertiary`. Internal so the mapping is assertable
+  /// without a hosting view, the way `SessionCapsuleCluster.perform(_:)` is.
+  func stageTextStyle(for index: Int) -> GroundInkStyle {
+    guard let current = stageIndex else { return .ground(.timestamp) }
+    if index == current { return .ground(.body) }
+    return index < current ? .ground(.speaker) : .ground(.timestamp)
   }
 }
 

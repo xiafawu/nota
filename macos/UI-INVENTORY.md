@@ -91,7 +91,7 @@ Targets for `Tokens.swift` / `Metrics.swift` extraction. Each row is one or more
 | `.accentColor.opacity(0.15)` | new-transcription button glass tint | `Tokens.primaryActionTint` |
 | `Color.accentColor` | drop overlay stroke, drop target glass tint, idle icon when targeted | `Tokens.dropAccent` (= `.accentColor`) |
 | `Color.secondary.opacity(0.2)` | drop fallback stroke (reduce transparency) | `Tokens.dropFallbackStroke` |
-| `Color.primary.opacity(0.85)` | empty-state icon | `Tokens.emptyIconColor` |
+| `GroundInk.Tier.body` | empty-state icon (drawn on the ground) | `.foregroundStyle(.ground(.body))` |
 
 ### Font
 
