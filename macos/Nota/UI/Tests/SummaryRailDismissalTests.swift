@@ -119,6 +119,38 @@ final class SummaryRailContentTests: XCTestCase {
     XCTAssertTrue(
       SummaryRailView.noRecordNotice.lowercased().contains("no history record"))
   }
+
+  /// **The caption under the editor names the whole keyboard** (P-C12).
+  ///
+  /// ⌘↩ is bound to Save and was named nowhere — the caption explained Escape
+  /// and stopped there, so the one shortcut that commits an edit was the one
+  /// nothing on screen said. Both dismissal behaviours owe it: the key does the
+  /// same thing under either.
+  func testTheEditorCaptionNamesBothKeys() {
+    for behavior in [SummaryRailDismissalBehavior.save, .ask] {
+      let caption = SummaryRailView.escapeCaption(behavior)
+      XCTAssertTrue(
+        caption.contains("⌘↩"),
+        "\(behavior) caption does not name the key that saves: \(caption)")
+      XCTAssertTrue(
+        caption.contains("Esc"),
+        "\(behavior) caption stopped naming Escape: \(caption)")
+    }
+  }
+
+  /// **A menu row that binds a key names it** (P-C12). The cluster keeps that
+  /// contract for ⌘K; the menu-bar popover bound the same key with no tooltip
+  /// and no hint, while the string it needed already existed one type away.
+  func testEveryMenuRowWithAShortcutSaysWhatTheKeyIs() {
+    for action in MiniIslandAction.allCases where action.shortcut != nil {
+      XCTAssertFalse(
+        action.shortcutHint.isEmpty,
+        "\(action) binds a key and its accessibility hint names none")
+      XCTAssertTrue(
+        action.help.contains("⌘"),
+        "\(action) binds a key and its tooltip does not name it: \(action.help)")
+    }
+  }
 }
 
 // MARK: - The panel's ink

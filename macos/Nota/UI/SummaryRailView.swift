@@ -471,6 +471,14 @@ struct SummaryRailView: View {
         case .summary:
           summarySectionHeader
           summarySection
+            // The Details button's ring fades in and out over the same run
+            // (`MainPaneView`, `.animation(Tokens.animFast, value: isGenerating)`),
+            // so the panel half reporting that run may not cut (P-B10). Scoped
+            // to this subtree and keyed on the activity: the editor lives in
+            // here and writes an `@Published` on the model this view observes,
+            // so a curve on the panel root — or an unkeyed one — would ride
+            // every keystroke of a summary edit.
+            .animation(Tokens.animFast, value: enrichment.activity)
         case .noRecordNotice:
           // Nothing behind this document to summarize. Say so, rather than
           // ending at the hairline and letting the absence read as a missing
@@ -606,11 +614,18 @@ struct SummaryRailView: View {
 
   /// What Escape does, in the words of the setting that decides it — the
   /// caption may not promise a commit the `Ask me` policy will not make.
-  private var escapeCaption: String {
-    switch model.summaryDismissalBehavior {
-    case .save: return "Esc closes and saves your changes"
-    case .ask: return "Esc closes — you'll be asked about unsaved changes"
+  /// The whole keyboard under the editor, not half of it (P-C12). ⌘↩ is bound
+  /// to Save and was named nowhere — the caption explained Escape and stopped,
+  /// so the one shortcut that commits an edit was the one nothing said.
+  static func escapeCaption(_ behavior: SummaryRailDismissalBehavior) -> String {
+    switch behavior {
+    case .save: return "⌘↩ saves · Esc closes and saves your changes"
+    case .ask: return "⌘↩ saves · Esc closes — you'll be asked about unsaved changes"
     }
+  }
+
+  private var escapeCaption: String {
+    Self.escapeCaption(model.summaryDismissalBehavior)
   }
 
   private var editor: some View {
@@ -682,6 +697,10 @@ struct SummaryRailView: View {
         Image(systemName: "xmark")
           .font(.system(size: 8, weight: .bold))
           .foregroundStyle(.ground(.speaker))
+          // The glyph is unchanged; the rectangle that takes the click is not
+          // the glyph's own bounds any more (P-C3).
+          .frame(width: Metrics.chipHitTarget, height: Metrics.chipHitTarget)
+          .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
       .help("Dismiss this reminder")

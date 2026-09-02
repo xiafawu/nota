@@ -182,6 +182,13 @@ enum MiniIslandAction: CaseIterable {
   var shortcut: KeyboardShortcut? {
     self == .mark ? KeyboardShortcut("k", modifiers: .command) : nil
   }
+
+  /// The accessibility hint for a row that binds a key — "Mark ⌘K", the same
+  /// string the cluster's capsule uses (P-C12). Empty for a row with no
+  /// shortcut, so a row never announces a key it does not bind.
+  var shortcutHint: String {
+    self == .mark ? RecordingPaneCopy.markShortcut : ""
+  }
 }
 
 // MARK: - Copy

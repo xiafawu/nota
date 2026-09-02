@@ -223,6 +223,11 @@ struct SessionMenuSection: View {
           ForEach(SessionMenuRows.rows(state: session.state), id: \.self) { row in
             Button(row.title) { perform(row.action) }
               .keyboardShortcut(row.action.shortcut)
+              // A key this row binds is named on this row (P-C12). The cluster
+              // keeps that contract for ⌘K; the popover binding the same key
+              // named it nowhere, though the string was already two files away.
+              .help(row.action.help)
+              .accessibilityHint(row.action.shortcutHint)
           }
         }
         .buttonStyle(MenuRowButtonStyle())
