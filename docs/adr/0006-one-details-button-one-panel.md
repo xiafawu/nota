@@ -138,3 +138,34 @@ outlined-plus is gone, because it was the promise of the dual-purpose click.
 - **Grey out Edit and Regenerate above the live Generate button.** Rejected:
   two dead controls above the live one, one of them naming an object that never
   existed, read as a summary that was tried and failed. They are absent instead.
+
+---
+
+## Addendum — 2026-09-02: the panel is the summary's only home
+
+This ADR said the pane is the transcript and everything else is behind one
+button. The code did not do it. `MarkdownRender` skips the header block and
+begins the body at the **first `## `**, which on a summarized meeting is
+`## Summary` — so the narrative, key topics, decisions and action items were
+drawn in the document body *and* again in `SummaryRailView`, which reads all
+four off the record. The same text, twice, in two places, on every meeting that
+had been summarized. It went unnoticed because a transcript-only live meeting
+has no `## Summary` at all.
+
+Decided (owner, 2026-09-02): the copy in the **document body** goes. The pane
+draws the title and the transcript, and nothing else. Two further changes come
+with it, both from the owner's marks on a screenshot the same afternoon:
+
+- The fixed header band is **removed**. The title becomes the first line of the
+  scrolling document, in the reading column. The band existed to hold the
+  metadata this ADR moved out; with the title alone left in it, a whole
+  non-scrolling region was reserved for one line.
+- The `## Full Transcript` heading is **removed**. The pane *is* the transcript;
+  the heading labelled the obvious, and with the summary gone from the body it
+  was the document's first line, where the title belongs.
+
+Owed by this change: `SummaryRailView`'s summary half must fall back to parsing
+the markdown's own `## Summary` section when `record == nil`. An imported `.md`
+has no record, so with the body copy gone it would otherwise lose its summary
+entirely — the exact failure this ADR's own rule forbids, that nothing about a
+document may disappear because of where it was opened from.

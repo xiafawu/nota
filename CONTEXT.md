@@ -80,3 +80,25 @@ _Avoid_: status, health
 record" hero on the home screen. The main window deliberately has no other
 record button.
 _Avoid_: record button (there is only one, and it is the hero)
+
+## Reading
+
+**Reading surface** — The one surface a transcript is read on, whether it is
+still arriving from a Live meeting or has been sealed into a document. It is
+one thing in two states, not two views: pressing Stop changes what the surface
+holds, never how it reads.
+_Avoid_: transcript view, document pane (each names only one of the two states)
+
+**Name column** — The column holding a speaker's name, set apart from the words
+they said. Names are right-aligned in it; the words are left-aligned on one
+shared edge and never wrap beneath a name. Reserved on the Reading surface even
+where no name is known, so no line moves when one arrives.
+
+**Live name** — A speaker's name shown while the meeting is still running.
+Best-effort: it appears only when the voice is a confident match for someone
+already enrolled, and is absent otherwise rather than guessed.
+_Avoid_: speaker label (that is what the Sealed label carries)
+
+**Sealed label** — The speaker attribution written into the record when a Live
+meeting is sealed, produced by diarizing the whole recording. Authoritative: it
+may add or correct a Live name.

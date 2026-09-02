@@ -84,6 +84,12 @@ final class LiveMeetingSession: ObservableObject {
     let id: UUID
     let text: String
     let endTime: TimeInterval
+    /// The speaker this turn was attributed to while the meeting was still
+    /// running, or nil when nobody confident was recognised (ADR 0008). Live
+    /// names are best-effort: the seal re-runs diarization over the whole
+    /// audio and is authoritative. Defaulted so every existing construction
+    /// still reads as "not attributed".
+    var speaker: String? = nil
   }
 
   struct LiveMeetingResult: Equatable {
