@@ -365,6 +365,14 @@ private struct RichDocumentPane: View {
       )
       .mask(bodyFadeMask)
       .padding(.bottom, bottomReserve)
+      // The reserve is reported from the receipt's `onAppear`/`onDisappear`,
+      // which fire at the *start* of the 0.2s fade they are timing — so the
+      // scroll geometry used to step while the receipt was still half
+      // transparent. Travelling on the same curve keeps the transcript's
+      // footprint and the surface floating over it in agreement, which is the
+      // whole of the XIA-429/XIA-445 reservation argument (P-B11). Keyed on the
+      // reserve itself, so the transaction reaches this subtree and no further.
+      .animation(Tokens.animFast, value: bottomReserve)
     }
     .animation(Tokens.animFast, value: isBodyScrolled)
   }
