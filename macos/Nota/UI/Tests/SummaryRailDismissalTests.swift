@@ -121,6 +121,60 @@ final class SummaryRailContentTests: XCTestCase {
   }
 }
 
+// MARK: - The panel's ink
+
+/// **The Details panel reads one ink, top to bottom.**
+///
+/// The four detail blocks were moved into this panel wholesale (ADR 0006) and
+/// only the two `SummaryRailView` draws itself — the subtitle and the tags —
+/// were converted, so in one `VStack` at one spacing it read ground ink, label
+/// colours, label colours, ground ink. This is not the ground-contrast argument
+/// (the panel is a `craftGlassPanel`); it is that a surface may not disagree
+/// with itself about which system its own rows come from.
+///
+/// The three files are **read** rather than rendered: these are plain modifiers
+/// with no function to ask, SwiftUI publishes no accessibility tree for an
+/// unhosted hosting view, and an *adoption gap* is invisible to a test that
+/// only checks the values that are there. Semantic **meaning** colours are not
+/// in scope and are deliberately not banned — `CraftTokens.failure`, the
+/// outdated banner's warning, and the system tint on a link all still say what
+/// they mean.
+final class SummaryRailInkTests: XCTestCase {
+  func testEveryRowOfTheDetailsPanelComesFromTheGroundInkTiers() {
+    let banned = [
+      ".foregroundStyle(.primary)", ".foregroundStyle(.secondary)",
+      ".foregroundStyle(.tertiary)",
+    ]
+    var offenders: [String] = []
+    for name in ["SummaryRailView.swift", "RecordFacts.swift", "DocumentHeaderView.swift"] {
+      for (index, line) in Self.uiSource(name).split(
+        separator: "\n", omittingEmptySubsequences: false
+      ).enumerated() {
+        let text = line.trimmingCharacters(in: .whitespaces)
+        guard !text.hasPrefix("//") else { continue }
+        if banned.contains(where: { text.contains($0) }) {
+          offenders.append("\(name):\(index + 1) \(text)")
+        }
+      }
+    }
+    XCTAssertEqual(
+      offenders, [],
+      "the Details panel is back on macOS label colours in one of its rows: \(offenders)")
+  }
+
+  /// A UI source file, found relative to this test's own path. The test target
+  /// copies no resources, so a bundle lookup would silently resolve to nil.
+  private static func uiSource(_ name: String) -> String {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent(name)
+    let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    XCTAssertFalse(text.isEmpty, "could not read \(name) beside this test")
+    return text
+  }
+}
+
 // MARK: - History drawer tab (decision 14)
 
 final class HistoryDrawerTabTests: XCTestCase {

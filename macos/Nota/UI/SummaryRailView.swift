@@ -43,6 +43,18 @@ import SwiftUI
 /// weakened**: someone who opened it to read a speaker name must not be able to
 /// lose an in-progress summary edit on the way out. Nothing added here calls
 /// `model.closeSummaryRail()` or otherwise routes around `requestDismissal()`.
+///
+/// **One ink, top to bottom.** The four detail blocks were moved in wholesale
+/// and only the two this file draws itself — the subtitle and the tags — were
+/// converted, so in one `VStack` at one spacing the panel read ground ink,
+/// label colours, label colours, ground ink. Every secondary run in here is
+/// `GroundInk.Tier.speaker` now and every tertiary one is `.timestamp`, and the
+/// two views it embeds (`SpeakerChipStrip`, `RecordFactStripView`) draw from the
+/// same table. This is not the ground-contrast argument — the panel is a
+/// `craftGlassPanel` — it is that a surface may not disagree with itself about
+/// which system its own rows come from. Semantic *meaning* colours stay
+/// semantic: `CraftTokens.failure`, the outdated banner's warning, and the
+/// system tint on a link.
 struct SummaryRailView: View {
   @ObservedObject var model: NotaModel
   @ObservedObject private var enrichment = EnrichmentController.shared
@@ -314,7 +326,7 @@ struct SummaryRailView: View {
       Button(action: requestDismissal) {
         Image(systemName: "xmark")
           .font(.system(size: 11, weight: .semibold))
-          .foregroundStyle(.secondary)
+          .foregroundStyle(.ground(.speaker))
           .frame(width: 22, height: 22)
           .contentShape(Rectangle())
       }
@@ -465,7 +477,7 @@ struct SummaryRailView: View {
           // feature.
           Text(Self.noRecordNotice)
             .font(.caption)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(.ground(.speaker))
             .fixedSize(horizontal: false, vertical: true)
         case .waitingForRecord:
           // The record is still being read off disk. Neither half can be drawn
@@ -572,7 +584,7 @@ struct SummaryRailView: View {
         "Generating \(enrichment.activity == .tagging ? "tags" : "summary") — \(enrichment.generatingModelID)"
       )
       .font(.subheadline)
-      .foregroundStyle(.secondary)
+      .foregroundStyle(.ground(.speaker))
       Spacer()
       Button("Cancel") {
         // Cancelling leaves the panel exactly where it is. Closing it was
@@ -636,7 +648,7 @@ struct SummaryRailView: View {
         .onExitCommand { requestDismissal() }
       Text(escapeCaption)
         .font(.caption2)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.ground(.speaker))
     }
   }
 
@@ -651,7 +663,7 @@ struct SummaryRailView: View {
         .foregroundStyle(.yellow)
       Text("Speaker names changed — the summary still references the old names.")
         .font(.caption)
-        .foregroundStyle(.secondary)
+        .foregroundStyle(.ground(.speaker))
         .lineLimit(1)
         .truncationMode(.middle)
         .help("Regenerate to update the summary with the renamed speakers")
@@ -666,7 +678,7 @@ struct SummaryRailView: View {
       } label: {
         Image(systemName: "xmark")
           .font(.system(size: 8, weight: .bold))
-          .foregroundStyle(.secondary)
+          .foregroundStyle(.ground(.speaker))
       }
       .buttonStyle(.plain)
       .help("Dismiss this reminder")
@@ -809,7 +821,7 @@ struct SummaryRailView: View {
       ForEach(Array(decisions.enumerated()), id: \.offset) { _, item in
         HStack(alignment: .firstTextBaseline, spacing: 6) {
           Text("•")
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(.ground(.timestamp))
           // fixedSize: after the stacked→two-column width flip, a plain Text
           // can keep the narrower layout's cached 2-line height and truncate
           // mid-word; forcing ideal vertical size always shows every line.
@@ -833,7 +845,7 @@ struct SummaryRailView: View {
           // bullet the Decisions column uses says what these are (a list) and
           // promises nothing it cannot keep.
           Text("•")
-            .foregroundStyle(.tertiary)
+            .foregroundStyle(.ground(.timestamp))
           Text(inlineMarkdownAttributed(displayActionItem(item)))
             .font(.subheadline)
             .fixedSize(horizontal: false, vertical: true)
@@ -847,7 +859,7 @@ struct SummaryRailView: View {
       .kerning(0.8)
       .textCase(.uppercase)
       .font(.caption2.weight(.semibold))
-      .foregroundStyle(.secondary)
+      .foregroundStyle(.ground(.speaker))
   }
 
   /// The pipeline writes action items as `[ ] …` checkboxes; the rail renders
