@@ -401,7 +401,7 @@ struct LiveMeetingView: View {
           // banner". Audio is the one artifact that cannot be re-made.
           confirmingDiscard = true
         } label: {
-          Text("Discard")
+          Text(RecordingDeletionCopy.discardVerbTitle)
         }
         .liquidGlassButton()
       }

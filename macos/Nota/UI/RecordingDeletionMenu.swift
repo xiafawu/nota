@@ -6,10 +6,10 @@ import SwiftUI
 /// directions of the containment rule and only one of them is reversible in
 /// any practical sense:
 ///
-///   - **Delete recording audio…** — reclaims almost all of the record's size
+///   - **Delete Audio…** — reclaims almost all of the record's size
 ///     and costs almost none of its value once a transcript exists. The
 ///     transcript, summary and markers stay.
-///   - **Delete record…** — takes the transcript AND its audio. The exported
+///   - **Delete Record…** — takes the transcript AND its audio. The exported
 ///     `.md` on disk is never touched; it lives outside `~/.nota`.
 ///
 /// Both confirm, and both confirmations name what goes, what stays, the size
@@ -71,14 +71,14 @@ struct RecordingDeletionMenu: ViewModifier {
           )
         }
         Divider()
-        Button("Delete recording audio…") {
+        Button(RecordingDeletionCopy.deleteAudioVerbTitle) {
           if let record = locate() { pendingAudio = record } else { unresolved = true }
         }
         // Disabled would be silent about WHY. The dialog says "keeps no
         // audio", which is the answer, and is also what a legacy record needs
         // to hear — once, quietly, never as an error.
         Divider()
-        Button("Delete record…", role: .destructive) {
+        Button(RecordingDeletionCopy.deleteRecordVerbTitle, role: .destructive) {
           if let record = locate() { pendingRecord = record } else { unresolved = true }
         }
       }
@@ -94,7 +94,9 @@ struct RecordingDeletionMenu: ViewModifier {
         // A record with no audio gets an acknowledgement, not a delete button:
         // there is nothing to confirm.
         if record.audioBytes != nil {
-          Button("Delete Audio", role: .destructive) { onDeleteAudio(record) }
+          Button(RecordingDeletionCopy.deleteAudioConfirmTitle, role: .destructive) {
+            onDeleteAudio(record)
+          }
         }
         Button("Cancel", role: .cancel) {}
       } message: { record in
@@ -115,7 +117,9 @@ struct RecordingDeletionMenu: ViewModifier {
         titleVisibility: .visible,
         presenting: pendingRecord
       ) { record in
-        Button("Delete Record", role: .destructive) { onDeleteRecord(record) }
+        Button(RecordingDeletionCopy.deleteRecordConfirmTitle, role: .destructive) {
+          onDeleteRecord(record)
+        }
         Button("Cancel", role: .cancel) {}
       } message: { record in
         Text(

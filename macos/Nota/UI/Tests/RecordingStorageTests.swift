@@ -393,6 +393,59 @@ final class RecordingStorageTests: XCTestCase {
     XCTAssertFalse(message.contains("("))
   }
 
+  // MARK: - A verb that confirms says so
+
+  /// The ellipsis is the platform's one signal that a press opens a dialog
+  /// rather than doing the thing. Every verb in `allConfirmingVerbs` presents a
+  /// confirmation before anything is deleted, so every one of them owes it —
+  /// and it has to be U+2026, not three periods, or the verb draws a different
+  /// glyph run from its neighbours in the same menu.
+  func testEveryVerbThatConfirmsEndsInAnEllipsis() {
+    XCTAssertFalse(RecordingDeletionCopy.allConfirmingVerbs.isEmpty)
+    for verb in RecordingDeletionCopy.allConfirmingVerbs {
+      XCTAssertTrue(verb.hasSuffix("\u{2026}"), "\(verb) opens a dialog and does not say so")
+      XCTAssertFalse(verb.hasSuffix("..."), "\(verb) uses three periods, not an ellipsis")
+    }
+  }
+
+  /// One noun per verb. The owner picks a menu item and is then asked to
+  /// confirm; if the dialog's button renames the operation, the two halves of
+  /// one decision read as two operations, and the owner is confirming
+  /// something they did not choose.
+  func testEachMenuVerbNamesTheButtonItOpens() {
+    XCTAssertFalse(RecordingDeletionCopy.confirmedVerbPairs.isEmpty)
+    for pair in RecordingDeletionCopy.confirmedVerbPairs {
+      XCTAssertEqual(pair.verb, pair.confirm + "\u{2026}")
+    }
+  }
+
+  /// Button and menu titles are Title Case on macOS (Apple HIG), and the app
+  /// used to be split roughly in half — the same slot even changed its
+  /// capitalisation with its state. These are the deletion verbs; the check is
+  /// cheap and it is the one that catches a new verb typed in prose case.
+  func testTheDeletionVerbsAreTitleCase() {
+    let titles =
+      RecordingDeletionCopy.allConfirmingVerbs
+      + RecordingDeletionCopy.confirmedVerbPairs.map(\.confirm)
+    for title in titles {
+      XCTAssertTrue(Self.isTitleCase(title), "\(title) is not Title Case")
+    }
+  }
+
+  /// Every word that carries letters starts with a capital, apart from the
+  /// short joining words Title Case leaves alone.
+  static func isTitleCase(_ title: String) -> Bool {
+    let minor: Set<String> = ["a", "an", "and", "the", "of", "to", "in", "for", "on", "with"]
+    let words = title.split(whereSeparator: { !$0.isLetter && $0 != "/" })
+    guard let first = words.first else { return false }
+    for (index, word) in words.enumerated() {
+      guard let head = word.first, head.isLetter else { continue }
+      if index > 0, minor.contains(word.lowercased()) { continue }
+      if !head.isUppercase { return false }
+    }
+    return first.first?.isUppercase ?? false
+  }
+
   // MARK: - Formatting + copy
 
   func testByteFormattingMatchesTheCLIsSpelling() {
@@ -412,7 +465,9 @@ final class RecordingStorageTests: XCTestCase {
     )
 
     XCTAssertTrue(message.contains("2 per-speaker voice clips"))
-    XCTAssertTrue(message.contains("Delete record…"))
+    // Named through the constant: the message quotes the verb the owner will
+    // actually go looking for in the menu, so the two may not drift apart.
+    XCTAssertTrue(message.contains(RecordingDeletionCopy.deleteRecordVerbTitle))
     // And nothing is claimed when there are none.
     XCTAssertFalse(
       RecordingDeletionCopy

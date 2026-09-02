@@ -374,7 +374,7 @@ struct SpeakersSettingsView: View {
           Button(role: .destructive) {
             showDeleteConfirmation = true
           } label: {
-            Label("Delete Speaker", systemImage: "trash")
+            Label(RecordingDeletionCopy.deleteSpeakerVerbTitle, systemImage: "trash")
           }
         }
       }

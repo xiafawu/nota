@@ -498,6 +498,52 @@ enum StorageFormat {
 /// dialog that does not say what survives is how an owner learns the
 /// containment rule the expensive way.
 enum RecordingDeletionCopy {
+  // MARK: - Verb titles
+
+  /// The titles of the verbs that open one of the confirmations below.
+  ///
+  /// They live here rather than at their call sites because the ellipsis is a
+  /// promise about behaviour, not decoration: it is the platform's one signal
+  /// that a press is not yet the deed. Two of these verbs confirmed and did
+  /// not say so — Discard, on the failure banner, which is the most
+  /// destructive control in the app, and Delete Speaker, which drops a
+  /// person's voiceprints. `allConfirmingVerbs` is the promise a test reads,
+  /// the way `RecordingPaneCopy.all(kind:controls:)` is.
+
+  /// The failure banner's third button (`LiveMeetingView`).
+  static let discardVerbTitle = "Discard…"
+
+  /// The Speakers pane's delete verb (`SpeakersSettings`).
+  static let deleteSpeakerVerbTitle = "Delete Speaker…"
+
+  /// The drawer row's two deletion verbs, and the button each one's dialog
+  /// puts under the owner's pointer.
+  ///
+  /// **One noun per verb.** The menu said "Delete recording audio…" and the
+  /// dialog it opened said "Delete Audio", so one operation reached the screen
+  /// under two names before the owner had confirmed anything. The menu title
+  /// is now the confirm title plus the ellipsis and nothing else — pinned by
+  /// `testEachMenuVerbNamesTheButtonItOpens`, because two strings that must
+  /// agree cannot be left to agree by hand.
+  static let deleteAudioVerbTitle = "Delete Audio…"
+  static let deleteAudioConfirmTitle = "Delete Audio"
+  static let deleteRecordVerbTitle = "Delete Record…"
+  static let deleteRecordConfirmTitle = "Delete Record"
+
+  /// Every verb title that opens a confirmation. Each one ends in an ellipsis.
+  static let allConfirmingVerbs: [String] = [
+    discardVerbTitle,
+    deleteSpeakerVerbTitle,
+    deleteAudioVerbTitle,
+    deleteRecordVerbTitle,
+  ]
+
+  /// The two verbs whose dialog offers a button of its own, paired with it.
+  static let confirmedVerbPairs: [(verb: String, confirm: String)] = [
+    (deleteAudioVerbTitle, deleteAudioConfirmTitle),
+    (deleteRecordVerbTitle, deleteRecordConfirmTitle),
+  ]
+
   static func audioTitle(_ title: String) -> String {
     "Delete the audio for “\(title)”?"
   }
@@ -521,7 +567,7 @@ enum RecordingDeletionCopy {
       : "The record stays — only the recording goes."
     let clips = speakerClipCount > 0
       ? " \(speakerClipCount) per-speaker voice clip\(speakerClipCount == 1 ? "" : "s") "
-        + "also stay — they are audio too, and “Delete record…” is what removes them."
+        + "also stay — they are audio too, and “\(deleteRecordVerbTitle)” is what removes them."
       : ""
     return "\(goes) \(stays)\(clips) This cannot be undone."
   }

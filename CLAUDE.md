@@ -202,7 +202,7 @@ in the app that owns files.
   resolver at all (`keptAudioURL`, above).
 
   **The drawer row outlives the record it named.** Rows are built from exported
-  `.md` files, "Delete record…" never removes one, and nothing else in the app
+  `.md` files, "Delete Record…" never removes one, and nothing else in the app
   does either — so the row is still there afterwards and its context menu can
   no longer find a record. That alert says what is true of both ways to reach
   it (deleted just now, or an imported `.md` that never had a record), names
@@ -264,7 +264,11 @@ the recording on disk is the one that lies. The other half is pinned by test —
 a session that *fails* still settles and keeps everything, because nobody
 chose that outcome. Two things it owes:
 
-- **It confirms, naming the length, the bytes and the way out.** It is the
+- **It confirms, naming the length, the bytes and the way out — and the verb
+  says so.** The button reads **Discard…**: a trailing ellipsis is the
+  platform's one signal that a press opens a dialog rather than doing the
+  thing, and the two drawer verbs beside it already carried one while this,
+  the most destructive control in the app, did not. It is the
   most destructive verb in the app — a whole session's un-recreatable audio —
   and it sits between **Save Transcript** and **Try Again**, both harmless, on
   a banner it reads as dismissing. The drawer's verbs all name what goes, what
@@ -1482,7 +1486,7 @@ old dual-purpose click (a press with no summary used to spend a model call
 *and* open the rail to watch it) is gone with the `plus` glyph that promised
 it, and so is its `.disabled`: a tag run is no reason to lock the owner out of
 their own speaker chips. The only way to start a summary is the **Generate
-summary** button *inside* the panel, in the slot where the narrative would be.
+Summary** button *inside* the panel, in the slot where the narrative would be.
 A record with no narrative is the ordinary resting state of a transcript-only
 meeting, so that slot is a state and not a failure; a failed generation lands
 in the same slot with the message above a button reading **Try Again**, rather
@@ -1561,7 +1565,7 @@ Escape, a record switch, a phase leave — runs `requestSummaryRailDismissal`.
 The panel is visually modal (an invisible full-window backdrop makes the window
 inert to clicks), so it carries `.accessibilityAddTraits(.isModal)` and the
 backdrop is `.accessibilityHidden` — otherwise the assistive cursor goes on
-walking a transcript and a Details button nothing can reach. Generate summary
+walking a transcript and a Details button nothing can reach. Generate Summary
 takes `.defaultAction`, since it is the one control that spends money and the
 panel takes no initial focus.
 
@@ -2323,7 +2327,7 @@ pip alone cannot do. No timeline, no list, no popover.
 **Kind relabeling is `RecordKindMenuItems`, a view builder and not a second
 `ViewModifier`** — two `.contextMenu` modifiers on one view do not merge, the
 later **replaces** the earlier, so a separate modifier would have silently
-removed Delete audio and Delete record from every drawer row. It writes `kind`
+removed Delete Audio… and Delete Record… from every drawer row. It writes `kind`
 and `summaryOutdated` in one merge-preserving atomic write and **never**
 re-summarizes: spending a model call on a mis-click is the failure mode that
 ruled out the alternative.
@@ -2490,7 +2494,7 @@ site, not the machine.
 - Voice audio is captured **during** the pipeline run (the source audio is often a temp file deleted afterward): a per-speaker PCM clip is saved under `~/.nota/history/<id>.assets/<label>.pcm` on **every** diarized run with history enabled — recognition or not — and naming a speaker later enrolls an ONNX embedding from that stored clip, so enrollment works without the original audio. Speaker store schema v4 holds numeric d-vector arrays under `~/.nota/speakers.json`; incompatible v3 Eagle voiceprints are dropped with a warning and must be re-enrolled.
 - Speaker identification is **auto by default** (decision 1 of the speaker-workflow map, XIA-406): recognition runs on every diarized transcription whenever the store has ≥1 enrolled voiceprint, in both the CLI and the macOS app. `--no-identify` (and the app's identify toggle) opts out; `--identify` forces it on, which is the path for first-time enrollment of unknown speakers (interactive TTY; freshly-typed names are enrolled inline from the captured clip). A `.qta` input is pre-converted to a durable 16 kHz wav whenever the run will read the audio after transcription (identification or clip capture), because the source temp file may vanish when the share sheet closes.
 - Tentative-band matches ([0.50, 0.65) cosine) are never silently dropped: they persist on the history record as `suggestions` (`{label, suggestedName, score, voiceprintId, state, decidedAt?}`) and surface on the macOS speaker chip as "Speaker 2 → Kenny Kim? 0.62" with accept/dismiss. Accept = rename propagation (segments, clip, output `.md`) + enroll the record's clip as a new voiceprint; dismiss = clear on this record only. `nota history suggestions --recompute <id>` backfills an old record from its stored clips (no migration sweep). Confident matches (≥ 0.65) auto-label as before; threshold bands are fixed (0.65 / 0.50, measured in `docs/research/voiceprint-cosine-bands.md`) — never per-speaker, never learned.
-- Enrollment hygiene: a new voiceprint that disagrees strongly with the person's existing prints (best same-name cosine < 0.5) warns on stderr naming the score and is marked `lowAgreement` on the print — never refused, never silent. `nota speakers doctor` lists flagged prints and same-name pairs below 0.30 for delete/reassign. A rename/accept landing on a completed record sets `summaryOutdated`, which surfaces a one-click "Regenerate summary" affordance in the app until used or dismissed; a fresh summary clears it.
+- Enrollment hygiene: a new voiceprint that disagrees strongly with the person's existing prints (best same-name cosine < 0.5) warns on stderr naming the score and is marked `lowAgreement` on the print — never refused, never silent. `nota speakers doctor` lists flagged prints and same-name pairs below 0.30 for delete/reassign. A rename/accept landing on a completed record sets `summaryOutdated`, which surfaces a one-click "Regenerate Summary" affordance in the app until used or dismissed; a fresh summary clears it.
 - Long transcripts (>100k tokens) are summarized in sections then rolled up
 - Output saved as markdown file next to input by default
 - Byte-level (SHA-256) duplicate detection: when history is enabled (the default), Nota hashes the raw audio once in `runPipeline` and, if an identical file already has a *completed* history record whose output `.md` still exists, reuses that summary and skips transcription. `--force` overrides; a hash failure warns but still transcribes. This gates the common case (same file shared twice) cheaply before any paid call; it is a byte hash, not an acoustic fingerprint, so a re-encoded copy of the same recording is not detected. Legacy records (pre-feature) have no `contentHash` and never match. Example: `nota recording.m4a --force` reprocesses a file already in history.
