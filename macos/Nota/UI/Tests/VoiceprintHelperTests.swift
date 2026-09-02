@@ -182,21 +182,30 @@ final class VoiceprintHelperTests: XCTestCase {
   /// on this side rather than trusted from the helper's own score.
   func testOnlyAConfidentScoreIsDrawn() {
     XCTAssertEqual(
-      VoiceprintHelperProcess.name(fromAnswer: ["id": 1, "name": "Kenny Kim", "score": 0.71]),
+      VoiceprintHelperProcess.name(fromAnswer: ["id": "1", "ok": true, "name": "Kenny Kim", "score": 0.71]),
       "Kenny Kim"
     )
     XCTAssertNil(
-      VoiceprintHelperProcess.name(fromAnswer: ["id": 1, "name": "Kenny Kim", "score": 0.62]),
+      VoiceprintHelperProcess.name(fromAnswer: ["id": "1", "ok": true, "name": "Kenny Kim", "score": 0.62]),
       "a tentative-band match shows nothing live"
     )
-    XCTAssertNil(VoiceprintHelperProcess.name(fromAnswer: ["id": 1, "name": NSNull()]))
-    XCTAssertNil(VoiceprintHelperProcess.name(fromAnswer: ["id": 1]))
+    XCTAssertNil(VoiceprintHelperProcess.name(fromAnswer: ["id": "1", "ok": true, "name": NSNull()]))
+    XCTAssertNil(VoiceprintHelperProcess.name(fromAnswer: ["id": "1", "ok": true]))
     XCTAssertNil(
-      VoiceprintHelperProcess.name(fromAnswer: ["id": 1, "error": "insufficient_speech"])
+      VoiceprintHelperProcess.name(fromAnswer: ["id": "1", "ok": true, "error": "insufficient_speech"])
     )
-    XCTAssertNil(VoiceprintHelperProcess.name(fromAnswer: ["id": 1, "name": ""]))
+    XCTAssertNil(VoiceprintHelperProcess.name(fromAnswer: ["id": "1", "ok": true, "name": ""]))
+    // `ok:false` is the helper's refusal shape and carries no name to read.
+    XCTAssertNil(
+      VoiceprintHelperProcess.name(
+        fromAnswer: ["id": "1", "ok": false, "reason": "unavailable"]))
+    // …and `ok:true` with a null name plus a reason is the ordinary
+    // "nobody we know" answer, not an error.
+    XCTAssertNil(
+      VoiceprintHelperProcess.name(
+        fromAnswer: ["id": "1", "ok": true, "name": NSNull(), "reason": "tentative"]))
     XCTAssertEqual(
-      VoiceprintHelperProcess.name(fromAnswer: ["id": 1, "name": "Kenny Kim"]),
+      VoiceprintHelperProcess.name(fromAnswer: ["id": "1", "ok": true, "name": "Kenny Kim"]),
       "Kenny Kim",
       "an answer with no score is the helper's own call"
     )
@@ -451,8 +460,8 @@ final class VoiceprintHelperTests: XCTestCase {
 
     let parsed = try JSONSerialization.jsonObject(with: Data(body))
     let object = try XCTUnwrap(parsed as? [String: Any])
-    XCTAssertEqual(object["id"] as? Int, 7)
-    XCTAssertEqual(object["sampleRate"] as? Int, 16_000)
+    XCTAssertEqual(object["id"] as? String, "7")
+    XCTAssertEqual(object["op"] as? String, "match")
     let pcm = try XCTUnwrap(Data(base64Encoded: try XCTUnwrap(object["pcm"] as? String)))
     XCTAssertEqual(pcm.count, samples.count * MemoryLayout<Int16>.stride)
     let decoded = stride(from: 0, to: pcm.count, by: 2).map { index in
@@ -494,7 +503,7 @@ final class VoiceprintHelperTests: XCTestCase {
   /// side that knows the store is the side that decides.
   func testAHelperThatDeclinesNamesNothingAndIsShutDown() async {
     let helper = scriptedHelper(
-      #"printf '{"ready":false,"reason":"no enrolled voiceprints"}\n'; cat > /dev/null"#
+      #"printf '{"type":"ready","protocol":1,"ok":false,"reason":"no enrolled voiceprints"}\n'; cat > /dev/null"#
     )
     helper.start()
 
@@ -509,7 +518,7 @@ final class VoiceprintHelperTests: XCTestCase {
   /// names from that point on.** The child here answers nothing and exits; the
   /// request in flight resolves nil rather than being abandoned.
   func testAHelperThatDiesMidSessionAnswersNothingMore() async {
-    let helper = scriptedHelper(#"printf '{"ready":true}\n'; exec sleep 0.2"#)
+    let helper = scriptedHelper(#"printf '{"type":"ready","protocol":1,"ok":true}\n'; exec sleep 0.2"#)
     helper.start()
 
     let first = await helper.identify(oneSecondRequest())
@@ -527,7 +536,7 @@ final class VoiceprintHelperTests: XCTestCase {
   /// against a helper that could never work at all.
   func testARealChildSpeakingTheProtocolProducesAName() async {
     let helper = scriptedHelper(
-      #"printf '{"ready":true}\n'; read -r line; printf '{"id":1,"name":"Kenny Kim","score":0.91}\n'; cat > /dev/null"#
+      #"printf '{"type":"ready","protocol":1,"ok":true}\n'; read -r line; printf '{"id":"1","ok":true,"name":"Kenny Kim","score":0.91}\n'; cat > /dev/null"#
     )
     helper.start()
 

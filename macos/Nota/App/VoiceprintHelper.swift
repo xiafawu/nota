@@ -203,7 +203,10 @@ final class VoiceprintHelperProcess: LiveVoiceprintNaming {
   static let executableOverrideVariable = "NOTA_VOICEPRINT_HELPER"
 
   /// The verb the CLI half answers to.
-  static let verb = ["voiceprint", "serve"]
+  /// One hyphenated command, not two words. The helper is registered on the
+  /// CLI as `voiceprint-serve`; the two-word form in the first draft of
+  /// `docs/voiceprint-helper-protocol.md` never existed on the far side.
+  static let verb = ["voiceprint-serve"]
 
   static let requestTimeout: TimeInterval = 10
 
@@ -258,11 +261,17 @@ final class VoiceprintHelperProcess: LiveVoiceprintNaming {
     )
   }
 
-  /// `{"id":…,"sampleRate":…,"pcm":"<base64 Int16 LE>"}` plus a newline.
+  /// `{"id":"…","op":"match","pcm":"<base64 Int16 LE>"}` plus a newline.
+  ///
+  /// The id crosses as a **string** and the op is named, because the helper's
+  /// protocol carries both — it dispatches on `op` and echoes the id verbatim.
+  /// The sample rate does not cross at all: 16 kHz mono is the only thing the
+  /// capture path produces and the helper asserts it on its own side, so a
+  /// field naming it would be a second place for one fact to be wrong.
   static func requestLine(id: Int, request: VoiceprintRequest) -> Data? {
     let payload: [String: Any] = [
-      "id": id,
-      "sampleRate": request.sampleRate,
+      "id": String(id),
+      "op": "match",
       "pcm": pcmBase64(request.samples),
     ]
     guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return nil }
@@ -282,8 +291,15 @@ final class VoiceprintHelperProcess: LiveVoiceprintNaming {
   /// the threshold. There is no unfiltered value to read, so a caller cannot
   /// forget to apply the rule.
   static func name(fromAnswer json: [String: Any]) -> String? {
+    // `ok:false` is a refusal; `ok:true` with a null name is the ordinary
+    // "nobody we know" answer and carries a `reason` we do not read. Both are
+    // simply no name — ADR 0008 draws a name only for a confident match.
+    if let ok = json["ok"] as? Bool, !ok { return nil }
     if json["error"] != nil { return nil }
     guard let name = json["name"] as? String, !name.isEmpty else { return nil }
+    // Re-applied on this side on purpose, though the helper already thresholds:
+    // the surface that draws the name is this one, so a helper that started
+    // sending tentative scores could never put a guess on screen.
     if let score = json["score"] as? Double, score < matchThreshold { return nil }
     return name
   }
@@ -303,11 +319,12 @@ final class VoiceprintHelperProcess: LiveVoiceprintNaming {
   static func readiness(fromLine line: Data) -> Readiness {
     guard
       let json = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
-      let ready = json["ready"] as? Bool
+      json["type"] as? String == "ready",
+      let ok = json["ok"] as? Bool
     else {
       return .declined(reason: "unreadable readiness line")
     }
-    return ready ? .ready : .declined(reason: json["reason"] as? String)
+    return ok ? .ready : .declined(reason: json["reason"] as? String)
   }
 
   /// Split a stdout chunk into complete lines plus the unterminated remainder.
@@ -346,6 +363,16 @@ final class VoiceprintHelperProcess: LiveVoiceprintNaming {
   /// until the child drained it.
   private let writeQueue = DispatchQueue(label: "com.xiafawu.nota.voiceprint-helper.write")
 
+  /// Writing to a pipe whose reader has gone raises **SIGPIPE**, whose default
+  /// action is to kill the process — and a 12 s slice is ~512 KB of base64
+  /// against a 64 KB pipe buffer, so the write is genuinely in the kernel for a
+  /// while and a helper that dies during it is the ordinary case, not a race
+  /// nobody hits. Ignoring the signal turns that into the `EPIPE` the `catch`
+  /// below already handles, which is the whole of "a dying helper degrades to
+  /// no names, never to a crash". Process-wide and once; every other pipe and
+  /// socket in the app wants the same answer.
+  private static let ignoreSIGPIPE: Void = { signal(SIGPIPE, SIG_IGN) }()
+
   /// `nonisolated(unsafe)` for the reason `FieldEngine.timer` is: `deinit` is
   /// not main-actor isolated and must still be able to kill this child. It is
   /// the last line of defence against a leak — the ordinary way out is `stop()`
@@ -365,6 +392,10 @@ final class VoiceprintHelperProcess: LiveVoiceprintNaming {
   private var nextID = 1
 
   init(plan: LaunchPlan? = nil) {
+    // Touching it is what runs it: a `static let` is lazy, so declaring the
+    // signal disposition and never reading it would leave SIGPIPE fatal while
+    // reading as though it had been handled.
+    _ = Self.ignoreSIGPIPE
     self.plan = plan ?? Self.launchPlan(projectDirectory: Self.projectDirectory)
   }
 
@@ -456,8 +487,16 @@ final class VoiceprintHelperProcess: LiveVoiceprintNaming {
 
     // Closing stdin is the contract's way out: the helper sees EOF and leaves.
     // `terminate()` is the backstop for one that does not.
-    try? stdinHandle?.close()
+    //
+    // The close goes through `writeQueue`, the same queue `identify` writes on.
+    // Closed from here directly it would race an in-flight write against the
+    // very same `FileHandle` — a main-actor close and a background write, no
+    // lock — and the loser is either an invalid descriptor or, worse, one the
+    // kernel has already handed to something else. Ordering it behind whatever
+    // is queued costs nothing: the helper is being torn down either way.
+    let closing = stdinHandle
     stdinHandle = nil
+    writeQueue.async { try? closing?.close() }
     if process?.isRunning == true { process?.terminate() }
 
     phase = .stopped
@@ -489,7 +528,7 @@ final class VoiceprintHelperProcess: LiveVoiceprintNaming {
       }
       guard
         let json = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any],
-        let id = json["id"] as? Int,
+        let id = (json["id"] as? String).flatMap(Int.init),
         let continuation = pending.removeValue(forKey: id)
       else { continue }
       continuation.resume(returning: Self.name(fromAnswer: json))

@@ -56,7 +56,7 @@ enum PreviewMocks {
   [00:14] **Sam:** Good to be here, let's get started.
   """
 
-  static let sampleRichText: NSAttributedString = renderMarkdownAsRichText(sampleMarkdown)
+  static let sampleRichText: NSAttributedString = renderMarkdownAsRichText(sampleMarkdown, sections: .transcript)
   static let sampleDocument = DocumentRender(meta: parseDocumentMeta(sampleMarkdown), body: sampleRichText)
 }
 #endif

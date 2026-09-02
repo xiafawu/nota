@@ -175,6 +175,22 @@ enum RecordingPaneMetrics {
   /// over reading through the refraction or having the cluster fade while text
   /// arrives). Computed from the constants the cluster is *placed* with, never
   /// typed a second time, or the reserve and the placement drift apart.
+  /// The band the "not saved" marker notice occupies, reserved **above** the
+  /// cluster's own so the jump-to-newest control can never land on it.
+  ///
+  /// Both are bottom-anchored overlays padded by `transcriptBottomReserve`, so
+  /// before this they shared one anchor exactly: a pill that appears whenever
+  /// the owner has scrolled up covered the only feedback the surface gives that
+  /// a moment mark failed to reach the record — the more important of the two,
+  /// and the one that cannot be recovered by scrolling. Reserved
+  /// unconditionally, because a control that stepped up when a notice appeared
+  /// would be a second thing moving on a surface whose rule is that nothing does.
+  /// Measured from the caption face rather than typed.
+  static let unsavedNoticeLane: CGFloat = {
+    let font = NSFont.preferredFont(forTextStyle: .caption1)
+    return ceil(NSLayoutManager().defaultLineHeight(for: font)) + CraftTokens.spacing4
+  }()
+
   static let transcriptBottomReserve: CGFloat =
     capsuleHeight + clusterBottomInset + clusterTranscriptGap
 
@@ -233,10 +249,15 @@ enum RecordingPaneMetrics {
   /// Seven ems of the speaker face, in the idiom `Metrics.readingMeasure` uses
   /// for the reading column — about thirteen characters of a semibold interface
   /// face, which is the whole of an ordinary "Brian Demsky" with room over.
-  static let speakerColumnEms: CGFloat = 7
-  static let speakerColumnWidth: CGFloat = speakerColumnEms * NSFonts.readingSpeaker.pointSize
-  /// Between the name column's trailing edge and the words' shared left edge.
-  static let speakerColumnGap: CGFloat = CraftTokens.spacing12
+  /// The live column is **the document's column**, not a number of its own.
+  /// Two independent widths meant pressing Stop moved every line sideways by
+  /// the difference — the event ADR 0007 exists to remove. `SpeakerColumn` is
+  /// one constant derived from the reading measure, so both surfaces are the
+  /// same column in the same place. See `SpeakerColumn.width(forNames:)`.
+  static var speakerColumnWidth: CGFloat { SpeakerColumn.maximumWidth }
+
+  /// Likewise the gap: one em of the label face, from the same type.
+  static var speakerColumnGap: CGFloat { SpeakerColumn.gap }
 
   /// How near the bottom still counts as "at the bottom" for the follow
   /// (`LiveTranscriptFollow`). One line of transcript plus the spacing under
@@ -930,7 +951,13 @@ enum LiveTranscript {
           LiveTranscriptRow(
             id: line.id,
             gutter: opener ? block.startedAt : nil,
-            speaker: opener ? block.speaker : nil,
+            // Through the document's own ladder (ADR 0008) — full name, then
+            // "Brian D.", then "B.D." — so the two surfaces abbreviate one way
+            // rather than two, and the live column never truncates a person
+            // mid-syllable. It runs here, in the memoized row build, and not in
+            // `rowView`: it measures a string, and the body is re-evaluated on
+            // a feed that ticks many times a second.
+            speaker: opener ? block.speaker.map(SpeakerColumn.drawnName) : nil,
             line: line,
             isMarked: markedLineIDs.contains(line.id)
           )
@@ -1612,7 +1639,8 @@ struct SessionJumpToNewestControl: View {
         // travelling, and a thing that slides in at the edge of vision during a
         // meeting is what the setting is asking us not to do.
         .transition(Tokens.popIn(reduceMotion: reduceMotion))
-        .padding(.bottom, bottomReserve)
+        // Above the marker notice's lane, not on it — see `unsavedNoticeLane`.
+        .padding(.bottom, bottomReserve + RecordingPaneMetrics.unsavedNoticeLane)
       }
     }
     .animation(Tokens.animSnap, value: isFollowing)

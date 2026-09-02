@@ -51,7 +51,7 @@ final class ReadingColumnTests: XCTestCase {
   private static func paneBody(_ markdown: String, chips: [SpeakerChip] = [])
     -> NSAttributedString {
     MainPaneView.documentBody(
-      DocumentRender(meta: parseDocumentMeta(markdown), body: renderMarkdownAsRichText(markdown)),
+      DocumentRender(meta: parseDocumentMeta(markdown), body: renderMarkdownAsRichText(markdown, sections: .transcript)),
       chips: chips)
   }
 
@@ -281,7 +281,7 @@ final class ReadingColumnTests: XCTestCase {
       MainPaneView.documentBody(
         DocumentRender(
           meta: DocMeta(title: "Team Sync", subtitle: subtitle, tags: tags),
-          body: renderMarkdownAsRichText(markdown)),
+          body: renderMarkdownAsRichText(markdown, sections: .transcript)),
         chips: [])
     }
     let bare = body(subtitle: "", tags: [])
@@ -449,7 +449,7 @@ final class ReadingColumnTests: XCTestCase {
   /// above `## Full Transcript` and no longer reach the body at all, so the
   /// only documents that still draw one are the imported ones.
   func testHeadingsCarrySpaceAboveThem() {
-    let rendered = renderMarkdownAsRichText(Self.foreign)
+    let rendered = renderMarkdownAsRichText(Self.foreign, sections: .transcript)
     let text = rendered.string as NSString
     let range = text.range(of: "Chapter one")
     XCTAssertNotEqual(range.location, NSNotFound, "the sample lost its heading")
@@ -467,7 +467,7 @@ final class ReadingColumnTests: XCTestCase {
   /// A turn ends visibly. It used to be 5pt against 2pt of line spacing, so one
   /// speaker's turn and the next line looked the same distance apart.
   func testATurnIsSeparatedFromTheNextByMoreThanItsOwnLeading() {
-    let rendered = renderMarkdownAsRichText(Self.sample)
+    let rendered = renderMarkdownAsRichText(Self.sample, sections: .transcript)
     let range = (rendered.string as NSString).range(of: "Brian Demsky")
     XCTAssertNotEqual(range.location, NSNotFound)
     let style = rendered.attribute(.paragraphStyle, at: range.location, effectiveRange: nil)
@@ -482,7 +482,7 @@ final class ReadingColumnTests: XCTestCase {
   /// interface face. It is the row's structure, not part of the sentence.
   func testTheSpeakerNameDoesNotGrowWithTheBody() {
     XCTAssertLessThan(NSFonts.readingSpeaker.pointSize, NSFonts.readingBody.pointSize)
-    let rendered = renderMarkdownAsRichText(Self.sample)
+    let rendered = renderMarkdownAsRichText(Self.sample, sections: .transcript)
     let range = (rendered.string as NSString).range(of: "Brian Demsky")
     let font = rendered.attribute(.font, at: range.location, effectiveRange: nil) as? NSFont
     XCTAssertEqual(font?.pointSize ?? 0, NSFonts.readingSpeaker.pointSize, accuracy: 0.01)
@@ -497,7 +497,7 @@ final class ReadingColumnTests: XCTestCase {
   /// The timestamp attributes survive all of it — the gutter and the XIA-429
   /// moment pips are both built from them.
   func testTimestampsStillRideOnTheText() {
-    let rendered = renderMarkdownAsRichText(Self.sample)
+    let rendered = renderMarkdownAsRichText(Self.sample, sections: .transcript)
     var stamps: [String] = []
     rendered.enumerateAttribute(
       .notaTimestamp, in: NSRange(location: 0, length: rendered.length)

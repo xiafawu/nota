@@ -1,0 +1,213 @@
+{
+  "project": "Nota",
+  "updated": "2026-08-01T22:19:35.168Z",
+  "nodes": [
+    {
+      "parent": null,
+      "collapsed": false,
+      "id": "n_rec_root",
+      "title": "Refine recording entry: hero-click starts, toolbar mic removed",
+      "tag": "goal",
+      "state": "active",
+      "body": "# Goal\nMake the home hero **“Ready to record”** the start affordance for live meetings and remove the toolbar mic button (`ContentView.liveMeetingButton`).\n\nCurrent state (verified):\n- Hero card (`PreflightHomeView.header`) is a **status label** — dot + title + subtitle + a Re-check button; clicking it does nothing.\n- Toolbar `.primaryAction` mic toggle is the only start entry outside the live pane (start when idle, stop while recording).\n- The live pane (`LiveMeetingView`) already owns a Stop control and an idle “Start Recording” retry button.\n- `PreflightOverall` gate exists (`fail` = “blocks recording if blocking”) but the toolbar button **bypasses it** — hero-as-entry can enforce it.\n\nDecisions below, one per step.",
+      "pos": {
+        "x": 80,
+        "y": 80
+      }
+    },
+    {
+      "parent": "n_rec_root",
+      "collapsed": false,
+      "id": "n_d1",
+      "title": "D1 · Click target for starting",
+      "tag": "decision",
+      "state": "active",
+      "decision": true,
+      "body": "What exactly becomes the record affordance in the hero card? (The card currently holds dot + verdict text + Re-check button — nested buttons are not allowed in SwiftUI, so this shapes the layout.)\n\n**Recommendation: Option A.**",
+      "pos": {
+        "x": 480,
+        "y": 40
+      },
+      "verify": "pending"
+    },
+    {
+      "parent": "n_d1",
+      "collapsed": false,
+      "id": "n_d1a",
+      "title": "A · Left cluster is the button",
+      "state": "done",
+      "chosen": true,
+      "body": "Dot + “Ready to record” title + subtitle become one button; Re-check stays as its own control on the right. Matches your wording (“click on ‘ready to record’”), no nested-button surgery, Re-check untouched.",
+      "pos": {
+        "x": 880,
+        "y": 40
+      }
+    },
+    {
+      "parent": "n_d1",
+      "collapsed": false,
+      "id": "n_d1b",
+      "title": "B · Dedicated Start Recording button",
+      "state": "killed",
+      "chosen": false,
+      "body": "Add a prominent mic button (mic.fill, larger) beside Re-check; the verdict text stays a status label. Clearest affordance, but the click target is not the text you named.",
+      "pos": {
+        "x": 880,
+        "y": 150
+      }
+    },
+    {
+      "parent": "n_d1",
+      "collapsed": false,
+      "id": "n_d1c",
+      "title": "C · Whole card clickable",
+      "state": "killed",
+      "chosen": false,
+      "body": "Entire hero card is one button; Re-check must move out of the card (biggest layout change; where it goes is an open sub-question).",
+      "pos": {
+        "x": 880,
+        "y": 260
+      }
+    },
+    {
+      "parent": "n_rec_root",
+      "collapsed": false,
+      "id": "n_d2",
+      "title": "D2 · Verdict gating",
+      "tag": "decision",
+      "state": "active",
+      "decision": true,
+      "body": "Which preflight verdicts may start a recording when clicked?\n\nCurrent subtitles: `.unverified` = “You can record, but a run may fail”; `.blocked` = “Fix the failing check below before recording.”\n\n**Recommendation: Option A** — it matches the existing copy exactly, and it finally enforces the `fail = blocks recording` gate that the toolbar button bypasses today.",
+      "pos": {
+        "x": 480,
+        "y": 170
+      }
+    },
+    {
+      "parent": "n_d2",
+      "collapsed": false,
+      "id": "n_d2a",
+      "title": "A · .ready + .unverified start; .blocked inert",
+      "state": "open",
+      "chosen": false,
+      "body": "Green/amber hero clicks start the session; red (.blocked) renders non-interactive. Aligns UI with `PreflightOverall` semantics; blocked users are directed to the failing check instead of a doomed session.",
+      "pos": {
+        "x": 880,
+        "y": 40
+      }
+    },
+    {
+      "parent": "n_d2",
+      "collapsed": false,
+      "id": "n_d2b",
+      "title": "B · Only .ready starts",
+      "state": "open",
+      "chosen": false,
+      "body": "Amber (.unverified) also inert. Stricter than the copy promises (“You can record”); forces a re-check loop for offline hiccups.",
+      "pos": {
+        "x": 880,
+        "y": 150
+      }
+    },
+    {
+      "parent": "n_d2",
+      "collapsed": false,
+      "id": "n_d2c",
+      "title": "C · Blocked click reveals the issues",
+      "state": "open",
+      "chosen": false,
+      "body": "Red hero click expands the attention rows instead of recording. More magic in the card; attention rows are already shown above the fold when blocked.",
+      "pos": {
+        "x": 880,
+        "y": 260
+      }
+    },
+    {
+      "parent": "n_rec_root",
+      "collapsed": false,
+      "id": "n_d3",
+      "title": "D3 · Entry while a transcript is open",
+      "tag": "decision",
+      "state": "active",
+      "decision": true,
+      "body": "Toolbar mic button is removed from **every** non-running phase, including `.document` (a transcript open). With it gone, starting a new live meeting while viewing a document requires clicking Home (chevron) first.\n\n**Recommendation: Option A** — the toolbar removal is the point of the change; Home is one click away; a second document-phase affordance keeps two entry points alive.",
+      "pos": {
+        "x": 480,
+        "y": 300
+      }
+    },
+    {
+      "parent": "n_d3",
+      "collapsed": false,
+      "id": "n_d3a",
+      "title": "A · Home is the only entry",
+      "state": "open",
+      "chosen": false,
+      "body": "Document phase keeps Share/Settings only. Single, discoverable entry point; simplest diff (toolbar group just loses one item).",
+      "pos": {
+        "x": 880,
+        "y": 40
+      }
+    },
+    {
+      "parent": "n_d3",
+      "collapsed": false,
+      "id": "n_d3b",
+      "title": "B · Keep a record affordance in document view",
+      "state": "open",
+      "chosen": false,
+      "body": "e.g. a mic button in the document header row. Faster for the record-while-reading flow, but keeps a second entry point and contradicts “remove the top-right record button” in spirit.",
+      "pos": {
+        "x": 880,
+        "y": 150
+      }
+    },
+    {
+      "parent": "n_rec_root",
+      "collapsed": false,
+      "id": "n_d4",
+      "title": "D4 · Stop control while recording",
+      "tag": "decision",
+      "state": "active",
+      "decision": true,
+      "body": "The toolbar button is currently the stop toggle while recording. With it gone, Stop lives only in the live pane header (`LiveMeetingView.stopControl`). After stop the model persists and opens the new transcript (existing behavior).\n\n**Recommendation: Option A** — the pane control already exists and is the primary stop affordance; a second toolbar stop would recreate the removed control.",
+      "pos": {
+        "x": 480,
+        "y": 430
+      }
+    },
+    {
+      "parent": "n_d4",
+      "collapsed": false,
+      "id": "n_d4a",
+      "title": "A · Pane-only stop",
+      "state": "open",
+      "chosen": false,
+      "body": "Live pane header Stop is the sole stop control. No toolbar changes beyond removing the start button.",
+      "pos": {
+        "x": 880,
+        "y": 40
+      }
+    },
+    {
+      "parent": "n_d4",
+      "collapsed": false,
+      "id": "n_d4b",
+      "title": "B · Toolbar stop-only while recording",
+      "state": "open",
+      "chosen": false,
+      "body": "Keep a stop button in the toolbar only during `.recording/.stopping`. Two stop controls for one session; keeps a toolbar item that flickers in and out.",
+      "pos": {
+        "x": 880,
+        "y": 150
+      }
+    }
+  ],
+  "edges": [],
+  "threads": {},
+  "excalidraw": {
+    "elements": [],
+    "appState": {}
+  },
+  "projectId": "2622610999"
+}

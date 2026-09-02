@@ -341,10 +341,21 @@ struct SummaryRailView: View {
   /// document that has one and a half-and-half summary is a document describing
   /// itself out of two sources.
   ///
+  /// It also requires the document to be one whose body is **not already
+  /// drawing that summary**. `DocumentBody.plan` opens a `.transcript` render
+  /// after `## Full Transcript` — dropping the summary sections, which is what
+  /// this fallback exists to re-home — but only for a document that *has* that
+  /// heading. A foreign `.md` has none, so it degrades to rendering whole and
+  /// its `## Summary` is already on screen in the reading column; parsing it
+  /// into the panel as well would put the same text in two places, which is the
+  /// exact failure ADR 0006's 2026-09-02 addendum exists to remove. Such a
+  /// document falls through to the ordinary "no record behind this" line.
+  ///
   /// Static and pure-ish so the guard is a fact a test can check — the view
   /// cannot be hosted (`NotaModel.init` sweeps the real `~/.nota`).
   static func parsedFallback(hasRecord: Bool, markdown: String) -> ParsedDocumentSummary? {
     guard !hasRecord else { return nil }
+    guard markdown.contains(DocumentBody.transcriptHeading) else { return nil }
     return DocumentSummaryCache.summary(for: markdown)
   }
 

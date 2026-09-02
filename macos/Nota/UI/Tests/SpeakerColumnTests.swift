@@ -56,7 +56,7 @@ final class SpeakerColumnTests: XCTestCase {
   /// style the renderer produced *and* on the string it produced, because a tab
   /// stop with no tab character in front of it aligns nothing.
   func testNamesAreRightAlignedAndWordsLeftAlignedOnOneEdgeEach() {
-    let rendered = renderMarkdownAsRichText(Self.export)
+    let rendered = renderMarkdownAsRichText(Self.export, sections: .transcript)
     let text = rendered.string as NSString
     let range = text.range(of: "Brian Demsky")
     XCTAssertNotEqual(range.location, NSNotFound, "the transcript lost its speaker")
@@ -117,7 +117,7 @@ final class SpeakerColumnTests: XCTestCase {
 
       [00:03] **Brian Demsky:** \(long)
       """
-    let rendered = renderMarkdownAsRichText(markdown)
+    let rendered = renderMarkdownAsRichText(markdown, sections: .transcript)
     let nameWidth = SpeakerColumn.width(forNames: ["Brian Demsky"])
     let edge = SpeakerColumn.textEdge(nameWidth: nameWidth)
 
@@ -229,7 +229,7 @@ final class SpeakerColumnTests: XCTestCase {
     // The full name survives on the run whatever was drawn (`.notaSpeakerName`),
     // which is what the identity-hue pass and the hover path read.
     let markdown = "## Full Transcript\n\n[00:03] **\(single):** hi"
-    let rendered = renderMarkdownAsRichText(markdown)
+    let rendered = renderMarkdownAsRichText(markdown, sections: .transcript)
     var carried: [String] = []
     rendered.enumerateAttribute(
       .notaSpeakerName, in: NSRange(location: 0, length: rendered.length)
@@ -243,7 +243,7 @@ final class SpeakerColumnTests: XCTestCase {
   /// the override is what the run carries — the identity hue is keyed by it.
   func testAnOverrideIsWhatTheColumnMeasuresAndCarries() {
     let markdown = "## Full Transcript\n\n[00:03] **Speaker 1:** hi"
-    let rendered = renderMarkdownAsRichText(markdown, overrides: ["Speaker 1": "Kenny Kim"])
+    let rendered = renderMarkdownAsRichText(markdown, overrides: ["Speaker 1": "Kenny Kim"], sections: .transcript)
     let text = rendered.string as NSString
     XCTAssertNotEqual(text.range(of: "Kenny Kim").location, NSNotFound)
     XCTAssertEqual(text.range(of: "Speaker 1").location, NSNotFound)
@@ -272,7 +272,7 @@ final class SpeakerColumnTests: XCTestCase {
   /// twice, on every meeting that had been summarized — and the `## Full
   /// Transcript` heading went with them, because the pane *is* the transcript.
   func testADocumentWithASummaryRendersNoSummaryInTheBody() {
-    let body = renderMarkdownAsRichText(Self.export).string
+    let body = renderMarkdownAsRichText(Self.export, sections: .transcript).string
     for gone in [
       "The team agreed to ship the reading column this week.",
       "Summary", "Key Topics", "Decisions Made", "Action Items",
@@ -318,7 +318,7 @@ final class SpeakerColumnTests: XCTestCase {
 
       A closing paragraph.
       """
-    let body = renderMarkdownAsRichText(foreign).string
+    let body = renderMarkdownAsRichText(foreign, sections: .transcript).string
     for kept in [
       "Some ordinary prose that a person wrote.", "Chapter one",
       "a bullet", "another bullet", "A closing paragraph.",
@@ -335,7 +335,7 @@ final class SpeakerColumnTests: XCTestCase {
     // for the pane to draw either.
     let headerless = "just a line\nand another"
     XCTAssertEqual(
-      renderMarkdownAsRichText(headerless).string.trimmingCharacters(in: .newlines),
+      renderMarkdownAsRichText(headerless, sections: .transcript).string.trimmingCharacters(in: .newlines),
       headerless)
     XCTAssertNil(parseDocumentMeta(headerless))
   }

@@ -607,13 +607,17 @@ final class GroundInkTests: XCTestCase {
   /// `.primary` resolves to `labelColor`, which is black at 85% — *lighter* than
   /// `#1C1A16` at full strength — so the surface this ticket found was already
   /// inside that bound. An equality against the composite is no good either: no
-  /// glyph reaches full coverage at 14pt, so the extreme pixel is always some
-  /// way short of the tier's own colour.
+  /// glyph reached full coverage at 14pt, so the extreme pixel was always some
+  /// way short of the tier's own colour. (At 18.5pt — the size the live
+  /// transcript took from the document under ADR 0007 — it *does* reach it, so
+  /// the drawn extreme now lands exactly on the tier's colour rather than near
+  /// it. The ratio below is unchanged and simply has more margin.)
   ///
   /// What does separate them is which colour the extreme pixel is reaching
-  /// *for*. The body tier is the ink at alpha 1, so the darkest thing the
-  /// transcript can draw is the ink swatch, and `labelColor` bottoms out a long
-  /// way short of it. Both are rendered here, in the same probe, at the same
+  /// *for*. The transcript settles at the **reading** tier, not `body` — one
+  /// surface with the document means one tier with it too — so the darkest
+  /// thing it can draw is the reading swatch, and `labelColor` bottoms out a
+  /// long way short of it. Both are rendered here, in the same probe, at the same
   /// font and over the same ground — so the bar cannot rot as fonts, smoothing
   /// or the rep's colour space change. Only the ratio between two things
   /// measured together is asserted.
@@ -622,7 +626,7 @@ final class GroundInkTests: XCTestCase {
       let light = scheme == .light
       let g = ground(light: light)
       guard
-        let inkEnd = Self.swatch(over: g, ink: .body, scheme: scheme),
+        let inkEnd = Self.swatch(over: g, ink: .reading, scheme: scheme),
         let transcript = renderTranscript(over: g, scheme: scheme),
         let labelled = RenderProbe.bitmap(
           ZStack {

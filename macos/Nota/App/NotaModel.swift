@@ -220,12 +220,12 @@ final class NotaModel: ObservableObject {
     } else {
       display = markdown
     }
-    return renderMarkdownAsRichText(display, overrides: speakerNameOverrides)
+    return renderMarkdownAsRichText(display, overrides: speakerNameOverrides, sections: .transcript)
   }
 
   /// The complete document (summary included) for copy and export.
   private var fullRichText: NSAttributedString {
-    renderMarkdownAsRichText(markdown, overrides: speakerNameOverrides)
+    renderMarkdownAsRichText(markdown, overrides: speakerNameOverrides, sections: .whole)
   }
 
   private var speakerNameOverrides: [String: String] {

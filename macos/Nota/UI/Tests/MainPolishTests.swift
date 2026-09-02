@@ -121,7 +121,7 @@ final class MainPolishTests: XCTestCase {
     [00:14] **Speaker 1:** hello there
     [00:20] **Speaker 2:** hi
     """
-    let body = renderMarkdownAsRichText(markdown)
+    let body = renderMarkdownAsRichText(markdown, sections: .whole)
     let chips = [
       SpeakerChip(label: "Speaker 1", name: "", indicator: .none),
       SpeakerChip(label: "Speaker 2", name: "", indicator: .none),
@@ -130,12 +130,12 @@ final class MainPolishTests: XCTestCase {
     let colored = MainPaneView.applySpeakerColors(to: body, chips: chips)
     let text = colored.string as NSString
 
-    let firstRange = text.range(of: "Speaker 1: ")
+    let firstRange = text.range(of: "Speaker 1")
     XCTAssertNotEqual(firstRange.location, NSNotFound)
     let firstColor = colored.attribute(.foregroundColor, at: firstRange.location, effectiveRange: nil) as? NSColor
     XCTAssertEqual(firstColor, SpeakerColors.nsColor(at: 0))
 
-    let secondRange = text.range(of: "Speaker 2: ")
+    let secondRange = text.range(of: "Speaker 2")
     XCTAssertNotEqual(secondRange.location, NSNotFound)
     let secondColor = colored.attribute(.foregroundColor, at: secondRange.location, effectiveRange: nil) as? NSColor
     XCTAssertEqual(secondColor, SpeakerColors.nsColor(at: 1))
@@ -144,11 +144,11 @@ final class MainPolishTests: XCTestCase {
 
   func testApplySpeakerColors_matchesRenamedSpeakers() {
     let markdown = "[00:14] **Speaker 1:** hello"
-    let body = renderMarkdownAsRichText(markdown, overrides: ["Speaker 1": "Kenny"])
+    let body = renderMarkdownAsRichText(markdown, overrides: ["Speaker 1": "Kenny"], sections: .whole)
     let chips = [SpeakerChip(label: "Speaker 1", name: "Kenny", indicator: .enrolled)]
 
     let colored = MainPaneView.applySpeakerColors(to: body, chips: chips)
-    let range = (colored.string as NSString).range(of: "Kenny: ")
+    let range = (colored.string as NSString).range(of: "Kenny")
     XCTAssertNotEqual(range.location, NSNotFound)
     let color = colored.attribute(.foregroundColor, at: range.location, effectiveRange: nil) as? NSColor
     XCTAssertEqual(color, SpeakerColors.nsColor(at: 0))
@@ -159,7 +159,7 @@ final class MainPolishTests: XCTestCase {
     [00:14] **Speaker 1:** hello **there** friend
     Plain **bold** paragraph.
     """
-    let body = renderMarkdownAsRichText(markdown)
+    let body = renderMarkdownAsRichText(markdown, sections: .whole)
     let chips = [SpeakerChip(label: "Speaker 1", name: "", indicator: .none)]
 
     let colored = MainPaneView.applySpeakerColors(to: body, chips: chips)
@@ -180,7 +180,7 @@ final class MainPolishTests: XCTestCase {
   }
 
   func testApplySpeakerColors_noChipsReturnsBodyUnchanged() {
-    let body = renderMarkdownAsRichText("[00:14] **Speaker 1:** hello")
+    let body = renderMarkdownAsRichText("[00:14] **Speaker 1:** hello", sections: .whole)
     let colored = MainPaneView.applySpeakerColors(to: body, chips: [])
     XCTAssertTrue(colored.isEqual(to: body))
   }

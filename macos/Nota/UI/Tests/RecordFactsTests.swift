@@ -530,7 +530,7 @@ final class RecordFactsTests: XCTestCase {
     XCTAssertEqual(timestampSeconds("0:51"), 51)
     XCTAssertEqual(timestampSeconds("01:02:03"), 3723)
 
-    let body = renderMarkdownAsRichText("[01:05] **Alice:** hello\n[02:00] and again\n")
+    let body = renderMarkdownAsRichText("[01:05] **Alice:** hello\n[02:00] and again\n", sections: .whole)
     var found: [(String, TimeInterval)] = []
     body.enumerateAttribute(.notaTimestamp, in: NSRange(location: 0, length: body.length)) {
       value, range, _ in
@@ -741,7 +741,7 @@ final class RecordFactsTests: XCTestCase {
       let body = renderMarkdownAsRichText(
         (0..<40).map { "[00:\(String(format: "%02d", $0))] **Alice:** line \($0)" }
           .joined(separator: "\n") + "\n"
-      )
+      , sections: .whole)
       view.textStorage?.setAttributedString(body)
       view.markerSeconds = markers
       // The gutter is the text container's inset (XIA-441 centres the reading

@@ -89,15 +89,29 @@ enum SpeakerColumn {
     fitted(name, within: maximumWidth)
   }
 
-  /// **The column is measured, not typed**: one pass over the document's own
-  /// speaker names, sized to the longest thing it has to hold and clamped.
+  /// **The column is one width for every surface that draws it**, and it is
+  /// `maximumWidth` — derived from the reading measure, never typed.
   ///
-  /// Measured over the names **as drawn**, so a document whose one long name
-  /// abbreviates to `B.D.` gets a narrow column rather than a wide one holding
-  /// four characters.
+  /// ADR 0008 asked for a column measured per document, and this was that: one
+  /// pass over the document's own names, clamped. It cannot survive ADR 0007.
+  /// The live transcript draws the same column while a meeting is still
+  /// running, and it cannot measure — a name arrives mid-session and the seal
+  /// may add or correct one at Stop, so a column measured over what has arrived
+  /// so far would widen under the owner mid-sentence. So live must use a
+  /// constant; and the moment the document uses anything else, pressing Stop
+  /// moves every line of the transcript sideways by the difference. That is the
+  /// one event ADR 0007 exists to remove, and the owner chose it twice.
+  ///
+  /// What ADR 0008 actually bought is kept whole: the abbreviation ladder is
+  /// what handles a name too long for the column, which was the owner's own
+  /// instruction ("if name too long, shrink to use abbreviation"). The measuring
+  /// was a recommendation of mine, and it is the half that had to give.
+  ///
+  /// `names` is still taken, and still decides **whether there is a column at
+  /// all**: a document with no speaker lines has no column and no indent, since
+  /// a foreign `.md` is not a transcript and may not be laid out as one.
   static func width(forNames names: [String]) -> CGFloat {
-    let widest = names.map { width(of: drawnName($0)) }.max() ?? 0
-    return min(widest, maximumWidth)
+    names.isEmpty ? 0 : maximumWidth
   }
 
   /// Where the words start. A document with no speaker lines has no column at
@@ -201,10 +215,16 @@ enum RenderedSections {
 ///     string uses the mapped value instead of the original label. The body
 ///     on disk is **never** mutated — substitution is purely at render time.
 ///   - sections: Which sections reach the output. See `RenderedSections`.
+///     **Deliberately has no default.** It briefly had one (`.transcript`), and
+///     a default is how a parameter that changes what a document *is* gets
+///     inherited by a call site that never considered it: `NotaModel`'s
+///     `fullRichText` — the copy-to-clipboard and RTF-export path, whose own doc
+///     comment reads "the complete document (summary included)" — silently began
+///     exporting the transcript alone. Every caller states its answer.
 func renderMarkdownAsRichText(
   _ markdown: String,
   overrides: [String: String] = [:],
-  sections: RenderedSections = .transcript
+  sections: RenderedSections
 ) -> NSAttributedString {
   let output = NSMutableAttributedString()
   let normalized = markdown.replacingOccurrences(of: "\r\n", with: "\n")
