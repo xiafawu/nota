@@ -17,9 +17,11 @@ final class EmptyStateGrammarTests: XCTestCase {
   }
 
   func testAlignmentAndInkDoNotChangeTheEmptyStateScale() {
+    // One icon in both: SF Symbols do not all draw at the same height, and
+    // this is a test about the grammar rather than about a glyph.
     let settings = height(
       EmptyStateView(
-        icon: "person.wave.2",
+        icon: "tray",
         title: "No enrolled speakers",
         helpers: ["A helper line that says what is missing."]
       )

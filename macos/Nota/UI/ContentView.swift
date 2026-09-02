@@ -184,6 +184,12 @@ struct ContentView: View {
         .contentShape(Rectangle())
         .onTapGesture { model.isHistoryDrawerPresented = false }
         .ignoresSafeArea()
+        // The window is inert to clicks while the drawer is open, so it must
+        // be inert to VoiceOver too (P-D11) — otherwise the assistive cursor
+        // walks an invisible full-window rectangle and then the transcript
+        // and toolbar behind a panel nothing can be reached through. The
+        // summary rail already does exactly this at the same layer.
+        .accessibilityHidden(true)
 
       HistoryDrawerView(
         model: model,
@@ -199,6 +205,8 @@ struct ContentView: View {
         .keyboardShortcut(.cancelAction)
         .hidden()
     }
+    // Visually modal, so it says so (P-D11), exactly as the summary rail does.
+    .accessibilityAddTraits(.isModal)
   }
 
   @ToolbarContentBuilder
