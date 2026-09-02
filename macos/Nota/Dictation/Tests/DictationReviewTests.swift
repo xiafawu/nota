@@ -2154,3 +2154,36 @@ final class DictationReviewPanelTests: XCTestCase {
     XCTAssertEqual(applied, "Ship the patch today")
   }
 }
+
+// MARK: - The card's chrome numbers
+
+/// The review card is the third floating surface, and the other two name every
+/// number they lay out with (`HUDPillMetrics`, `HUDBarMetrics`,
+/// `HUDPrompterMetrics`). Its chrome spacing was typed into the view body, where
+/// nothing could read it — so these pin the constants that replaced the literals
+/// at exactly the values the card has always drawn (P-D12). The panel's fitting
+/// size is pinned elsewhere and may not move for a rename.
+final class DictationReviewChromeMetricsTests: XCTestCase {
+  func testTheCardsChromeNumbersAreNamedAtTheValuesItDrew() {
+    XCTAssertEqual(DictationReviewView.cardInset, 18)
+    XCTAssertEqual(DictationReviewView.metaRowSpacing, 12)
+    XCTAssertEqual(DictationReviewView.controlsRowSpacing, 10)
+    XCTAssertEqual(DictationReviewView.inlineGap, 5)
+  }
+
+  /// The meta row carries the card's own row grammar; the controls row is
+  /// deliberately tighter, because its buttons carry their own padding; the
+  /// inline gap is tighter still, because it joins a glyph to the word beside
+  /// it. A rename that swapped two of them would still compile.
+  func testTheChromeRowsAreOrderedFromTheCardsRowSpacingDownward() {
+    XCTAssertEqual(DictationReviewView.metaRowSpacing, DictationReviewView.rowSpacing)
+    XCTAssertLessThan(
+      DictationReviewView.controlsRowSpacing,
+      DictationReviewView.metaRowSpacing
+    )
+    XCTAssertLessThan(
+      DictationReviewView.inlineGap,
+      DictationReviewView.controlsRowSpacing
+    )
+  }
+}

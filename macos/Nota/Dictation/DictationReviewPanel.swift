@@ -1004,6 +1004,27 @@ struct DictationReviewView: View {
 
   /// Gap between the card's rows.
   static let rowSpacing: CGFloat = 12
+
+  // MARK: - The chrome's own numbers
+  //
+  // Named here for the reason every number on the HUD pill, bar and prompter is
+  // named in `HUDPillMetrics` / `HUDBarMetrics` / `HUDPrompterMetrics`: this card
+  // is the third floating surface, and its two chrome rows were the only ones
+  // whose spacing was typed into the body where nothing could assert it (P-D12).
+  // The values are exactly what the card has always drawn — the panel's fitting
+  // size is pinned by the dictation tests and may not move for a rename.
+
+  /// The inset from the card's edge to its content, inside the shadow margin.
+  static let cardInset: CGFloat = 18
+  /// The meta row's gap: the card's name, the listening cluster, the word count.
+  static let metaRowSpacing: CGFloat = 12
+  /// The controls row's gap: the status line and the two decisions. Deliberately
+  /// tighter than `metaRowSpacing` — the buttons carry their own padding, so the
+  /// row reads evenly at the smaller number.
+  static let controlsRowSpacing: CGFloat = 10
+  /// The gap inside a pair that reads as one thing: the mic dot and "Listening…",
+  /// the warning glyph and its message.
+  static let inlineGap: CGFloat = 5
   /// The editor's height — fixed, and the reason the card's is.
   ///
   /// It was a `minHeight` while the card had a separate draft block to grow for.
@@ -1026,7 +1047,7 @@ struct DictationReviewView: View {
       metaRow
       controlsRow
     }
-    .padding(18)
+    .padding(Self.cardInset)
     .frame(
       minWidth: Self.minCardWidth,
       minHeight: Self.minCardHeight,
@@ -1063,11 +1084,11 @@ struct DictationReviewView: View {
   /// accent circle, and this is that circle. Nothing else moves — the card must
   /// not resize under the owner's cursor while they are mid-edit.
   private var metaRow: some View {
-    HStack(alignment: .firstTextBaseline, spacing: 12) {
+    HStack(alignment: .firstTextBaseline, spacing: Self.metaRowSpacing) {
       Text("Review dictation")
         .font(.headline)
       if model.isListening {
-        HStack(spacing: 5) {
+        HStack(spacing: Self.inlineGap) {
           Circle()
             .fill(Color.accentColor)
             .frame(width: 7, height: 7)
@@ -1140,7 +1161,7 @@ struct DictationReviewView: View {
   /// Status line and the two decisions — the last row on the card, and the edge
   /// the text above it grows away from.
   private var controlsRow: some View {
-    HStack(spacing: 10) {
+    HStack(spacing: Self.controlsRowSpacing) {
       statusLine
       Spacer(minLength: 12)
 
@@ -1186,7 +1207,7 @@ struct DictationReviewView: View {
   @ViewBuilder
   private var statusLine: some View {
     if let error = model.errorMessage, !error.isEmpty {
-      HStack(spacing: 5) {
+      HStack(spacing: Self.inlineGap) {
         Image(systemName: "exclamationmark.triangle.fill")
           .font(.caption)
         Text(error)
