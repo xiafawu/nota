@@ -250,6 +250,7 @@ final class LiveMeetingSession: ObservableObject {
       failStart(error)
       throw error
     }
+    startNaming()
     logger.info("live meeting session started")
   }
 
@@ -348,6 +349,7 @@ final class LiveMeetingSession: ObservableObject {
       elapsedTask?.cancel()
       elapsedTask = nil
       stopCapture()
+      stopNaming()
       if let speech = appleSpeech {
         let finalText = try? await speech.finish()
         // A session that never produced a final delta still delivers its text
@@ -388,6 +390,7 @@ final class LiveMeetingSession: ObservableObject {
     elapsedTask?.cancel()
     elapsedTask = nil
     stopCapture()
+    stopNaming()
     receiveTask?.cancel()
     receiveTask = nil
     webSocketTask?.cancel(with: .normalClosure, reason: nil)
@@ -435,6 +438,7 @@ final class LiveMeetingSession: ObservableObject {
     receiveTask?.cancel()
     receiveTask = nil
     stopCapture()
+    stopNaming()
     didSendTerminate = false
     webSocketTask?.cancel(with: .normalClosure, reason: nil)
     teardownWS()
@@ -493,7 +497,7 @@ final class LiveMeetingSession: ObservableObject {
         // to lose: a turn with no words is not a turn.
         let spoken = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
         if !spoken.isEmpty {
-          segments.append(LiveSegment(id: UUID(), text: transcript, endTime: elapsed))
+          appendFinalizedSegment(text: transcript)
         }
         partialText = nil
         logger.debug("Final turn: \"\(transcript.prefix(60), privacy: .public)\"")
@@ -601,6 +605,41 @@ final class LiveMeetingSession: ObservableObject {
   private var appleSpeech: AppleSpeechStream?
   private var appleHypothesesTask: Task<Void, Never>?
 
+  // MARK: - Live speaker naming (ADR 0008)
+
+  /// The helper that answers a finalized turn with an enrolled name, for as
+  /// long as this session runs. Nil whenever there will be no names — before
+  /// the session starts, after any exit, and for the whole of a session whose
+  /// helper would not start. Everything downstream reads its nil-ness rather
+  /// than a flag, so "no names this meeting" has one representation.
+  private var voiceprintNaming: (any LiveVoiceprintNaming)?
+
+  /// How one is made. A factory rather than an injected instance because the
+  /// helper's life is exactly the session's: `start()` builds one, every exit
+  /// destroys it, and a second meeting gets a second process.
+  ///
+  /// **Inert under XCTest**, the way `FieldEngine.shared` is. A test that drives
+  /// a pause boundary through `beginForTesting` must not spawn `node` and load a
+  /// 27 MB ONNX model; the tests that are about naming install a fake through
+  /// `setNamingFactoryForTesting`.
+  private var voiceprintNamingFactory: () -> (any LiveVoiceprintNaming)? = {
+    FieldEngine.isUnderTest ? nil : VoiceprintHelperProcess()
+  }
+
+  /// The most recent kept audio, so a turn that has just finalized can be
+  /// sliced back out. A plain `var` and never `@Published`: it is written from
+  /// `handlePCMBuffer` ~45 times a second, and this session is observed by
+  /// `ContentView` and `LiveMeetingView` — the XIA-432 trap, which is about the
+  /// *rate* of a publisher multiplied by the breadth of its observers, arriving
+  /// through a second door.
+  private var turnAudio = LiveTurnAudioBuffer()
+
+  /// The naming requests, chained so exactly one is in flight. Two reasons, and
+  /// the first is correctness: the helper is one process with one stdin. The
+  /// second is that a chain is a thing a test can await, so "the name landed"
+  /// is asserted rather than slept for.
+  private var namingChain: Task<Void, Never>?
+
   private var transcriptText: String {
     segments.map(\.text).joined(separator: "\n")
   }
@@ -667,6 +706,12 @@ final class LiveMeetingSession: ObservableObject {
         // words spoken while it was paused are not in the transcript either.
         guard Self.capturesAudio(self.state) else { return }
         try? self.appleSpeech?.feed(buffer)
+        // Live naming's copy (ADR 0008), after the recognizer has been fed and
+        // only when a helper is up. The conversion is the same one the WS path
+        // does for its socket frame; this path has no other reason to make it.
+        if self.voiceprintNaming != nil, let converted = self.convertToInt16(buffer) {
+          self.appendTurnAudio(converted)
+        }
       }
     }
     do {
@@ -680,6 +725,7 @@ final class LiveMeetingSession: ObservableObject {
       failStart(error)
       throw error
     }
+    startNaming()
     state = .recording
     logger.info("live meeting session started (apple engine)")
   }
@@ -698,11 +744,103 @@ final class LiveMeetingSession: ObservableObject {
     /// the right second of the audio.
     guard state == .recording || state == .paused else { return }
     if hypothesis.isFinal {
-      segments.append(LiveSegment(id: UUID(), text: hypothesis.text, endTime: elapsed))
+      appendFinalizedSegment(text: hypothesis.text)
       partialText = nil
     } else {
       partialText = hypothesis.text
     }
+  }
+
+  // MARK: - Live speaker naming (ADR 0008)
+
+  /// Append a finalized turn and ask who said it.
+  ///
+  /// One method for both engines: AssemblyAI streaming v3 carries no speaker
+  /// label at all and the Apple analyzer carries none either, so "a turn just
+  /// finalized" is the only moment either of them offers and both have to reach
+  /// the same request.
+  private func appendFinalizedSegment(text: String) {
+    let previousEnd = segments.last?.endTime ?? 0
+    let segment = LiveSegment(id: UUID(), text: text, endTime: elapsed)
+    segments.append(segment)
+    requestName(for: segment, previousEnd: previousEnd)
+  }
+
+  /// Slice the turn's audio out of the ring and ask the helper for a name.
+  ///
+  /// The span is measured **backwards from the write head** rather than from
+  /// `endTime`: `elapsed` is published on a 250 ms ticker and begins before the
+  /// first buffer lands, so it names a slightly different instant than the audio
+  /// does, while the head is exactly the end of what was kept. A turn shorter
+  /// than `LiveTurnAudioBuffer.minimumTurnSeconds` is never sent — ADR 0008
+  /// lists a turn too short to embed as one that stays blank live.
+  private func requestName(for segment: LiveSegment, previousEnd: TimeInterval) {
+    guard let naming = voiceprintNaming, naming.isRunning else { return }
+    guard let samples = turnAudio.slice(lastSeconds: segment.endTime - previousEnd) else { return }
+    let request = VoiceprintRequest(samples: samples, sampleRate: LiveTurnAudioBuffer.sampleRate)
+    let id = segment.id
+    let previous = namingChain
+    namingChain = Task { @MainActor [weak self] in
+      await previous?.value
+      guard !Task.isCancelled, let self, let naming = self.voiceprintNaming else { return }
+      let name = await naming.identify(request)
+      guard !Task.isCancelled, let name else { return }
+      self.attribute(name: name, to: id)
+    }
+  }
+
+  /// Write a name onto one turn, once.
+  ///
+  /// `LiveSpeakerAttribution.mayWrite` is the whole rule: **a label once shown
+  /// is never changed mid-meeting**. A later answer that contradicts an earlier
+  /// one is dropped rather than applied — the seal re-runs diarization over the
+  /// whole audio and is the authority, so the correction is coming anyway, and
+  /// a name flickering from one person to another under the reader's eye is
+  /// worse than a name that is merely incomplete.
+  ///
+  /// This is the only `@Published` write naming makes, and it happens once per
+  /// finalized turn — seconds apart, never at buffer rate.
+  private func attribute(name: String, to id: UUID) {
+    guard let index = segments.firstIndex(where: { $0.id == id }) else { return }
+    guard LiveSpeakerAttribution.mayWrite(over: segments[index].speaker) else { return }
+    segments[index].speaker = name
+  }
+
+  /// Bring the helper up for this session. Called once the engine is live, from
+  /// both engines' start paths, and never on a path that can throw: a session
+  /// that cannot name its turns is still a session that records the meeting.
+  private func startNaming() {
+    guard voiceprintNaming == nil else { return }
+    turnAudio.reset()
+    guard let naming = voiceprintNamingFactory() else { return }
+    voiceprintNaming = naming
+    naming.start()
+  }
+
+  /// Take the helper down. Called from **every** exit — a clean stop on either
+  /// engine, `cancel()` (which is what Discard runs), a setup failure, a
+  /// mid-session failure and a server-initiated end — because a child process
+  /// this app owns may not outlive the meeting that opened it.
+  private func stopNaming() {
+    namingChain?.cancel()
+    namingChain = nil
+    voiceprintNaming?.stop()
+    voiceprintNaming = nil
+    turnAudio.reset()
+  }
+
+  /// Keep one converted buffer for the turn it belongs to.
+  ///
+  /// Called only behind `capturesAudio`, and only when a helper exists: a paused
+  /// span is as absent from this ring as it is from `recording.caf`, and a
+  /// session with no helper pays nothing at all. It is deliberately gated on the
+  /// helper *existing* rather than on `isRunning`, because readiness arrives
+  /// asynchronously — a ring that waited for it would have nothing to say about
+  /// the meeting's first turn.
+  private func appendTurnAudio(_ int16Buffer: AVAudioPCMBuffer) {
+    let count = Int(int16Buffer.frameLength)
+    guard count > 0, let pointer = int16Buffer.int16ChannelData?[0] else { return }
+    turnAudio.append(UnsafeBufferPointer(start: pointer, count: count))
   }
 
   // MARK: - WebSocket plumbing
@@ -801,6 +939,7 @@ final class LiveMeetingSession: ObservableObject {
     // cancel, and it must not outlive the session that owns it.
     stopPauseKeepAlive()
     stopCapture()
+    stopNaming()
     receiveTask?.cancel()
     receiveTask = nil
     teardownWS()
@@ -813,6 +952,7 @@ final class LiveMeetingSession: ObservableObject {
     elapsedTask = nil
     stopPauseKeepAlive()
     stopCapture()
+    stopNaming()
     receiveTask?.cancel()
     receiveTask = nil
     webSocketTask?.cancel(with: .normalClosure, reason: nil)
@@ -831,7 +971,12 @@ final class LiveMeetingSession: ObservableObject {
   }
 
   /// Set `.failed` for a `start()` setup failure before it throws.
+  ///
+  /// It takes the helper down too: `startAppleEngine` brings one up before the
+  /// last thing that can fail, so a capture failure after that point would
+  /// leave a child process running for a session that never began.
   private func failStart(_ error: any Error) {
+    stopNaming()
     state = .failed(Self.message(for: error))
   }
 
@@ -1042,6 +1187,11 @@ final class LiveMeetingSession: ObservableObject {
         self.audioFile = nil
       }
     }
+
+    // Live naming's copy, kept LAST and behind a nil check, so the ring cannot
+    // change one byte of what reached the socket or the file above and a
+    // session with no helper pays nothing (ADR 0008).
+    if voiceprintNaming != nil { appendTurnAudio(int16Buffer) }
   }
 
   /// Float32 16 kHz mono → Int16 16 kHz mono (mirrors
@@ -1221,8 +1371,42 @@ extension LiveMeetingSession {
     // The production handler, not a stand-in: the pause/resume ordering rules
     // are about what *that* closure does at drain time.
     installCaptureHandler()
+    // The same call `start()` makes, so a naming test drives the real wiring.
+    // Under XCTest the default factory answers nil, so every test that does not
+    // install a fake gets a session with no helper and no child process.
+    startNaming()
     state = .recording
     publishElapsed(now: startedAt)
+  }
+
+  /// Install a fake helper for the session `beginForTesting` is about to start.
+  /// Must be called **before** it — the factory is consulted once, at start.
+  func setNamingFactoryForTesting(_ factory: @escaping () -> (any LiveVoiceprintNaming)?) {
+    voiceprintNamingFactory = factory
+  }
+
+  /// The helper this session is holding, so a test can assert it was torn down.
+  var namingForTesting: (any LiveVoiceprintNaming)? { voiceprintNaming }
+
+  /// Wait for every naming request made so far. The chain serializes them, so
+  /// awaiting the newest awaits all of them — no sleeping, no polling.
+  func awaitNamingForTesting() async {
+    await namingChain?.value
+  }
+
+  /// The turn ring, so a test can assert what a paused span did and did not put
+  /// in it.
+  var turnAudioForTesting: LiveTurnAudioBuffer { turnAudio }
+
+  /// Finalize a turn exactly as either engine's handler does.
+  func appendFinalizedSegmentForTesting(text: String) {
+    appendFinalizedSegment(text: text)
+  }
+
+  /// The production write every answer goes through, so the never-rewrite rule
+  /// is driven rather than restated.
+  func attributeForTesting(name: String, to id: UUID) {
+    attribute(name: name, to: id)
   }
 
   /// The session's own clock, so a test can assert audio time rather than only
