@@ -104,7 +104,10 @@ struct ContentView: View {
     // no drawer row to appear in, and Stop took away the live pane that used to
     // be the last surface acknowledging it. This is the one place left that can
     // say so with the window in front. Only failures with nowhere else to go
-    // reach here — see `HandoffFailureNotice`.
+    // reach here — see `HandoffFailureNotice` — and only for as long as the
+    // window has not moved on, which is `OpenDocument`'s job: the pill is
+    // deliberately read without reference to what is on screen, because it may
+    // not still be up when that changes.
     if let failure = model.backgroundFailure {
       return ToolbarStatusPillState(isRunning: false, text: failure)
     }

@@ -618,6 +618,76 @@ enum HandoffFailureNotice {
   }
 }
 
+// MARK: - What the window is showing, and how long a notice about it lives
+
+/// **THE OPEN DOCUMENT — and the one rule that takes the pill back down.**
+///
+/// `HandoffFailureNotice` above decides *what* the pill says; this decides *how
+/// long it stands*. They are separate because the message is about a record
+/// while its lifetime is about the window: the notice exists precisely because
+/// the record has no drawer row and no live pane left to speak for it, so it is
+/// addressed to whoever is looking at the window it was raised over. The moment
+/// that window is showing different content, it is a claim about nothing
+/// visible.
+///
+/// Reported by the owner on 2026-09-02 with a screenshot — the pill read
+/// "Transcription failed — the audio is saved." while a complete, healthy
+/// transcript of a *different* meeting was on screen. It was true, about a
+/// record handed off some time earlier. The notice was written in one place
+/// (`finishBackgroundJob`) and cleared in two (the next landing, and the next
+/// Start press); **opening a different document cleared nothing**, so a
+/// window-level claim outlived the record it was about and sat over unrelated
+/// content.
+///
+/// The fix is this type rather than a `failureNotice = nil` at each of the six
+/// sites that move the window, because the seventh route added would forget it.
+/// The URL and the notice are ONE value with one mutator each, so there is no
+/// way to change the open document *without* dropping the notice, and the
+/// compiler is what enforces it: `NotaModel.lastOutputURL` and
+/// `NotaModel.backgroundFailure` are both reads of this value and neither can
+/// be assigned.
+///
+/// **Moving is an act, not a comparison of paths.** `changed(to:)` clears
+/// whatever the URL was and whatever it becomes, including nil → nil: the front
+/// door and a file about to be transcribed both read as "no document", so a
+/// `!=` test would have left the pill standing across the two routes the report
+/// is most likely to be reproduced through — go home, then drop another file.
+struct OpenDocument: Equatable {
+  /// The `.md` the window is showing, or nil at the front door and during a
+  /// file run. The only comparisons made against it — `CompletionEffect.decide`
+  /// and `StopLanding`'s `openDocumentChanged` — standardize both sides first.
+  private(set) var url: URL?
+
+  /// What the toolbar pill says about the last handed-off record that had
+  /// nowhere else to be reported. Nil is the ordinary state.
+  private(set) var failureNotice: String?
+
+  /// The window is now showing different content: a drawer row, the document a
+  /// Stop just sealed, a file about to be transcribed, or the front door.
+  mutating func changed(to url: URL?) {
+    self.url = url
+    failureNotice = nil
+  }
+
+  /// The window has left the document for the live pane. The URL is
+  /// deliberately **kept**: a session is a phase over the same open document,
+  /// not a different one, and `StopLanding` compares what was open when the
+  /// press landed against what is open now — a Start press that forgot it would
+  /// make every stop read as "the owner opened something else" and route
+  /// nowhere.
+  mutating func leftForALiveSession() {
+    failureNotice = nil
+  }
+
+  /// A background job landed. Assigned unconditionally, so a healthy landing
+  /// clears the last one — the behaviour `finishBackgroundJob` has always had,
+  /// moved in here so that raising the notice and dropping it read side by
+  /// side.
+  mutating func reportLanding(status: HistoryStatus, hasRow: Bool) {
+    failureNotice = HandoffFailureNotice.message(status: status, hasRow: hasRow)
+  }
+}
+
 // MARK: - Quitting with work in flight
 
 /// What ⌘Q asks when something is still processing.
@@ -664,14 +734,15 @@ enum QuitPrompt {
 /// never rewrite the pane, because the pane may be a *different* record — or a
 /// live session that is recording right now.
 ///
-/// Which record is "open" is `NotaModel.lastOutputURL`, and only
-/// `performOpenHistory` sets it. So `.reloadOpenDocument` is reached by the
-/// **retry** path — the owner opens a record whose summary failed, presses
-/// Retry, and the summary lands in the pane they are reading — and never by the
-/// live-stop path. That is the design, not an oversight: the stop path used to
-/// end with `lastOutputURL = saved.outputURL`, i.e. Stop opened the transcript
-/// it had just sealed. A lane whose whole claim is that Stop gives the window
-/// back may not then take it for a document the owner did not ask for.
+/// Which record is "open" is `OpenDocument.url`, read through
+/// `NotaModel.lastOutputURL` and moved only by `OpenDocument.changed(to:)`. So
+/// `.reloadOpenDocument` is reached by the **retry** path — the owner opens a
+/// record whose summary failed, presses Retry, and the summary lands in the
+/// pane they are reading. The live-stop path reaches it only when Stop's own
+/// seal has already routed the window to that document (`StopLanding`), which
+/// is the one case where the pane IS the record: a summary that returned after
+/// the owner opened something else finds two different paths and updates the
+/// list alone.
 enum CompletionEffect: Equatable {
   /// Refresh the drawer. The record is not what the window is showing.
   case listOnly
