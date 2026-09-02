@@ -14,8 +14,12 @@ struct ToolbarStatusPill: View {
       Text(state.text)
         .font(Tokens.statusFont)
         .lineLimit(1)
-        .truncationMode(.middle)
+        .truncationMode(state.truncatesFromTail ? .tail : .middle)
     }
+    // The whole message on the tooltip, exactly as `DictationReviewView`'s
+    // status line does it: one line here, the rest one hover away (P-C11).
+    .help(state.helpText)
+    .accessibilityLabel(state.helpText)
     .padding(.horizontal, Metrics.statusPillH)
     .padding(.vertical, Metrics.statusPillV)
     // No `.liquidGlass`, for the reason spelled out in `HealthPillView`: this is

@@ -740,4 +740,33 @@ final class StopLandingTests: XCTestCase {
     }
     XCTAssertTrue(StopLanding.routesToDocument, "shipped on; flip this to go back")
   }
+
+  // MARK: - The pill is the failure's one surface
+
+  /// **A handed-off failure is read in full, or it is not read** (P-C11).
+  ///
+  /// `HandoffFailureNotice` routes a record that failed before writing any
+  /// markdown to the toolbar pill — no drawer row, no document, nowhere else.
+  /// The pill draws one line and used to truncate it in the **middle** with no
+  /// tooltip, so the owner saw a fragment of the only account of the failure
+  /// and had no way to reach the rest. The tooltip and the accessibility label
+  /// both read the whole string, and a failure reads from its beginning.
+  func testTheStatusPillCarriesTheWholeFailureNotEverJustTheLineItDraws() {
+    let notice =
+      "Summarizing failed: the summary model returned nothing for “Team Sync”. "
+      + "The transcript is saved."
+    let failed = ToolbarStatusPillState(isRunning: false, text: notice)
+    XCTAssertEqual(
+      failed.helpText, notice,
+      "the tooltip is not the whole message, so nothing on screen is")
+    XCTAssertTrue(
+      failed.truncatesFromTail,
+      "a failure sentence truncated from the middle loses its informative half")
+
+    let running = ToolbarStatusPillState(isRunning: true, text: "Transcribing…")
+    XCTAssertEqual(running.helpText, "Transcribing…")
+    XCTAssertFalse(
+      running.truncatesFromTail,
+      "a running phase label reads from its head; only a failure is a sentence")
+  }
 }
