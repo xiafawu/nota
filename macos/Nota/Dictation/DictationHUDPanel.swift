@@ -800,6 +800,8 @@ private struct ListeningView: View {
   /// alone, exactly as the pill looked before streaming delivery existed.
   var roughDraft: String?
 
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   private static let barCount = 9
   /// Center-weighted silhouette — Apple's voice UIs (Siri, Voice Memos)
   /// peak in the middle and taper outward, rather than ramping left-to-right
@@ -853,8 +855,10 @@ private struct ListeningView: View {
         }
         .frame(height: HUDPillMetrics.meterHeight)
         // One spring for all bars, driven by the level: overshoot + settle is
-        // what makes the meter feel alive instead of stepped.
-        .animation(.spring(response: 0.28, dampingFraction: 0.55), value: level)
+        // what makes the meter feel alive instead of stepped. The curve is
+        // `RecordingMotion`'s, so this meter answers Reduce Motion exactly as
+        // the recording window's does — plainer, but still moving (P-B2).
+        .animation(RecordingMotion.meterAnimation(reduceMotion: reduceMotion), value: level)
       }
     }
   }

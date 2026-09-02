@@ -54,6 +54,11 @@ struct HUDCompactMeter: View {
   var barCount: Int = 7
   var maxHeight: CGFloat = 16
 
+  /// The meter is *information* on every surface that draws it, so it reads
+  /// the one policy `RecordingMotion` owns rather than a hand-copied spring
+  /// (P-B2): under Reduce Motion it keeps moving, on a plainer curve.
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   /// Center-weighted silhouette, same family as the pill's.
   private static let profile: [CGFloat] = [0.4, 0.65, 0.9, 1.0, 0.9, 0.65, 0.4]
 
@@ -69,7 +74,7 @@ struct HUDCompactMeter: View {
     // these styles, and it must never be able to change a size the window
     // animation is also responsible for.
     .frame(height: maxHeight)
-    .animation(.spring(response: 0.28, dampingFraction: 0.55), value: level)
+    .animation(RecordingMotion.meterAnimation(reduceMotion: reduceMotion), value: level)
   }
 
   private func height(for index: Int) -> CGFloat {
