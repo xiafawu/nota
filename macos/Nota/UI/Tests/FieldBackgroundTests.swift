@@ -278,50 +278,174 @@ final class FieldBackgroundTests: XCTestCase {
     RunLoop.current.run(until: Date().addingTimeInterval(0.08))
   }
 
-  /// The light transcript wears paper and asks nothing of the engine: no
-  /// viewer, so no clock and no frame, and the role is left where the last
-  /// field surface put it — the paper must not become the ground home morphs
-  /// back from.
-  func testTheLightTranscriptWearsPaperAndAsksNothingOfTheEngine() {
-    let engine = makeEngine(light: true)
-    let window = host(FieldBackground(role: .transcript, engine: engine), dark: false)
-    defer { window.close() }
+  /// **Both** light reading states wear paper and ask nothing of the engine
+  /// (ADR 0007): no viewer, so no clock and no frame, and the role is left
+  /// where the last field surface put it — a ground nobody drew must not
+  /// become the one home morphs back from.
+  ///
+  /// The recording half is what changed. A whole light-mode session — press
+  /// Start, talk, press Stop, read — now runs with the field engine inert,
+  /// which is the point: there is nothing to swap at Stop because there is
+  /// nothing moving on either side of it.
+  func testTheLightReadingStatesWearPaperAndAskNothingOfTheEngine() {
+    for role in [GroundRole.recording, .transcript] {
+      let engine = makeEngine(light: true)
+      let window = host(FieldBackground(role: role, engine: engine), dark: false)
+      defer { window.close() }
 
-    XCTAssertFalse(engine.isRunning, "a paper surface started the field's clock")
-    XCTAssertNil(engine.image, "a paper surface had the field painted for nobody")
-    XCTAssertEqual(engine.role, .home, "a paper surface steered the engine's role")
+      XCTAssertFalse(engine.isRunning, "\(role): a paper surface started the field's clock")
+      XCTAssertNil(engine.image, "\(role): a paper surface had the field painted for nobody")
+      XCTAssertEqual(engine.role, .home, "\(role): a paper surface steered the engine's role")
+    }
   }
 
-  /// The dark transcript keeps the field, exactly as before.
-  func testTheDarkTranscriptStillWearsTheField() {
+  /// Dark is entirely unchanged: both reading states keep the field, and each
+  /// steers the engine to its own ground.
+  func testTheDarkReadingStatesStillWearTheField() {
+    for role in [GroundRole.recording, .transcript] {
+      let engine = makeEngine(light: false)
+      let window = host(FieldBackground(role: role, engine: engine), dark: true)
+      defer { window.close() }
+
+      XCTAssertTrue(engine.isRunning, "\(role)")
+      XCTAssertNotNil(engine.image, "\(role)")
+      XCTAssertEqual(engine.role, role)
+    }
+  }
+
+  /// A scheme flip while either reading state is up moves it between paper and
+  /// field in both directions — the viewer is taken and given back, so the
+  /// clock follows the surface that is actually drawn.
+  func testASchemeFlipMovesAReadingStateBetweenPaperAndField() {
+    for role in [GroundRole.recording, .transcript] {
+      let engine = makeEngine(light: true)
+      let window = host(FieldBackground(role: role, engine: engine), dark: false)
+      defer { window.close() }
+      XCTAssertFalse(engine.isRunning, "\(role)")
+
+      window.appearance = NSAppearance(named: .darkAqua)
+      settle(window)
+      XCTAssertTrue(engine.isRunning, "\(role): going dark did not put the field back under it")
+      XCTAssertEqual(engine.role, role)
+      XCTAssertFalse(engine.light)
+
+      window.appearance = NSAppearance(named: .aqua)
+      settle(window)
+      XCTAssertFalse(engine.isRunning, "\(role): going light did not take the viewer back")
+      XCTAssertTrue(engine.light)
+    }
+  }
+
+  /// Moving between home (field) and a light recording (paper) hands the
+  /// viewer back and forth, in both directions and repeatedly.
+  ///
+  /// The refcount is the thing at risk: a paper surface that forgot to give
+  /// its viewer back would leave a 20 Hz clock painting for nobody for the
+  /// rest of the run, and one that took a viewer it never had would drive the
+  /// count to zero under a home screen still on screen. Neither shows up on a
+  /// single transition.
+  func testMovingBetweenHomeAndALightRecordingHandsTheViewerBack() {
+    let engine = makeEngine(light: true)
+    let box = GroundRoleBox(.home)
+    let window = host(GroundRoleSwitcher(box: box, engine: engine), dark: false)
+    defer { window.close() }
+
+    XCTAssertTrue(engine.isRunning, "home did not start the clock")
+    XCTAssertEqual(engine.role, .home)
+
+    for _ in 0..<2 {
+      box.role = .recording
+      settle(window)
+      XCTAssertFalse(engine.isRunning, "a light recording left the field running")
+      XCTAssertEqual(engine.role, .home, "a paper surface steered the engine's role")
+
+      box.role = .home
+      settle(window)
+      XCTAssertTrue(engine.isRunning, "coming back to home did not restart the clock")
+      XCTAssertEqual(engine.role, .home)
+    }
+  }
+
+  /// …and in dark, where a recording is still a field surface, the same move
+  /// keeps the viewer and steers the role. This is the control for the test
+  /// above: without it, "the engine stopped" would also pass for a recording
+  /// surface that had simply stopped working.
+  func testMovingBetweenHomeAndADarkRecordingKeepsTheViewerAndSteersTheRole() {
     let engine = makeEngine(light: false)
-    let window = host(FieldBackground(role: .transcript, engine: engine), dark: true)
+    let box = GroundRoleBox(.home)
+    let window = host(GroundRoleSwitcher(box: box, engine: engine), dark: true)
     defer { window.close() }
 
+    XCTAssertEqual(engine.role, .home)
+    box.role = .recording
+    settle(window)
+    XCTAssertTrue(engine.isRunning, "a dark recording stopped the field")
+    XCTAssertEqual(engine.role, .recording)
+
+    box.role = .home
+    settle(window)
     XCTAssertTrue(engine.isRunning)
-    XCTAssertNotNil(engine.image)
-    XCTAssertEqual(engine.role, .transcript)
+    XCTAssertEqual(engine.role, .home, "home did not take the ground back")
   }
 
-  /// A scheme flip while the document is up moves it between paper and field
-  /// in both directions — the viewer is taken and given back, so the clock
-  /// follows the surface that is actually drawn.
-  func testASchemeFlipMovesTheTranscriptBetweenPaperAndField() {
+  /// **Nothing changes at Stop.** The live page and the document draw the same
+  /// pixels in light mode, because both tint from the family's *transcript*
+  /// palette — the family gives them different grounds, so paper resolved per
+  /// role would still swap the colour under the owner at the press.
+  ///
+  /// The third render is what stops this passing vacuously: with no frame
+  /// painted, a `FieldBackground` that had drawn no paper at all would fall
+  /// through to the wash floor for both roles and compare equal. Home on a
+  /// non-drawing engine *is* that floor, so requiring the reading states to
+  /// differ from it is the assertion that paper was really drawn.
+  func testTheRecordingPageAndTheDocumentDrawTheSamePaper() {
     let engine = makeEngine(light: true)
-    let window = host(FieldBackground(role: .transcript, engine: engine), dark: false)
-    defer { window.close() }
-    XCTAssertFalse(engine.isRunning)
+    let size = CGSize(width: 120, height: 80)
 
-    window.appearance = NSAppearance(named: .darkAqua)
-    settle(window)
-    XCTAssertTrue(engine.isRunning, "going dark did not put the field back under the transcript")
-    XCTAssertEqual(engine.role, .transcript)
-    XCTAssertFalse(engine.light)
+    func render(_ role: GroundRole, on engine: FieldEngine) -> NSBitmapImageRep? {
+      RenderProbe.bitmap(
+        FieldBackground(role: role, engine: engine).environment(\.colorScheme, .light),
+        size: size)
+    }
 
-    window.appearance = NSAppearance(named: .aqua)
-    settle(window)
-    XCTAssertFalse(engine.isRunning, "going light did not take the transcript's viewer back")
-    XCTAssertTrue(engine.light)
+    guard
+      let recording = render(.recording, on: engine),
+      let transcript = render(.transcript, on: engine),
+      // A non-drawing engine paints no frame, so `.home` here is exactly the
+      // wash floor plus the grain — the surface paper has to differ from.
+      let wash = render(
+        .home,
+        on: FieldEngine(
+          simulation: FieldSimulation(
+            width: FieldBackgroundTests.width,
+            height: FieldBackgroundTests.height,
+            palette: GroundPalette.palette(id: "tide")!,
+            light: true),
+          drawsFrames: false))
+    else { return XCTFail("no bitmap") }
+
+    var sampled = 0
+    var differedFromWash = 0
+    for x in stride(from: 0, to: recording.pixelsWide, by: 3) {
+      for y in stride(from: 0, to: recording.pixelsHigh, by: 3) {
+        guard
+          let live = recording.colorAt(x: x, y: y)?.usingColorSpace(.sRGB),
+          let doc = transcript.colorAt(x: x, y: y)?.usingColorSpace(.sRGB),
+          let floor = wash.colorAt(x: x, y: y)?.usingColorSpace(.sRGB)
+        else { continue }
+        sampled += 1
+        XCTAssertEqual(
+          FieldBackgroundTests.rgb(live), FieldBackgroundTests.rgb(doc),
+          "the ground changes at Stop: pixel (\(x), \(y)) is \(live) live and \(doc) in the document")
+        if FieldBackgroundTests.rgb(live) != FieldBackgroundTests.rgb(floor) { differedFromWash += 1 }
+      }
+    }
+
+    XCTAssertGreaterThan(sampled, 100, "the probe read \(sampled) pixels")
+    XCTAssertGreaterThan(
+      differedFromWash, sampled / 2,
+      "the reading states are drawing the wash floor, not paper — this test would "
+        + "pass for two surfaces that draw nothing at all")
   }
 
   /// Home is untouched by any of this: light or dark, it is the field.
@@ -333,6 +457,12 @@ final class FieldBackgroundTests: XCTestCase {
       XCTAssertTrue(engine.isRunning, dark ? "dark" : "light")
       XCTAssertEqual(engine.role, .home)
     }
+  }
+
+  /// Quantized so two renders are compared on what a display shows rather than
+  /// on the last bit of a float.
+  private static func rgb(_ color: NSColor) -> [Int] {
+    [color.redComponent, color.greenComponent, color.blueComponent].map { Int(($0 * 255).rounded()) }
   }
 
   // MARK: - Reduce Motion
@@ -594,5 +724,29 @@ final class FieldBackgroundTests: XCTestCase {
     engine.setAppVisible(false)
     engine.setAppVisible(true)
     XCTAssertFalse(engine.isRunning)
+  }
+}
+
+// MARK: - Driving a role change from a test
+
+/// The role, as something a test can move while the view stays mounted.
+///
+/// `FieldBackground` handles a role change two ways — `.onChange(of: role)`
+/// when the same view is re-evaluated, and the `onAppear`/`onDisappear` pair
+/// when SwiftUI swaps one surface for another. This drives the first, which is
+/// the one the viewer refcount can get wrong quietly: a swap at least leaves
+/// two visible lifecycle callbacks to reason about.
+@MainActor
+final class GroundRoleBox: ObservableObject {
+  @Published var role: GroundRole
+  init(_ role: GroundRole) { self.role = role }
+}
+
+struct GroundRoleSwitcher: View {
+  @ObservedObject var box: GroundRoleBox
+  let engine: FieldEngine
+
+  var body: some View {
+    FieldBackground(role: box.role, engine: engine)
   }
 }

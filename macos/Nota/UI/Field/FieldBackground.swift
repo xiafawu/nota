@@ -4,10 +4,12 @@ import SwiftUI
 ///
 /// A drop-in replacement for `CraftWashBackground` at the surfaces that carry
 /// the app's ground — the home dashboard, the live session and the document.
-/// **The light transcript wears paper instead** (`GroundPaper`); everything
-/// below is about the field, which every other role and theme draws. It keeps
-/// that view's whole contract: it fills whatever it is put in, it extends under
-/// the titlebar, and it takes no clicks.
+/// **The two light reading states wear paper instead** (`GroundPaper`, ADR
+/// 0007) — the live session and the document, tinted from the same palette so
+/// nothing changes at Stop. Everything below is about the field, which home
+/// draws in both themes and every role draws in dark. It keeps that view's
+/// whole contract: it fills whatever it is put in, it extends under the
+/// titlebar, and it takes no clicks.
 ///
 /// It is a **64×36 image scaled to a window**, which is not a compromise: every
 /// feature in the field is a soft blob hundreds of points across, so the
@@ -85,10 +87,11 @@ struct FieldBackground: View {
   /// A paper surface is not one — see `wearsPaper`.
   @State private var isViewing = false
 
-  /// The light transcript wears flat paper instead of the field
-  /// (`GroundPaper`). It is decided from two things this view already reads,
-  /// so a colour scheme that flips while the document is up moves the surface
-  /// between paper and field without anyone asking the engine to.
+  /// The light reading states — the live session and the document — wear flat
+  /// paper instead of the field (`GroundPaper`). It is decided from two things
+  /// this view already reads, so a colour scheme that flips while either is up
+  /// moves the surface between paper and field without anyone asking the
+  /// engine to.
   private var wearsPaper: Bool {
     GroundPaper.wears(role: role, light: colorScheme == .light)
   }
@@ -97,10 +100,12 @@ struct FieldBackground: View {
     ZStack {
       CraftTokens.washGradient(colorScheme)
       if wearsPaper {
-        // The family's transcript palette, read rather than the engine's
-        // current one: the engine may be sitting on home's ground, since a
-        // paper surface never asks it to move.
-        GroundPaper.swiftUIColor(for: engine.family.palette(for: role))
+        // The family, not the role: `GroundPaper` tints every paper surface
+        // from the transcript's palette, so the live session and the document
+        // are the same colour and Stop changes nothing (ADR 0007). And the
+        // family rather than `engine.palette`, because the engine may be
+        // sitting on home's ground — a paper surface never asks it to move.
+        GroundPaper.swiftUIColor(in: engine.family)
       } else {
         FieldImageLayer(engine: engine)
       }
@@ -137,9 +142,11 @@ struct FieldBackground: View {
   }
 
   /// A field surface holds a viewer and steers the engine's role; a paper
-  /// surface does neither — the engine's clock has nobody to draw for, and
-  /// the transcript's ground must not become the target the *home* screen
-  /// morphs back from.
+  /// surface does neither — the engine's clock has nobody to draw for, and a
+  /// ground nobody drew must not become the target the *home* screen morphs
+  /// back from. With two roles wearing paper in light, a whole light-mode
+  /// session (record, stop, read) can pass without the engine running at all,
+  /// and home still morphs back from home's own ground.
   ///
   /// The role is set before `addViewer`, which paints if there is no frame
   /// yet: a first frame painted at the previous role's ground would be a cut

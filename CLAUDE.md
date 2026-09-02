@@ -1344,35 +1344,66 @@ the first frame after a switch moves **0.54** against a whole-morph travel of
 **42.90** — 1.3%. Anything that reprimes takes that number to most of the way
 and the test goes red.
 
-**The light transcript wears paper, not the field** (owner, 2026-09-02: "C for
-light and A for dark", chosen off a sheet that put four surfaces under the
-same transcript side by side). `GroundPaper` is the transcript palette's base
-hue at 2.4% saturation and 97.3% value — flat, tinted from the launch, not
-white — and `FieldBackground` draws it in place of `FieldImageLayer` whenever
-`GroundPaper.wears(role:light:)` says so, which is `.transcript` in light and
-nothing else. The measurement behind it is the 2026-08-15 sweep of eight
-shipping apps (memory `three-lanes-for-text-on-colour`): long-form text sits
-on one strong hue, or on a **dark** multi-hue field, or on something neutral
-with the colour kept to the edges, and never on a pale multi-hue field. The
-dark transcript is the second of those and keeps the field, push 0.97 and
-all; only the light one was in no lane. Three things the paper owes:
+**The light reading surfaces wear paper, not the field** (owner, 2026-09-02:
+"C for light and A for dark", chosen off a sheet that put four surfaces under
+the same transcript side by side; extended to the live session by ADR 0007).
+`GroundPaper` is the transcript palette's base hue at 2.4% saturation and
+97.3% value — flat, tinted from the launch, not white — and `FieldBackground`
+draws it in place of `FieldImageLayer` whenever `GroundPaper.wears(role:light:)`
+says so, which is **`.recording` and `.transcript` in light**, and nothing
+else. The measurement behind it is the 2026-08-15 sweep of eight shipping apps
+(memory `three-lanes-for-text-on-colour`): long-form text sits on one strong
+hue, or on a **dark** multi-hue field, or on something neutral with the colour
+kept to the edges, and never on a pale multi-hue field. Both light reading
+states are that last case now — with ADR 0007 the live pane draws a 34em
+column at 18.5pt, so it *is* long-form text — while dark stays the second lane
+and keeps the field in every role, push 0.97 and all. `home` never wears
+paper: it is a dashboard, not a wall of text.
 
+Four things the paper owes:
+
+- **It is ONE paper, tinted from the transcript palette whichever role wears
+  it.** The launch's family gives `.recording` and `.transcript` different
+  grounds, so paper resolved per role would still change colour under the
+  owner at Stop — the quiet version of the event ADR 0007 exists to remove.
+  `GroundPaper.palette(in:)` is the one function that answers which palette a
+  paper surface tints from and it takes **no role**; `swiftUIColor(in:)` is
+  what the view calls, so there is no second call site to disagree with the
+  first. Asserted as values (`testEveryPaperSurfaceTintsFromTheTranscriptPalette`,
+  over all seven chords) and in pixels
+  (`testTheRecordingPageAndTheDocumentDrawTheSamePaper`, which renders both
+  roles and additionally requires them to differ from the wash floor — without
+  that third render, two surfaces drawing *nothing* would compare equal).
 - **A paper surface is not a viewer and does not steer the role.** It adds no
   viewer (the clock has nobody to draw for) and never sets `engine.role`, so
   the engine sits on whatever the last *field* surface put it on and home
-  morphs back from home's own ground, not from a transcript ground nobody
-  drew. A scheme flip while the document is up moves it between paper and
-  field in both directions, viewer taken and given back
-  (`testASchemeFlipMovesTheTranscriptBetweenPaperAndField`, hosted in an
-  offscreen window because `onAppear` is where every viewer decision lives).
+  morphs back from home's own ground, not from a ground nobody drew. With two
+  roles on paper a whole light-mode session — record, stop, read — runs with
+  the field engine inert. A scheme flip while either is up moves it between
+  paper and field in both directions, viewer taken and given back
+  (`testASchemeFlipMovesAReadingStateBetweenPaperAndField`), and moving
+  home ↔ recording hands the viewer back and forth repeatedly
+  (`testMovingBetweenHomeAndALightRecordingHandsTheViewerBack`, with the dark
+  twin as its control). All hosted in an offscreen window, because `onAppear`
+  is where every viewer decision lives.
 - **The transcribing screen wears it too.** It is `.transcript` for the reason
   it always was — a run is the transcript arriving — and a paper-to-field
   swap at the moment the text lands would be the second event that role
   exists to prevent.
 - **The ink is unchanged.** The warm `GroundInk.light` on tinted paper is the
   ordinary warm black on paper; `GroundPaperTests` walks all sixteen palettes
-  at both contrast settings and every tier clears its bar (body ≥ 15:1). The
-  question of the ink's hue is now a question about **home** only.
+  at both contrast settings and every tier clears its bar (body ≥ 15:1) — now
+  against `minimumContrast(contrast)`, the promoted bar Increase Contrast
+  actually asks for, rather than the standard one. The live pane's own
+  `.timestamp` and `.speaker` tiers are in that sweep and pinned to be
+  (`testTheRecordingSurfacesOwnTiersAreCoveredByThatSweep`). The question of
+  the ink's hue is now a question about **home** only.
+
+Two costs, both named and both accepted by the owner: in light mode the launch
+family's **`recording` palette goes undrawn** (home still shows its own field,
+so two of the three survive), and the recording cluster's **Liquid Glass
+capsules refract less**, because flat paper has nothing moving behind them —
+the ember meter still carries liveness, which is what that surface owes.
 
 **Under Reduce Motion a switch paints once instead of morphing.** The morph is
 advanced by `step`, and a Reduce Motion engine never steps again — without the
