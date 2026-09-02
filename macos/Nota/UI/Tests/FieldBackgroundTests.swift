@@ -1,4 +1,6 @@
+import AppKit
 import CoreGraphics
+import SwiftUI
 import XCTest
 
 @testable import Nota
@@ -250,6 +252,87 @@ final class FieldBackgroundTests: XCTestCase {
     XCTAssertTrue(
       description.contains("LinearGradient"),
       "the wash floor is gone; the CoreGraphics-refusal case degrades to a hole")
+  }
+
+  // MARK: - Paper
+
+  /// Host a ground in an offscreen window and let `onAppear` run. An unhosted
+  /// `NSHostingView` never fires it (`RenderProbe.bitmap`'s limit), and every
+  /// viewer decision the ground makes is made there.
+  private func host(_ view: some View, dark: Bool) -> NSWindow {
+    let hosting = NSHostingView(rootView: view)
+    hosting.frame = CGRect(x: 0, y: 0, width: 200, height: 120)
+    let window = NSWindow(
+      contentRect: hosting.frame, styleMask: [.borderless], backing: .buffered, defer: false)
+    window.isReleasedWhenClosed = false
+    window.appearance = NSAppearance(named: dark ? .darkAqua : .aqua)
+    window.contentView = hosting
+    window.layoutIfNeeded()
+    hosting.layoutSubtreeIfNeeded()
+    RunLoop.current.run(until: Date().addingTimeInterval(0.08))
+    return window
+  }
+
+  private func settle(_ window: NSWindow) {
+    window.contentView?.layoutSubtreeIfNeeded()
+    RunLoop.current.run(until: Date().addingTimeInterval(0.08))
+  }
+
+  /// The light transcript wears paper and asks nothing of the engine: no
+  /// viewer, so no clock and no frame, and the role is left where the last
+  /// field surface put it — the paper must not become the ground home morphs
+  /// back from.
+  func testTheLightTranscriptWearsPaperAndAsksNothingOfTheEngine() {
+    let engine = makeEngine(light: true)
+    let window = host(FieldBackground(role: .transcript, engine: engine), dark: false)
+    defer { window.close() }
+
+    XCTAssertFalse(engine.isRunning, "a paper surface started the field's clock")
+    XCTAssertNil(engine.image, "a paper surface had the field painted for nobody")
+    XCTAssertEqual(engine.role, .home, "a paper surface steered the engine's role")
+  }
+
+  /// The dark transcript keeps the field, exactly as before.
+  func testTheDarkTranscriptStillWearsTheField() {
+    let engine = makeEngine(light: false)
+    let window = host(FieldBackground(role: .transcript, engine: engine), dark: true)
+    defer { window.close() }
+
+    XCTAssertTrue(engine.isRunning)
+    XCTAssertNotNil(engine.image)
+    XCTAssertEqual(engine.role, .transcript)
+  }
+
+  /// A scheme flip while the document is up moves it between paper and field
+  /// in both directions — the viewer is taken and given back, so the clock
+  /// follows the surface that is actually drawn.
+  func testASchemeFlipMovesTheTranscriptBetweenPaperAndField() {
+    let engine = makeEngine(light: true)
+    let window = host(FieldBackground(role: .transcript, engine: engine), dark: false)
+    defer { window.close() }
+    XCTAssertFalse(engine.isRunning)
+
+    window.appearance = NSAppearance(named: .darkAqua)
+    settle(window)
+    XCTAssertTrue(engine.isRunning, "going dark did not put the field back under the transcript")
+    XCTAssertEqual(engine.role, .transcript)
+    XCTAssertFalse(engine.light)
+
+    window.appearance = NSAppearance(named: .aqua)
+    settle(window)
+    XCTAssertFalse(engine.isRunning, "going light did not take the transcript's viewer back")
+    XCTAssertTrue(engine.light)
+  }
+
+  /// Home is untouched by any of this: light or dark, it is the field.
+  func testHomeWearsTheFieldInBothThemes() {
+    for dark in [false, true] {
+      let engine = makeEngine(light: !dark)
+      let window = host(FieldBackground(role: .home, engine: engine), dark: dark)
+      defer { window.close() }
+      XCTAssertTrue(engine.isRunning, dark ? "dark" : "light")
+      XCTAssertEqual(engine.role, .home)
+    }
   }
 
   // MARK: - Reduce Motion

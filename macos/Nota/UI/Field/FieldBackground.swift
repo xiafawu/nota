@@ -2,8 +2,10 @@ import SwiftUI
 
 /// The ground, drawn.
 ///
-/// A drop-in replacement for `CraftWashBackground` at the two surfaces that
-/// carry the app's ground — the home dashboard and the live session. It keeps
+/// A drop-in replacement for `CraftWashBackground` at the surfaces that carry
+/// the app's ground — the home dashboard, the live session and the document.
+/// **The light transcript wears paper instead** (`GroundPaper`); everything
+/// below is about the field, which every other role and theme draws. It keeps
 /// that view's whole contract: it fills whatever it is put in, it extends under
 /// the titlebar, and it takes no clicks.
 ///
@@ -79,10 +81,29 @@ struct FieldBackground: View {
     self.engine = engine
   }
 
+  /// Whether this surface is currently counted as a viewer of the engine.
+  /// A paper surface is not one — see `wearsPaper`.
+  @State private var isViewing = false
+
+  /// The light transcript wears flat paper instead of the field
+  /// (`GroundPaper`). It is decided from two things this view already reads,
+  /// so a colour scheme that flips while the document is up moves the surface
+  /// between paper and field without anyone asking the engine to.
+  private var wearsPaper: Bool {
+    GroundPaper.wears(role: role, light: colorScheme == .light)
+  }
+
   var body: some View {
     ZStack {
       CraftTokens.washGradient(colorScheme)
-      FieldImageLayer(engine: engine)
+      if wearsPaper {
+        // The family's transcript palette, read rather than the engine's
+        // current one: the engine may be sitting on home's ground, since a
+        // paper surface never asks it to move.
+        GroundPaper.swiftUIColor(for: engine.family.palette(for: role))
+      } else {
+        FieldImageLayer(engine: engine)
+      }
       CraftNoiseLayer(
         opacity: CraftTokens.noiseOpacity(colorScheme),
         color: CraftTokens.noiseColor(colorScheme)
@@ -99,21 +120,48 @@ struct FieldBackground: View {
     .onAppear {
       engine.light = (colorScheme == .light)
       engine.reduceMotion = reduceMotion
-      // Set before `addViewer`, which paints if there is no frame yet: a first
-      // frame painted at the previous role's ground would be a cut that the
-      // morph then has to walk back.
-      //
-      // Two surfaces are briefly mounted at once while ContentView cross-fades
-      // its phases, so the last `onAppear` wins — which is the incoming view,
-      // and therefore right. Nothing clears the role on the way out for the
-      // same reason: the outgoing view must not drag the ground back with it.
-      engine.role = role
-      engine.addViewer()
+      reconcileViewer()
     }
-    .onDisappear { engine.removeViewer() }
-    .onChange(of: colorScheme) { _, new in engine.light = (new == .light) }
+    .onDisappear {
+      if isViewing {
+        engine.removeViewer()
+        isViewing = false
+      }
+    }
+    .onChange(of: colorScheme) { _, new in
+      engine.light = (new == .light)
+      reconcileViewer()
+    }
     .onChange(of: reduceMotion) { _, new in engine.reduceMotion = new }
-    .onChange(of: role) { _, new in engine.role = new }
+    .onChange(of: role) { _, _ in reconcileViewer() }
+  }
+
+  /// A field surface holds a viewer and steers the engine's role; a paper
+  /// surface does neither — the engine's clock has nobody to draw for, and
+  /// the transcript's ground must not become the target the *home* screen
+  /// morphs back from.
+  ///
+  /// The role is set before `addViewer`, which paints if there is no frame
+  /// yet: a first frame painted at the previous role's ground would be a cut
+  /// that the morph then has to walk back.
+  ///
+  /// Two surfaces are briefly mounted at once while ContentView cross-fades
+  /// its phases, so the last one to reconcile wins — which is the incoming
+  /// view, and therefore right. Nothing clears the role on the way out for the
+  /// same reason: the outgoing view must not drag the ground back with it.
+  private func reconcileViewer() {
+    if wearsPaper {
+      if isViewing {
+        engine.removeViewer()
+        isViewing = false
+      }
+    } else {
+      engine.role = role
+      if !isViewing {
+        engine.addViewer()
+        isViewing = true
+      }
+    }
   }
 }
 
