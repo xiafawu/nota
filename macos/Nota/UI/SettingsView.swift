@@ -6,8 +6,6 @@ import SwiftUI
 private enum SettingsTab: Hashable {
   case general, dictation, dictionary, models, apiKeys, speakers
 
-  static let windowWidth: CGFloat = 720
-
   var idealHeight: CGFloat {
     switch self {
     case .general: 300
@@ -83,35 +81,20 @@ struct SettingsView: View {
         .tabItem { Label("Speakers", systemImage: "person.wave.2") }
         .tag(SettingsTab.speakers)
     }
-    .frame(width: SettingsTab.windowWidth, height: selectedTab.idealHeight)
+    .frame(width: SettingsForm.windowWidth, height: selectedTab.idealHeight)
   }
 
   private var generalTab: some View {
     Form {
       Section {
         Toggle(isOn: $identifySpeakers) {
-          VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
-            Text("Remember speakers")
-            Text("Auto-recognize voices you've enrolled on every recording. Turn off to skip recognition.")
-              .font(Tokens.settingsCaptionFont)
-              .foregroundStyle(.secondary)
-          }
+          SettingsLabel("Remember speakers", caption: "Auto-recognize voices you've enrolled on every recording. Turn off to skip recognition.")
         }
         Toggle(isOn: $skipSummary) {
-          VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
-            Text("Transcribe only")
-            Text("Skip the LLM summary. Produces a transcript-only output.")
-              .font(Tokens.settingsCaptionFont)
-              .foregroundStyle(.secondary)
-          }
+          SettingsLabel("Transcribe only", caption: "Skip the LLM summary. Produces a transcript-only output.")
         }
         Toggle(isOn: $memoDiarization) {
-          VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
-            Text("Diarize memo recordings")
-            Text("Identify speakers in quick memos (off by default — faster and cheaper).")
-              .font(Tokens.settingsCaptionFont)
-              .foregroundStyle(.secondary)
-          }
+          SettingsLabel("Diarize memo recordings", caption: "Identify speakers in quick memos (off by default — faster and cheaper).")
         }
         .onChange(of: memoDiarization) { _, newValue in
           NotaSettingsStore.memoDiarizationEnabled = newValue
@@ -125,12 +108,7 @@ struct SettingsView: View {
             Text(behavior.label).tag(behavior)
           }
         } label: {
-          VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
-            Text("Closing the summary with unsaved edits")
-            Text("Save it commits the draft and closes; Ask me confirms first.")
-              .font(Tokens.settingsCaptionFont)
-              .foregroundStyle(.secondary)
-          }
+          SettingsLabel("Closing the summary with unsaved edits", caption: "Save it commits the draft and closes; Ask me confirms first.")
         }
         .pickerStyle(.segmented)
         Picker(selection: $appearanceRaw) {
@@ -138,26 +116,17 @@ struct SettingsView: View {
             Text(setting.label).tag(setting.rawValue)
           }
         } label: {
-          VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
-            Text("Appearance")
-            Text("System follows macOS; Light and Dark pin every Nota window.")
-              .font(Tokens.settingsCaptionFont)
-              .foregroundStyle(.secondary)
-          }
+          SettingsLabel("Appearance", caption: "System follows macOS; Light and Dark pin every Nota window.")
         }
         .pickerStyle(.segmented)
         .onChange(of: appearanceRaw) { _, newValue in
           (AppearanceSetting(rawValue: newValue) ?? .system).apply()
         }
       } footer: {
-        Text("Build \(buildStamp)")
-          .font(Tokens.settingsCaptionFont)
-          .foregroundStyle(.secondary)
+        SettingsCaption("Build \(buildStamp)")
       }
       Section {} footer: {
-        Text("Deployed from /Applications/Nota.app — ignore Spotlight duplicates of deleted build products.")
-          .font(Tokens.settingsCaptionFont)
-          .foregroundStyle(.secondary)
+        SettingsCaption("Deployed from /Applications/Nota.app — ignore Spotlight duplicates of deleted build products.")
       }
     }
     .formStyle(.grouped)
@@ -215,7 +184,7 @@ struct ModelsSettingsView: View {
         Section {
           Label(errorMessage, systemImage: "exclamationmark.triangle")
             .foregroundStyle(.red)
-            .font(Tokens.settingsCaptionFont)
+            .settingsCaptionFont()
         }
       }
     }
@@ -271,9 +240,7 @@ struct ModelsSettingsView: View {
       Text(title)
     } footer: {
       if let footer {
-        Text(footer)
-          .font(Tokens.settingsCaptionFont)
-          .foregroundStyle(.secondary)
+        SettingsCaption(footer)
       }
     }
   }
@@ -284,7 +251,7 @@ struct ModelsSettingsView: View {
       HStack(alignment: .top, spacing: Metrics.statusHStackSpacing) {
         Label {
           Text("\(id) is no longer available; runs will use the default.")
-            .font(Tokens.settingsCaptionFont)
+            .settingsCaptionFont()
         } icon: {
           Image(systemName: "exclamationmark.triangle")
         }
@@ -305,9 +272,7 @@ struct ModelsSettingsView: View {
   private var catalogSection: some View {
     Section {
       HStack(spacing: Metrics.statusHStackSpacing) {
-        Text(catalog.footerText)
-          .font(Tokens.settingsCaptionFont)
-          .foregroundStyle(.secondary)
+        SettingsCaption(catalog.footerText)
         Spacer()
         if catalog.isRefreshing {
           ProgressView().controlSize(.small)
@@ -319,9 +284,7 @@ struct ModelsSettingsView: View {
         .disabled(catalog.isRefreshing)
       }
       if let message = catalog.refreshMessage, !catalog.isRefreshing {
-        Text(message)
-          .font(Tokens.settingsCaptionFont)
-          .foregroundStyle(.secondary)
+        SettingsCaption(message)
       }
     }
   }
@@ -364,16 +327,14 @@ struct ApiKeysSettingsView: View {
           keyRow(status)
         }
       } footer: {
-        Text("Keys are stored in ~/.nota/config (chmod 600). Environment variables override the file.")
-          .font(Tokens.settingsCaptionFont)
-          .foregroundStyle(.secondary)
+        SettingsCaption("Keys are stored in ~/.nota/config (chmod 600). Environment variables override the file.")
       }
 
       if let errorMessage {
         Section {
           Label(errorMessage, systemImage: "exclamationmark.triangle")
             .foregroundStyle(.red)
-            .font(Tokens.settingsCaptionFont)
+            .settingsCaptionFont()
         }
       }
     }
@@ -389,7 +350,7 @@ struct ApiKeysSettingsView: View {
             .font(.callout)
             .fontWeight(.medium)
           Text(status.env)
-            .font(Tokens.settingsCaptionFont)
+            .settingsCaptionFont()
             .foregroundStyle(.tertiary)
         }
         Spacer()
@@ -430,17 +391,13 @@ struct ApiKeysSettingsView: View {
   private func statusBadge(_ status: ApiKeyStatus) -> some View {
     switch status.source {
     case .env:
-      Text("\(status.masked ?? "") · env")
-        .font(Tokens.settingsCaptionFont)
-        .foregroundStyle(.secondary)
+      SettingsCaption("\(status.masked ?? "") · env")
         .help("Set by an environment variable; change or remove it in your shell.")
     case .file:
-      Text("\(status.masked ?? "") · config")
-        .font(Tokens.settingsCaptionFont)
-        .foregroundStyle(.secondary)
+      SettingsCaption("\(status.masked ?? "") · config")
     case .absent:
       Text("not set")
-        .font(Tokens.settingsCaptionFont)
+        .settingsCaptionFont()
         .foregroundStyle(.tertiary)
     }
   }

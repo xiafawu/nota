@@ -42,7 +42,7 @@ struct DictationSettingsView: View {
     } header: {
       Text("Activation")
     } footer: {
-      footerText(settings.activation == .hold
+      SettingsCaption(settings.activation == .hold
         ? "Hold the trigger key while speaking; release to finalize."
         : "Press the trigger key to start; press again to stop."
       )
@@ -53,20 +53,20 @@ struct DictationSettingsView: View {
 
   private var triggerSection: some View {
     Section {
-      Picker("Trigger Key", selection: $settings.trigger.kind) {
+      Picker("Trigger key", selection: $settings.trigger.kind) {
         Text("Fn / Globe").tag(TriggerKey.Kind.fnGlobe)
-        Text("Custom Key Code").tag(TriggerKey.Kind.keyCode)
+        Text("Custom key code").tag(TriggerKey.Kind.keyCode)
       }
       .labelsHidden()
 
       if settings.trigger.kind == .keyCode {
-        TextField("Key Code", value: triggerKeyCodeBinding, format: .number)
+        TextField("Key code", value: triggerKeyCodeBinding, format: .number)
       }
     } header: {
       Text("Trigger Key")
     } footer: {
       if settings.trigger.kind == .keyCode {
-        footerText("Numeric key code of the trigger key — for example, 49 for Space.")
+        SettingsCaption("Numeric key code of the trigger key — for example, 49 for Space.")
       }
     }
   }
@@ -93,7 +93,7 @@ struct DictationSettingsView: View {
       Text("Recognition Engine")
     } footer: {
       if settings.engine == .assemblyAIRealtime {
-        footerText("AssemblyAI Realtime requires an AssemblyAI API key, set in the API Keys tab.")
+        SettingsCaption("AssemblyAI Realtime requires an AssemblyAI API key, set in the API Keys tab.")
       }
     }
   }
@@ -102,7 +102,7 @@ struct DictationSettingsView: View {
 
   private var polishSection: some View {
     Section {
-      Toggle("LLM Polish", isOn: $settings.polishEnabled)
+      Toggle("LLM polish", isOn: $settings.polishEnabled)
 
       if settings.polishEnabled {
         // Only models that are an HTTP endpoint: polish is a network call per
@@ -133,20 +133,20 @@ struct DictationSettingsView: View {
     } header: {
       Text("Polish")
     } footer: {
-      VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
-        footerText("Applies a language model to improve the formatted text before it is inserted.")
-        footerText("By default, the provider receives only the formatted text and your custom dictionary terms — never audio or raw recognition data.")
+      SettingsFooter {
+        SettingsCaption("Applies a language model to improve the formatted text before it is inserted.")
+        SettingsCaption("By default, the provider receives only the formatted text and your custom dictionary terms — never audio or raw recognition data.")
         if settings.screenContextEnabled {
-          footerText("Focused app context is read only during a user-initiated dictation and sent only to LLM Polish: the app name, window title, and a bounded text sample from the focused control. It is not used to change raw audio transcription, and it is not saved in history or logs.")
+          SettingsCaption("Focused app context is read only during a user-initiated dictation and sent only to LLM Polish: the app name, window title, and a bounded text sample from the focused control. It is not used to change raw audio transcription, and it is not saved in history or logs.")
           if settings.screenCaptureFallbackEnabled {
-            footerText("If Accessibility text is unavailable or too short, Nota may ask for Screen Recording permission at dictation completion. It captures only the target app window once, OCRs it in memory, sends bounded redacted text, then discards the image and text. If permission or capture is unavailable, dictation continues normally.")
+            SettingsCaption("If Accessibility text is unavailable or too short, Nota may ask for Screen Recording permission at dictation completion. It captures only the target app window once, OCRs it in memory, sends bounded redacted text, then discards the image and text. If permission or capture is unavailable, dictation continues normally.")
           } else {
-            footerText("Accessibility text is preferred. No screenshot or Screen Recording permission is used while this fallback is off.")
+            SettingsCaption("Accessibility text is preferred. No screenshot or Screen Recording permission is used while this fallback is off.")
           }
         } else {
-          footerText("Focused app context is off. Nota does not send app, window, or screen text to the polish provider.")
+          SettingsCaption("Focused app context is off. Nota does not send app, window, or screen text to the polish provider.")
         }
-        footerText("Local formatting always runs first and is the offline fallback if polish fails.")
+        SettingsCaption("Local formatting always runs first and is the offline fallback if polish fails.")
       }
     }
   }
@@ -168,21 +168,21 @@ struct DictationSettingsView: View {
     } header: {
       Text("Delivery")
     } footer: {
-      VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
-        footerText(settings.deliveryMode.detail)
+      SettingsFooter {
+        SettingsCaption(settings.deliveryMode.detail)
         switch settings.deliveryMode {
         case .immediate:
           EmptyView()
         case .streaming:
-          footerText("Text is only ever added, never rewritten — a sentence the polish model improves late still arrives in the order you said it. If polish fails for a sentence, its local formatting is inserted instead.")
-          footerText("Insertion stays in the app that had focus when you started speaking, even if you switch apps mid-sentence.")
+          SettingsCaption("Text is only ever added, never rewritten — a sentence the polish model improves late still arrives in the order you said it. If polish fails for a sentence, its local formatting is inserted instead.")
+          SettingsCaption("Insertion stays in the app that had focus when you started speaking, even if you switch apps mid-sentence.")
           if settings.engine != .apple {
-            footerText("Requires the Apple On-Device engine; other engines insert on release as usual.")
+            SettingsCaption("Requires the Apple On-Device engine; other engines insert on release as usual.")
           }
         case .review:
-          footerText("The panel takes keyboard focus without bringing Nota to the front, so the app you were dictating into stays where it is. Applying inserts there, not into whatever is frontmost.")
-          footerText("Pressing the trigger again while the panel is open adds to it instead of replacing it — keep talking as many times as you like, then apply the whole thing at once. Anything you have already edited by hand is left exactly as you typed it.")
-          footerText("Corrections you make are learned: the term you typed is remembered, and the wrong spelling you replaced becomes one of its spoken forms.")
+          SettingsCaption("The panel takes keyboard focus without bringing Nota to the front, so the app you were dictating into stays where it is. Applying inserts there, not into whatever is frontmost.")
+          SettingsCaption("Pressing the trigger again while the panel is open adds to it instead of replacing it — keep talking as many times as you like, then apply the whole thing at once. Anything you have already edited by hand is left exactly as you typed it.")
+          SettingsCaption("Corrections you make are learned: the term you typed is remembered, and the wrong spelling you replaced becomes one of its spoken forms.")
         }
       }
     }
@@ -199,9 +199,9 @@ struct DictationSettingsView: View {
     } header: {
       Text("Custom Dictionary")
     } footer: {
-      VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
-        footerText("Custom terms live in the Dictionary tab. They bias recognition, are substituted into the text, and are given to the polish model as the correct spelling.")
-        footerText("Shared with the `nota dictionary` command — both read ~/.nota/dictionary.json.")
+      SettingsFooter {
+        SettingsCaption("Custom terms live in the Dictionary tab. They bias recognition, are substituted into the text, and are given to the polish model as the correct spelling.")
+        SettingsCaption("Shared with the `nota dictionary` command — both read ~/.nota/dictionary.json.")
       }
     }
   }
@@ -210,7 +210,7 @@ struct DictationSettingsView: View {
 
   private var hudSection: some View {
     Section {
-      Toggle("Show Dictation HUD", isOn: $settings.showHUD)
+      Toggle("Show dictation HUD", isOn: $settings.showHUD)
 
       if settings.showHUD {
         Picker("Style", selection: $settings.hudStyle) {
@@ -244,8 +244,8 @@ struct DictationSettingsView: View {
         value: glassOpacityBinding,
         in: GlassTint.range,
         label: { Text("Glass opacity") },
-        minimumValueLabel: { Text("Clear").font(Tokens.settingsCaptionFont) },
-        maximumValueLabel: { Text("Solid").font(Tokens.settingsCaptionFont) },
+        minimumValueLabel: { Text("Clear").settingsCaptionFont() },
+        maximumValueLabel: { Text("Solid").settingsCaptionFont() },
         onEditingChanged: { editing in
           guard !editing, let value = glassOpacityDraft else { return }
           glassOpacityDraft = nil
@@ -255,17 +255,17 @@ struct DictationSettingsView: View {
     } header: {
       Text("Heads-Up Display")
     } footer: {
-      VStack(alignment: .leading, spacing: Metrics.tightStackSpacing) {
-        footerText("Shows a floating panel with microphone level and status while dictating.")
-        footerText("Frosted diffuses what is behind the pill and the review card; Clear lets it show through sharp. Opacity sets how strongly either is tinted — lower lets more through, higher keeps their white text readable over a bright window.")
+      SettingsFooter {
+        SettingsCaption("Shows a floating panel with microphone level and status while dictating.")
+        SettingsCaption("Frosted diffuses what is behind the pill and the review card; Clear lets it show through sharp. Opacity sets how strongly either is tinted — lower lets more through, higher keeps their white text readable over a bright window.")
         if settings.showHUD {
-          footerText(settings.hudStyle.detail)
+          SettingsCaption(settings.hudStyle.detail)
           if settings.hudStyle.isAboutLiveText,
             let caveat = HUDStyle.liveTextCaveat(
               mode: settings.deliveryMode, engine: settings.engine
             )
           {
-            footerText(caveat)
+            SettingsCaption(caveat)
           }
         }
       }
@@ -281,11 +281,5 @@ struct DictationSettingsView: View {
       get: { glassOpacityDraft ?? settings.hudGlassOpacity },
       set: { glassOpacityDraft = $0 }
     )
-  }
-
-  private func footerText(_ text: String) -> some View {
-    Text(text)
-      .font(Tokens.settingsCaptionFont)
-      .foregroundStyle(.secondary)
   }
 }
