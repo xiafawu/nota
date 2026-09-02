@@ -243,7 +243,7 @@ struct HomeDashboardView: View {
       .craftPrimaryCard(in: Self.cardShape)
       .opacity(gate == nil ? 1 : 0.75)
     }
-    .buttonStyle(.plain)
+    .buttonStyle(EntryCardButtonStyle(shape: Self.cardShape))
     .disabled(model.isRunning)
     .help(gate.map { "Needs setup — \($0)" } ?? "Start a live meeting (⌘N)")
   }
@@ -275,7 +275,7 @@ struct HomeDashboardView: View {
       )
       .opacity(gate == nil ? 1 : 0.75)
     }
-    .buttonStyle(.plain)
+    .buttonStyle(EntryCardButtonStyle(shape: Self.cardShape))
     .disabled(model.isRunning)
     .help(gate.map { "Needs setup — \($0)" } ?? "Transcribe an audio file (⌘O)")
     .onDrop(of: [UTType.fileURL.identifier], isTargeted: $fileCardTargeted) { providers in
@@ -307,7 +307,7 @@ struct HomeDashboardView: View {
       .craftGlassPanel(in: Self.cardShape)
       .opacity(gate == nil ? 1 : 0.75)
     }
-    .buttonStyle(.plain)
+    .buttonStyle(EntryCardButtonStyle(shape: Self.cardShape))
     .disabled(model.isRunning)
     .help(gate.map { "Needs setup — \($0)" } ?? "Start a quick memo (⌘M)")
   }
@@ -390,11 +390,14 @@ struct HomeDashboardView: View {
     .buttonStyle(.plain)
     .craftGlassPanel(in: Self.cardShape)
     .onHover { hovering in
-      // Subtle affordance that the strip opens the Usage sheet.
+      // Subtle affordance that the strip opens the Usage sheet. push/pop, not
+      // set/set: `NSCursor.arrow.set()` on exit forces the arrow rather than
+      // restoring whatever the view underneath had asked for, so leaving the
+      // strip over a text cursor or a resize cursor stomped it (P-C7).
       if hovering {
-        NSCursor.pointingHand.set()
+        NSCursor.pointingHand.push()
       } else {
-        NSCursor.arrow.set()
+        NSCursor.pop()
       }
     }
     .help("Open usage and cost (one click away)")
@@ -420,6 +423,40 @@ struct HomeDashboardView: View {
     return "\(minutes)m"
   }
 
+}
+
+/// Hover and press feedback for the three entry cards (P-C7).
+///
+/// They were `.plain` buttons: three 132pt cards that answered a pointer with
+/// nothing at all until the app changed phase, in a window where the drawer's
+/// transcript rows wash on hover and every Liquid Glass cluster button gets
+/// hover and press free from `.regular.interactive()`. Three answers to one
+/// question. This is the drawer row's answer — `Tokens.rowHoverWashOpacity` at
+/// `Tokens.animSnap`, the app's one hover speed — plus the pressed step the
+/// drawer row has no need for, since a card press starts a recording.
+///
+/// A `ButtonStyle` rather than an `@State` per card because `isPressed` only
+/// exists here, and because `.disabled` already withholds both signals: a card
+/// gated on setup, or greyed out while a run is going, cannot light up.
+struct EntryCardButtonStyle: ButtonStyle {
+  let shape: RoundedRectangle
+
+  @State private var isHovered = false
+
+  func makeBody(configuration: Configuration) -> some View {
+    configuration.label
+      .overlay(
+        shape.fill(Color.primary.opacity(wash(pressed: configuration.isPressed)))
+      )
+      .onHover { isHovered = $0 }
+      .animation(Tokens.animSnap, value: isHovered)
+      .animation(Tokens.animSnap, value: configuration.isPressed)
+  }
+
+  private func wash(pressed: Bool) -> Double {
+    if pressed { return Tokens.rowPressedWashOpacity }
+    return isHovered ? Tokens.rowHoverWashOpacity : 0
+  }
 }
 
 #if DEBUG

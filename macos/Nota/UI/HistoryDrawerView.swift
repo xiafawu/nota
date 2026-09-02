@@ -68,6 +68,7 @@ struct HistoryDrawerView: View {
   /// The one dictation row expanded in place (decision 16: one row open at a
   /// time; expansion is the receipt of the copy that happened on click).
   @State private var expandedDictationID: UUID?
+  @State private var hoveredDictationID: UUID?
 
   static let drawerWidth: CGFloat = 380
 
@@ -507,9 +508,25 @@ struct HistoryDrawerView: View {
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: Metrics.rowCornerRadius, style: .continuous)
-        .fill(Color.primary.opacity(isExpanded ? 0.06 : 0))
+        // A dictation row is tappable and washed only when *expanded*, while
+        // the transcript rows one tab away wash on hover — one drawer, two
+        // answers (P-C7). It is the transcript row's answer now, at the same
+        // token and the same speed.
+        .fill(
+          Color.primary.opacity(
+            isExpanded || hoveredDictationID == entry.id ? Tokens.rowHoverWashOpacity : 0
+          )
+        )
     )
     .contentShape(Rectangle())
+    .onHover { hovering in
+      if hovering {
+        hoveredDictationID = entry.id
+      } else if hoveredDictationID == entry.id {
+        hoveredDictationID = nil
+      }
+    }
+    .animation(Tokens.animSnap, value: hoveredDictationID)
     .animation(Tokens.animFast, value: isExpanded)
   }
 }
@@ -598,6 +615,9 @@ private struct HistoryDrawerRow: View {
         Button(action: onTogglePin) {
           Image(systemName: isPinned ? "pin.fill" : "pin")
             .font(.system(size: 11))
+            // The glyph was its own hit target at 11pt (P-C3).
+            .frame(width: Metrics.chipHitTarget, height: Metrics.chipHitTarget)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .foregroundStyle(isPinned ? Color.accentColor : Color.secondary)
