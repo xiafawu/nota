@@ -128,7 +128,15 @@ final class NotaModel: ObservableObject {
   @Published var skipSummary: Bool = (UserDefaults.standard.object(forKey: "skipSummary") as? Bool) ?? false {
     didSet { UserDefaults.standard.set(skipSummary, forKey: "skipSummary") }
   }
-  @Published var lastOutputURL: URL?
+  /// **The one place the open document and its window-level notice live.**
+  /// Both `lastOutputURL` and `backgroundFailure` are reads of this; neither
+  /// can be assigned, which is what makes "moving the window takes the pill
+  /// down" a fact the compiler keeps rather than a line each route has to
+  /// remember. See `OpenDocument`.
+  @Published private(set) var openDocument = OpenDocument()
+
+  /// The `.md` the window is showing, or nil at the front door.
+  var lastOutputURL: URL? { openDocument.url }
   @Published var displayName = "Drop Audio"
   @Published var displayPath = "MP3, M4A, WAV, CAF, QTA, MOV, MP4"
   /// Live pipeline stage shown under the title while a run is in flight,
@@ -547,7 +555,7 @@ final class NotaModel: ObservableObject {
     }
 
     markdown = ""
-    lastOutputURL = nil
+    openDocument.changed(to: nil)
     enrichment.setRecord(nil)
     displayName = friendlyName
     displayPath = fileURL.path
@@ -597,7 +605,7 @@ final class NotaModel: ObservableObject {
 
     isRunning = true
     markdown = ""
-    lastOutputURL = nil
+    openDocument.changed(to: nil)
     status = "Preparing audio..."
     phase = "Preparing…"
 
@@ -607,7 +615,7 @@ final class NotaModel: ObservableObject {
           Task { @MainActor in self?.phase = label }
         }
         markdown = result.markdown
-        lastOutputURL = result.outputURL
+        openDocument.changed(to: result.outputURL)
         status = "Complete"
         refreshHistory()
         if let entry = history.first(where: { $0.url.standardizedFileURL == result.outputURL.standardizedFileURL }) {
@@ -692,8 +700,10 @@ final class NotaModel: ObservableObject {
     sessionMarkers.reset()
     markersUnsaved = false
     // The last handoff's failure, if it had one, has been read by now: it is
-    // about a record the owner has moved on from.
-    backgroundFailure = nil
+    // about a record the owner has moved on from. The open document is NOT
+    // cleared with it — a session is a phase over whatever was open, and
+    // `StopLanding` compares that against what is open when the seal lands.
+    openDocument.leftForALiveSession()
     let engine = Self.engine(
       for: kind,
       hasAssemblyAIKey: ApiKeyStore.value(for: "ASSEMBLYAI_API_KEY") != nil
@@ -983,8 +993,12 @@ final class NotaModel: ObservableObject {
   /// A handed-off record that ended in failure with **no drawer row to say so**
   /// — see `HandoffFailureNotice`. Shown in the toolbar pill, because leaving
   /// the live pane on the press removed the last surface that acknowledged the
-  /// work. Nil whenever the last landing had somewhere else to be reported.
-  @Published private(set) var backgroundFailure: String?
+  /// work. Nil whenever the last landing had somewhere else to be reported, and
+  /// nil again the moment the window moves on: it is a claim about the record
+  /// the owner just handed off, and it may not outlive the view it was raised
+  /// over. That lifetime lives on `openDocument`, which is the only thing that
+  /// can write it.
+  var backgroundFailure: String? { openDocument.failureNotice }
 
   /// Run the record's summary in the background and land it.
   ///
@@ -1068,10 +1082,7 @@ final class NotaModel: ObservableObject {
     // A failure that wrote no markdown has no row and no title to change — the
     // two signals this lane relies on — so the window says it itself. Assigned
     // unconditionally, so a healthy landing clears the last one.
-    backgroundFailure = HandoffFailureNotice.message(
-      status: landing.status,
-      hasRow: outputURL != nil
-    )
+    openDocument.reportLanding(status: landing.status, hasRow: outputURL != nil)
 
     if let outputURL {
       // A completion may update the list it belongs to; it may rewrite the
@@ -1513,7 +1524,7 @@ final class NotaModel: ObservableObject {
   private func performOpenHistory(_ entry: HistoryEntry) {
     do {
       markdown = try String(contentsOf: entry.url, encoding: .utf8)
-      lastOutputURL = entry.url
+      openDocument.changed(to: entry.url)
       selectedURL = nil
       selectedHistoryID = entry.id
       displayName = entry.title
@@ -1536,7 +1547,7 @@ final class NotaModel: ObservableObject {
   /// selected.
   private func openSealedSession(_ saved: LiveSessionPersistence.SavedSession) {
     markdown = saved.markdown
-    lastOutputURL = saved.outputURL
+    openDocument.changed(to: saved.outputURL)
     selectedURL = nil
     let entry = history.first {
       $0.url.standardizedFileURL == saved.outputURL.standardizedFileURL
@@ -1657,7 +1668,7 @@ final class NotaModel: ObservableObject {
 
   private func performNewTranscription() {
     markdown = ""
-    lastOutputURL = nil
+    openDocument.changed(to: nil)
     selectedURL = nil
     originalSelectedURL = nil
     selectedHistoryID = nil

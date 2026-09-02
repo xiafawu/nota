@@ -552,6 +552,139 @@ final class BackgroundProcessingTests: XCTestCase {
     XCTAssertNil(HandoffFailureNotice.message(status: .transcribed, hasRow: false))
   }
 
+  // MARK: - …and it does not outlive the document it was raised over
+
+  private func md(_ name: String) -> URL {
+    URL(fileURLWithPath: "/tmp/nota-tests/\(name).summary.md")
+  }
+
+  /// **The reported bug** (owner, 2026-09-02, with a screenshot): the pill read
+  /// "Transcription failed — the audio is saved." while a complete, healthy
+  /// transcript of a different meeting was on screen. It was true — about a
+  /// record handed off earlier. The notice was cleared by the next landing and
+  /// by the next Start press, and by nothing else, so opening a document left a
+  /// window-level claim standing over unrelated content.
+  ///
+  /// Every route that moves the window is one call, which is the point: the fix
+  /// is not a `nil` at each site but a value that cannot be moved without
+  /// dropping the notice.
+  func testTheFailureNoticeGoesTheMomentTheWindowShowsADifferentDocument() {
+    // Stop hands a record off; it fails before writing any markdown, so it has
+    // no drawer row and the pill is the one surface left.
+    var open = OpenDocument()
+    open.reportLanding(status: .failed(stage: .transcribing), hasRow: false)
+    XCTAssertEqual(open.failureNotice, "Transcription failed — the audio is saved.")
+
+    // The owner opens yesterday's meeting from the drawer.
+    open.changed(to: md("q3-planning"))
+    XCTAssertNil(
+      open.failureNotice,
+      "the pill is a claim about a record, sitting over a document that is not it")
+    XCTAssertEqual(open.url, md("q3-planning"))
+  }
+
+  /// The same rule through each of the other three routes that move the window,
+  /// because "opening from the drawer" is only the one the report happened to
+  /// come in through. Two of them land on **no** document at all, which is why
+  /// the mutator is an act rather than a `!=` on the paths: the front door and
+  /// a file about to be transcribed both read as nil, so a comparison would
+  /// have left the pill up across exactly the sequence the owner is likeliest
+  /// to reproduce — go home, then drop another file.
+  func testEveryRouteThatMovesTheWindowTakesTheNoticeWithIt() {
+    let failed = HistoryStatus.failed(stage: .recording)
+    let notice = "Recording failed — the audio is saved."
+
+    // Going home from a document.
+    var home = OpenDocument()
+    home.changed(to: md("standup"))
+    home.reportLanding(status: failed, hasRow: false)
+    XCTAssertEqual(home.failureNotice, notice)
+    home.changed(to: nil)
+    XCTAssertNil(home.failureNotice, "the front door says nothing about a record")
+    XCTAssertNil(home.url)
+
+    // Dropping a file while already home: nil → nil is still a move.
+    var run = OpenDocument()
+    run.reportLanding(status: failed, hasRow: false)
+    XCTAssertEqual(run.failureNotice, notice)
+    run.changed(to: nil)
+    XCTAssertNil(
+      run.failureNotice,
+      "a fresh run is different content, whatever the URL happens to compare as")
+
+    // A completion swapping the open document — a file run's own output, or
+    // the document a Stop's seal just routed to.
+    var sealed = OpenDocument()
+    sealed.reportLanding(status: failed, hasRow: false)
+    sealed.changed(to: md("weekly-sync"))
+    XCTAssertNil(sealed.failureNotice)
+
+    // Starting a live session. The URL is deliberately kept — `StopLanding`
+    // compares what was open at the press against what is open now, and a
+    // Start that forgot it would make every stop read as "the owner opened
+    // something else" and route nowhere.
+    var live = OpenDocument()
+    live.changed(to: md("weekly-sync"))
+    live.reportLanding(status: failed, hasRow: false)
+    live.leftForALiveSession()
+    XCTAssertNil(live.failureNotice)
+    XCTAssertEqual(live.url, md("weekly-sync"))
+  }
+
+  /// And the other half, which is the whole reason the pill exists: a failure
+  /// that wrote no markdown has no drawer row and no live pane left to say so,
+  /// so with the window sitting exactly where the press left it the notice
+  /// **stands**. A fix that cleared on any refresh, any landing, or any
+  /// re-assert of the same document would take the app back to saying nothing
+  /// at all about a lost recording.
+  func testTheNoticeStandsWhileTheWindowHasNotMovedOn() {
+    var open = OpenDocument()
+    // The owner was reading a document when they started the session; Stop
+    // leaves the live pane on the press and the seal then fails.
+    open.changed(to: md("q3-planning"))
+    open.leftForALiveSession()
+    open.reportLanding(status: .failed(stage: .transcribing), hasRow: false)
+    XCTAssertEqual(open.failureNotice, "Transcription failed — the audio is saved.")
+
+    // And it is not a function of WHICH document is open — only of a move.
+    // That is the honest boundary of this fix, and it is deliberate: the pill
+    // is raised for whoever is looking at the window at the moment it is
+    // raised, and the owner reading an unrelated transcript when a background
+    // record dies is exactly who the message is for. What the report was about
+    // is the pill surviving the owner navigating *afterwards*, which the test
+    // above pins.
+    XCTAssertEqual(open.url, md("q3-planning"))
+    XCTAssertEqual(open.failureNotice, "Transcription failed — the audio is saved.")
+
+    // A second landing for a healthy record is the only other thing that can
+    // take it down, and that is the pre-existing rule, not a new expiry.
+    var untouched = open
+    untouched.reportLanding(status: .done, hasRow: true)
+    XCTAssertNil(untouched.failureNotice)
+    XCTAssertEqual(
+      open.failureNotice, "Transcription failed — the audio is saved.",
+      "a value type: nothing reaches back into the notice the window is holding")
+  }
+
+  /// A landing is assigned unconditionally, so a healthy one clears the last
+  /// one — the behaviour `finishBackgroundJob` has always had, kept when the
+  /// assignment moved onto `OpenDocument`. And a failure that DID write its
+  /// markdown still says nothing here: its drawer row carries the failure and
+  /// its Retry.
+  func testAHealthyLandingClearsTheLastFailureAndARowedFailureRaisesNone() {
+    var open = OpenDocument()
+    open.reportLanding(status: .failed(stage: .transcribing), hasRow: false)
+    XCTAssertNotNil(open.failureNotice)
+
+    open.reportLanding(status: .done, hasRow: true)
+    XCTAssertNil(open.failureNotice, "a landing that went well says nothing")
+
+    open.reportLanding(status: .failed(stage: .summarizing), hasRow: true)
+    XCTAssertNil(
+      open.failureNotice,
+      "two surfaces for one failure is the doubling this lane already refuses")
+  }
+
   /// A transcription failure is not a recording failure. Saying it is sends the
   /// owner looking for audio that is exactly where it should be.
   func testTranscriptionAndRecordingFailuresAreNamedApart() {
@@ -769,4 +902,5 @@ final class StopLandingTests: XCTestCase {
       running.truncatesFromTail,
       "a running phase label reads from its head; only a failure is a sentence")
   }
+
 }
