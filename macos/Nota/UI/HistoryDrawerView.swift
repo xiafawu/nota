@@ -402,6 +402,7 @@ struct HistoryDrawerView: View {
       entry: entry,
       detail: model.recordDetail(for: entry),
       isPinned: model.recordDetail(for: entry)?.pinned == true,
+      canOpen: HistoryRowAvailability.canOpen(isRunning: model.isRunning),
       onOpen: {
         model.openHistory(entry)
         onClose()
@@ -430,7 +431,12 @@ struct HistoryDrawerView: View {
       // relabel's read-modify-write can lose the summary that lands mid-write.
       kindRelabelIsBusy: !model.canRelabelKind(for: entry)
     )
-    .disabled(model.isRunning)
+    // P-C8: only *opening* is refused while a file transcription runs. The
+    // modifier used to sit here as `.disabled(model.isRunning)`, which killed
+    // the whole row — pin, Reveal in Finder and the deletion verbs included,
+    // none of which touch anything a running pipeline owns — and said nothing
+    // about why, since `.help` does not fire on a disabled control.
+    .help(HistoryRowAvailability.help(isRunning: model.isRunning))
   }
 
   // MARK: - Dictation row (decisions 16/18/21)
@@ -510,10 +516,27 @@ struct HistoryDrawerView: View {
 
 // MARK: - Drawer row (transcripts)
 
+/// What a history row still offers while a **file** transcription is running
+/// (P-C8). Opening is the one thing refused — it would swap the document out
+/// from under a run — and the row says so out loud, the way
+/// `RecordingDeletionMenu` offers its submenu and refuses rather than
+/// vanishing. Pure, so the decision is asserted without a drawer.
+enum HistoryRowAvailability {
+  static func canOpen(isRunning: Bool) -> Bool { !isRunning }
+
+  /// Sentence case: this is a tooltip, not a button.
+  static func help(isRunning: Bool) -> String {
+    isRunning ? "Busy — a transcription is running" : "Open this transcript"
+  }
+}
+
 private struct HistoryDrawerRow: View {
   let entry: HistoryEntry
   let detail: HistoryRecordInfo.HistoryDetail?
   let isPinned: Bool
+  /// False while a file transcription is running. Only the open button reads
+  /// it; the pin and the context menu stay live (P-C8).
+  let canOpen: Bool
   let onOpen: () -> Void
   let onTogglePin: () -> Void
   // No `onDelete`: the row's trash button is gone (XIA-436). It deleted the
@@ -568,6 +591,7 @@ private struct HistoryDrawerRow: View {
         .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
+      .disabled(!canOpen)
 
       // Hover actions live OUTSIDE the open button so they never double-fire.
       HStack(spacing: 2) {

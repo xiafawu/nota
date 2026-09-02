@@ -129,3 +129,27 @@ final class DictationSearchTests: XCTestCase {
     XCTAssertTrue(HistoryPresentation.matches(entry, query: "TEAM"))
   }
 }
+
+// MARK: - A busy row says what is off (P-C8)
+
+/// While a file transcription runs the whole row used to be `.disabled`, which
+/// killed pin, Reveal in Finder and the deletion verbs — none of which touch
+/// anything a run owns — and explained nothing, because `.help` does not fire
+/// on a disabled control. Only opening is refused now, and the row says so.
+final class HistoryRowAvailabilityTests: XCTestCase {
+  func testOnlyOpeningIsRefusedWhileARunIsInFlight() {
+    XCTAssertTrue(HistoryRowAvailability.canOpen(isRunning: false))
+    XCTAssertFalse(HistoryRowAvailability.canOpen(isRunning: true))
+  }
+
+  func testTheRowSaysWhyItIsBusy() {
+    XCTAssertEqual(
+      HistoryRowAvailability.help(isRunning: true),
+      "Busy \u{2014} a transcription is running"
+    )
+    XCTAssertEqual(
+      HistoryRowAvailability.help(isRunning: false),
+      "Open this transcript"
+    )
+  }
+}
