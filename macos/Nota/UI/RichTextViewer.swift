@@ -36,14 +36,13 @@ struct RichTextViewer: NSViewRepresentable {
   /// transcript offset after the NSScrollView is relaid out.
   var layoutRevision: Int = 0
   /// Reports the vertical scroll offset (0 = at top), so the host can fade the
-  /// body's top edge once content scrolls beneath the header.
+  /// body's top edge once content scrolls up under the toolbar.
   ///
   /// It reported the document's scroll **range** as well until XIA-441's card
-  /// landed, because the host used to collapse the header on this offset —
-  /// which changed the viewport height, which changed the offset. The header is
-  /// the title and nothing else now — everything else is in the Details panel —
-  /// so it cannot change height at all, the only consumer left changes no
-  /// layout, and the range has no reader.
+  /// landed, because the host used to collapse a pinned header on this offset —
+  /// which changed the viewport height, which changed the offset. That header
+  /// is gone entirely (2026-09-02: the title is the document's own first line),
+  /// so the only consumer left changes no layout and the range has no reader.
   var onScroll: ((_ offset: CGFloat) -> Void)? = nil
   /// The seconds this document's flagged moments were taken at (XIA-429).
   /// Handed straight to the text view, which draws one pip per marked line in
@@ -108,14 +107,15 @@ struct RichTextViewer: NSViewRepresentable {
     // to be watched directly.
     //
     // **Only when the WIDTH changed**, and that guard is not an optimisation —
-    // without it the transcript shakes while you scroll it. The loop:
-    // scrolling reports an offset, the host collapses the document header on
-    // it, the collapse changes the scroll view's *height*, the clip view's
-    // frame changes, and this observer rewrote `textContainerInset` and the
+    // without it the transcript shook while you scrolled it. The loop was:
+    // scrolling reported an offset, the host collapsed the document header on
+    // it, the collapse changed the scroll view's *height*, the clip view's
+    // frame changed, and this observer rewrote `textContainerInset` and the
     // container size — which invalidates the whole text layout, moves the
-    // document under the scroller, and reports another offset. The column
-    // depends on width alone, so a height-only frame change has no business
-    // touching it.
+    // document under the scroller, and reports another offset. That header is
+    // gone (2026-09-02), but the guard is not: the receipt's bottom reserve
+    // still changes this view's height under a document being read, and the
+    // column depends on width alone.
     scrollView.contentView.postsFrameChangedNotifications = true
     context.coordinator.lastLaidOutWidth = scrollView.contentSize.width
     context.coordinator.frameObserver = NotificationCenter.default.addObserver(
@@ -212,8 +212,8 @@ struct RichTextViewer: NSViewRepresentable {
     /// *behaviour* rather than a number: re-applying the column writes
     /// `textContainerInset`, which invalidates the entire text layout. Doing
     /// that from a frame change that only altered the height is what made the
-    /// transcript shake under a scroll (the document header collapses on
-    /// scroll, which changes the height, which fired this observer).
+    /// transcript shake under a scroll (the document header used to collapse on
+    /// scroll, which changed the height, which fired this observer).
     ///
     /// Sub-half-point drift is refused for the reason
     /// `RichTextScrollRestore.needsRestore` refuses it: the correction costs

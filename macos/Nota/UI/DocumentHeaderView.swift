@@ -1,45 +1,28 @@
 import SwiftUI
 
-/// Pinned above the scrollable rich-text body: **the title, and nothing else**
-/// (XIA-441; reduced to the title alone on 2026-08-19).
-///
-/// Everything that used to stack under it — the "date · duration" subtitle, the
-/// speaker chips, the record's fact strip and the tags — lives in the Details
-/// panel (`SummaryRailView`), opened by the one Details button in the local
-/// cluster beside Share. That is not a tidy-up. Those five parts folded away on
-/// scroll, so the header changed height, so it changed the scroll range that had
-/// decided it should fold: a state change driven by a value it alters. Two
-/// thresholds and a range floor (`DocumentHeaderCollapse`, deleted) made the
-/// resulting oscillation settle on short documents. The header now has nothing
-/// left to fold, so the loop cannot start — the fix is structural, and it got
-/// *more* structural when the info card became a panel: this view reads one
-/// string and draws it.
-///
-/// Left padding matches the body's gutter so the title aligns with the
-/// transcript text below.
-struct DocumentHeaderView: View {
-  let meta: DocMeta
-
-  var body: some View {
-    Text(meta.title)
-      .font(Tokens.docTitleFont)
-      .fontWeight(.bold)
-      // The biggest text on the document surface, and it sits directly on the
-      // `.transcript` ground with the reading column right under it — where
-      // every glyph goes through `GroundInk.nsColor(_:)`. Falling through to
-      // `labelColor` made the title the one run on this pane that was not
-      // measured against the field.
-      .foregroundStyle(.ground(.body))
-      .lineLimit(2)
-      .truncationMode(.tail)
-      .textSelection(.enabled)
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .padding(.leading, Metrics.gutterWidth)
-      .padding(.trailing, Metrics.richTextInsetX)
-      .padding(.top, Metrics.docHeaderTopPadding)
-      .padding(.bottom, Metrics.docHeaderBottomPadding)
-  }
-}
+// MARK: - The header band is gone
+//
+// `DocumentHeaderView` used to live here: one pinned line above the scrollable
+// rich-text body, holding the title and nothing else (XIA-441, reduced to the
+// title alone on 2026-08-19, **deleted 2026-09-02**).
+//
+// It existed to hold the metadata that ADR 0006 moved into the Details panel —
+// the "date · duration" subtitle, the speaker chips, the fact strip and the
+// tags. Those five parts folded away on scroll, so the band changed height, so
+// it changed the scroll range that had decided it should fold: a state change
+// driven by a value it alters, which the owner saw as the transcript *shaking*.
+// Moving them out removed the loop; what was left was a whole non-scrolling
+// region reserved for one line, and the owner crossed it out (2026-09-02).
+//
+// The title is now the document's own first line, drawn inside the reading
+// column by `renderDocumentTitle` and composed onto the body by
+// `MainPaneView.documentBody`. A line of text has no height that scroll can
+// alter, so the loop is not merely damped or removed — there is no longer a
+// band for it to happen in.
+//
+// The rest of this file is what the Details panel draws: the badge rule, the
+// speaker chips, the tag row, and the focus-loss rule the two inline editors
+// share.
 
 // MARK: - What the Details button announces
 
@@ -616,15 +599,16 @@ private struct AddTagChip: View {
 }
 
 #if DEBUG
-#Preview("header") {
-  DocumentHeaderView(
-    meta: DocMeta(
-      title: "Reflecting on Self and Confidence",
-      subtitle: "May 20 · 51 min",
-      tags: ["self-awareness", "confidence"]
-    )
+#Preview("speaker chips") {
+  SpeakerChipStrip(
+    chips: .constant([
+      SpeakerChip(label: "Speaker 1", name: "Freya Wu", indicator: .enrolled),
+      SpeakerChip(label: "Speaker 2", name: "", indicator: .none),
+    ]),
+    onRename: { _, _ in }
   )
-  .frame(width: 600)
+  .padding()
+  .frame(width: 320)
 }
 
 #endif
