@@ -516,3 +516,56 @@ final class HUDInkTests: XCTestCase {
     }
   }
 }
+
+// MARK: - The meters' idle breathing
+
+/// The pill's meter used to breathe off a 30 fps timeline for the whole
+/// session, silence included, with no way out for an owner who asked for
+/// Reduce Motion — while the bar's and the prompter's `HUDCompactMeter` had no
+/// breathing at all and sat dead still at silence. One term, drawn by both,
+/// sampled at the level feed's own cadence, and a constant when motion is
+/// reduced (P-B7).
+final class HUDMeterBreatheTests: XCTestCase {
+  /// The decorative half stops under Reduce Motion: no phase, no index, one
+  /// value. (The *level* keeps moving — that is information, and it is
+  /// `RecordingMotion.meterAnimation`'s job, not this term's.)
+  func testTheBreatheTermIsAConstantUnderReduceMotion() {
+    var seen = Set<Double>()
+    for phase in stride(from: 0.0, through: 12.0, by: 0.37) {
+      for index in 0..<9 {
+        seen.insert(HUDPillMetrics.breathe(phase: phase, index: index, reduceMotion: true))
+      }
+    }
+    XCTAssertEqual(seen.count, 1, "breathing under Reduce Motion is not one value: \(seen)")
+    XCTAssertEqual(seen.first ?? .nan, 0.05, accuracy: 0.0001)
+  }
+
+  /// With motion allowed it is the swell it always was: bounded by the
+  /// unchanged 0.05 +/- 0.04, moving over time, and offset per bar so the
+  /// swell travels across them rather than pumping in lockstep.
+  func testTheBreatheTermStillSwellsAndTravelsWhenMotionIsAllowed() {
+    var values: [Double] = []
+    for phase in stride(from: 0.0, through: 6.0, by: 0.05) {
+      values.append(HUDPillMetrics.breathe(phase: phase, index: 0, reduceMotion: false))
+    }
+    XCTAssertGreaterThan(values.max() ?? 0, 0.088)
+    XCTAssertLessThan(values.min() ?? 1, 0.012)
+    for value in values {
+      XCTAssertGreaterThanOrEqual(value, 0.05 - 0.04 - 0.0001)
+      XCTAssertLessThanOrEqual(value, 0.05 + 0.04 + 0.0001)
+    }
+    XCTAssertNotEqual(
+      HUDPillMetrics.breathe(phase: 1.0, index: 0, reduceMotion: false),
+      HUDPillMetrics.breathe(phase: 1.0, index: 1, reduceMotion: false),
+      accuracy: 0.0001,
+      "neighbouring bars must not breathe in lockstep"
+    )
+  }
+
+  /// The decoration is sampled at the level feed's cadence, never faster: the
+  /// level itself is throttled to ~15 Hz by `MeterPublishGate`, and a redraw
+  /// the feed cannot feed is per-tick main-actor work nobody can see.
+  func testTheBreathingIsSampledAtTheLevelFeedsCadence() {
+    XCTAssertEqual(HUDPillMetrics.breatheInterval, 1.0 / 15.0, accuracy: 0.0001)
+  }
+}

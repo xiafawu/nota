@@ -638,6 +638,30 @@ enum HUDPillMetrics {
   /// grow.
   static var maxCardHeight: CGFloat { cardHeight(lineCount: draftLineLimit) }
 
+  /// Cadence the meters' idle breathing is sampled at.
+  ///
+  /// 1/15 s, matching `MeterPublishGate` — the level itself is throttled to
+  /// ~15 Hz, so a decoration redrawing faster than the feed it decorates is
+  /// per-tick main-actor work nobody can see (the trap this file already
+  /// records for the prompter's text).
+  static let breatheInterval: TimeInterval = 1.0 / 15.0
+
+  /// The meters' idle swell, so a still meter never reads as a dead one.
+  ///
+  /// ONE term for every HUD style: the pill's meter and `HUDCompactMeter`
+  /// (the bar's and the prompter's) both draw it, so the three styles idle
+  /// alike. Neighbours are offset so the swell travels across the bars.
+  ///
+  /// Under Reduce Motion it is the base offset alone — a constant, in phase
+  /// and in index. This is the `SessionRing`'s answer rather than the meter's
+  /// (see "Reduce Motion is answered differently by the two"): the *level*
+  /// keeps moving, because that is information, and only the decorative idle
+  /// breathing stops.
+  static func breathe(phase: TimeInterval, index: Int, reduceMotion: Bool) -> Double {
+    guard !reduceMotion else { return 0.05 }
+    return 0.05 + 0.04 * sin(phase * 2.1 + Double(index) * 0.8)
+  }
+
   static let frameDuration: TimeInterval = 0.26
 
   /// Spring-ish settle: fast out, long decelerating tail, no overshoot (an
@@ -827,10 +851,11 @@ private struct ListeningView: View {
         .foregroundStyle(HUDInk.listening)
         .font(.system(size: 15, weight: .medium))
 
-      // The timeline phase adds a slow low-amplitude breathing so the meter
-      // never freezes at steady input — a still meter reads as dead.
-      TimelineView(.animation(minimumInterval: 1.0 / 30.0)) { timeline in
-        let phase = timeline.date.timeIntervalSinceReferenceDate
+      // The phase adds a slow low-amplitude breathing so the meter never
+      // freezes at steady input — a still meter reads as dead. Under Reduce
+      // Motion no timeline is created at all and the phase is a static 0
+      // (P-B7); the level's own movement is untouched.
+      HUDMeterPhase(reduceMotion: reduceMotion) { phase in
         HStack(spacing: 3) {
           ForEach(0..<Self.barCount, id: \.self) { i in
             Capsule()
@@ -854,8 +879,8 @@ private struct ListeningView: View {
     // Per-bar wobble keyed to index and level so neighbors never move in
     // lockstep — lockstep is the "cheap" tell.
     let wobble = 0.72 + 0.28 * sin(Double(index) * 1.7 + Double(level) * 21)
-    // Idle breathing: neighbors offset so the swell travels across the bars.
-    let breathe = 0.05 + 0.04 * sin(phase * 2.1 + Double(index) * 0.8)
+    // Idle breathing: the one term every HUD style draws.
+    let breathe = HUDPillMetrics.breathe(phase: phase, index: index, reduceMotion: reduceMotion)
     let drive = CGFloat(level) * Self.profile[index] * CGFloat(wobble) + CGFloat(breathe)
     let h = base + (maxH - base) * drive
     return min(maxH, max(base, h))

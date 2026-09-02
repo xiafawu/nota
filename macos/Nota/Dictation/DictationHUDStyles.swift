@@ -41,11 +41,36 @@ extension View {
   }
 }
 
+// MARK: - Meter phase
+
+/// Supplies the meters' breathing phase, and is the one place the timeline is
+/// gated on Reduce Motion.
+///
+/// Under Reduce Motion no `TimelineView` is created at all — the content is
+/// built once against a static phase of 0 — so the HUD does no per-frame work
+/// for an owner who asked for none. Otherwise it ticks at
+/// `HUDPillMetrics.breatheInterval`, the level feed's own cadence (P-B7).
+struct HUDMeterPhase<Content: View>: View {
+  let reduceMotion: Bool
+  @ViewBuilder let content: (TimeInterval) -> Content
+
+  var body: some View {
+    if reduceMotion {
+      content(0)
+    } else {
+      TimelineView(.animation(minimumInterval: HUDPillMetrics.breatheInterval)) { timeline in
+        content(timeline.date.timeIntervalSinceReferenceDate)
+      }
+    }
+  }
+}
+
 // MARK: - Compact level meter
 
-/// The RMS meter as the bar and the prompter show it: shorter, thinner, and
-/// without the pill's idle breathing, because both styles sit next to text that
-/// is doing the talking.
+/// The RMS meter as the bar and the prompter show it: shorter and thinner than
+/// the pill's, but idling the same way — it draws the one
+/// `HUDPillMetrics.breathe` term, so all three styles behave alike at silence
+/// instead of two of them sitting dead still (P-B7).
 ///
 /// A separate view from the pill's meter on purpose — sharing one would mean
 /// editing `ListeningView`, and the pill's rendering is the baseline.
@@ -63,25 +88,28 @@ struct HUDCompactMeter: View {
   private static let profile: [CGFloat] = [0.4, 0.65, 0.9, 1.0, 0.9, 0.65, 0.4]
 
   var body: some View {
-    HStack(spacing: 2.5) {
-      ForEach(0..<barCount, id: \.self) { i in
-        Capsule()
-          .fill(.primary.opacity(0.85))
-          .frame(width: 2.5, height: height(for: i))
+    HUDMeterPhase(reduceMotion: reduceMotion) { phase in
+      HStack(spacing: 2.5) {
+        ForEach(0..<barCount, id: \.self) { i in
+          Capsule()
+            .fill(.primary.opacity(0.85))
+            .frame(width: 2.5, height: height(for: i, phase: phase))
+        }
       }
+      // Fixed height frame: the meter's spring is the only SwiftUI animation on
+      // these styles, and it must never be able to change a size the window
+      // animation is also responsible for.
+      .frame(height: maxHeight)
+      .animation(RecordingMotion.meterAnimation(reduceMotion: reduceMotion), value: level)
     }
-    // Fixed height frame: the meter's spring is the only SwiftUI animation on
-    // these styles, and it must never be able to change a size the window
-    // animation is also responsible for.
-    .frame(height: maxHeight)
-    .animation(RecordingMotion.meterAnimation(reduceMotion: reduceMotion), value: level)
   }
 
-  private func height(for index: Int) -> CGFloat {
+  private func height(for index: Int, phase: TimeInterval) -> CGFloat {
     let base: CGFloat = 3
     let shape = Self.profile[index % Self.profile.count]
     let wobble = 0.75 + 0.25 * sin(Double(index) * 1.7 + Double(level) * 21)
-    let drive = CGFloat(level) * shape * CGFloat(wobble)
+    let breathe = HUDPillMetrics.breathe(phase: phase, index: index, reduceMotion: reduceMotion)
+    let drive = CGFloat(level) * shape * CGFloat(wobble) + CGFloat(breathe)
     return min(maxHeight, max(base, base + (maxHeight - base) * drive))
   }
 }
