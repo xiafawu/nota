@@ -48,6 +48,7 @@ import {
 } from "./cli/storage.js";
 import { printConfig } from "./cli/config.js";
 import { preflightCommand } from "./cli/preflight.js";
+import { serveVoiceprints } from "./cli/voiceprint-serve.js";
 import { applyEnvFile } from "./utils/env-file.js";
 import { summarizeHistory } from "./cli/summarize-history.js";
 import {
@@ -817,6 +818,15 @@ program
       );
       process.exit(1);
     }
+  });
+
+program
+  .command("voiceprint-serve")
+  .description(
+    "Long-running speaker matcher for the macOS app: loads the voiceprint model once, then answers newline-delimited JSON requests on stdin with one response line each on stdout until stdin closes (see src/cli/voiceprint-serve.ts for the protocol)",
+  )
+  .action(async () => {
+    process.exit(await serveVoiceprints());
   });
 
 // Load ~/.nota/config once at bootstrap so every subcommand (run, history,
