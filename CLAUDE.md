@@ -1905,6 +1905,16 @@ as a question the surface is still asking.
   which content padding satisfies perfectly — a test adjacent to the thing that
   mattered, which is how all of this stayed green. A failed session's transcript
   reserves nothing: nothing floats over it.
+- **The transcript follows the newest line only while the owner is at the
+  bottom.** Scrolling up to re-read during a meeting works, scrolling back
+  within `followSlack` resumes the follow, and there is no control for it — the
+  volatile tail is rewritten many times a second, so the old unconditional
+  `scrollToNewest` snapped the view back before a line could be read.
+  **Content growth is not the owner scrolling away**: an appended row grows the
+  content before the proxy scroll lands, so `LiveTranscriptFollow.decide`
+  compares two geometries and switches the follow off only when the content and
+  the container were the size they already were — i.e. only when the owner moved
+  the offset themselves.
 - **The kind reaches the surface as one word, in the idle state.** The cluster
   draws no kind at all now, so `RecordingPaneCopy.kindLine` is read only by
   `idleView` — and it stays in `all(kind:controls:)`, which

@@ -1789,6 +1789,121 @@ final class RecordingPaneTests: XCTestCase {
     XCTAssertEqual(cached, fresh)
   }
 
+  // MARK: - The transcript follows the newest line only while the owner is at it
+
+  /// A row appended while the owner is at the bottom is **not** the owner
+  /// scrolling away. The content grows before the proxy scroll lands on the new
+  /// row, so at that instant the offset is a whole line short of the bottom —
+  /// and a predicate on one geometry would switch the follow off on the first
+  /// line of every session.
+  func testAnAppendedRowDoesNotStopTheFollow() {
+    let atBottom = LiveTranscriptFollow.Geometry(
+      offsetY: 600, contentHeight: 1000, containerHeight: 400
+    )
+    let grown = LiveTranscriptFollow.Geometry(
+      offsetY: 600, contentHeight: 1080, containerHeight: 400
+    )
+    XCTAssertGreaterThan(
+      grown.distanceFromBottom,
+      RecordingPaneMetrics.followSlack,
+      "the appended row has to be taller than the slack, or this proves nothing"
+    )
+    XCTAssertTrue(
+      LiveTranscriptFollow.decide(
+        following: true,
+        previous: atBottom,
+        new: grown,
+        slack: RecordingPaneMetrics.followSlack
+      )
+    )
+  }
+
+  /// Scrolling up to re-read, with nothing else moving, stops the follow —
+  /// which is the whole point: the newest line may not yank the view back while
+  /// the owner is reading two minutes ago.
+  func testScrollingUpStopsTheFollow() {
+    let atBottom = LiveTranscriptFollow.Geometry(
+      offsetY: 600, contentHeight: 1000, containerHeight: 400
+    )
+    let scrolledUp = LiveTranscriptFollow.Geometry(
+      offsetY: 200, contentHeight: 1000, containerHeight: 400
+    )
+    XCTAssertFalse(
+      LiveTranscriptFollow.decide(
+        following: true,
+        previous: atBottom,
+        new: scrolledUp,
+        slack: RecordingPaneMetrics.followSlack
+      )
+    )
+  }
+
+  /// …and scrolling back down resumes it. There is no control, so this is the
+  /// only way back.
+  func testScrollingBackToTheBottomResumesTheFollow() {
+    let scrolledUp = LiveTranscriptFollow.Geometry(
+      offsetY: 200, contentHeight: 1000, containerHeight: 400
+    )
+    let within = LiveTranscriptFollow.Geometry(
+      offsetY: 600 - RecordingPaneMetrics.followSlack,
+      contentHeight: 1000,
+      containerHeight: 400
+    )
+    XCTAssertTrue(
+      LiveTranscriptFollow.decide(
+        following: false,
+        previous: scrolledUp,
+        new: within,
+        slack: RecordingPaneMetrics.followSlack
+      )
+    )
+  }
+
+  /// A session that has just begun follows: there is no previous geometry, and
+  /// the first row is the newest line.
+  func testTheFirstRowOfASessionFollows() {
+    let first = LiveTranscriptFollow.Geometry(
+      offsetY: 0, contentHeight: 40, containerHeight: 400
+    )
+    XCTAssertTrue(
+      LiveTranscriptFollow.decide(
+        following: false,
+        previous: nil,
+        new: first,
+        slack: RecordingPaneMetrics.followSlack
+      )
+    )
+  }
+
+  /// Neither a shrinking content (a finalized turn replacing a longer volatile
+  /// tail) nor a window resize is the owner scrolling, so neither may switch a
+  /// follow off behind their back.
+  func testOnlyTheOwnerMovingTheOffsetStopsTheFollow() {
+    let atBottom = LiveTranscriptFollow.Geometry(
+      offsetY: 600, contentHeight: 1000, containerHeight: 400
+    )
+    let resized = LiveTranscriptFollow.Geometry(
+      offsetY: 600, contentHeight: 1000, containerHeight: 260
+    )
+    XCTAssertTrue(
+      LiveTranscriptFollow.decide(
+        following: true,
+        previous: atBottom,
+        new: resized,
+        slack: RecordingPaneMetrics.followSlack
+      )
+    )
+    XCTAssertFalse(
+      LiveTranscriptFollow.decide(
+        following: false,
+        previous: atBottom,
+        new: resized,
+        slack: RecordingPaneMetrics.followSlack
+      ),
+      "a geometry change the owner did not make leaves the flag exactly as it was"
+    )
+  }
+
   // MARK: - The ember is only ever the open microphone
 
   /// The idle pane draws **no ember**. It is the state every owner sees before

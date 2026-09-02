@@ -190,6 +190,13 @@ enum RecordingPaneMetrics {
   /// that difference is what makes a per-speaker block read as a turn.
   static let blockSpacing: CGFloat = CraftTokens.spacing16
   static let lineSpacing: CGFloat = CraftTokens.spacing4
+  /// How near the bottom still counts as "at the bottom" for the follow
+  /// (`LiveTranscriptFollow`). One line of transcript plus the spacing under it
+  /// — 14pt text lays out at ~17pt and `lineSpacing` adds 4 — so the owner who
+  /// has not deliberately moved off the newest line is still following, and the
+  /// sub-point drift between an appended row and the proxy scroll landing on it
+  /// is absorbed rather than read as a scroll.
+  static let followSlack: CGFloat = CraftTokens.spacing24
 
   // MARK: The marker rule (XIA-433)
 
@@ -1353,6 +1360,67 @@ struct SessionCapsuleCluster: View {
 
 // MARK: - Transcript
 
+/// Whether the transcript follows the newest line, decided from geometry alone.
+///
+/// The live surface pins the newest row on every recognizer tick, and the
+/// volatile tail is rewritten many times a second — so scrolling up to re-read
+/// what someone said two minutes ago used to be impossible: the view snapped
+/// back before a line could be read. The follow is now the owner's, without a
+/// control: at the bottom it follows, scrolled away it does not, and scrolling
+/// back down resumes it.
+///
+/// **Content growth is not the owner scrolling away**, and that is the whole
+/// of why this is a comparison of two geometries rather than a predicate on
+/// one. A row appended while following grows the content *before* the proxy
+/// scroll lands on it, so the naive "is the offset within slack of the bottom?"
+/// evaluated on that very change reads as "scrolled away" and would switch the
+/// follow off on the first line of every session. Only a change that left the
+/// content and the container the size they were — i.e. one the owner made by
+/// moving the offset — may switch it off. Anything else (an appended row, a
+/// finalized turn replacing a longer volatile one, a window resize) leaves the
+/// flag exactly as it was.
+///
+/// Pure and O(1): it is asked on a feed that ticks many times a second, and it
+/// never touches the row cache.
+enum LiveTranscriptFollow {
+  /// The three numbers a scroll geometry change carries that this decision
+  /// reads. Equatable so `.onScrollGeometryChange` can chase it directly.
+  struct Geometry: Equatable {
+    var offsetY: CGFloat
+    var contentHeight: CGFloat
+    var containerHeight: CGFloat
+
+    /// How far the bottom of the content sits below the bottom of the visible
+    /// region. Negative when the content is shorter than the view.
+    var distanceFromBottom: CGFloat { contentHeight - containerHeight - offsetY }
+  }
+
+  /// The new following flag.
+  ///
+  /// - Parameters:
+  ///   - following: what it was before this geometry change.
+  ///   - previous: the geometry before the change; nil at session start, which
+  ///     follows — the first row of a meeting is the newest line.
+  ///   - new: the geometry after it.
+  ///   - slack: how near the bottom still counts as the bottom.
+  static func decide(
+    following: Bool,
+    previous: Geometry?,
+    new: Geometry,
+    slack: CGFloat
+  ) -> Bool {
+    // Landing within slack of the bottom always resumes the follow: it is the
+    // only way back, since there is no control.
+    if new.distanceFromBottom <= slack { return true }
+    guard let previous else { return true }
+    // The owner moved the offset only if nothing else moved.
+    let ownerMovedTheOffset =
+      new.contentHeight == previous.contentHeight
+      && new.containerHeight == previous.containerHeight
+    return ownerMovedTheOffset ? false : following
+  }
+}
+
 /// The live transcript: gutter timestamps, a speaker slot above each turn, the
 /// volatile tail dimmed, newest text always in view.
 struct LiveTranscriptView: View {
@@ -1397,6 +1465,11 @@ struct LiveTranscriptView: View {
   /// it answers Reduce Motion the way `SessionRing` does (P-B6).
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
+  /// Whether the newest line is being followed. See `LiveTranscriptFollow`:
+  /// the owner turns it off by scrolling up and back on by scrolling down, and
+  /// there is deliberately no control for it.
+  @State private var isFollowing = true
+
   var body: some View {
     ScrollViewReader { proxy in
       ScrollView {
@@ -1417,10 +1490,29 @@ struct LiveTranscriptView: View {
       // sibling in the pane's `ZStack`, so the transcript still gives up no
       // width and no *drawn* height to it — only the bottom of its own frame.
       .padding(.bottom, bottomReserve)
-      .onChange(of: rows.count) { _, _ in
+      .onScrollGeometryChange(for: LiveTranscriptFollow.Geometry.self) { geometry in
+        LiveTranscriptFollow.Geometry(
+          offsetY: geometry.contentOffset.y,
+          contentHeight: geometry.contentSize.height,
+          containerHeight: geometry.containerSize.height
+        )
+      } action: { previous, new in
+        isFollowing = LiveTranscriptFollow.decide(
+          following: isFollowing,
+          previous: previous,
+          new: new,
+          slack: RecordingPaneMetrics.followSlack
+        )
+      }
+      .onChange(of: rows.count) { previousCount, _ in
+        // A session that has just begun follows: the first row is the newest
+        // line, whatever the last session left the flag on.
+        if previousCount == 0 { isFollowing = true }
+        guard isFollowing else { return }
         scrollToNewest(proxy)
       }
       .onChange(of: rows.last) { _, _ in
+        guard isFollowing else { return }
         scrollToNewest(proxy)
       }
     }
