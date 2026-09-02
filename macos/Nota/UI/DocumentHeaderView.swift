@@ -24,6 +24,12 @@ struct DocumentHeaderView: View {
     Text(meta.title)
       .font(Tokens.docTitleFont)
       .fontWeight(.bold)
+      // The biggest text on the document surface, and it sits directly on the
+      // `.transcript` ground with the reading column right under it — where
+      // every glyph goes through `GroundInk.nsColor(_:)`. Falling through to
+      // `labelColor` made the title the one run on this pane that was not
+      // measured against the field.
+      .foregroundStyle(.ground(.body))
       .lineLimit(2)
       .truncationMode(.tail)
       .textSelection(.enabled)

@@ -335,7 +335,14 @@ private struct RichDocumentPane: View {
         // and then sat in an overlay card hung off this body — is in the
         // Details panel, one press away in the local cluster.
         DocumentHeaderView(meta: meta)
-        Divider()
+        // Not a `Divider()`: that is `separatorColor`, and this hairline sits on
+        // the `.transcript` ground with the reading column under it, where the
+        // `---` rule already draws at the measured `.rail` tier
+        // (`MarkdownRender`). The recording pane made this exact argument for
+        // its own rail before that rail was deleted with the bar.
+        Rectangle()
+          .fill(.ground(.rail))
+          .frame(height: 1)
       }
       // Decision 29: nothing sits between the header and the transcript —
       // the enrichment slot is gone, the summary lives in the rail overlay.

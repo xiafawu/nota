@@ -392,4 +392,141 @@ final class ReadingColumnTests: XCTestCase {
     }
     XCTAssertEqual(stamps, ["0:03", "0:28", "0:31"])
   }
+
+  // MARK: - The rest of the surface the ground carries
+
+  /// **The empty / in-progress pane is inked too.**
+  ///
+  /// It is the one screen an owner stares at for the whole length of a
+  /// transcription, and `MainPaneView` draws it straight on
+  /// `FieldBackground(role: .transcript)` — no glass, no card. Every glyph on it
+  /// used to be `labelColor`/`secondaryLabelColor`/`tertiaryLabelColor`
+  /// composited onto the moving field, while the transcript that replaces it a
+  /// moment later was drawn entirely in solved ink.
+  ///
+  /// Asserted two ways, because neither alone is enough. The stage labels'
+  /// three states are a pure mapping, so they are read off `stageTextStyle`
+  /// directly — SwiftUI publishes no accessibility tree for a hosting view in
+  /// this bundle, so a rendered pane cannot answer which tier a label took. And
+  /// the *other* four call sites are plain modifiers with no function to ask, so
+  /// the file itself is scanned: this is an adoption gap, and a gap is invisible
+  /// to a test that only checks the values that are there.
+  @MainActor
+  func testTheRunningPaneIsInkedAndNotLabelled() {
+    let running = EmptyMainView(
+      state: EmptyMainState(
+        isRunning: true, displayName: "standup.m4a", displayPath: "/tmp/standup.m4a",
+        phase: RunStages.phaseLabels[1]),
+      isDropTargeted: false)
+    XCTAssertEqual(running.stageTextStyle(for: 0).tier, .speaker, "a finished stage")
+    XCTAssertEqual(running.stageTextStyle(for: 1).tier, .body, "the stage that is running")
+    XCTAssertEqual(running.stageTextStyle(for: 3).tier, .timestamp, "a stage still to come")
+
+    let preparing = EmptyMainView(
+      state: EmptyMainState(
+        isRunning: true, displayName: "standup.m4a", displayPath: "/tmp/standup.m4a"),
+      isDropTargeted: false)
+    XCTAssertEqual(
+      preparing.stageTextStyle(for: 0).tier, .timestamp,
+      "nothing has started, so no stage may be drawn as the current one")
+
+    let banned = [
+      ".foregroundStyle(.primary", ".foregroundStyle(.secondary", ".foregroundStyle(.tertiary",
+    ]
+    var offenders: [String] = []
+    for (index, line) in Self.uiSource("EmptyMainView.swift").split(
+      separator: "\n", omittingEmptySubsequences: false
+    ).enumerated() {
+      let text = line.trimmingCharacters(in: .whitespaces)
+      guard !text.hasPrefix("//") else { continue }
+      if banned.contains(where: { text.contains($0) }) {
+        offenders.append("EmptyMainView.swift:\(index + 1) \(text)")
+      }
+    }
+    XCTAssertEqual(
+      offenders, [],
+      "the pane that sits bare on the ground is back on macOS label colours: \(offenders)")
+  }
+
+  /// **The document's title is ink, and the hairline under it is the rail
+  /// tier.**
+  ///
+  /// The two last semantic colours on this surface. The title had no
+  /// `foregroundStyle` at all, so it fell through to `labelColor` — the biggest
+  /// text on the pane, sitting on the `.transcript` ground directly above a
+  /// reading column where every glyph goes through `GroundInk.nsColor(_:)`. The
+  /// hairline was a `Divider()`, i.e. `separatorColor`, on a surface whose own
+  /// `---` rule already draws at the measured `.rail` tier.
+  ///
+  /// The title is measured the way `testTheTranscriptIsInkedAndNotLabelled`
+  /// measures the live transcript: no glyph reaches full coverage, so what is
+  /// compared is which colour the darkest pixel is reaching *for*, with both
+  /// candidates rendered in the same probe at the same face. The hairline has no
+  /// glyph to measure, so its call site is read instead.
+  @MainActor
+  func testTheDocumentTitleAndItsHairlineAreDrawnInGroundInk() {
+    let size = CGSize(width: 420, height: 80)
+    func darkest(_ view: some View) -> Double? {
+      guard
+        let rep = RenderProbe.bitmap(
+          ZStack {
+            Color.white
+            view
+          }
+          .environment(\.colorScheme, .light), size: size)
+      else { return nil }
+      var extreme = Double.infinity
+      for x in 0..<rep.pixelsWide {
+        for y in 0..<rep.pixelsHigh {
+          guard let pixel = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
+          let tone =
+            (Double(pixel.redComponent) + Double(pixel.greenComponent)
+              + Double(pixel.blueComponent)) / 3 * 255
+          extreme = min(extreme, tone)
+        }
+      }
+      return extreme
+    }
+    func reference(_ style: AnyShapeStyle) -> some View {
+      Text("Team Sync")
+        .font(Tokens.docTitleFont)
+        .fontWeight(.bold)
+        .foregroundStyle(style)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    guard
+      let ink = darkest(reference(AnyShapeStyle(GroundInkStyle(tier: .body)))),
+      let labelled = darkest(reference(AnyShapeStyle(HierarchicalShapeStyle.primary))),
+      let drawn = darkest(DocumentHeaderView(meta: DocMeta(title: "Team Sync")))
+    else { return XCTFail("the hosting view produced no bitmap") }
+
+    XCTAssertLessThan(
+      abs(drawn - ink), abs(labelled - ink) / 2,
+      "the header title's darkest glyph is nearer labelColor (\(labelled)) than the "
+        + "measured ink (\(ink)); it drew \(drawn)")
+
+    var dividers: [String] = []
+    for line in Self.uiSource("MainPaneView.swift").split(
+      separator: "\n", omittingEmptySubsequences: false
+    ) {
+      let text = line.trimmingCharacters(in: .whitespaces)
+      if !text.hasPrefix("//"), text.contains("Divider()") { dividers.append(text) }
+    }
+    XCTAssertEqual(
+      dividers, [],
+      "the document surface drew a Divider() — that is separatorColor over the ground")
+  }
+
+  /// A UI source file, found relative to this test's own path. Same mechanism
+  /// `RecordingStorageTests` uses for its fixture: the test target copies no
+  /// resources, so a bundle lookup would silently resolve to nil.
+  private static func uiSource(_ name: String) -> String {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent(name)
+    let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    XCTAssertFalse(text.isEmpty, "could not read \(name) beside this test")
+    return text
+  }
 }
