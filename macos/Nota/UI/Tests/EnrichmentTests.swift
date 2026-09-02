@@ -998,3 +998,37 @@ final class SpeakerChipGenericLabelTests: XCTestCase {
     XCTAssertTrue(SpeakerChip(label: "Speaker 2", name: "", indicator: .none).hasGenericLabel)
   }
 }
+
+// MARK: - What focus loss does to an inline edit (P-C6)
+
+/// One answer for both inline editors — the add-tag field and the speaker-name
+/// popover. Both used to discard a typed value silently when the owner clicked
+/// anywhere else, including the Details panel's own full-window backdrop.
+final class InlineEditFocusLossTests: XCTestCase {
+  func testATypedValueIsCommittedRatherThanThrownAway() {
+    XCTAssertEqual(InlineEditFocusLoss.outcome(draft: "self-awareness"), .commit)
+    XCTAssertEqual(
+      InlineEditFocusLoss.outcome(draft: "Kenny Kim", committed: "Speaker 2"),
+      .commit
+    )
+  }
+
+  func testAnEmptyDraftLosesNothingAndSoDiscards() {
+    XCTAssertEqual(InlineEditFocusLoss.outcome(draft: ""), .discard)
+    XCTAssertEqual(InlineEditFocusLoss.outcome(draft: "   \n "), .discard)
+    XCTAssertEqual(InlineEditFocusLoss.outcome(draft: "  ", committed: "Kenny Kim"), .discard)
+  }
+
+  /// Naming a chip enrols a voiceprint. The popover seeds its draft with the
+  /// chip's current name, so opening one and clicking away must enrol nothing.
+  func testAnUnchangedDraftEnrolsNothing() {
+    XCTAssertEqual(
+      InlineEditFocusLoss.outcome(draft: "Kenny Kim", committed: "Kenny Kim"),
+      .discard
+    )
+    XCTAssertEqual(
+      InlineEditFocusLoss.outcome(draft: "  Kenny Kim  ", committed: "Kenny Kim"),
+      .discard
+    )
+  }
+}

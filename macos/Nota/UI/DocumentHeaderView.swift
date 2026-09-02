@@ -155,6 +155,9 @@ private struct SpeakerChipButton: View {
 
   @State private var showRenamePopover = false
   @State private var draft = ""
+  /// Set by the Return path so the popover's own dismissal does not commit the
+  /// same draft a second time (P-C6).
+  @State private var isCommitting = false
 
   private var displayName: String {
     chip.name.isEmpty ? chip.label : chip.name
@@ -258,6 +261,25 @@ private struct SpeakerChipButton: View {
     .popover(isPresented: $showRenamePopover, arrowEdge: .bottom) {
       renamePopover
     }
+    // Dismissing the popover by clicking away COMMITS a typed name, through
+    // the same call Return makes (P-C6) — the same rule the tag field keeps,
+    // written down once in `InlineEditFocusLoss`.
+    //
+    // Naming a chip enrols a voiceprint, so the guard is not decoration:
+    // `draft` is seeded with `chip.name` on open, and an unchanged draft is a
+    // dismissal that must enrol nothing. `isCommitting` keeps the Return path
+    // from arriving here a second time.
+    .onChange(of: showRenamePopover) { _, shown in
+      guard !shown else { return }
+      guard !isCommitting else {
+        isCommitting = false
+        return
+      }
+      guard
+        InlineEditFocusLoss.outcome(draft: draft, committed: chip.name) == .commit
+      else { return }
+      onRename(chip.label, draft.trimmingCharacters(in: .whitespacesAndNewlines))
+    }
   }
 
   /// True when the chip has no display name and no suggestion pending — and
@@ -326,8 +348,40 @@ private struct SpeakerChipButton: View {
   }
 
   private func commit() {
+    isCommitting = true
     showRenamePopover = false
     onRename(chip.label, draft.trimmingCharacters(in: .whitespacesAndNewlines))
+  }
+}
+
+/// What losing focus does to an inline editor's draft — one answer for the tag
+/// field and the speaker-name popover (P-C6).
+///
+/// Both used to throw a typed value away on focus loss, silently, one scroll
+/// below a summary draft protected by a three-button alert and a persisted
+/// policy. Focus loss now commits what the Return key would have committed, and
+/// Escape keeps its own meaning. It discards only when there is nothing to
+/// lose: a draft that is empty after trimming, or one still equal to the value
+/// already on the record — which is what keeps a speaker popover the owner
+/// merely opened and clicked away from enrolling a voiceprint.
+enum InlineEditFocusLoss {
+  enum Outcome: Equatable {
+    /// The draft carries something new: commit it, through the same call
+    /// Return makes, with the same validation.
+    case commit
+    /// Nothing typed, or nothing changed: closing loses nothing.
+    case discard
+  }
+
+  /// `committed` is the value already on the record — the empty string for a
+  /// field that opens blank, like the add-tag chip.
+  static func outcome(draft: String, committed: String = "") -> Outcome {
+    let value = draft.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !value.isEmpty else { return .discard }
+    guard value != committed.trimmingCharacters(in: .whitespacesAndNewlines) else {
+      return .discard
+    }
+    return .commit
   }
 }
 
@@ -480,7 +534,8 @@ struct RemovableTagChip: View {
 }
 
 /// Always-visible dashed "+ add tag" chip; clicking reveals an inline field
-/// (Enter commits, Esc or focus loss cancels).
+/// (Enter commits, focus loss commits too, Esc cancels — see
+/// `InlineEditFocusLoss`).
 private struct AddTagChip: View {
   let onAdd: (String) -> Void
 
@@ -498,8 +553,17 @@ private struct AddTagChip: View {
           .focused($fieldFocused)
           .onSubmit { commit() }
           .onExitCommand { cancel() }
+          // Focus loss COMMITS (P-C6). Clicking anywhere else — including the
+          // Details panel's own full-window backdrop — used to throw the typed
+          // tag away with no prompt and no trace, one scroll below a summary
+          // draft protected by a three-button alert. Escape still cancels, so
+          // the two gestures stop meaning the same thing.
           .onChange(of: fieldFocused) { _, focused in
-            if !focused { cancel() }
+            guard !focused else { return }
+            switch InlineEditFocusLoss.outcome(draft: draft) {
+            case .commit: commit()
+            case .discard: cancel()
+            }
           }
           .padding(.horizontal, Metrics.tagPillH)
           .padding(.vertical, Metrics.tagPillV)

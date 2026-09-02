@@ -1585,6 +1585,18 @@ the open outright; the decision is `ChromeDismissal.onToggleDrawer(railOpen:)`,
 pure and pinned, and the drawer's cancel button is mounted only while the rail
 is not presented.
 
+**The panel's other two edits are not thrown away either.** The add-tag field
+and the speaker-name popover both discarded a typed value on focus loss —
+including a click on the panel's own full-window backdrop — one scroll below a
+summary draft protected by a three-button alert. `InlineEditFocusLoss` is the
+one rule for both: focus loss commits what Return would have committed, and
+discards only when there is nothing to lose (an empty draft, or one still equal
+to the value already on the record). That second clause is load-bearing rather
+than tidy — naming a chip enrols a voiceprint, and the popover seeds its draft
+with the chip's current name, so a popover the owner merely opened and clicked
+away from must enrol nothing. Escape still cancels, so the two gestures stop
+meaning the same thing.
+
 **The reading column.** The document path had no measure cap at all —
 `widthTracksTextView` plus a 48pt inset means a 1400pt window draws
 140-character lines. The cap is on the **text container**, not the insets (a
