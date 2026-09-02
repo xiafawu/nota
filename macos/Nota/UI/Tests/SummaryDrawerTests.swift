@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import Nota
 
@@ -12,6 +13,17 @@ final class SummaryDrawerTests: XCTestCase {
   func testRailWidthMatchesHistoryDrawer() {
     XCTAssertEqual(SummaryDrawerLayout.railWidth, 380)
     XCTAssertEqual(SummaryDrawerLayout.railWidth, HistoryDrawerView.drawerWidth)
+  }
+
+  /// The two panels are the same width, the same radius and the same shape by
+  /// design, and their section headers disagreed anyway — uppercase kerned
+  /// caption2 in the rail, 12pt mono in the drawer (P-D9). Both draw
+  /// `CraftSectionLabel` now, so what is left to pin is the one style it
+  /// carries: a *section label*, not the `metadataFont` a timestamp takes.
+  func testTheTwoPanelsShareOneSectionLabelFont() {
+    XCTAssertEqual(CraftTokens.sectionLabelFont, .caption2.weight(.semibold))
+    XCTAssertNotEqual(CraftTokens.sectionLabelFont, CraftTokens.metadataFont)
+    XCTAssertEqual(CraftTokens.sectionLabelKerning, 0.8)
   }
 
   // MARK: Transcript scroll-restore coalescing

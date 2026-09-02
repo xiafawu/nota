@@ -664,8 +664,11 @@ struct SummaryRailView: View {
       Text("Speaker names changed — the summary still references the old names.")
         .font(.caption)
         .foregroundStyle(.ground(.speaker))
-        .lineLimit(1)
-        .truncationMode(.middle)
+        // Prose wraps; middle truncation is for paths and identifiers (P-D8).
+        // At 380pt this sentence always truncated, and `.middle` ate the
+        // informative half: "Speaker names chan…the old names."
+        .lineLimit(2)
+        .fixedSize(horizontal: false, vertical: true)
         .help("Regenerate to update the summary with the renamed speakers")
       Spacer(minLength: 4)
       Button("Regenerate Summary") {
@@ -854,12 +857,10 @@ struct SummaryRailView: View {
     }
   }
 
+  /// One section-header style across the two sibling panels (P-D9) — see
+  /// `CraftSectionLabel`.
   private func sectionLabel(_ title: String) -> some View {
-    Text(title)
-      .kerning(0.8)
-      .textCase(.uppercase)
-      .font(.caption2.weight(.semibold))
-      .foregroundStyle(.ground(.speaker))
+    CraftSectionLabel(title)
   }
 
   /// The pipeline writes action items as `[ ] …` checkboxes; the rail renders
