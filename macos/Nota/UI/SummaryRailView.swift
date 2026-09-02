@@ -26,6 +26,15 @@ import SwiftUI
 /// that starts a tag run is now four rows above the summary it would otherwise
 /// have replaced (`summaryIsInFlight`).
 ///
+/// **It is the summary's only home** (ADR 0006 addendum, 2026-09-02). The
+/// document body used to draw `## Summary` and its three lists as well, so a
+/// summarized meeting rendered the same four fields twice; the body copy went.
+/// What that costs is an **imported** `.md`, which has no history record and so
+/// no record-fed summary at all — and a document may not lose something because
+/// of where it was opened from. So the summary half falls back to parsing the
+/// open markdown's own `## Summary` (`.parsedSummary`, below). It is read-only,
+/// and it waits for the record lookup exactly as the notice does.
+///
 /// **Opening is free; generating is not.** The button no longer starts a
 /// summary (the old dual-purpose click, decision 10). The only way to start one
 /// is `generateBlock`'s button, in the slot where the narrative would be — so
@@ -129,9 +138,11 @@ struct SummaryRailView: View {
   }
 
   /// Said in place of the summary half when the open document has no history
-  /// record. Named so a test can reach it: the rule is that nothing about a
-  /// document silently disappears because of where it came from, and a panel
-  /// that simply ended at the hairline would be exactly that.
+  /// record **and none of its own** — the markdown carries no `## Summary`
+  /// either, so there is genuinely nothing to draw. Named so a test can reach
+  /// it: the rule is that nothing about a document silently disappears because
+  /// of where it came from, and a panel that simply ended at the hairline would
+  /// be exactly that.
   ///
   /// It states the **absence** and nothing else. It used to open "Imported
   /// file —", which is a claim about provenance that `record == nil` does not
@@ -273,23 +284,80 @@ struct SummaryRailView: View {
 
   /// What the panel may honestly draw below the hairline.
   ///
-  /// Three states, not two, because `record == nil` answers two different
-  /// questions: a document with no history record, and a document whose record
-  /// has not been read yet. `NotaModel.loadChips` clears the record
-  /// synchronously and looks the real one up in a detached task, so every
-  /// recorded transcript is momentarily indistinguishable from an imported one
-  /// on open — and this slot is where the panel makes a *statement* about the
-  /// document. An absence during a race is nothing; a sentence during a race is
-  /// a false claim.
+  /// Four states, and three of them exist because `record == nil` answers more
+  /// than one question. It means a document with no history record — and also a
+  /// document whose record has not been read yet, because `NotaModel.loadChips`
+  /// clears the record synchronously and looks the real one up in a detached
+  /// task, so every recorded transcript is momentarily indistinguishable from an
+  /// imported one on open. This slot is where the panel makes a *statement*
+  /// about the document. An absence during a race is nothing; a sentence during
+  /// a race is a false claim.
+  ///
+  /// `.parsedSummary` joined them when the summary left the document body (ADR
+  /// 0006's 2026-09-02 addendum). An imported `.md` has no record, so the
+  /// record-fed half draws nothing for it, and with the body copy gone its
+  /// summary would be visible nowhere at all. The markdown's own `## Summary` is
+  /// the answer — and it is ordered strictly **below** `.waitingForRecord` for
+  /// the reason that state exists: parsing is instant and the disk read is not,
+  /// so a fallback that did not wait would flash the document's own summary on
+  /// open and then swap it for the record's, on every recorded transcript.
   enum SummaryHalf: Equatable {
     case summary
+    /// The document's own `## Summary`, for a document with nothing behind it.
+    case parsedSummary
     case noRecordNotice
     case waitingForRecord
+
+    /// **Whether this half may offer a control that writes to a record.**
+    ///
+    /// Edit, Regenerate, the Edited pill, the saving spinner, Generate Summary
+    /// — every one of them acts on a history record, and a parsed summary
+    /// has none — there is nothing to write to and nothing to regenerate from.
+    /// So they are *absent* there, not disabled, which is the same call ADR 0006
+    /// already made for Edit and Regenerate above an empty slot: a dead control
+    /// naming an object that does not exist reads as a feature that failed.
+    ///
+    /// Asked by both arms that draw a summary rather than typed at each of them,
+    /// so "may this half write" has one answer and a test can hold it.
+    var offersRecordControls: Bool { self == .summary }
   }
 
-  static func summaryHalf(hasRecord: Bool, isResolvingRecord: Bool) -> SummaryHalf {
+  /// `hasParsedSummary` defaults to false so the three original states are
+  /// spelled exactly as they were: a settled document with no record and no
+  /// summary of its own is still the one-line notice.
+  static func summaryHalf(
+    hasRecord: Bool,
+    isResolvingRecord: Bool,
+    hasParsedSummary: Bool = false
+  ) -> SummaryHalf {
     if hasRecord { return .summary }
-    return isResolvingRecord ? .waitingForRecord : .noRecordNotice
+    if isResolvingRecord { return .waitingForRecord }
+    return hasParsedSummary ? .parsedSummary : .noRecordNotice
+  }
+
+  /// The document's own summary, and **only** when there is no record to
+  /// prefer. Guarded rather than merged: a record that carries a narrative but
+  /// no key topics goes on drawing none, because the record is truth for a
+  /// document that has one and a half-and-half summary is a document describing
+  /// itself out of two sources.
+  ///
+  /// Static and pure-ish so the guard is a fact a test can check — the view
+  /// cannot be hosted (`NotaModel.init` sweeps the real `~/.nota`).
+  static func parsedFallback(hasRecord: Bool, markdown: String) -> ParsedDocumentSummary? {
+    guard !hasRecord else { return nil }
+    return DocumentSummaryCache.summary(for: markdown)
+  }
+
+  private var parsedSummary: ParsedDocumentSummary? {
+    Self.parsedFallback(hasRecord: enrichment.record != nil, markdown: model.markdown)
+  }
+
+  private var summaryHalf: SummaryHalf {
+    Self.summaryHalf(
+      hasRecord: enrichment.record != nil,
+      isResolvingRecord: enrichment.isResolvingRecord,
+      hasParsedSummary: parsedSummary != nil
+    )
   }
 
   private var hasNarrative: Bool {
@@ -400,11 +468,18 @@ struct SummaryRailView: View {
   /// pill, the saving spinner, and Edit / Regenerate (or Cancel / Save while
   /// editing). Everything here used to sit in the panel's header, where it now
   /// would have been a verb aimed at a speaker chip.
-  private var summarySectionHeader: some View {
+  ///
+  /// `showsRecordControls` is `SummaryHalf.offersRecordControls`, never a
+  /// literal at the call site: a parsed summary has no record behind it, so the
+  /// Edited pill, the saving spinner and Edit / Regenerate / Cancel / Save all
+  /// name an object that does not exist. They are absent for it — the same call
+  /// this row already makes for a record with no narrative — and the label is
+  /// all that is left.
+  private func summarySectionHeader(showsRecordControls: Bool) -> some View {
     HStack(spacing: 8) {
       HStack(spacing: 8) {
         sectionLabel("Summary")
-        if record?.isSummaryEdited == true {
+        if showsRecordControls, record?.isSummaryEdited == true {
           Text("Edited")
             .font(.caption2)
             .foregroundStyle(Color.accentColor)
@@ -412,7 +487,7 @@ struct SummaryRailView: View {
             .padding(.vertical, Metrics.tagPillV)
             .background(Tokens.primaryActionTint, in: Capsule())
         }
-        if enrichment.isSavingEdit {
+        if showsRecordControls, enrichment.isSavingEdit {
           ProgressView()
             .controlSize(.mini)
         }
@@ -420,7 +495,9 @@ struct SummaryRailView: View {
 
       Spacer(minLength: 8)
 
-      if isEditing {
+      if !showsRecordControls {
+        EmptyView()
+      } else if isEditing {
         Button("Cancel") { cancelEdit() }
           .controlSize(.small)
         Button("Save") { saveEdit() }
@@ -464,12 +541,9 @@ struct SummaryRailView: View {
             .padding(.vertical, 4)
         }
 
-        switch Self.summaryHalf(
-          hasRecord: enrichment.record != nil,
-          isResolvingRecord: enrichment.isResolvingRecord
-        ) {
+        switch summaryHalf {
         case .summary:
-          summarySectionHeader
+          summarySectionHeader(showsRecordControls: summaryHalf.offersRecordControls)
           summarySection
             // The Details button's ring fades in and out over the same run
             // (`MainPaneView`, `.animation(Tokens.animFast, value: isGenerating)`),
@@ -479,6 +553,13 @@ struct SummaryRailView: View {
             // so a curve on the panel root — or an unkeyed one — would ride
             // every keystroke of a summary edit.
             .animation(Tokens.animFast, value: enrichment.activity)
+        case .parsedSummary:
+          // The document's own `## Summary`, read straight out of the markdown
+          // in the pane. Read-only, and no run can be in flight against a
+          // record that does not exist — so no in-flight fork, no failure
+          // caption, and no curve keyed on an activity this half cannot have.
+          summarySectionHeader(showsRecordControls: summaryHalf.offersRecordControls)
+          parsedSummarySection
         case .noRecordNotice:
           // Nothing behind this document to summarize. Say so, rather than
           // ending at the hairline and letting the absence read as a missing
@@ -534,6 +615,28 @@ struct SummaryRailView: View {
       errorCaption
     } else {
       generateBlock
+    }
+  }
+
+  /// The read-only half: the markdown's own narrative, then the same
+  /// `structuredSummary` the record's half draws — the three lists are fed
+  /// through `keyTopics` / `decisions` / `actionItems`, which fall back to the
+  /// parse, so there is one rendering of a topic chip and one of a bullet
+  /// however the document was opened.
+  ///
+  /// The narrative is a plain `Text`: no tap-to-edit, no "Click to edit" help,
+  /// and no `narrativeHeight` measurement, because there is no editor for it to
+  /// open at the right height. `generateBlock` is not reachable from here
+  /// either — it is inside `summarySection`, which this half does not draw.
+  @ViewBuilder
+  private var parsedSummarySection: some View {
+    if let parsed = parsedSummary {
+      if !parsed.narrative.isEmpty {
+        Text(parsed.narrative)
+          .font(.body)
+          .frame(maxWidth: .infinity, alignment: .leading)
+      }
+      structuredSummary
     }
   }
 
@@ -751,9 +854,19 @@ struct SummaryRailView: View {
 
   // MARK: Structured summary (topics / decisions / action items, read-only)
 
-  private var keyTopics: [String] { record?.summary?.keyTopics ?? [] }
-  private var decisions: [String] { record?.summary?.decisions ?? [] }
-  private var actionItems: [String] { record?.summary?.actionItems ?? [] }
+  // The record first, the document's own parse only when there is no record —
+  // `parsedSummary` is nil whenever one exists, so a record that carries a
+  // narrative but empty lists still draws empty lists. Unchanged for every
+  // document that has a record.
+  private var keyTopics: [String] {
+    record?.summary?.keyTopics ?? parsedSummary?.keyTopics ?? []
+  }
+  private var decisions: [String] {
+    record?.summary?.decisions ?? parsedSummary?.decisions ?? []
+  }
+  private var actionItems: [String] {
+    record?.summary?.actionItems ?? parsedSummary?.actionItems ?? []
+  }
 
   /// Compact rendering of the record's structured summary fields. Read-only —
   /// the narrative above keeps the only edit affordances. Renders nothing when
@@ -886,5 +999,156 @@ struct SummaryRailView: View {
   /// them as bullets, so the textual prefix is stripped rather than shown.
   private func displayActionItem(_ item: String) -> String {
     item.hasPrefix("[ ] ") ? String(item.dropFirst(4)) : item
+  }
+}
+
+// MARK: - The document's own summary (ADR 0006 addendum, 2026-09-02)
+
+/// The four summary fields as the open markdown itself carries them.
+///
+/// This exists because the summary left the document **body**: `MarkdownRender`
+/// used to draw `## Summary` and its three lists, and `SummaryRailView` drew the
+/// same four fields off the history record, so every summarized meeting rendered
+/// them twice. The body copy went. An imported `.md` has no history record, so
+/// with the body copy gone its summary would have been visible nowhere at all —
+/// which is precisely the rule ADR 0006 states, that nothing about a document
+/// may disappear because of where it was opened from.
+///
+/// It is deliberately not `EnrichmentSummary`. That type is the record's shape,
+/// it decodes from JSON, and half its fields (`title`, `tags`) are answered
+/// elsewhere in this panel; a parsed document is four strings-and-lists and
+/// nothing that can be written back.
+struct ParsedDocumentSummary: Equatable {
+  var narrative: String = ""
+  var keyTopics: [String] = []
+  var decisions: [String] = []
+  var actionItems: [String] = []
+
+  /// Nothing was found. The panel keeps its one-line notice for this, rather
+  /// than drawing an empty SUMMARY heading over nothing.
+  var isEmpty: Bool {
+    narrative.isEmpty && keyTopics.isEmpty && decisions.isEmpty && actionItems.isEmpty
+  }
+}
+
+/// Parse the markdown's own summary block into the four fields the panel draws.
+///
+/// The headings are `src/pipeline/write.ts`'s, exactly: a meeting emits
+/// `## Summary`, `## Key Topics`, `## Decisions Made` and `## Action Items`; a
+/// memo emits `## Note` and `## Action Items`. Action items keep their `[ ] `
+/// prefix here because the record's copies carry it too — stripping it is
+/// `displayActionItem`'s job, and doing it in two places is how the two
+/// renderings would come to disagree.
+///
+/// **It never enumerates the transcript**, which is the whole cost question.
+/// `parseDocumentMeta` stops at the *first* `## `; this one starts there and
+/// stops at the boundary the writer puts between the summary and the transcript
+/// — the `## Full Transcript` heading, or the `---` rule immediately above it.
+/// So what is scanned is a header block plus a summary, never a 90-minute
+/// meeting, and `enumerateLines` means no line of it is materialized as a
+/// `String` after the loop breaks.
+///
+/// The `---` stop is gated on having already seen a `## ` heading, so a
+/// document that opens with YAML front matter is not cut off at its first line.
+/// With neither boundary present (an imported `.md` that is not a Nota export)
+/// the scan runs to the end and collects nothing, which is the reason for the
+/// memo below as well as for the two stops.
+func parseDocumentSummary(_ markdown: String) -> ParsedDocumentSummary? {
+  enum Section { case none, narrative, topics, decisions, actionItems }
+
+  var section = Section.none
+  var sawSection = false
+  var narrativeLines: [String] = []
+  var parsed = ParsedDocumentSummary()
+
+  markdown.enumerateLines { rawLine, stop in
+    let line = rawLine.trimmingCharacters(in: .whitespaces)
+
+    if line.hasPrefix("## ") {
+      sawSection = true
+      switch String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces) {
+      case "Summary", "Note": section = .narrative
+      case "Key Topics": section = .topics
+      case "Decisions Made", "Decisions": section = .decisions
+      case "Action Items": section = .actionItems
+      case "Full Transcript": stop = true
+      default: section = .none
+      }
+      return
+    }
+
+    // The writer's separator. Everything below it is the transcript.
+    if sawSection, line == "---" {
+      stop = true
+      return
+    }
+
+    switch section {
+    case .none:
+      return
+    case .narrative:
+      // Raw, so an intentional blank line inside the narrative survives; the
+      // block is trimmed once at the end.
+      narrativeLines.append(rawLine)
+    case .topics:
+      if let item = summaryBulletItem(line) { parsed.keyTopics.append(item) }
+    case .decisions:
+      if let item = summaryBulletItem(line) { parsed.decisions.append(item) }
+    case .actionItems:
+      if let item = summaryBulletItem(line) { parsed.actionItems.append(item) }
+    }
+  }
+
+  parsed.narrative = narrativeLines
+    .joined(separator: "\n")
+    .trimmingCharacters(in: .whitespacesAndNewlines)
+  return parsed.isEmpty ? nil : parsed
+}
+
+/// `- item` / `* item` → `item`. Nil for anything that is not a list row, so
+/// stray prose under a list heading is dropped rather than drawn as a bullet.
+private func summaryBulletItem(_ line: String) -> String? {
+  for marker in ["- ", "* "] where line.hasPrefix(marker) {
+    let item = String(line.dropFirst(marker.count)).trimmingCharacters(in: .whitespaces)
+    return item.isEmpty ? nil : item
+  }
+  return nil
+}
+
+/// **Parsed once per document, not once per body evaluation.**
+///
+/// Both halves of the cost rule are honoured, and this is the second one. The
+/// parse itself is bounded (it stops at the transcript, above); this one-entry
+/// memo then means it runs *once* for an open document rather than on every
+/// evaluation of the panel's body — and the panel's own `TextEditor` writes an
+/// `@Published` on the model it observes, so "every evaluation" means every
+/// keystroke of a summary edit. That is the same trap `parseDocumentMeta`'s
+/// `enumerateLines` note records.
+///
+/// The key is the markdown itself. Comparing it is O(1) in the case that
+/// matters — `String.==` short-circuits when both sides are the same storage,
+/// and `model.markdown` is one stored property read repeatedly — and a full
+/// comparison only happens when the lengths match and the instances differ,
+/// i.e. when the document really did change into an equal-length one. Staleness
+/// is impossible by construction: equal markdown has an equal parse.
+///
+/// Main-actor only in practice (it is read from a SwiftUI body), which is why
+/// there is no lock: two views of one document on one actor is the whole
+/// audience.
+enum DocumentSummaryCache {
+  private static var key = ""
+  private static var value: ParsedDocumentSummary?
+
+  /// How many parses have actually run — so the memo is a fact a test can
+  /// check rather than a claim in a comment.
+  private(set) static var parseCount = 0
+
+  static func summary(for markdown: String) -> ParsedDocumentSummary? {
+    if markdown == key { return value }
+    let parsed = parseDocumentSummary(markdown)
+    key = markdown
+    value = parsed
+    parseCount += 1
+    return parsed
   }
 }
