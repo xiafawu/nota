@@ -565,7 +565,7 @@ final class VoiceprintHelperTests: XCTestCase {
     )
     XCTAssertEqual(
       built.arguments,
-      ["node", "/tmp/nota-project/dist/index.js", "voiceprint", "serve"]
+      ["node", "/tmp/nota-project/dist/index.js", "voiceprint-serve"]
     )
 
     let source = VoiceprintHelperProcess.launchPlan(
@@ -573,7 +573,7 @@ final class VoiceprintHelperTests: XCTestCase {
     )
     XCTAssertEqual(
       source.arguments,
-      ["npx", "tsx", "/tmp/nota-project/src/index.ts", "voiceprint", "serve"]
+      ["npx", "tsx", "/tmp/nota-project/src/index.ts", "voiceprint-serve"]
     )
   }
 }

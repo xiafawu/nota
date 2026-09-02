@@ -158,15 +158,35 @@ final class SpeakerColumnTests: XCTestCase {
     }
   }
 
-  // MARK: - The column is measured
+  // MARK: - The column is one width, everywhere
 
-  /// **The column tracks the longest name the document actually draws**, and
-  /// nothing else — not a typed constant, not the first name it sees.
-  func testTheColumnWidthTracksTheLongestName() {
+  /// **Every document that draws names draws the same column**, and the live
+  /// transcript draws that column too.
+  ///
+  /// This replaces `testTheColumnWidthTracksTheLongestName`, which asserted
+  /// ADR 0008's measured-per-document column. That could not survive ADR 0007:
+  /// the live pane draws the same column while a meeting is running and cannot
+  /// measure — a name arrives mid-session — so it must use a constant, and the
+  /// moment the document uses anything else, pressing Stop moves every line of
+  /// the transcript sideways by the difference. Length is handled by the
+  /// abbreviation ladder instead, which is the half the owner actually asked
+  /// for. The assertions below are the ones that would have caught the
+  /// disagreement: two documents with different names, and the live surface,
+  /// all agreeing on one number.
+  func testTheColumnIsOneWidthForEveryDocumentAndForTheLiveSurface() {
     let short = SpeakerColumn.width(forNames: ["Al"])
     let mixed = SpeakerColumn.width(forNames: ["Al", "Bartholomew"])
-    XCTAssertEqual(mixed, SpeakerColumn.width(of: "Bartholomew"), accuracy: 0.5)
-    XCTAssertGreaterThan(mixed, short, "a longer name did not widen the column")
+    XCTAssertEqual(short, SpeakerColumn.maximumWidth, accuracy: 0.01)
+    XCTAssertEqual(
+      mixed, short, accuracy: 0.01,
+      "two documents with different names drew different columns — Stop would "
+        + "shift every line sideways by the difference")
+    XCTAssertEqual(
+      RecordingPaneMetrics.speakerColumnWidth, SpeakerColumn.maximumWidth, accuracy: 0.01,
+      "the live column and the document's column are two numbers again")
+    XCTAssertEqual(
+      RecordingPaneMetrics.speakerColumnGap, SpeakerColumn.gap, accuracy: 0.01,
+      "the live gap and the document's gap are two numbers again")
     XCTAssertEqual(
       SpeakerColumn.width(forNames: []), 0,
       "a document with no speakers still reserved a column")
