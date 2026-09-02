@@ -1997,14 +1997,17 @@ as a question the surface is still asking.
   no surface draws those two now — they belong to `SessionMarkerList`, which has
   no caller. They stay as constants beside the view that reads them, not in the
   promise about what an owner sees.
-- **The transcript lays out a speaker column the pipeline does not fill yet.**
-  `LiveTranscriptLine.speaker` is nil today, `LiveTranscript.blocks` already
-  groups consecutive lines by it, and a turn draws the name above its text when
-  there is one. Realtime speaker labels are a known unresolved follow-up; the
-  grouping is not waiting to be written, it is waiting to be fed, and the day it
-  is the transcript gains names and not one number in `RecordingPaneMetrics`
-  moves. The volatile tail is a line like any other — it continues the turn it
-  belongs to and differs only in being drawn at the `timestamp` ink tier.
+- **The transcript lays out a speaker column, and ADR 0008 fills it.**
+  `LiveTranscript.blocks` groups consecutive lines by `speaker` and a turn draws
+  the name above its text when there is one; what feeds it is
+  `LiveMeetingSession.LiveSegment.speaker`, written once per finalized turn by
+  the voiceprint helper (see Live speaker names below). It is still **often
+  nil** — nobody enrolled, a voice nobody has enrolled, a turn too short to
+  embed, a helper that would not start — so the column stays reserved rather
+  than conditional, and not one number in `RecordingPaneMetrics` moved when the
+  names arrived. The volatile tail is a line like any other — it continues the
+  turn it belongs to and differs only in being drawn at the `timestamp` ink
+  tier.
 - **…but the grouping may not cost the laziness, so the drawn model is flat.**
   `LiveTranscript.rows` turns the blocks into one row per line plus a header row
   where the speaker changes, and `LiveTranscriptView` puts those rows **directly**
@@ -2269,6 +2272,80 @@ about **Moments**, a browsing affordance on a surface meant for recording.
   `transcriptBottomReserve` inherits it. Unconditional, not "wider while
   paused": a reserve that changed at the press would reflow the transcript under
   the owner at the moment the surface is promising to hold still.
+
+### Live speaker names (ADR 0008)
+
+Who is speaking, while the meeting is still running.
+`macos/Nota/App/VoiceprintHelper.swift` +
+`macos/Nota/Dictation/LiveMeetingSession.swift`; the wire is
+`docs/voiceprint-helper-protocol.md`, which is the authority when the two
+halves disagree.
+
+AssemblyAI streaming v3 carries **no speaker label at all** — the turn payload
+is a transcript and an end-of-turn flag — so this is embedding-side work, not a
+field waiting to be read off a socket. A **single long-running Node child**
+loads the 27 MB WeSpeaker model once and answers line-delimited JSON on stdio
+for the length of the session. Spawn-per-turn was rejected: `EnrollQueue`'s
+shape would reload 27 MB every few seconds and trail the conversation.
+
+**Naming may never take a meeting down with it.** Every way of not having a
+name — a binary that is not there, `ready:false` (the cheap exit when nobody
+is enrolled), a child that dies mid-meeting, one that stops answering, a turn
+too short to embed, a voice nobody enrolled — is the same nil, and the session
+records, transcribes, pauses, stops and seals exactly as it would with the
+feature absent. Nothing throws, nothing reaches `failSession`, and nothing is
+surfaced to the owner. `identify` collapses all of them deliberately: a caller
+that had to tell them apart is a caller that could get the degrade wrong.
+
+- **Only a confident match is drawn**, and the 0.65 floor is **re-checked on
+  the Swift side** (`VoiceprintHelperProcess.matchThreshold`) rather than
+  trusted from the helper's score. The surface that draws the name is this one,
+  and a helper that shipped ahead of us — or one behind
+  `NOTA_VOICEPRINT_HELPER` — must not be able to put a guess in front of the
+  owner. There is no live "Speaker 1 / Speaker 2" clustering; it was proposed
+  and rejected.
+- **A label once shown is never changed mid-meeting**
+  (`LiveSpeakerAttribution.mayWrite`). A later answer that contradicts an
+  earlier attribution is dropped. The seal re-runs diarization over the whole
+  audio and is the authority, so the correction is coming anyway, and a name
+  flickering from one person to another under the reader's eye is worse than
+  one that is merely incomplete.
+- **The ring is fed behind `capturesAudio`, after both destinations, and only
+  when a helper is up.** So a **paused span is as absent from a naming request
+  as it is from `recording.caf`** — a pause is often taken for privacy, and
+  shipping that audio to an embedding process is the same failure as writing it
+  to disk — and a session with no helper pays nothing at all.
+  `testTheRingDoesNotChangeWhatIsKept` compares `keptBufferCount` with a helper
+  installed and without one.
+- **`LiveTurnAudioBuffer` is sliced backwards from the write head, never from
+  `elapsed`.** The published clock is quantized to the 250 ms ticker and starts
+  before the first sample is captured; the head is by construction the exact end
+  of the audio that was kept. Its bound is **composed** —
+  `maxTurnSeconds + finalizationMarginSeconds` — the
+  `RecordingPaneMetrics.capsuleHeight` precedent, never a typed literal. It
+  trims in blocks rather than per delivery, because a `memmove` 45 times a
+  second is the audio-rate cost this whole feature is built to avoid.
+- **Nothing publishes at buffer rate.** The ring is a plain `var` on the
+  session (a `@Published` there is the XIA-432 trap through a second door), and
+  the one `segments` write happens once per finalized turn — seconds apart.
+  Requests are serialized on `namingChain`: the helper is one process with one
+  stdin, and the chain is also what a test awaits instead of sleeping.
+- **The child is owned.** `startNaming()` runs on both engines' start paths;
+  `stopNaming()` runs on **every** exit — a clean stop on either engine,
+  `cancel()` (which is Discard), a setup failure, a mid-session failure and a
+  server-initiated end. The in-flight name is cancelled rather than waited for.
+  Against an app that is killed outright the defence is the contract's own:
+  the helper **exits on stdin EOF**, which is what `stop()` closes; `terminate()`
+  and `deinit` are the backstops. Both timeouts (a request, and a readiness line
+  that never comes) write the helper off rather than only themselves, so a
+  wedged child cannot queue a meeting's worth of turns behind it.
+- **Inert under XCTest**, the way `FieldEngine.shared` is: `beginForTesting`
+  runs the production `startNaming()`, and a unit bundle must not spawn `npx`
+  or read the owner's real `speakers.json` because it drove a pause boundary.
+  Tests install a fake through `setNamingFactoryForTesting`. Three cases the
+  fake cannot reach — a child that declines, one that dies, and one that speaks
+  the protocol correctly — are driven against a real `VoiceprintHelperProcess`
+  running a `/bin/sh` script, which needs neither Node nor the model.
 
 ### The mini-recorder island and the menu bar (XIA-434)
 
