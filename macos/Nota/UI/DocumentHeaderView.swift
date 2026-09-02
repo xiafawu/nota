@@ -482,7 +482,7 @@ private struct AddTagChip: View {
           draft = ""
           isEditing = true
         } label: {
-          HStack(spacing: 2) {
+          HStack(spacing: Metrics.tagToggleIconSpacing) {
             Image(systemName: "plus")
               .font(.system(size: 7, weight: .bold))
             Text("add tag")

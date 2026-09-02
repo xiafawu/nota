@@ -31,8 +31,10 @@ enum Tokens {
   static let settingsCaptionFont: Font = .caption
 
   static let docTitleFont: Font = .title2
-  static let docTitleCompactFont: Font = .headline
   static let docSubtitleFont: Font = .subheadline
+  // `docTitleCompactFont` went with the collapsing document header (XIA-441):
+  // the header is one height whatever the document carries, so there is no
+  // compact title left to set (P-D5).
 
   /// The live meeting pane's type now lives in `RecordingPaneMetrics` and
   /// `SessionTimerMetrics` (XIA-432): the timer's size is *derived* (it steps at
@@ -88,13 +90,12 @@ enum SpeakerColors {
 
 enum NSFonts {
   static let codeBlock: NSFont = .monospacedSystemFont(ofSize: 12, weight: .regular)
-  static let h1: NSFont = .boldSystemFont(ofSize: 26)
-  static let h2: NSFont = .boldSystemFont(ofSize: 18)
-  static let body: NSFont = .systemFont(ofSize: 14)
   static let separator: NSFont = .systemFont(ofSize: 13)
-  static let timestamp: NSFont = .monospacedDigitSystemFont(ofSize: 12, weight: .regular)
   static let speaker: NSFont = .boldSystemFont(ofSize: 14)
-  static let gutterTimestamp: NSFont = .monospacedDigitSystemFont(ofSize: 11, weight: .regular)
+  // The old document scale — `h1`, `h2`, `body`, `timestamp` and
+  // `gutterTimestamp` — was superseded wholesale by the reading column below
+  // (XIA-441) and had no reader left. Two answers to "how big is a heading" is
+  // one answer too many (P-D5).
 
   // MARK: - The reading column (XIA-441)
   //

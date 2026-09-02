@@ -8,9 +8,6 @@ enum Metrics {
 
   static let newButtonH: CGFloat = 12
   static let newButtonV: CGFloat = 10
-  static let newButtonOuterH: CGFloat = 10
-  static let newButtonOuterTop: CGFloat = 10
-  static let newButtonOuterBottom: CGFloat = 6
   static let newButtonStackSpacing: CGFloat = 8
   static let primaryActionCornerRadius: CGFloat = 10
 
@@ -22,17 +19,13 @@ enum Metrics {
   static let emptyMainOuterPadding: CGFloat = 40
   static let emptyMainSpacing: CGFloat = 24
   static let emptyTextSpacing: CGFloat = 10
-  static let emptyProgressWidth: CGFloat = 220
 
   static let windowMinWidth: CGFloat = 780
   static let windowMinHeight: CGFloat = 560
-  static let settingsWidth: CGFloat = 420
-  static let settingsHeight: CGFloat = 160
-  static let sidebarMin: CGFloat = 220
-  static let sidebarIdeal: CGFloat = 260
-  static let sidebarMax: CGFloat = 320
-  static let detailMin: CGFloat = 520
-  static let detailIdeal: CGFloat = 720
+  // The settings window's own size and a split view's column widths used to be
+  // declared here and were read by nothing: `SettingsView` sizes itself, and no
+  // `NavigationSplitView` has ever existed in this app. Seven numbers that
+  // looked like the answer to "how wide is the sidebar" and were not (P-D5).
 
   static let richTextInsetX: CGFloat = 20
   static let richTextInsetY: CGFloat = 18
@@ -97,7 +90,6 @@ enum Metrics {
   static let tagSpacing: CGFloat = 4
   static let tagTopPadding: CGFloat = 4
   static let tagToggleIconSpacing: CGFloat = 2
-  static let maxVisibleTags: Int = 3
 
   // One card vocabulary on the home surface: section cards vs. row elements.
   static let cardCornerRadius: CGFloat = 12
