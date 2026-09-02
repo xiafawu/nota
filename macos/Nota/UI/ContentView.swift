@@ -200,10 +200,17 @@ struct ContentView: View {
       .padding(CraftTokens.spacing16)
       .zIndex(1)
 
-      // Escape (cancelAction) dismisses while the drawer is up.
-      Button("") { model.isHistoryDrawerPresented = false }
-        .keyboardShortcut(.cancelAction)
-        .hidden()
+      // Escape (cancelAction) dismisses while the drawer is up — and only
+      // while the rail is not (P-C1). Two hidden `.cancelAction` buttons in
+      // one window make Escape close an arbitrary one of the two surfaces;
+      // `toggleHistoryDrawer` now closes the rail before the drawer opens, so
+      // the overlap is momentary, and this guard is what makes "one cancel
+      // action at a time" true rather than merely likely.
+      if !model.isSummaryRailPresented {
+        Button("") { model.isHistoryDrawerPresented = false }
+          .keyboardShortcut(.cancelAction)
+          .hidden()
+      }
     }
     // Visually modal, so it says so (P-D11), exactly as the summary rail does.
     .accessibilityAddTraits(.isModal)

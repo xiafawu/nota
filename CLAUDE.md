@@ -1569,6 +1569,17 @@ walking a transcript and a Details button nothing can reach. Generate Summary
 takes `.defaultAction`, since it is the one control that spends money and the
 panel takes no initial focus.
 
+**Opening the history drawer is a phase leave, and ⌘L was the one route that
+skipped the policy.** The drawer slid in *under* the rail's backdrop — drawn in
+full and inert to every click, so the first press on a row was spent dismissing
+the rail — and it mounted a second hidden `.keyboardShortcut(.cancelAction)`,
+which made Escape close an arbitrary one of the two surfaces.
+`NotaModel.toggleHistoryDrawer` and `showHistoryDrawer(tab:)` now open inside
+`requestSummaryRailDismissal`, so an Ask-me draft answered Keep Editing refuses
+the open outright; the decision is `ChromeDismissal.onToggleDrawer(railOpen:)`,
+pure and pinned, and the drawer's cancel button is mounted only while the rail
+is not presented.
+
 **The reading column.** The document path had no measure cap at all —
 `widthTracksTextView` plus a 48pt inset means a 1400pt window draws
 140-character lines. The cap is on the **text container**, not the insets (a

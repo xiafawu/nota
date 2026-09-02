@@ -60,6 +60,32 @@ func summaryRailDismissalDecision(
   }
 }
 
+/// What ⌘L (and the toolbar History button) does, given whether the Details
+/// panel is open. Pure so the rule is asserted without a window (P-C1).
+///
+/// The drawer used to open straight on top of an open rail, which put it under
+/// the rail's full-window invisible backdrop: fully drawn and completely inert,
+/// with the first click on any row spent dismissing the rail instead of opening
+/// the record it landed on. It also mounted a second
+/// `.keyboardShortcut(.cancelAction)` in the same window, so Escape closed an
+/// arbitrary one of the two surfaces. Opening the drawer is a
+/// phase-leave-class event, so it now runs the same dismissal policy every
+/// other such call site runs — and when that policy is refused (Ask me → Keep
+/// Editing) the completion never fires and the drawer does not open.
+enum ChromeDismissal {
+  enum DrawerToggle: Equatable {
+    /// No rail is up: ⌘L is the plain toggle it has always been.
+    case toggle
+    /// The rail is up: run its dismissal policy first, and open the drawer
+    /// only if that policy lets the dismissal through.
+    case dismissRailThenOpen
+  }
+
+  static func onToggleDrawer(railOpen: Bool) -> DrawerToggle {
+    railOpen ? .dismissRailThenOpen : .toggle
+  }
+}
+
 enum SummaryRailDismissalDecision: Equatable {
   /// No draft in flight: close immediately.
   case close
@@ -315,15 +341,24 @@ final class NotaModel: ObservableObject {
   @Published var historyDrawerTab: HistoryDrawerTab = .transcripts
 
   func toggleHistoryDrawer() {
-    isHistoryDrawerPresented.toggle()
+    switch ChromeDismissal.onToggleDrawer(railOpen: isSummaryRailPresented) {
+    case .toggle:
+      isHistoryDrawerPresented.toggle()
+    case .dismissRailThenOpen:
+      requestSummaryRailDismissal { [weak self] in
+        self?.isHistoryDrawerPresented = true
+      }
+    }
   }
 
   /// Open the drawer on a specific tab. The only in-app route that needs this
   /// is the menu-bar popover's "Show all N in Nota →" (decision 26); ⌘L keeps
   /// the last-used tab.
   func showHistoryDrawer(tab: HistoryDrawerTab) {
-    historyDrawerTab = tab
-    isHistoryDrawerPresented = true
+    requestSummaryRailDismissal { [weak self] in
+      self?.historyDrawerTab = tab
+      self?.isHistoryDrawerPresented = true
+    }
   }
 
   // MARK: - Summary rail

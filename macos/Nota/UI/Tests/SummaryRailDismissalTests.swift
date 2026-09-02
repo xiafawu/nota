@@ -65,6 +65,31 @@ final class SummaryRailDismissalDecisionTests: XCTestCase {
   }
 }
 
+// MARK: - ⌘L over an open Details panel (P-C1)
+
+/// The drawer used to open under the rail's full-window invisible backdrop —
+/// drawn, and inert to every click — while a second hidden `.cancelAction`
+/// made Escape close an arbitrary one of the two surfaces. Opening the drawer
+/// is a phase-leave-class event, so it runs the same dismissal policy the
+/// record switch and the transcribe verb already run.
+final class ChromeDismissalTests: XCTestCase {
+  func testWithNoRailOpen_commandLIsThePlainToggle() {
+    XCTAssertEqual(ChromeDismissal.onToggleDrawer(railOpen: false), .toggle)
+  }
+
+  func testWithTheRailOpen_theRailsPolicyRunsFirst() {
+    XCTAssertEqual(ChromeDismissal.onToggleDrawer(railOpen: true), .dismissRailThenOpen)
+  }
+
+  /// The composed rule the model applies: with a draft in flight and Ask me
+  /// set, the dismissal defers — so the completion that opens the drawer never
+  /// runs, and Keep Editing leaves the owner where they were.
+  func testAnAskMeDraftDefersTheDrawerRatherThanOpeningIt() {
+    XCTAssertEqual(ChromeDismissal.onToggleDrawer(railOpen: true), .dismissRailThenOpen)
+    XCTAssertEqual(summaryRailDismissalDecision(editing: true, behavior: .ask), .ask)
+  }
+}
+
 // MARK: - What the merged Details panel draws below the hairline (2026-08-19)
 
 /// The panel merged the info card into the summary rail, and the two rules
