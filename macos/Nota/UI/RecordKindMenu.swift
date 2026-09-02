@@ -1,12 +1,12 @@
 import SwiftUI
 
-/// **Change kind**, in the drawer row's existing context menu (XIA-429 rule 3).
+/// **Change Kind**, in the drawer row's existing context menu (XIA-429 rule 3).
 ///
 /// A kind is decided at record time by which button was pressed, and it is
 /// wrong often enough to need a fix — a memo that turned into a meeting, a
 /// meeting started from the memo affordance. The fix belongs where every other
 /// per-record verb already is: the row's context menu, beside **Reveal in
-/// Finder**, **Delete recording audio…** and **Delete record…**.
+/// Finder**, **Delete Audio…** and **Delete Record…**.
 ///
 /// It is a **view builder rather than a second `ViewModifier`**, and that is not
 /// a style choice: two `.contextMenu` modifiers on one view do not merge — the
@@ -18,7 +18,7 @@ import SwiftUI
 /// Three things it owes, and each of them is a rejected alternative:
 ///
 /// - **It never re-summarizes.** Relabeling writes the record and sets
-///   `summaryOutdated`; the existing one-click "Regenerate summary" banner is
+///   `summaryOutdated`; the existing one-click "Regenerate Summary" banner is
 ///   the path, and the existing `enrichmentNeedsConfirm` alert guards a summary
 ///   the owner has edited. Spending a model call automatically on a mis-click
 ///   in a context menu is the failure mode that ruled the alternative out.
@@ -75,8 +75,8 @@ struct RecordKindMenuItems: View {
 }
 
 enum RecordKindCopy {
-  static let menuTitle = "Change kind"
+  static let menuTitle = "Change Kind"
   /// What the relabel costs, said once. The banner it refers to is the app's
-  /// existing "Regenerate summary" one — this verb adds no second path.
+  /// existing "Regenerate Summary" one — this verb adds no second path.
   static let outdatedNote = "The summary is marked outdated; regenerating is yours to do."
 }

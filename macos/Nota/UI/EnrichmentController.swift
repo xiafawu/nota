@@ -69,7 +69,7 @@ struct EnrichmentRecord: Codable, Equatable {
   var hasSummaryNarrative: Bool { !(summary?.narrative ?? "").isEmpty }
   /// True when a rename/accept landed on a record that already has a summary
   /// (the narrative still references the old label) — drives the one-click
-  /// "Regenerate summary" affordance until used or dismissed.
+  /// "Regenerate Summary" affordance until used or dismissed.
   var isSummaryOutdated: Bool { summaryOutdated ?? false }
   var pendingSuggestions: [SpeakerSuggestion] { (suggestions ?? []).filter(\.isPending) }
 
@@ -97,7 +97,7 @@ struct EnrichmentEditPayload: Codable, Equatable {
   var tags: [String]?
   var summaryEdited: Bool?
   var tagsEdited: Bool?
-  /// Dismisses the "Regenerate summary" affordance (decision 5) — the CLI
+  /// Dismisses the "Regenerate Summary" affordance (decision 5) — the CLI
   /// clears/keeps the flag per this field.
   var summaryOutdated: Bool?
 }
@@ -118,7 +118,7 @@ enum EnrichmentField: Equatable {
 /// The state the summary half of the Details panel renders from: hidden (no
 /// record, or a record with no narrative) → in-flight row → summary content
 /// (decisions 9/10/29). `hidden` is the ordinary resting state of a
-/// transcript-only meeting, and the panel fills it with the Generate summary
+/// transcript-only meeting, and the panel fills it with the Generate Summary
 /// button — the one control that starts a run, since the Details button that
 /// opens the panel starts nothing (ADR 0006).
 enum EnrichmentSlotState: Equatable {
@@ -492,7 +492,7 @@ final class EnrichmentController: ObservableObject {
     return applyEdit(EnrichmentEditPayload(summary: trimmed, summaryEdited: true), field: .summary)
   }
 
-  /// Dismiss the "Regenerate summary" affordance (decision 5): writes
+  /// Dismiss the "Regenerate Summary" affordance (decision 5): writes
   /// `summaryOutdated: false` through the apply-enrichment plumbing. The
   /// record keeps its stale summary — the user chose not to regenerate.
   @discardableResult

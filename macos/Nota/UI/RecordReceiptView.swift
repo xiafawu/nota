@@ -284,7 +284,7 @@ struct RecordReceiptView: View {
           .truncationMode(.tail)
         if status.retry == .summary, let onRetry {
           // Manual, always. Nothing on this path re-runs a summary on its own.
-          Button("Retry summary", action: onRetry)
+          Button("Retry Summary", action: onRetry)
             .font(.caption2)
             .buttonStyle(.plain)
             .foregroundStyle(Color.accentColor)

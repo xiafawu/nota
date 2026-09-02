@@ -381,7 +381,7 @@ enum ProvisionalTitle {
 /// Why a summary is being asked for.
 ///
 /// The distinction exists because **Skip summary is a standing preference about
-/// work Nota starts on its own**, and a press on one record's "Retry summary"
+/// work Nota starts on its own**, and a press on one record's "Retry Summary"
 /// is not that. Reading the setting for both is what erased a failure: the
 /// retry rewrote `failed:summarizing` to `transcribed`, then the setting sent
 /// it home without running anything — and `transcribed` offers no Retry, so the

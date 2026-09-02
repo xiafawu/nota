@@ -1603,7 +1603,7 @@ final class NotaModel: ObservableObject {
     }
   }
 
-  /// Whether the drawer row's **Change kind** submenu may be used right now.
+  /// Whether the drawer row's **Change Kind** submenu may be used right now.
   /// False while this record has work in flight — see `setKind`.
   func canRelabelKind(for entry: HistoryEntry) -> Bool {
     backgroundJobs.job(outputPath: entry.url.standardizedFileURL.path) == nil
@@ -2401,7 +2401,7 @@ struct HistoryRecordInfo {
   ///
   /// **Optional, and nothing on the enroll path reads it** (XIA-436). A record
   /// whose audio was deleted by `nota history delete-audio` or the drawer's
-  /// "Delete recording audio…" keeps neither `audioPath` nor a `sourcePath`
+  /// "Delete Audio…" keeps neither `audioPath` nor a `sourcePath`
   /// naming the file that went, so this resolves to nil — and that is the
   /// whole point of the verb, not a reason to stop finding the record.
   let audioURL: URL?
@@ -2575,7 +2575,7 @@ struct HistoryRecordInfo {
   ///
   /// Relabeling a memo as a meeting changes what a summary should say, so the
   /// existing one is stale. It is marked and nothing else: the one-click
-  /// "Regenerate summary" banner is the path, and the existing
+  /// "Regenerate Summary" banner is the path, and the existing
   /// `enrichmentNeedsConfirm` alert guards a summary the owner has edited.
   /// **It never auto-re-summarizes** — spending a model call on a mis-click in
   /// a context menu is exactly the failure that ruled out the alternative.
@@ -2596,7 +2596,7 @@ struct HistoryRecordInfo {
     var updated = json
     updated["kind"] = kind.rawValue
     // Only a record that HAS a summary can have a stale one. Marking a
-    // transcript-only record outdated would put a "Regenerate summary" banner
+    // transcript-only record outdated would put a "Regenerate Summary" banner
     // on a document that has never had one.
     if let summary = json["summary"] as? String, !summary.isEmpty {
       updated["summaryOutdated"] = true

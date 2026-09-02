@@ -356,13 +356,13 @@ struct ShareMenu: View {
         Button {
           model.exportRichText()
         } label: {
-          Label("Export Rich Text...", systemImage: "textformat")
+          Label("Export Rich Text…", systemImage: "textformat")
         }
         .liquidGlassButton()
         Button {
           model.exportMarkdown()
         } label: {
-          Label("Export Markdown...", systemImage: "number")
+          Label("Export Markdown…", systemImage: "number")
         }
         .liquidGlassButton()
       }

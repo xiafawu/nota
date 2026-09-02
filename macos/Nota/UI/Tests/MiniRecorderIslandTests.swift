@@ -680,12 +680,29 @@ final class MiniRecorderIslandTests: XCTestCase {
     // wherever it is pressed.
     XCTAssertEqual(SessionMenuRow.mark.action, .mark)
     XCTAssertEqual(SessionMenuRow.stop.action, .stop)
-    XCTAssertEqual(MenuBarSessionCopy.markTitle, "Mark this moment")
-    XCTAssertEqual(MenuBarSessionCopy.stopTitle, "Stop & summarize")
+    XCTAssertEqual(MenuBarSessionCopy.markTitle, "Mark This Moment")
+    XCTAssertEqual(MenuBarSessionCopy.stopTitle, "Stop & Summarize")
     XCTAssertEqual(
       MenuBarSessionCopy.status(state: .recording, elapsed: 461),
       "Recording · 07:41"
     )
+  }
+
+  /// The menu bar's four verbs are menu items, so they are Title Case (Apple
+  /// HIG) like the island's own Show / Try Again. They were sentence case while
+  /// the surfaces beside them were not, which is the split this pass closed.
+  func testTheMenuBarVerbsAreTitleCase() {
+    let titles = [
+      MenuBarSessionCopy.markTitle,
+      MenuBarSessionCopy.pauseTitle,
+      MenuBarSessionCopy.resumeTitle,
+      MenuBarSessionCopy.stopTitle,
+      MiniIslandCopy.showTitle,
+      MiniIslandCopy.retryTitle,
+    ]
+    for title in titles {
+      XCTAssertTrue(RecordingStorageTests.isTitleCase(title), "\(title) is not Title Case")
+    }
   }
 
   /// **The other half of the derivation.** `testTheIslandHeightIsDerivedFrom…`

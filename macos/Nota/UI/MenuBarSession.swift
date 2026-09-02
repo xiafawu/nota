@@ -138,10 +138,10 @@ enum SessionMenuRow: CaseIterable, Equatable {
 }
 
 enum MenuBarSessionCopy {
-  static let markTitle = "Mark this moment"
-  static let pauseTitle = "Pause recording"
-  static let resumeTitle = "Resume recording"
-  static let stopTitle = "Stop & summarize"
+  static let markTitle = "Mark This Moment"
+  static let pauseTitle = "Pause Recording"
+  static let resumeTitle = "Resume Recording"
+  static let stopTitle = "Stop & Summarize"
 
   /// What the status **item itself** draws — the one string an owner reads from
   /// another app without opening anything.

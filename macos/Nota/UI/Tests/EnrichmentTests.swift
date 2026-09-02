@@ -173,7 +173,7 @@ final class EnrichmentSlotStateTests: XCTestCase {
 
   func testTranscribedNoSummary_hidden() {
     // The placeholder case is retired (decisions 9/10): with no narrative
-    // this state renders nothing, and the panel puts its Generate summary
+    // this state renders nothing, and the panel puts its Generate Summary
     // button in the slot instead of a "No summary yet" card (ADR 0006).
     let record = makeRecord(status: "transcribed")
     XCTAssertEqual(

@@ -431,7 +431,7 @@ struct SummaryRailView: View {
       } else if hasNarrative {
         // Absent, not greyed out, when there is no narrative. A record with no
         // summary is the ordinary resting state of a transcript-only meeting,
-        // and two dead buttons above the live "Generate summary" — one of them
+        // and two dead buttons above the live "Generate Summary" — one of them
         // labelled *Re*generate, naming an object that has never existed —
         // read as the summary having been tried and failed.
         Button("Edit") { beginEdit() }
@@ -498,7 +498,7 @@ struct SummaryRailView: View {
     } else if hasNarrative {
       // Decision 5: a rename/accept on a record that already has a
       // summary leaves the narrative referencing the old label. One-click
-      // "Regenerate summary" until used or dismissed.
+      // "Regenerate Summary" until used or dismissed.
       if record?.isSummaryOutdated == true {
         outdatedSummaryBanner
       }
@@ -539,7 +539,7 @@ struct SummaryRailView: View {
   /// generation lands in exactly this slot, so the message is drawn here and
   /// the button reads Try Again. Two blocks would have meant two Retry buttons
   /// one state apart, and dropping the message would have left a failed summary
-  /// offering "Generate summary" with no word about why the last one did not
+  /// offering "Generate Summary" with no word about why the last one did not
   /// land.
   ///
   /// No confirm gate: `requestRegenerate`'s alert protects an *edited* summary,
@@ -552,7 +552,7 @@ struct SummaryRailView: View {
           .foregroundStyle(CraftTokens.failure)
           .lineLimit(3)
       }
-      Button(hasSummaryFailure ? "Try Again" : "Generate summary") {
+      Button(hasSummaryFailure ? "Try Again" : "Generate Summary") {
         enrichment.generateSummary()
       }
       .buttonStyle(.borderedProminent)
@@ -569,7 +569,7 @@ struct SummaryRailView: View {
   }
 
   /// True when the empty slot is empty *because* something went wrong, which
-  /// is the whole difference between "Generate summary" and "Try Again".
+  /// is the whole difference between "Generate Summary" and "Try Again".
   private var hasSummaryFailure: Bool {
     enrichment.errorMessage != nil && enrichment.errorField == .summary
   }
@@ -590,7 +590,7 @@ struct SummaryRailView: View {
         // Cancelling leaves the panel exactly where it is. Closing it was
         // right only while the button generated on the way in and an empty
         // panel was unreachable; now the empty state IS a state — the slot
-        // holds Generate summary — and taking the panel down would also take
+        // holds Generate Summary — and taking the panel down would also take
         // away the chips and facts the owner may have opened it for.
         enrichment.cancelGeneration()
       }
@@ -668,7 +668,7 @@ struct SummaryRailView: View {
         .truncationMode(.middle)
         .help("Regenerate to update the summary with the renamed speakers")
       Spacer(minLength: 4)
-      Button("Regenerate summary") {
+      Button("Regenerate Summary") {
         requestRegenerate()
       }
       .controlSize(.small)

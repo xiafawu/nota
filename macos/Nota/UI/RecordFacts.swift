@@ -211,7 +211,7 @@ extension RecordFacts {
   ///   **`+`**, the same "at least" the CLI's totals line carries. Stating a
   ///   settled `$0.0031` while a second billed model call is running is the
   ///   "quietly understates the bill" failure `recordCost` may not have — and
-  ///   it is reachable: Retry summary on a record that already has usage.
+  ///   it is reachable: Retry Summary on a record that already has usage.
   /// - Anything else is left exactly as the record says it.
   static func cost(recorded: Cost, workInFlight: Bool) -> Cost {
     guard workInFlight else { return recorded }

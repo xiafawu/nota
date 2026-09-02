@@ -303,7 +303,7 @@ struct HistoryDrawerView: View {
     /// names the query and offers the crossing (the badge computes the count).
     case queryNoMatchOnActive(otherTab: HistoryDrawerTab, otherCount: Int)
     /// (d) Query matched nothing anywhere: names the query and how much was
-    /// searched, plus Clear search.
+    /// searched, plus Clear Search.
     case queryNoMatchAnywhere
   }
 
@@ -348,7 +348,7 @@ struct HistoryDrawerView: View {
         Text("Not in \(model.history.count) transcripts or \(dictationController.dictationHistory.count) dictations.")
           .font(.system(size: 12))
           .foregroundStyle(.secondary)
-        Button("Clear search") { searchText = "" }
+        Button("Clear Search") { searchText = "" }
           .font(.system(size: 12))
           .buttonStyle(.plain)
           .foregroundStyle(Color.accentColor)
@@ -424,7 +424,7 @@ struct HistoryDrawerView: View {
   // MARK: - Dictation row (decisions 16/18/21)
 
   /// One click expands the row in place to its full text AND copies it — the
-  /// expansion is the receipt. One row open at a time. Insert again / Delete
+  /// expansion is the receipt. One row open at a time. Insert Again / Delete
   /// are labelled buttons inside the expanded row; there is no pin icon and
   /// no bulk clear on this tab.
   private func dictationRow(_ entry: DictationHistoryEntry) -> some View {
@@ -472,7 +472,7 @@ struct HistoryDrawerView: View {
             .font(.caption.weight(.medium))
             .foregroundStyle(entry.status == .failed ? CraftTokens.failure : Color.secondary)
           Spacer()
-          Button("Insert again") {
+          Button("Insert Again") {
             dictationController.retryDictationHistory(entry.id)
           }
           .controlSize(.small)

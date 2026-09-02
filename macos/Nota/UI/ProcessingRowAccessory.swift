@@ -31,7 +31,7 @@ struct ProcessingRowLine: View {
         // Retry is manual, everywhere (standing rule 4). Nothing on this path
         // ever re-runs a summary on its own — an automatic retry spends the
         // owner's money twice without asking.
-        Button("Retry summary", action: onRetry)
+        Button("Retry Summary", action: onRetry)
           .font(.caption2)
           .buttonStyle(.plain)
           .foregroundStyle(Color.accentColor)

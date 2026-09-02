@@ -250,7 +250,7 @@ struct DictationMenuBarView: View {
 
 /// One recent dictation in the popover (decision 24): up to two lines of
 /// text, then `2:44 PM · Slack`-style meta plus the status label. Click
-/// copies; hover replaces the status text with "↩ Insert again" and the same
+/// copies; hover replaces the status text with "↩ Insert Again" and the same
 /// click then retries insertion into the focused app. No ⌥-click modifier —
 /// the hover state is the visible mode switch.
 private struct RecentDictationRow: View {
@@ -282,7 +282,7 @@ private struct RecentDictationRow: View {
             .lineLimit(1)
             .truncationMode(.tail)
           Spacer(minLength: 4)
-          Text(isHovering ? "↩ Insert again" : entry.status.label)
+          Text(isHovering ? "↩ Insert Again" : entry.status.label)
             .fontWeight(.medium)
             .foregroundStyle(
               isHovering

@@ -116,7 +116,7 @@ final class RecordFactsTests: XCTestCase {
   /// **A figure that is still growing says so.** The receipt's cost is derived
   /// from the record's own total *and* from whether a billed call is running.
   ///
-  /// The reachable failure is Retry summary on a record that already has usage:
+  /// The reachable failure is Retry Summary on a record that already has usage:
   /// the record says `$0.0031`, a second model call is in flight, and stating
   /// the first figure as settled is the "quietly understates the bill" failure
   /// `recordCost`'s own rules forbid.
@@ -656,7 +656,7 @@ final class RecordFactsTests: XCTestCase {
   }
 
   /// Only a record that HAS a summary can have a stale one. Marking a
-  /// transcript-only record outdated would put a "Regenerate summary" banner on
+  /// transcript-only record outdated would put a "Regenerate Summary" banner on
   /// a document that has never had one.
   func testRelabelingATranscriptOnlyRecordMarksNothingStale() throws {
     let dir = try Self.temporaryHistory()
