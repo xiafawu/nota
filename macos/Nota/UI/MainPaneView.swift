@@ -77,11 +77,8 @@ struct MainPaneView: View {
         )
       }
 
-      if isDropTargeted {
-        RoundedRectangle(cornerRadius: Metrics.dropFullBleedCornerRadius)
-          .strokeBorder(Tokens.dropAccent, lineWidth: Metrics.dropTargetStrokeWidth)
-          .allowsHitTesting(false)
-          .transition(.opacity)
+      if isDropTargeted, acceptsDrop {
+        DropTargetStroke()
       }
 
       // Bottom-right local cluster (ADR 0005): per-transcript actions float
@@ -119,7 +116,17 @@ struct MainPaneView: View {
     }
     .animation(Tokens.animSnap, value: isDropTargeted)
     .animation(Tokens.animFast, value: isRichContent)
-    .onDrop(of: [UTType.fileURL.identifier], isTargeted: $isDropTargeted) { providers in
+    // P-C9: a live session refuses the drop rather than queueing it. Binding
+    // `isTargeted` to a constant is what keeps the accept stroke off the
+    // screen — a target that lights up over a running meeting promises to
+    // accept a file the surface would then hide, and `performAccept` would
+    // clear the open document and start a second pipeline behind the live
+    // phase.
+    .onDrop(
+      of: [UTType.fileURL.identifier],
+      isTargeted: acceptsDrop ? $isDropTargeted : .constant(false)
+    ) { providers in
+      guard acceptsDrop else { return false }
       guard let provider = providers.first else {
         return false
       }
@@ -152,6 +159,11 @@ struct MainPaneView: View {
   private var isRichContent: Bool {
     if case .rich = content { return true }
     return false
+  }
+
+  /// Whether this pane may take a dropped file at all (P-C9).
+  private var acceptsDrop: Bool {
+    MainPaneDrop.accepts(content: content, isStartingLiveSession: model.isStartingLiveSession)
   }
 
   /// The bottom-right local cluster: Details (one button, 2026-08-19) and
@@ -441,3 +453,36 @@ private struct RichDocumentPane: View {
   .frame(width: 720, height: 540)
 }
 #endif
+
+// MARK: - Drop decisions and the stroke both phases draw (P-C9 / P-C10)
+
+/// Whether the main pane may accept a dropped audio file, as a pure decision —
+/// the way `LivePhaseGate` and `StopLanding` are (P-C9).
+///
+/// A live meeting refuses. Accepting one runs `performAccept` → `transcribe()`,
+/// which clears the open document and starts a second pipeline behind a pane
+/// the live phase pins in front, and `performTranscribe` guards only
+/// `!isRunning`. `isStartingLiveSession` is refused for the same reason: a
+/// Start press is accepted the instant it is seen, and the seconds-long start
+/// window is exactly when a stray drop would land.
+enum MainPaneDrop {
+  static func accepts(content: MainPaneContent, isStartingLiveSession: Bool) -> Bool {
+    if isStartingLiveSession { return false }
+    if case .liveMeeting = content { return false }
+    return true
+  }
+}
+
+/// The full-bleed accept stroke. One view, so the home phase and the three
+/// pane phases cannot draw the same gesture at two radii (P-C10).
+struct DropTargetStroke: View {
+  var body: some View {
+    RoundedRectangle(cornerRadius: Self.cornerRadius)
+      .strokeBorder(Tokens.dropAccent, lineWidth: Self.strokeWidth)
+      .allowsHitTesting(false)
+      .transition(.opacity)
+  }
+
+  static let cornerRadius: CGFloat = Metrics.dropFullBleedCornerRadius
+  static let strokeWidth: CGFloat = Metrics.dropTargetStrokeWidth
+}

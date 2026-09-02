@@ -175,4 +175,35 @@ final class LiveMeetingViewTests: XCTestCase {
     XCTAssertFalse(LiveMeetingControls.saveOrDiscard.showsRecordingPane)
     XCTAssertFalse(LiveMeetingControls.retryOrDiscard.showsRecordingPane)
   }
+
+  // MARK: - A live session refuses a dropped file (P-C9)
+
+  /// `MainPaneView` attaches one `.onDrop` for all its contents. Over a
+  /// running session that used to light the full-bleed accept stroke and then
+  /// run `transcribe()`, which clears the open document and starts a second
+  /// pipeline behind a pane the live phase pins in front.
+  func testALiveMeetingRefusesADroppedFile() {
+    let empty = MainPaneContent.empty(
+      EmptyMainState(isRunning: false, displayName: "", displayPath: "", phase: "")
+    )
+    let running = MainPaneContent.empty(
+      EmptyMainState(isRunning: true, displayName: "a.m4a", displayPath: "/tmp/a.m4a", phase: "Transcribing…")
+    )
+    let rich = MainPaneContent.rich(DocumentRender(meta: nil, body: NSAttributedString(string: "x")))
+
+    XCTAssertTrue(MainPaneDrop.accepts(content: empty, isStartingLiveSession: false))
+    XCTAssertTrue(MainPaneDrop.accepts(content: running, isStartingLiveSession: false))
+    XCTAssertTrue(MainPaneDrop.accepts(content: rich, isStartingLiveSession: false))
+    XCTAssertFalse(MainPaneDrop.accepts(content: .liveMeeting, isStartingLiveSession: false))
+  }
+
+  /// A Start press is accepted the instant it is seen, and the start window is
+  /// seconds long — a drop landing in it must be refused, not queued.
+  func testAStartingSessionRefusesADroppedFileToo() {
+    let empty = MainPaneContent.empty(
+      EmptyMainState(isRunning: false, displayName: "", displayPath: "", phase: "")
+    )
+    XCTAssertFalse(MainPaneDrop.accepts(content: empty, isStartingLiveSession: true))
+    XCTAssertFalse(MainPaneDrop.accepts(content: .liveMeeting, isStartingLiveSession: true))
+  }
 }
