@@ -282,7 +282,7 @@ final class HoverTimestampTextView: NSTextView {
       gutterLabel.isHidden = false
     }
     NSAnimationContext.runAnimationGroup({ context in
-      context.duration = Tokens.hoverFadeDuration
+      context.duration = Tokens.hoverDuration
       gutterLabel.animator().alphaValue = visible ? 1 : 0
     }, completionHandler: { [weak self] in
       guard let self else {

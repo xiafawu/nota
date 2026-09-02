@@ -43,9 +43,33 @@ enum Tokens {
   /// constant here could only ever be a second opinion. The six fonts and the
   /// error wash this block held had no readers left after the rewrite.
 
+  /// The app's one appear/disappear curve. Four other durations exist and are
+  /// **deliberately not this one** — do not sweep them up in a consolidation
+  /// pass (P-B12): `FieldBackgroundMetrics.arrivalFade` (0.45, the ground's
+  /// arrival, defended in its own docstring), `RecordReceiptTransition`'s
+  /// stagger, `HUDPillMetrics.frameDuration` (0.26, the HUD's single animation
+  /// authority) and `RecordingMotion.pauseAnimation` (the owner's spring).
   static let animFast: Animation = .easeInOut(duration: 0.2)
-  static let animSnap: Animation = .easeInOut(duration: 0.15)
-  static let hoverFadeDuration: Double = 0.18
+
+  /// One hover speed for the whole app (P-B4). `animSnap` is built from it and
+  /// `HoverTimestampTextView`'s AppKit fade reads it directly, so a hover
+  /// cannot gain a second duration by being written in two places.
+  static let hoverDuration: Double = 0.15
+  static let animSnap: Animation = .easeInOut(duration: hoverDuration)
+
+  /// One transition for anything that pops into place — a stage checkmark, a
+  /// drawer badge, the toolbar status pill. Under Reduce Motion the scale goes
+  /// and the fade stays: a scale is a movement, and `ContentView` already
+  /// branches its `.move` transitions the same way (P-B9).
+  static func popIn(reduceMotion: Bool) -> AnyTransition {
+    reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: popInScale))
+  }
+
+  /// Asserted rather than inspected: `AnyTransition` is not `Equatable`, so the
+  /// tests pin this predicate instead of the value `popIn` returns.
+  static func popInScales(reduceMotion: Bool) -> Bool { !reduceMotion }
+
+  static let popInScale: Double = 0.7
 }
 
 /// Distinct per-speaker identity hues: the chip dot and the transcript speaker

@@ -568,15 +568,18 @@ private struct HistoryDrawerRow: View {
         .help(isPinned ? "Unpin" : "Pin")
       }
       .opacity(isHovered || isPinned ? 1 : 0)
-      .animation(Tokens.animSnap, value: isHovered)
     }
     .padding(.vertical, 6)
     .padding(.horizontal, 10)
     .frame(maxWidth: .infinity, alignment: .leading)
     .background(
       RoundedRectangle(cornerRadius: Metrics.rowCornerRadius, style: .continuous)
-        .fill(Color.primary.opacity(isHovered ? 0.06 : 0))
+        .fill(Color.primary.opacity(isHovered ? Tokens.rowHoverWashOpacity : 0))
     )
+    // One hover speed for the whole row (P-B4). This used to sit on the pin
+    // icon alone, so pointing at a row snapped the background wash on
+    // instantly while the icon faded in over 0.15s.
+    .animation(Tokens.animSnap, value: isHovered)
     .onHover { isHovered = $0 }
     .contentShape(Rectangle())
   }
@@ -604,6 +607,7 @@ private struct HistoryTabStrip: View {
 
   @Namespace private var indicator
   @State private var hoveredTab: HistoryDrawerTab?
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   var body: some View {
     HStack(spacing: 2) {
@@ -614,10 +618,14 @@ private struct HistoryTabStrip: View {
     .padding(2)
     .background(
       Capsule(style: .continuous)
-        .fill(Color.primary.opacity(0.06))
+        .fill(Color.primary.opacity(Tokens.rowHoverWashOpacity))
     )
     .animation(Tokens.animFast, value: selection)
     .animation(Tokens.animFast, value: badgeCount)
+    // The segment's hover wash fades at the same speed the drawer rows do
+    // (P-B4); it used to snap, because the only animations here keyed off
+    // `selection` and `badgeCount`.
+    .animation(Tokens.animSnap, value: hoveredTab)
   }
 
   private func segment(_ tab: HistoryDrawerTab) -> some View {
@@ -643,7 +651,7 @@ private struct HistoryTabStrip: View {
               .matchedGeometryEffect(id: "selection", in: indicator)
           } else if hoveredTab == tab {
             Capsule(style: .continuous)
-              .fill(Color.primary.opacity(0.05))
+              .fill(Color.primary.opacity(Tokens.rowHoverWashOpacity))
           }
         }
         // The badge rides on its own segment, so nothing has to be positioned
@@ -658,7 +666,7 @@ private struct HistoryTabStrip: View {
               .padding(.vertical, 1)
               .background(Capsule().fill(Color.accentColor))
               .offset(x: 4, y: -5)
-              .transition(.opacity.combined(with: .scale(scale: 0.7)))
+              .transition(Tokens.popIn(reduceMotion: reduceMotion))
               .allowsHitTesting(false)
           }
         }

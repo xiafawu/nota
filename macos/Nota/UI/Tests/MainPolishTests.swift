@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 @testable import Nota
 
@@ -5,6 +6,34 @@ import XCTest
 /// Recent-list recency bands and fallback titles (A1-H4/H6), and the
 /// per-speaker transcript colors (A1-D3).
 final class MainPolishTests: XCTestCase {
+  // MARK: - Motion vocabulary (polish batch 1)
+
+  /// The phase swap's 8pt rise is a movement, so Reduce Motion drops it and
+  /// keeps the fade — the answer the drawer and the summary rail in the same
+  /// `body` already give, and the one the field engine gives to the very same
+  /// phase change (P-B1).
+  func testThePhaseSwapDoesNotRiseUnderReduceMotion() {
+    XCTAssertFalse(PhaseSwapTransition.rises(reduceMotion: true))
+    XCTAssertTrue(PhaseSwapTransition.rises(reduceMotion: false))
+  }
+
+  /// A scale is a movement too, so the one pop-in transition drops it (P-B9).
+  /// Asserted through the predicate rather than the value: `AnyTransition` is
+  /// not `Equatable`.
+  func testTheOnePopInTransitionDoesNotScaleUnderReduceMotion() {
+    XCTAssertFalse(Tokens.popInScales(reduceMotion: true))
+    XCTAssertTrue(Tokens.popInScales(reduceMotion: false))
+  }
+
+  /// One hover speed, in one place: `animSnap` is built out of
+  /// `Tokens.hoverDuration`, which is also what `HoverTimestampTextView`'s
+  /// AppKit fade reads. Three hover durations used to ship (0, 0.15, 0.18) and
+  /// this is what stops them re-splitting (P-B4).
+  func testTheHoverCurveAndTheHoverDurationAreTheSameNumber() {
+    XCTAssertEqual(Tokens.animSnap, .easeInOut(duration: Tokens.hoverDuration))
+    XCTAssertNotEqual(Tokens.animSnap, Tokens.animFast)
+  }
+
   // MARK: - RunStages (A1-R1)
 
   func testRunStages_mapsEachPhaseLabelToItsStage() {

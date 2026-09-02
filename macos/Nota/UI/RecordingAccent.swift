@@ -61,6 +61,15 @@ enum RecordingMotion {
     return .easeInOut(duration: 0.70 * 0.7)
   }
 
+  /// False under Reduce Motion: a decorative SF Symbol pulse holds still.
+  ///
+  /// This is the ring's answer, and for the ring's reason (P-B6). The pulsing
+  /// waveform beside "Listening" on the live transcript, and the one on the
+  /// running view's icon, say nothing the surface is not already saying in
+  /// words — they are the ring's category, not the meter's. The waveform's
+  /// `isActive` was literally `true`, so nothing could stop it.
+  static func decorationPulses(reduceMotion: Bool) -> Bool { !reduceMotion }
+
   /// Nil under Reduce Motion: the ring holds at a steady scale and opacity.
   static func ringAnimation(reduceMotion: Bool) -> Animation? {
     guard !reduceMotion else { return nil }

@@ -1393,6 +1393,10 @@ struct LiveTranscriptView: View {
   /// would have to guess.
   @Environment(\.colorScheme) private var colorScheme
 
+  /// The empty-transcript waveform is decoration on the recording surface, so
+  /// it answers Reduce Motion the way `SessionRing` does (P-B6).
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   var body: some View {
     ScrollViewReader { proxy in
       ScrollView {
@@ -1433,7 +1437,7 @@ struct LiveTranscriptView: View {
   private var listeningPlaceholder: some View {
     HStack(spacing: CraftTokens.spacing8) {
       Image(systemName: "waveform")
-        .symbolEffect(.pulse, isActive: true)
+        .symbolEffect(.pulse, isActive: RecordingMotion.decorationPulses(reduceMotion: reduceMotion))
         .foregroundStyle(.ground(.speaker))
       Text(RecordingPaneCopy.listening)
         .font(RecordingPaneMetrics.transcriptFont)

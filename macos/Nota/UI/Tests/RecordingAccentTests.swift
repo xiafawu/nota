@@ -28,6 +28,19 @@ final class RecordingAccentTests: XCTestCase {
     XCTAssertTrue(SessionRingMetrics.breathes(reduceMotion: false))
   }
 
+  /// A decorative SF Symbol pulse is the ring's category, not the meter's, so
+  /// it holds still too (P-B6). The empty-transcript waveform on the live
+  /// meeting surface and the running view's icon both read this predicate.
+  func testDecorativePulsesStopUnderReduceMotion() {
+    XCTAssertFalse(RecordingMotion.decorationPulses(reduceMotion: true))
+    XCTAssertTrue(RecordingMotion.decorationPulses(reduceMotion: false))
+    // Same side as the ring, opposite side from the meter.
+    XCTAssertEqual(
+      RecordingMotion.decorationPulses(reduceMotion: true),
+      SessionRingMetrics.breathes(reduceMotion: true)
+    )
+  }
+
   /// The heights themselves are what the microphone is doing, so Reduce Motion
   /// cannot reach them at all — it is not a parameter of `barHeights`, and this
   /// pins the consequence: the meter still *tracks* the level either way.

@@ -3,6 +3,8 @@ import SwiftUI
 struct ToolbarStatusPill: View {
   let state: ToolbarStatusPillState
 
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   var body: some View {
     HStack(spacing: Metrics.statusHStackSpacing) {
       if state.isRunning {
@@ -21,7 +23,9 @@ struct ToolbarStatusPill: View {
     // one glass capsule around both. The tint this dropped was
     // `.secondary.opacity(0.1)` — a neutral wash, never a semantic signal — so
     // nothing the pill *says* travelled on it.
-    .transition(.opacity.combined(with: .scale))
+    // A scale is a movement, so it goes under Reduce Motion and the fade
+    // stays (P-B9).
+    .transition(Tokens.popIn(reduceMotion: reduceMotion))
   }
 }
 

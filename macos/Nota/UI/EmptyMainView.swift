@@ -18,6 +18,8 @@ struct EmptyMainView: View {
   let state: EmptyMainState
   let isDropTargeted: Bool
 
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
   private var stageIndex: Int? {
     RunStages.index(forPhase: state.phase)
   }
@@ -29,7 +31,10 @@ struct EmptyMainView: View {
       Image(systemName: state.isRunning ? "waveform" : "tray.and.arrow.down")
         .font(Tokens.emptyMainIconFont)
         .foregroundStyle(isDropTargeted ? Tokens.dropAccent : Tokens.emptyIconColor)
-        .symbolEffect(.pulse, isActive: state.isRunning)
+        .symbolEffect(
+          .pulse,
+          isActive: state.isRunning && RecordingMotion.decorationPulses(reduceMotion: reduceMotion)
+        )
 
       VStack(spacing: Metrics.emptyTextSpacing) {
         Text(state.displayName)
@@ -82,7 +87,7 @@ struct EmptyMainView: View {
       Image(systemName: "checkmark.circle.fill")
         .font(.system(size: Metrics.stageIndicatorSize - 1))
         .foregroundStyle(Color.accentColor)
-        .transition(.opacity.combined(with: .scale))
+        .transition(Tokens.popIn(reduceMotion: reduceMotion))
     } else if index == stageIndex {
       ProgressView()
         .controlSize(.mini)
