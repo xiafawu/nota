@@ -1666,8 +1666,14 @@ and that is not a motion preference; only the curve between two readings is.
 ### Reduce Transparency changes the material and nothing else
 
 The capsules degrade to opaque system materials through the existing
-`liquidGlass` branch, and the hairline and the shadow stay — they are constants
-on `CraftTokens`, not properties of the glass. Nothing moves: every number in
+`liquidGlass` branch, and the shadow stays — it is a `CraftTokens` constant, not
+a property of the glass. The **hairline is drawn only where the material has no
+rim of its own** (`CraftGlassPanel.drawsHairline`): Liquid Glass carries one, so
+a second stroke over it is the doubled outline the toolbar pills and the
+floating panels each deleted, and `.regularMaterial` carries none, so the
+degraded path keeps it. It is an `.overlay` either way, so the rim is chrome and
+never geometry — `testTheRimIsChromeAndOnlyTheDegradedMaterialDrawsIt`. Nothing
+moves: every number in
 `RecordingPaneMetrics` is a constant or is measured once from a font, and
 neither kind reads an `@Environment` value, so there is nothing for an
 accessibility setting to reach. Reduce Motion reaches exactly one thing here

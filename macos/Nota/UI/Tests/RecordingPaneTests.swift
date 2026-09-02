@@ -310,6 +310,85 @@ final class RecordingPaneTests: XCTestCase {
     XCTAssertEqual(RecordingCapsuleTint.strength, 0.62, accuracy: 0.0001)
   }
 
+  /// **Liquid Glass carries its own rim, so `craftGlassPanel` draws one only
+  /// where the material has none** (P-A6).
+  ///
+  /// Nine main-window surfaces go through that modifier — the history drawer,
+  /// the Details panel, the home cards, the failed-session banner, the receipt
+  /// and every capsule of the recording cluster — and each of them painted
+  /// `CraftTokens.hairline` over a plate that already has a rim. That is the
+  /// doubled outline the toolbar pills and the three floating panels each
+  /// deleted (CLAUDE.md, Key Design Decisions: "the neutral fill and the
+  /// hairline go, because the plate has its own rim"). The Reduce Transparency
+  /// branch swaps the effect for `.regularMaterial`, which has no rim of its
+  /// own, so the stroke stays exactly there — and the shadow stays on both,
+  /// being a `CraftTokens` constant rather than a property of the glass.
+  ///
+  /// The half that has to be **measured** is that this is chrome and not
+  /// geometry — otherwise `capsuleHeight`, the four-capsule row width and the
+  /// `transcriptBottomReserve` composed from them would all mean something
+  /// different under one accessibility setting than under the other.
+  ///
+  /// `\.accessibilityReduceTransparency` is a **read-only** environment value,
+  /// so the two branches cannot be driven from a test. What can be measured is
+  /// the mechanism the whole rule rests on: the hairline is an `.overlay` of
+  /// exactly `CraftTokens.hairline` at `panelHairlineWidth` on the panel's own
+  /// shape, and adding one to each real cluster surface moves not a point. A
+  /// stroke that costs nothing to add costs nothing to remove.
+  func testTheRimIsChromeAndOnlyTheDegradedMaterialDrawsIt() {
+    XCTAssertFalse(
+      CraftGlassPanel.drawsHairline(reduceTransparency: false),
+      "glass carries its own rim; a second stroke on it is the doubled outline"
+    )
+    XCTAssertTrue(
+      CraftGlassPanel.drawsHairline(reduceTransparency: true),
+      "`.regularMaterial` has no rim of its own — the degraded panel keeps the hairline"
+    )
+
+    func laidOut<V: View>(_ view: V) -> CGSize {
+      let host = NSHostingView(rootView: view)
+      host.layoutSubtreeIfNeeded()
+      return host.fittingSize
+    }
+    func rimmed<V: View>(_ view: V) -> some View {
+      view.overlay(
+        Capsule(style: .continuous)
+          .stroke(CraftTokens.hairline, lineWidth: CraftTokens.panelHairlineWidth)
+      )
+    }
+
+    let cluster = SessionCapsuleCluster(
+      elapsed: 61,
+      level: MicLevelFeed(level: 0.4),
+      controls: .stop,
+      markers: [],
+      onMark: {},
+      onStop: {}
+    )
+    let surfaces: [(String, AnyView)] = [
+      (
+        "the timer capsule",
+        AnyView(SessionTimerCapsule(elapsed: 61, level: MicLevelFeed(level: 0.4)))
+      ),
+      ("Mark", AnyView(cluster.capsule(.mark))),
+      ("Stop", AnyView(cluster.capsule(.stop))),
+      ("the whole cluster", AnyView(cluster)),
+    ]
+    for (name, view) in surfaces {
+      let bare = laidOut(view)
+      let stroked = laidOut(rimmed(view))
+      XCTAssertGreaterThan(bare.width, 0, "\(name) produced no layout")
+      XCTAssertEqual(
+        stroked.width, bare.width, accuracy: 0.01,
+        "\(name) changed width by \(stroked.width - bare.width)pt — the rim is geometry, not chrome"
+      )
+      XCTAssertEqual(
+        stroked.height, bare.height, accuracy: 0.01,
+        "\(name) changed height by \(stroked.height - bare.height)pt — the rim is geometry, not chrome"
+      )
+    }
+  }
+
   /// Nothing the pane lays out with can move under an accessibility setting:
   /// every number is a constant or is measured once from a font, and neither
   /// kind reads an `@Environment` value. The cluster has exactly **one** size —

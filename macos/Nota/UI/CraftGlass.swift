@@ -273,10 +273,26 @@ struct CraftWashBackground: View {
 
 // MARK: - Glass panel
 
+/// Which of the two `liquidGlass` branches owes a hairline.
+///
+/// Liquid Glass carries its own rim, so a second stroke on top of it is the
+/// doubled outline the toolbar pills and the three floating panels each deleted
+/// (CLAUDE.md, Key Design Decisions: "the neutral fill and the hairline go,
+/// because the plate has its own rim"). The Reduce Transparency branch swaps
+/// the effect for `.regularMaterial`, which has **no** rim of its own — take
+/// the stroke away there and the degraded panel has no edge at all.
+///
+/// The shadow is drawn on both paths regardless: it is a `CraftTokens`
+/// constant that lifts the drawer off the ground, not a property of the glass.
+enum CraftGlassPanel {
+  static func drawsHairline(reduceTransparency: Bool) -> Bool { reduceTransparency }
+}
+
 private struct CraftGlassPanelModifier<S: Shape>: ViewModifier {
   let shape: S
   let tint: Color
   @Environment(\.colorScheme) private var colorScheme
+  @Environment(\.accessibilityReduceTransparency) private var reduceTransparency
 
   func body(content: Content) -> some View {
     let glass: Glass = tint == .clear ? .regular : .regular.tint(tint)
@@ -284,8 +300,13 @@ private struct CraftGlassPanelModifier<S: Shape>: ViewModifier {
       .liquidGlass(glass, in: shape)
       // Hairline sits on the same .continuous outline as the glass, drawn
       // centered on the path (1pt hairline: the 0.5pt outward half is
-      // imperceptible and keeps `S: Shape` call sites unconstrained).
-      .overlay(shape.stroke(CraftTokens.hairline, lineWidth: CraftTokens.panelHairlineWidth))
+      // imperceptible and keeps `S: Shape` call sites unconstrained). It is an
+      // **overlay**, so switching it off is chrome and never geometry.
+      .overlay {
+        if CraftGlassPanel.drawsHairline(reduceTransparency: reduceTransparency) {
+          shape.stroke(CraftTokens.hairline, lineWidth: CraftTokens.panelHairlineWidth)
+        }
+      }
       .shadow(
         color: CraftTokens.panelShadowColor(colorScheme),
         radius: CraftTokens.panelShadowRadius,
@@ -296,10 +317,12 @@ private struct CraftGlassPanelModifier<S: Shape>: ViewModifier {
 }
 
 extension View {
-  /// Frosted glass panel: `.regularMaterial` (or `.regular` glassEffect)
-  /// + hairline border + gentle shadow. Reduce Transparency degrades via the
-  /// existing `liquidGlass` branch (system materials), hairline and shadow
-  /// stay. `tint` opts into a tinted glass (pass `.clear` for plain).
+  /// Frosted glass panel: `.regular` glassEffect (or `.regularMaterial` under
+  /// Reduce Transparency) + gentle shadow. The **hairline is drawn only where
+  /// the material has no rim of its own** — i.e. on the degraded branch; glass
+  /// carries its own rim and a second stroke is a doubled outline
+  /// (`CraftGlassPanel.drawsHairline`). The shadow stays on both.
+  /// `tint` opts into a tinted glass (pass `.clear` for plain).
   func craftGlassPanel<S: Shape>(in shape: S, tint: Color = .clear) -> some View {
     modifier(CraftGlassPanelModifier(shape: shape, tint: tint))
   }
