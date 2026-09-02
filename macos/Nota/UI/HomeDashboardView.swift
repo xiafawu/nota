@@ -107,6 +107,16 @@ struct HomeDashboardView: View {
   @State private var fileCardTargeted = false
   @State private var isUsageSheetPresented = false
 
+  /// The home surface's four glass cards are ONE shape (P-D6). Three entry
+  /// cards shipped at radius 16 and the stats strip at 12, so the strip read
+  /// as a different layer than the column it sits under; the two 380pt panels
+  /// were already at 16, which is what settles the value. Internal so the
+  /// radius is assertable without rendering, the way
+  /// `SessionCapsuleCluster.capsule(_:)` is.
+  static let cardShape = RoundedRectangle(
+    cornerRadius: CraftTokens.cardCornerRadius, style: .continuous
+  )
+
   /// "Needs setup — <what>" reason for a card, from the first FAILING check
   /// that gates it. `unverified` never gates (proceed-at-risk); identity is
   /// optional and never blocks. Memo is exempt from the transcription check
@@ -218,8 +228,8 @@ struct HomeDashboardView: View {
         secondary: .white.opacity(gate == nil ? 0.85 : 0.45)
       )
       .frame(maxWidth: .infinity, minHeight: 132, alignment: .leading)
-      .padding(20)
-      .craftPrimaryCard(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+      .padding(CraftTokens.cardPadding)
+      .craftPrimaryCard(in: Self.cardShape)
       .opacity(gate == nil ? 1 : 0.75)
     }
     .buttonStyle(.plain)
@@ -245,10 +255,10 @@ struct HomeDashboardView: View {
         secondary: .secondary.opacity(gate == nil ? 1 : 0.5)
       )
       .frame(maxWidth: .infinity, minHeight: 132, alignment: .leading)
-      .padding(20)
-      .craftDashedDropCard(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+      .padding(CraftTokens.cardPadding)
+      .craftDashedDropCard(in: Self.cardShape)
       .overlay(
-        RoundedRectangle(cornerRadius: 16, style: .continuous)
+        Self.cardShape
           .strokeBorder(CraftTokens.dropStrokeColor, lineWidth: 2)
           .opacity(fileCardTargeted ? 1 : 0)
       )
@@ -282,8 +292,8 @@ struct HomeDashboardView: View {
         secondary: .secondary.opacity(gate == nil ? 1 : 0.5)
       )
       .frame(maxWidth: .infinity, minHeight: 132, alignment: .leading)
-      .padding(20)
-      .craftGlassPanel(in: RoundedRectangle(cornerRadius: 16, style: .continuous))
+      .padding(CraftTokens.cardPadding)
+      .craftGlassPanel(in: Self.cardShape)
       .opacity(gate == nil ? 1 : 0.75)
     }
     .buttonStyle(.plain)
@@ -367,7 +377,7 @@ struct HomeDashboardView: View {
       .contentShape(Rectangle())
     }
     .buttonStyle(.plain)
-    .craftGlassPanel(in: RoundedRectangle(cornerRadius: 12, style: .continuous))
+    .craftGlassPanel(in: Self.cardShape)
     .onHover { hovering in
       // Subtle affordance that the strip opens the Usage sheet.
       if hovering {

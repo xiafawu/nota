@@ -155,6 +155,25 @@ enum CraftTokens {
   /// Mono for keyboard shortcuts.
   static let shortcutFont: Font = .system(size: 12, weight: .medium, design: .monospaced)
 
+  // MARK: Cards and panels
+
+  /// One card radius for the whole app (P-D6). The home surface stacked four
+  /// glass cards in one column, three at 16 and the stats strip at 12, so the
+  /// strip read as a different layer than the cards directly above it; the two
+  /// 380pt panels (history drawer, summary rail) were already at 16, which is
+  /// what settles the value.
+  static let cardCornerRadius: CGFloat = 16
+  /// The home cards' inset. It is off the 8pt grid on purpose — 20 is the
+  /// owner-visible value all three entry cards shipped with, so it is named
+  /// here rather than snapped to `spacing16` behind their back.
+  static let cardPadding: CGFloat = 20
+
+  /// One section-header style for the two sibling 380pt glass panels (P-D9).
+  /// Uppercase kerned caption2 rather than the drawer's old 12pt mono: this
+  /// reads as a *section label*, where `metadataFont` is for timestamps.
+  static let sectionLabelFont: Font = .caption2.weight(.semibold)
+  static let sectionLabelKerning: CGFloat = 0.8
+
   // MARK: 8pt grid
 
   static let spacing4: CGFloat = 4
@@ -163,6 +182,29 @@ enum CraftTokens {
   static let spacing16: CGFloat = 16
   static let spacing24: CGFloat = 24
   static let spacing32: CGFloat = 32
+}
+
+// MARK: - Section label
+
+/// The section header both 380pt glass panels draw (P-D9). `SummaryRailView`
+/// used uppercase kerned caption2 and `HistoryDrawerView` used 12pt mono, so
+/// opening History and then Details read as two products; the panels are the
+/// same width, the same radius and the same shape by design, so their headers
+/// are one call. Each panel keeps its own padding around it.
+struct CraftSectionLabel: View {
+  let title: String
+
+  init(_ title: String) {
+    self.title = title
+  }
+
+  var body: some View {
+    Text(title)
+      .kerning(CraftTokens.sectionLabelKerning)
+      .textCase(.uppercase)
+      .font(CraftTokens.sectionLabelFont)
+      .foregroundStyle(.ground(.speaker))
+  }
 }
 
 // MARK: - Chip tint

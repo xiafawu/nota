@@ -1,7 +1,21 @@
+import SwiftUI
 import XCTest
 @testable import Nota
 
 final class HomeDashboardStateTests: XCTestCase {
+  // MARK: - One card vocabulary (P-D6)
+
+  /// Four glass cards in one column used to carry two radii — the three entry
+  /// cards at 16 and the stats strip at 12 — and an inset typed four times.
+  /// They compose from one shape and one padding constant now, and the radius
+  /// is the one the two 380pt panels already used.
+  func testTheHomeCardsAreOneShape() {
+    XCTAssertEqual(HomeDashboardView.cardShape.cornerSize.width, CraftTokens.cardCornerRadius)
+    XCTAssertEqual(HomeDashboardView.cardShape.cornerSize.height, CraftTokens.cardCornerRadius)
+    XCTAssertEqual(CraftTokens.cardCornerRadius, 16)
+    XCTAssertEqual(CraftTokens.cardPadding, 20)
+  }
+
   // MARK: - CostCardViewModel: estimated marker
 
   func testCostCard_estimatedPrefix() {
