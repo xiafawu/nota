@@ -87,6 +87,13 @@ enum Metrics {
 
   static let tagPillH: CGFloat = 8
   static let tagPillV: CGFloat = 3
+
+  /// The clickable rectangle under a chip-scale glyph — a tag's ×, a
+  /// suggestion's accept/dismiss, the drawer row's pin (P-C3). Those glyphs are
+  /// 7–11pt and were their own hit targets; the glyph size is unchanged and
+  /// only the rectangle grows. 18 rather than the 22 the window's close buttons
+  /// use, because these sit inside rows and pills the close buttons do not.
+  static let chipHitTarget: CGFloat = 18
   static let tagSpacing: CGFloat = 4
   static let tagTopPadding: CGFloat = 4
   static let tagToggleIconSpacing: CGFloat = 2

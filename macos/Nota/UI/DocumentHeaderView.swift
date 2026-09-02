@@ -187,7 +187,11 @@ private struct SpeakerChipButton: View {
         onAcceptSuggestion(chip.label)
       } label: {
         Image(systemName: "checkmark")
-          .font(.system(size: 8, weight: .bold))
+          // 9pt, not 8: the two glyphs sit 4pt apart and one of them enrolls a
+          // voiceprint, so the pair has to be separable (P-C3).
+          .font(.system(size: 9, weight: .bold))
+          .frame(width: Metrics.chipHitTarget, height: Metrics.chipHitTarget)
+          .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
       .foregroundStyle(.green)
@@ -197,7 +201,9 @@ private struct SpeakerChipButton: View {
         onDismissSuggestion(chip.label)
       } label: {
         Image(systemName: "xmark")
-          .font(.system(size: 8, weight: .bold))
+          .font(.system(size: 9, weight: .bold))
+          .frame(width: Metrics.chipHitTarget, height: Metrics.chipHitTarget)
+          .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
       .foregroundStyle(.ground(.speaker))
@@ -420,32 +426,56 @@ struct EditableTagRow: View {
 }
 
 /// A tag pill whose × affordance appears only on hover (E2: chips clean at rest).
-private struct RemovableTagChip: View {
+///
+/// The × is an **overlay**, never an element of the pill's layout (P-C4).
+/// Inserting it on hover widened the pill by ~10pt the instant the pointer
+/// landed on it, and because the chips sit in a `FlowLayout` a hover near a
+/// line break pushed later chips onto the next line — the control moving under
+/// the pointer that is aiming at it, which is exactly the rule the moment tally
+/// keeps (`RecordingPane.markerCount`, an overlay for the same reason). The
+/// pill is one width in both states and the glyph fades in over trailing
+/// padding reserved for it, so it never sits on the last character.
+///
+/// `hovering` seeds the state so the invariant can be laid out both ways in a
+/// test (`testATagPillIsTheSameWidthHoveredAndNot`); nothing in the app passes it.
+struct RemovableTagChip: View {
   let tag: String
   let onRemove: () -> Void
 
-  @State private var isHovering = false
+  @State private var isHovering: Bool
+
+  init(tag: String, onRemove: @escaping () -> Void, hovering: Bool = false) {
+    self.tag = tag
+    self.onRemove = onRemove
+    _isHovering = State(initialValue: hovering)
+  }
 
   var body: some View {
-    HStack(spacing: 3) {
-      Text(tag)
-        .font(Tokens.historyTagFont)
-        .foregroundStyle(.ground(.speaker))
-      if isHovering {
+    Text(tag)
+      .font(Tokens.historyTagFont)
+      .foregroundStyle(.ground(.speaker))
+      .padding(.leading, Metrics.tagPillH)
+      .padding(.trailing, Metrics.tagPillH * 2)
+      .padding(.vertical, Metrics.tagPillV)
+      .background(Tokens.tagPillFill, in: Capsule())
+      .overlay(alignment: .trailing) {
         Button(action: onRemove) {
           Image(systemName: "xmark")
+            // The glyph stays 7pt; only the rectangle that takes the click
+            // grows, the treatment the drawer, rail and usage-sheet closes
+            // already use (P-C3).
             .font(.system(size: 7, weight: .bold))
             .foregroundStyle(.ground(.speaker))
+            .frame(width: Metrics.chipHitTarget, height: Metrics.chipHitTarget)
+            .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help("Remove tag")
+        .opacity(isHovering ? 1 : 0)
+        .allowsHitTesting(isHovering)
       }
-    }
-    .padding(.horizontal, Metrics.tagPillH)
-    .padding(.vertical, Metrics.tagPillV)
-    .background(Tokens.tagPillFill, in: Capsule())
-    .onHover { isHovering = $0 }
-    .animation(Tokens.animSnap, value: isHovering)
+      .onHover { isHovering = $0 }
+      .animation(Tokens.animSnap, value: isHovering)
   }
 }
 

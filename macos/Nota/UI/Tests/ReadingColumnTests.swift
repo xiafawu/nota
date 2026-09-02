@@ -257,6 +257,33 @@ final class ReadingColumnTests: XCTestCase {
       "the header grew with the document's metadata; that loop is what shook")
   }
 
+  /// **A tag pill is one width whether or not the pointer is on it** (P-C4).
+  ///
+  /// The × used to be an element of the pill's `HStack`, inserted on hover, so
+  /// the pill widened by ~10pt the instant the pointer landed on it — and the
+  /// chips sit in a `FlowLayout`, so a hover near a line break pushed later
+  /// chips onto the next line. That is the moment tally's rule (a control may
+  /// not move under the pointer) on the one control the pointer has to reach,
+  /// and the fix is the tally's mechanism: an overlay, reserving nothing.
+  ///
+  /// Shaped after `testTheNumberOfMomentsNeverMovesStop` — lay the same view
+  /// out in both states and require the same geometry.
+  @MainActor
+  func testATagPillIsTheSameWidthHoveredAndNot() {
+    func width(hovering: Bool) -> CGFloat {
+      let host = NSHostingView(
+        rootView: RemovableTagChip(tag: "roadmap", onRemove: {}, hovering: hovering))
+      host.layoutSubtreeIfNeeded()
+      return host.fittingSize.width
+    }
+    let rest = width(hovering: false)
+    XCTAssertGreaterThan(rest, 0, "the hosting view produced no layout")
+    XCTAssertEqual(
+      width(hovering: true), rest, accuracy: 0.5,
+      "the pill changed width on hover — the × is back in the layout, and every "
+        + "chip after it on the row moves when the pointer arrives")
+  }
+
   /// **A speaker suggestion is the only chip state that asks anything.**
   ///
   /// Putting the chips behind a button costs exactly one thing: they are the
