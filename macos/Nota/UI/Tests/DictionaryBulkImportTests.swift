@@ -106,4 +106,18 @@ final class DictionaryBulkImportTests: XCTestCase {
     )
     XCTAssertEqual(DictionaryImportSummary().message, "Nothing to import.")
   }
+
+  // MARK: - What Escape does to the sheet (P-C5)
+
+  func testEscapeClosesAnEmptyPasteBox() {
+    XCTAssertEqual(ImportSheetEscape.outcome(pasted: ""), .close)
+    XCTAssertEqual(ImportSheetEscape.outcome(pasted: "   \n\n  "), .close)
+  }
+
+  func testEscapeAsksBeforeLosingAPastedList() {
+    XCTAssertEqual(
+      ImportSheetEscape.outcome(pasted: "genc2rust | gency to rust"),
+      .confirmDiscard
+    )
+  }
 }

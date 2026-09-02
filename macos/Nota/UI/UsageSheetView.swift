@@ -156,7 +156,12 @@ struct UsageSheetView: View {
           .contentShape(Rectangle())
       }
       .buttonStyle(.plain)
-      .help("Close")
+      // Escape closes the sheet (P-C5). Every other dismissible surface in the
+      // app answers Escape — the drawer, the Details panel, the review card —
+      // and this sheet carries nothing the owner could lose by leaving it, so
+      // the key is unconditional here.
+      .keyboardShortcut(.cancelAction)
+      .help("Close (Esc)")
     }
   }
 

@@ -398,7 +398,12 @@ blank lines ignored, duplicates collapsed case-insensitively through
 per line: the pane runs on the main actor, and rewriting dictionary.json per
 term froze Settings, the HUD and the hotkey path for seconds on a list of any
 size. One write is also all-or-nothing, so a refused import leaves no half of
-itself on disk. The Dictation tab keeps only a "Manage Dictionary…" button
+itself on disk. **Escape reaches that sheet, and asks before it throws a paste
+away**: `role: .cancel` is semantic outside a dialog and bound no key, and the
+`TextEditor` answers `cancelOperation:` itself (the trap `SummaryRailView`'s
+editor documents), so the key is wired on both the Cancel button and the editor
+and routed through `ImportSheetEscape.outcome(pasted:)` — an empty box closes,
+a box holding an un-imported list confirms first. The Dictation tab keeps only a "Manage Dictionary…" button
 pointing at it. `macos/Nota/UI/DictionarySettingsView.swift`.
 
 ## Dictation Delivery

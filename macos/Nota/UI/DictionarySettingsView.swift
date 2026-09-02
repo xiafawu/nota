@@ -131,6 +131,7 @@ struct DictionarySettingsView: View {
 private struct DictionaryImportSheet: View {
   @Environment(\.dismiss) private var dismiss
   @State private var text = ""
+  @State private var showDiscardConfirm = false
 
   let onImport: (String) -> Void
 
@@ -147,10 +148,20 @@ private struct DictionaryImportSheet: View {
         .font(.system(.body, design: .monospaced))
         .frame(minWidth: 420, minHeight: 220)
         .border(Color.secondary.opacity(0.3))
+        // Escape has to be delivered HERE and not only by the Cancel button's
+        // `.cancelAction` (P-C5): `TextEditor` is an `NSTextView`, which
+        // answers `cancelOperation:` itself and never forwards it to a SwiftUI
+        // ancestor — the same trap the summary rail's editor documents. With
+        // the caret in this box is exactly when a pasted list is at risk, so
+        // this is the route that most needed wiring.
+        .onExitCommand { requestDismiss() }
 
       HStack {
         Spacer()
-        Button("Cancel", role: .cancel) { dismiss() }
+        Button("Cancel", role: .cancel) { requestDismiss() }
+          // `role: .cancel` is semantic outside a dialog and binds no key of
+          // its own; this is what makes Escape reach the sheet at all.
+          .keyboardShortcut(.cancelAction)
         Button("Import") {
           onImport(text)
           dismiss()
@@ -160,6 +171,45 @@ private struct DictionaryImportSheet: View {
       }
     }
     .padding(20)
+    .confirmationDialog(
+      "Discard this pasted list?",
+      isPresented: $showDiscardConfirm,
+      titleVisibility: .visible
+    ) {
+      Button("Discard", role: .destructive) { dismiss() }
+      Button("Keep Editing", role: .cancel) {}
+    } message: {
+      Text("Nothing has been added to your dictionary yet.")
+    }
+  }
+
+  /// The rail's bargain, at this sheet: an empty box closes on Escape, and a
+  /// box holding an uncommitted paste asks first. A pasted word list is often
+  /// the only copy the owner has in hand, and Escape is one key away from the
+  /// caret while they are editing it.
+  private func requestDismiss() {
+    switch ImportSheetEscape.outcome(pasted: text) {
+    case .close:
+      dismiss()
+    case .confirmDiscard:
+      showDiscardConfirm = true
+    }
+  }
+}
+
+/// What Escape does to the import sheet, given what is in the paste box. Pure
+/// so the rule is asserted without a window (P-C5); nothing in this bundle can
+/// press a key.
+enum ImportSheetEscape {
+  enum Outcome: Equatable {
+    /// Nothing typed or pasted: closing loses nothing.
+    case close
+    /// A list is in the box and has not been imported: ask before losing it.
+    case confirmDiscard
+  }
+
+  static func outcome(pasted: String) -> Outcome {
+    pasted.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .close : .confirmDiscard
   }
 }
 
