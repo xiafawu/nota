@@ -32,6 +32,29 @@ final class ReadingColumnTests: XCTestCase {
     ---
     """
 
+  /// A `.md` that is **not** one of Nota's exports: a heading, prose, a bullet,
+  /// and no `## Full Transcript` anywhere. Nothing may disappear from it.
+  private static let foreign = """
+    # Notes from a book
+
+    Some ordinary prose that a person wrote.
+
+    ## Chapter one
+
+    - a bullet
+    - another bullet
+
+    A closing paragraph.
+    """
+
+  /// What the pane really hands the text view: the title, then the transcript.
+  private static func paneBody(_ markdown: String, chips: [SpeakerChip] = [])
+    -> NSAttributedString {
+    MainPaneView.documentBody(
+      DocumentRender(meta: parseDocumentMeta(markdown), body: renderMarkdownAsRichText(markdown)),
+      chips: chips)
+  }
+
   // MARK: - The adoption gap
 
   /// **Nothing in the rendered document draws with a macOS semantic colour.**
@@ -47,7 +70,9 @@ final class ReadingColumnTests: XCTestCase {
   /// by resolved value: two colours can resolve equal on one ground and diverge
   /// on the next, and the rule is about which system the ink comes from.
   func testTheRenderedDocumentUsesNoSemanticColours() {
-    let rendered = renderMarkdownAsRichText(Self.sample)
+    // The whole surface, title included — the title moved into the body on
+    // 2026-09-02 and it was the last run drawn outside `GroundInk`.
+    let rendered = Self.paneBody(Self.sample)
     XCTAssertGreaterThan(rendered.length, 0, "the sample rendered to nothing")
 
     let banned: [(String, NSColor)] = [
@@ -75,7 +100,7 @@ final class ReadingColumnTests: XCTestCase {
 
   /// …and the ink it *does* use is the ground ink, at a tier that was measured.
   func testEveryRunIsDrawnInAGroundInkTier() {
-    let rendered = renderMarkdownAsRichText(Self.sample)
+    let rendered = Self.paneBody(Self.sample)
     let known = GroundInk.Tier.allCases.map { GroundInk.nsColor($0) }
     var unknown = 0
     rendered.enumerateAttribute(
@@ -216,45 +241,103 @@ final class ReadingColumnTests: XCTestCase {
     XCTAssertFalse(RichTextViewer.Column.needsRelayout(from: 900, to: 0))
   }
 
-  // MARK: - The header and the Details button
+  // MARK: - The title, and the band that used to hold it
 
-  /// **The header cannot change height, so it cannot oscillate.**
+  /// **Nothing is pinned above the transcript, and the document's metadata
+  /// cannot add height to it.**
   ///
-  /// The owner reported the transcript shaking under a scroll, only on short
-  /// documents (2026-08-17) — the signature of a feedback loop, not a rendering
-  /// glitch: collapsing the header freed ~200pt, which made the document fit,
-  /// which clamped the offset that had decided to collapse it. Two thresholds
-  /// and a range floor made it settle. Moving everything but the title out of
-  /// the header removed the loop instead of damping it, and this is the
-  /// assertion that holds that.
+  /// This is the honest replacement for
+  /// `testTheHeaderIsOneHeightWhateverTheDocumentCarries`, which laid out
+  /// `DocumentHeaderView` three times and required one height. That view is
+  /// deleted (2026-09-02): the title is the document's own first line, drawn in
+  /// the reading column and scrolling with the text.
   ///
-  /// It is a stronger claim than it used to make. The header once took an
-  /// `isInfoPresented` and a `hasPendingDecision`, and this test varied those;
-  /// it now takes a `DocMeta` and draws one field of it, so what is varied is
-  /// the **metadata itself** — the very thing that used to stack up under the
-  /// title and change its height. The title is deliberately held constant
-  /// across the three: it is `lineLimit(2)`, so a longer one is *allowed* to
-  /// change the height, and varying it would make this test lie.
-  @MainActor
-  func testTheHeaderIsOneHeightWhateverTheDocumentCarries() {
-    func height(_ view: DocumentHeaderView) -> CGFloat {
-      let host = NSHostingView(rootView: view.frame(width: 800))
-      host.layoutSubtreeIfNeeded()
-      return host.fittingSize.height
+  /// What the old test *guaranteed* is what is asserted here, in the two halves
+  /// that survive the deletion. **The loop cannot start**: the owner saw the
+  /// transcript shaking under a scroll, and the shape of it was a band whose
+  /// height changed on scroll changing the scroll range that decided it should
+  /// change — so the band's contents are what mattered. Vary the document's
+  /// metadata (a subtitle, three tags, twenty tags) and the drawn body must be
+  /// **byte-identical**: none of it reaches the reading surface at all, so none
+  /// of it can change a height. And **there is no band left**: the pane draws
+  /// the viewer directly, with no `DocumentHeaderView` and no hairline under it.
+  ///
+  /// The second half is a source read for the reason the `Divider()` scan below
+  /// is one — a hosting view in this bundle publishes no accessibility tree, so
+  /// "there is no band" is not a question a rendered pane can answer here.
+  /// (The compiler holds most of it already: `DocumentHeaderView` no longer
+  /// exists, so a reference to it would not build.)
+  func testNothingIsPinnedAboveTheTranscriptAndTheMetadataCannotResizeIt() {
+    let markdown = """
+      # Team Sync
+
+      **Captured:** 2026-05-20
+
+      ## Full Transcript
+
+      [00:03] **Alice:** hello
+      """
+    func body(subtitle: String, tags: [String]) -> NSAttributedString {
+      MainPaneView.documentBody(
+        DocumentRender(
+          meta: DocMeta(title: "Team Sync", subtitle: subtitle, tags: tags),
+          body: renderMarkdownAsRichText(markdown)),
+        chips: [])
     }
-    let bare = height(DocumentHeaderView(meta: DocMeta(title: "Team Sync")))
-    let full = height(DocumentHeaderView(
-      meta: DocMeta(title: "Team Sync", subtitle: "May 20 · 30 min", tags: ["a", "b", "c"])))
-    let heavy = height(DocumentHeaderView(
-      meta: DocMeta(
-        title: "Team Sync",
-        subtitle: "May 20 · 51 min",
-        tags: Array(repeating: "tag", count: 20))))
+    let bare = body(subtitle: "", tags: [])
+    XCTAssertGreaterThan(bare.length, 0, "the sample rendered to nothing")
+    XCTAssertTrue(
+      body(subtitle: "May 20 · 30 min", tags: ["a", "b", "c"]).isEqual(to: bare),
+      "a subtitle and tags reached the reading surface — they can change its height again")
+    XCTAssertTrue(
+      body(subtitle: "May 20 · 51 min", tags: Array(repeating: "tag", count: 20))
+        .isEqual(to: bare),
+      "the document's metadata grew the body; that is the loop that shook")
 
-    XCTAssertEqual(bare, full, accuracy: 0.5,
-      "a subtitle and tags resized the header — the shake's loop is back")
-    XCTAssertEqual(bare, heavy, accuracy: 0.5,
-      "the header grew with the document's metadata; that loop is what shook")
+    let pane = Self.uiSource("MainPaneView.swift")
+    var offenders: [String] = []
+    for (index, line) in pane.split(separator: "\n", omittingEmptySubsequences: false)
+      .enumerated() {
+      let text = line.trimmingCharacters(in: .whitespaces)
+      guard !text.hasPrefix("//") else { continue }
+      if text.contains("DocumentHeaderView(") || text.contains(".ground(.rail))") {
+        offenders.append("MainPaneView.swift:\(index + 1) \(text)")
+      }
+    }
+    XCTAssertEqual(
+      offenders, [], "a pinned band is back above the transcript: \(offenders)")
+  }
+
+  /// **The title is the document's first line, in the reading column, at full
+  /// ink.**
+  ///
+  /// Three claims, all about the one run: it opens the body, it is set at the
+  /// H1 face (the `# ` heading it literally is in the markdown), and it is
+  /// drawn at `GroundInk.Tier.body` — the tier the pinned title used, and the
+  /// only tier at full alpha. It carries **no** `.notaTimestamp`, because it is
+  /// not a transcript line and hovering it must reveal nothing in the gutter.
+  func testTheTitleOpensTheBodyInTheReadingFaceAndFullInk() {
+    let rendered = Self.paneBody(Self.sample)
+    let text = rendered.string as NSString
+    XCTAssertTrue(
+      text.hasPrefix("Meeting\n"),
+      "the document does not open with its title; it opens \"\(text.substring(to: min(40, text.length)))\"")
+
+    let font = rendered.attribute(.font, at: 0, effectiveRange: nil) as? NSFont
+    XCTAssertEqual(font?.pointSize ?? 0, NSFonts.readingH1.pointSize, accuracy: 0.01)
+    XCTAssertEqual(
+      rendered.attribute(.foregroundColor, at: 0, effectiveRange: nil) as? NSColor,
+      GroundInk.nsColor(.body),
+      "the title is drawn in something other than the full-ink tier")
+    XCTAssertNil(
+      rendered.attribute(.notaTimestamp, at: 0, effectiveRange: nil),
+      "the title carries a timestamp — the hover gutter would answer on it")
+
+    // …and exactly once. The renderer skips whichever `# ` line
+    // `parseDocumentMeta` took, so the title cannot also appear in the body.
+    XCTAssertEqual(
+      text.components(separatedBy: "Meeting").count - 1, 1,
+      "the title is drawn twice — the pane and the renderer are both claiming it")
   }
 
   /// **A tag pill is one width whether or not the pointer is on it** (P-C4).
@@ -361,10 +444,14 @@ final class ReadingColumnTests: XCTestCase {
   /// Headings get room **above** them, which the pane never had: only
   /// `paragraphSpacing` (after) was ever set, so a section title sat on the last
   /// line of the paragraph before it.
+  ///
+  /// Read off the **foreign** sample: a Nota export's own headings are all
+  /// above `## Full Transcript` and no longer reach the body at all, so the
+  /// only documents that still draw one are the imported ones.
   func testHeadingsCarrySpaceAboveThem() {
-    let rendered = renderMarkdownAsRichText(Self.sample)
+    let rendered = renderMarkdownAsRichText(Self.foreign)
     let text = rendered.string as NSString
-    let range = text.range(of: "Key Topics")
+    let range = text.range(of: "Chapter one")
     XCTAssertNotEqual(range.location, NSNotFound, "the sample lost its heading")
 
     let style = rendered.attribute(.paragraphStyle, at: range.location, effectiveRange: nil)
@@ -475,63 +562,21 @@ final class ReadingColumnTests: XCTestCase {
       "the pane that sits bare on the ground is back on macOS label colours: \(offenders)")
   }
 
-  /// **The document's title is ink, and the hairline under it is the rail
-  /// tier.**
+  /// **No hairline, and no `Divider()`, on the document surface.**
   ///
-  /// The two last semantic colours on this surface. The title had no
-  /// `foregroundStyle` at all, so it fell through to `labelColor` — the biggest
-  /// text on the pane, sitting on the `.transcript` ground directly above a
-  /// reading column where every glyph goes through `GroundInk.nsColor(_:)`. The
-  /// hairline was a `Divider()`, i.e. `separatorColor`, on a surface whose own
-  /// `---` rule already draws at the measured `.rail` tier.
+  /// This used to be a two-part test: the pinned title's darkest glyph measured
+  /// against `GroundInkStyle(tier: .body)` and against `labelColor`, plus a
+  /// source read for `Divider()`. The title half moved into the rendered body
+  /// on 2026-09-02 and is asserted directly on the attributed string now
+  /// (`testTheTitleOpensTheBodyInTheReadingFaceAndFullInk`) — reading the
+  /// attribute beats measuring pixels when the attribute is what ships. The
+  /// hairline it was divided from is gone with the band.
   ///
-  /// The title is measured the way `testTheTranscriptIsInkedAndNotLabelled`
-  /// measures the live transcript: no glyph reaches full coverage, so what is
-  /// compared is which colour the darkest pixel is reaching *for*, with both
-  /// candidates rendered in the same probe at the same face. The hairline has no
-  /// glyph to measure, so its call site is read instead.
-  @MainActor
-  func testTheDocumentTitleAndItsHairlineAreDrawnInGroundInk() {
-    let size = CGSize(width: 420, height: 80)
-    func darkest(_ view: some View) -> Double? {
-      guard
-        let rep = RenderProbe.bitmap(
-          ZStack {
-            Color.white
-            view
-          }
-          .environment(\.colorScheme, .light), size: size)
-      else { return nil }
-      var extreme = Double.infinity
-      for x in 0..<rep.pixelsWide {
-        for y in 0..<rep.pixelsHigh {
-          guard let pixel = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
-          let tone =
-            (Double(pixel.redComponent) + Double(pixel.greenComponent)
-              + Double(pixel.blueComponent)) / 3 * 255
-          extreme = min(extreme, tone)
-        }
-      }
-      return extreme
-    }
-    func reference(_ style: AnyShapeStyle) -> some View {
-      Text("Team Sync")
-        .font(Tokens.docTitleFont)
-        .fontWeight(.bold)
-        .foregroundStyle(style)
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-    guard
-      let ink = darkest(reference(AnyShapeStyle(GroundInkStyle(tier: .body)))),
-      let labelled = darkest(reference(AnyShapeStyle(HierarchicalShapeStyle.primary))),
-      let drawn = darkest(DocumentHeaderView(meta: DocMeta(title: "Team Sync")))
-    else { return XCTFail("the hosting view produced no bitmap") }
-
-    XCTAssertLessThan(
-      abs(drawn - ink), abs(labelled - ink) / 2,
-      "the header title's darkest glyph is nearer labelColor (\(labelled)) than the "
-        + "measured ink (\(ink)); it drew \(drawn)")
-
+  /// What is left is the rule that outlives both: a hairline on this surface
+  /// has no glyph to measure, so its call site is read. `Divider()` is
+  /// `separatorColor` over the moving ground, on a surface whose own `---` rule
+  /// already draws at the measured `.rail` tier.
+  func testTheDocumentSurfaceDrawsNoDivider() {
     var dividers: [String] = []
     for line in Self.uiSource("MainPaneView.swift").split(
       separator: "\n", omittingEmptySubsequences: false

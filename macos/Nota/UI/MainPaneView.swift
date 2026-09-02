@@ -274,10 +274,38 @@ struct MainPaneView: View {
     .accessibilityLabel(DocumentInfoBadge.label(waiting, isGeneratingSummary: isGenerating))
   }
 
-  /// Echo each chip's identity hue onto its transcript speaker runs. Speaker
-  /// runs are the "Name: " prefixes rendered in `NSFonts.speaker` that carry a
-  /// `.notaTimestamp` attribute (see MarkdownRender), which keeps generic bold
-  /// text untouched.
+  /// What the reading surface actually draws: **the title, then the
+  /// transcript** (ADR 0006, addendum 2026-09-02; ADR 0007).
+  ///
+  /// The title is prepended here rather than rendered by `MarkdownRender`
+  /// itself, because the pane is the only place that holds the *parsed* title —
+  /// `parseDocumentMeta` normalizes it (the legacy `Nota Summary` placeholder
+  /// becomes "Untitled transcript"), and the renderer skips whichever line that
+  /// parse would have taken, so the two can never both draw it. A document with
+  /// no parsed header (a legacy or headerless `.md`) simply gets no title line,
+  /// which is what it had before.
+  ///
+  /// Composed here rather than inside `DocumentRender` so the copy/export path
+  /// is untouched: an exported RTF never carried the title, and it still does
+  /// not.
+  static func documentBody(
+    _ document: DocumentRender,
+    chips: [SpeakerChip]
+  ) -> NSAttributedString {
+    let coloured = applySpeakerColors(to: document.body, chips: chips)
+    guard let title = document.meta?.title, !title.isEmpty else { return coloured }
+    let output = NSMutableAttributedString(attributedString: renderDocumentTitle(title))
+    output.append(coloured)
+    return output
+  }
+
+  /// Echo each chip's identity hue onto its transcript speaker runs.
+  ///
+  /// The run is found by `.notaSpeakerName`, which the renderer attaches to the
+  /// name run alone — never by matching the drawn glyphs. The name column is
+  /// capped and a long name is abbreviated (`Brian D.`, `B.D.`), so the drawn
+  /// text is not always the name a chip is keyed by; the attribute carries the
+  /// whole one. Generic bold text has no such attribute and stays untouched.
   static func applySpeakerColors(
     to body: NSAttributedString,
     chips: [SpeakerChip]
@@ -292,21 +320,13 @@ struct MainPaneView: View {
 
     let output = NSMutableAttributedString(attributedString: body)
     let fullRange = NSRange(location: 0, length: output.length)
-    let text = output.string as NSString
-    output.enumerateAttributes(in: fullRange) { attributes, range, _ in
+    output.enumerateAttribute(.notaSpeakerName, in: fullRange) { value, range, _ in
       guard
-        attributes[.notaTimestamp] != nil,
-        let font = attributes[.font] as? NSFont,
-        // The reading scale (XIA-441) renamed this face; the run is still
-        // found by matching the font the renderer used for a speaker name.
-        font == NSFonts.readingSpeaker
+        let name = value as? String,
+        let color = colorForName[name]
       else {
         return
       }
-      let run = text.substring(with: range)
-      guard run.hasSuffix(": ") else { return }
-      let name = String(run.dropLast(2))
-      guard let color = colorForName[name] else { return }
       output.addAttribute(.foregroundColor, value: color, range: range)
     }
     return output
@@ -331,66 +351,55 @@ private struct RichDocumentPane: View {
   /// the token is on `NotaModel` and arrives here as a plain value.
   var nextMomentToken: Int
 
-  /// True once the rich-text body has scrolled under the header; drives the
-  /// top fade on the body and **nothing else**.
+  /// True once the rich-text body has scrolled past its own top edge; drives
+  /// the top fade on the body and **nothing else**.
   ///
-  /// It used to drive the header's collapse too, which is where the shake came
-  /// from: collapsing changed the header's height, which changed the scroll
-  /// range that had decided to collapse it. A fade changes no layout, so this
-  /// offset can no longer feed back into itself.
+  /// It used to drive a header collapse, which is where the shake came from:
+  /// collapsing changed the header's height, which changed the scroll range
+  /// that had decided to collapse it. A fade changes no layout, so this offset
+  /// can no longer feed back into itself — and there is no longer a band above
+  /// the body for it to feed back *into*.
   @State private var isBodyScrolled = false
 
+  /// **One surface, and the title is inside it** (ADR 0006's 2026-09-02
+  /// addendum). There is no `VStack` and no pinned band any more: the document
+  /// title is the first line of the scrolling text, in the reading column, and
+  /// the hairline that used to divide the two went with the thing it divided.
+  /// Nothing above the transcript can change height, because nothing is above
+  /// the transcript.
   var body: some View {
-    VStack(spacing: 0) {
-      if let meta = document.meta {
-        // The title, and nothing else. Everything that used to sit under it —
-        // and then sat in an overlay card hung off this body — is in the
-        // Details panel, one press away in the local cluster.
-        DocumentHeaderView(meta: meta)
-        // Not a `Divider()`: that is `separatorColor`, and this hairline sits on
-        // the `.transcript` ground with the reading column under it, where the
-        // `---` rule already draws at the measured `.rail` tier
-        // (`MarkdownRender`). The recording pane made this exact argument for
-        // its own rail before that rail was deleted with the bar.
-        Rectangle()
-          .fill(.ground(.rail))
-          .frame(height: 1)
-      }
-      // Decision 29: nothing sits between the header and the transcript —
-      // the enrichment slot is gone, the summary lives in the rail overlay.
-      RichTextViewer(
-        attributedString: MainPaneView.applySpeakerColors(to: document.body, chips: speakerChips),
-        onScroll: { offset in
-          let scrolled = offset > Metrics.docBodyFadeThreshold
-          guard scrolled != isBodyScrolled else { return }
-          // A plain assignment: `.animation(Tokens.animFast, value:
-          // isBodyScrolled)` below is the one authority for this change. A
-          // `withAnimation` here duplicated it and, worse, leaked its
-          // transaction to everything else re-evaluated in the same update —
-          // the receipt, the drop border, the local cluster — so a surface
-          // arriving at the moment the reader scrolls would fade on the
-          // scroll's curve rather than its own (P-B5).
-          isBodyScrolled = scrolled
-        },
-        markerSeconds: markerSeconds,
-        nextMomentToken: nextMomentToken
-      )
-      .mask(bodyFadeMask)
-      .padding(.bottom, bottomReserve)
-      // The reserve is reported from the receipt's `onAppear`/`onDisappear`,
-      // which fire at the *start* of the 0.2s fade they are timing — so the
-      // scroll geometry used to step while the receipt was still half
-      // transparent. Travelling on the same curve keeps the transcript's
-      // footprint and the surface floating over it in agreement, which is the
-      // whole of the XIA-429/XIA-445 reservation argument (P-B11). Keyed on the
-      // reserve itself, so the transaction reaches this subtree and no further.
-      .animation(Tokens.animFast, value: bottomReserve)
-    }
+    RichTextViewer(
+      attributedString: MainPaneView.documentBody(document, chips: speakerChips),
+      onScroll: { offset in
+        let scrolled = offset > Metrics.docBodyFadeThreshold
+        guard scrolled != isBodyScrolled else { return }
+        // A plain assignment: `.animation(Tokens.animFast, value:
+        // isBodyScrolled)` below is the one authority for this change. A
+        // `withAnimation` here duplicated it and, worse, leaked its
+        // transaction to everything else re-evaluated in the same update —
+        // the receipt, the drop border, the local cluster — so a surface
+        // arriving at the moment the reader scrolls would fade on the
+        // scroll's curve rather than its own (P-B5).
+        isBodyScrolled = scrolled
+      },
+      markerSeconds: markerSeconds,
+      nextMomentToken: nextMomentToken
+    )
+    .mask(bodyFadeMask)
+    .padding(.bottom, bottomReserve)
+    // The reserve is reported from the receipt's `onAppear`/`onDisappear`,
+    // which fire at the *start* of the 0.2s fade they are timing — so the
+    // scroll geometry used to step while the receipt was still half
+    // transparent. Travelling on the same curve keeps the transcript's
+    // footprint and the surface floating over it in agreement, which is the
+    // whole of the XIA-429/XIA-445 reservation argument (P-B11). Keyed on the
+    // reserve itself, so the transaction reaches this subtree and no further.
+    .animation(Tokens.animFast, value: bottomReserve)
     .animation(Tokens.animFast, value: isBodyScrolled)
   }
 
-  /// Scroll-edge fade: once content scrolls beneath the header, the top of the
-  /// body dissolves instead of hard-clipping against the hairline. Fixed-height
+  /// Scroll-edge fade: once content scrolls up under the toolbar, the top of
+  /// the body dissolves instead of hard-clipping against it. Fixed-height
   /// gradient — a percentage gradient would scale with document height.
   private var bodyFadeMask: some View {
     VStack(spacing: 0) {

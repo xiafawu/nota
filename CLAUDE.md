@@ -1484,14 +1484,46 @@ What a finished transcript looks like (XIA-441, merged with the Details panel
 `DocumentHeaderView.swift`, `SummaryRailView.swift`, `RichTextViewer.swift`,
 `MarkdownRender.swift`.
 
-**The pane is the transcript, and everything else is behind one button.** Top
-to bottom it is a header holding the **title alone**, a hairline, and the
-reading column. The subtitle, the speaker chips, the record's fact strip, the
+**The pane is the transcript, and everything else is behind one button.** It is
+the reading column and nothing else: no header band, no hairline, no chrome
+above the text. The subtitle, the speaker chips, the record's fact strip, the
 tags and the summary all live in **one panel** — `SummaryRailView`, opened by
 the one **Details** button (`info.circle`) in the bottom-right local cluster
 beside Share. Not two surfaces, not tabs, not a second card: the details block
 is the first thing inside the panel's existing `ScrollView`, above a hairline,
 above the summary half.
+
+**The title is the document's first line, and the summary is drawn once**
+(2026-09-02, owner's marks on a screenshot; ADR 0006's addendum, ADR 0007).
+Three changes that arrived together, each removing something that was drawn
+twice or reserved for nothing:
+
+- **The pinned header band is gone.** `DocumentHeaderView` is deleted; the
+  title is rendered by `renderDocumentTitle` into the attributed string itself
+  and composed onto the body by `MainPaneView.documentBody`, so it sits inside
+  the reading column and scrolls with the text. A whole non-scrolling region
+  was being reserved for one line. The oscillation rule below is *stronger* for
+  it, not weaker: a line of text has no height that scroll can alter, so there
+  is no longer a band for the loop to happen in.
+- **The summary is no longer in the body.** `MarkdownRender` began the body at
+  the first `## `, which on a summarized meeting is `## Summary` — so the
+  narrative, key topics, decisions and action items were drawn in the document
+  *and* again in the panel, which reads all four off the record. The pane's
+  render is `RenderedSections.transcript` (the default) and starts after
+  `## Full Transcript`; copy and RTF export ask a different question and pass
+  `.whole`. The `## Full Transcript` heading itself goes too — the pane **is**
+  the transcript, and with the summary gone the heading was the document's
+  first line, where the title belongs.
+- **The degradation rule keys on one marker and guesses nothing.**
+  `## Full Transcript` is what makes a file recognizably one of Nota's exports
+  (`src/pipeline/write.ts`). Without it nothing about the file's shape is
+  known, so **nothing is dropped**: the whole document renders, in both modes,
+  minus the one line the pane draws as the title. Both cleverer rules are
+  wrong, and one of them shipped — cutting "everything before the first `## `"
+  silently ate an imported file's opening paragraphs for as long as the pane
+  has existed, because that region is a metadata block only in a document that
+  has one. The title skipped is *exactly* the line `parseDocumentMeta` took, so
+  the parse and the render can never both claim it.
 
 The panel is taller for it, and it still clears the cluster by construction:
 its bottom padding is the cluster's own diameter plus a gap plus the ordinary
@@ -1504,17 +1536,24 @@ overlay while a separate Summary button opened the rail. `DocumentInfoCard` and
 `DocumentInfoToggle` are **gone**; `DocMeta.subtitle(facts:)` outlived them
 (the one-duration-per-surface rule, below).
 
-**A header that cannot change height cannot oscillate.** The metadata used to
-fold away on scroll, so the header changed height, so it changed the scroll
-range that had decided it should fold — a state change driven by a value it
-alters. The owner saw it as the transcript **shaking**, and only on short
-documents, which is the signature: a long document has range to spare and never
-clamps. Two thresholds plus a range floor (`DocumentHeaderCollapse`) damped it;
-moving everything but the title out of the header **removed** it, and all of
-that arithmetic is deleted. `RichTextViewer.onScroll` reports the offset alone
-now; the range existed for the collapse and has no reader.
-`testTheHeaderIsOneHeightWhateverTheDocumentCarries` lays the header out bare,
-with a subtitle and tags, and with twenty tags, and requires one height.
+**A band that cannot change height cannot oscillate — and there is no band.**
+The metadata used to fold away on scroll, so the header changed height, so it
+changed the scroll range that had decided it should fold — a state change driven
+by a value it alters. The owner saw it as the transcript **shaking**, and only
+on short documents, which is the signature: a long document has range to spare
+and never clamps. Two thresholds plus a range floor (`DocumentHeaderCollapse`)
+damped it; moving everything but the title out of the header **removed** it,
+and deleting the header outright (2026-09-02) removed the shape it happened in.
+`RichTextViewer.onScroll` reports the offset alone now; the range existed for
+the collapse and has no reader. What holds the guarantee is
+`testNothingIsPinnedAboveTheTranscriptAndTheMetadataCannotResizeIt`, which
+replaced `testTheHeaderIsOneHeightWhateverTheDocumentCarries` and asserts the
+two halves that survive the deletion: varying the document's metadata (a
+subtitle, three tags, twenty tags) leaves the drawn body **byte-identical**, so
+none of it can change a height; and `MainPaneView` draws the viewer directly,
+with no `DocumentHeaderView` and no hairline under it. Most of the second half
+is the compiler's — `DocumentHeaderView` no longer exists, so a reference to it
+would not build.
 
 **Opening is free; generating is not.** The Details button starts nothing — the
 old dual-purpose click (a press with no summary used to spend a model call
@@ -1626,6 +1665,33 @@ than tidy — naming a chip enrols a voiceprint, and the popover seeds its draft
 with the chip's current name, so a popover the owner merely opened and clicked
 away from must enrol nothing. Escape still cancels, so the two gestures stop
 meaning the same thing.
+
+**Names right, words left** (ADR 0008; owner, 2026-09-02: *"verbatim and names
+should separate out. words should left align, names right align"*). A speaker
+line is `tab + name + tab + text` with a **right**-aligned `NSTextTab` at the
+name column's trailing edge, a **left** tab plus a matching `headIndent` at the
+text edge — so the text's left edge no longer moves with the length of the name
+and a wrapped paragraph no longer runs back underneath it. A timestamped line
+with no speaker starts on that same edge. The column sits **inside the text
+container**; the outer 48pt gutter is untouched and still belongs to the hover
+timestamps and the moment pips.
+
+`SpeakerColumn` is pure arithmetic, and the two numbers that matter are both
+**derived**. The column's width is one pass over this document's own speaker
+names, sized to the longest one *as drawn*. Its cap comes out of the measure it
+eats into — `readingMeasure − minimumTextEms × body − gap`, where 26em ≈ 57
+characters keeps the text column inside the 45–75 band — and the gap is one em
+of the label face. A name over the cap is **abbreviated, never truncated**:
+full name → `Brian D.` → `B.D.`, with an ellipsis only when a single word
+leaves nothing else to try. 26em rather than something tighter is measured, not
+taste: "Brian Demsky" is 92.9pt at the label face, so a cap much under 100pt
+would abbreviate ordinary two-word names and the ladder is meant to be the
+exception. The whole name always survives on `.notaSpeakerName`, which is how
+`MainPaneView.applySpeakerColors` finds the run to tint — matching the drawn
+glyphs would fail on exactly the names that abbreviate. The laid-out text is
+asserted through a real TextKit stack as well as the arithmetic, XIA-444's
+lesson being that a number and the thing it describes can disagree with every
+geometry test in the file green through it.
 
 **The reading column.** The document path had no measure cap at all —
 `widthTracksTextView` plus a 48pt inset means a 1400pt window draws
