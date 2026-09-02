@@ -1358,13 +1358,13 @@ struct ReviewEditor: NSViewRepresentable {
     if !runs.finalized.isEmpty || !lead.isEmpty {
       result.append(NSAttributedString(
         string: lead + runs.finalized,
-        attributes: [.font: font, .foregroundColor: NSColor.white.withAlphaComponent(0.92)]
+        attributes: [.font: font, .foregroundColor: HUDInk.nsFinalized]
       ))
     }
     if !runs.volatileTail.isEmpty {
       result.append(NSAttributedString(
         string: runs.volatileTail,
-        attributes: [.font: font, .foregroundColor: NSColor.white.withAlphaComponent(0.55)]
+        attributes: [.font: font, .foregroundColor: HUDInk.nsVolatile]
       ))
     }
     return result

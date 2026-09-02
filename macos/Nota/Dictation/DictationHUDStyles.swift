@@ -86,13 +86,15 @@ struct HUDCompactMeter: View {
   }
 }
 
-/// The red dot that says "the microphone is open" on the bar and the prompter.
+/// The dot that says "the microphone is open" on the bar and the prompter.
+///
+/// Neutral, never the error red one glyph away from it — see `HUDInk.listening`.
 struct HUDMicDot: View {
   var diameter: CGFloat = 8
 
   var body: some View {
     Circle()
-      .fill(Color.red)
+      .fill(HUDInk.listening)
       .frame(width: diameter, height: diameter)
   }
 }
@@ -497,9 +499,9 @@ struct DictationHUDPrompterView: View {
       finalized: window.finalized,
       volatileTail: window.volatileTail
     )
-    let finalized = Text(runs.finalized).foregroundStyle(.primary.opacity(0.92))
+    let finalized = Text(runs.finalized).foregroundStyle(HUDInk.finalized)
     guard !runs.volatileTail.isEmpty else { return finalized }
-    let tail = Text(runs.volatileTail).foregroundStyle(Color.white.opacity(0.55))
+    let tail = Text(runs.volatileTail).foregroundStyle(HUDInk.volatile)
     guard !runs.finalized.isEmpty else { return tail }
     return finalized + tail
   }

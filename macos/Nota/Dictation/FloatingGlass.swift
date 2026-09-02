@@ -202,6 +202,45 @@ enum GlassTint {
   }
 }
 
+// MARK: - HUDInk
+
+/// The ink on the dictation surfaces — one implementation of the treatment the
+/// prompter, the pill's draft and the review card's editor all draw.
+///
+/// All three floating panels are pinned `.darkAqua` with a dark `colorScheme`
+/// forced on their content, so these are stated as white with an alpha rather
+/// than as `.primary`. The prompter used to draw the finalized half of one
+/// sentence out of `labelColor` at 92% — which composites to ~0.78 white under
+/// that scheme — against a tail specified as pure white at 55%: two halves of
+/// one sentence from two different bases, with the dim step smaller than the
+/// two documented numbers promise. The pill's draft was a fourth value again.
+///
+/// The two alphas are the documented ones and do not move: 92% finalized, 55%
+/// volatile.
+enum HUDInk {
+  /// Text the recognizer has finalized.
+  static let finalized: Color = Color(nsColor: nsFinalized)
+
+  /// The volatile tail, still being resolved.
+  static let volatile: Color = Color(nsColor: nsVolatile)
+
+  /// `NSColor` twins, for the review card's attributed suffix.
+  static let nsFinalized: NSColor = NSColor.white.withAlphaComponent(0.92)
+  static let nsVolatile: NSColor = NSColor.white.withAlphaComponent(0.55)
+
+  /// "The microphone is open", on the dictation HUD only.
+  ///
+  /// Deliberately **not** red: the bar and the pill drew the live-mic mark and
+  /// the error mark in the same `.red`, one glyph apart, on a surface with
+  /// three visual elements — the two states that most need telling apart at a
+  /// glance. It is deliberately not the ember either: `CraftTokens.ember` means
+  /// "the microphone is open" for the *recording* surfaces, and a second
+  /// consumer would make it mean "Nota" instead (see "The ember" in CLAUDE.md).
+  /// So the mark is neutral and red is left to the error state, orange to the
+  /// warning — the vocabulary the HUD's own wash and stroke already use.
+  static let listening: Color = Color(nsColor: NSColor.white.withAlphaComponent(0.90))
+}
+
 // MARK: - GlassPlateView
 
 /// `NSGlassEffectView` that takes no clicks.

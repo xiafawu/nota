@@ -820,7 +820,7 @@ private struct ListeningView: View {
         meter
         Text(roughDraft ?? "")
           .font(.callout)
-          .foregroundStyle(.primary.opacity(0.85))
+          .foregroundStyle(HUDInk.finalized)
           .lineLimit(HUDPillMetrics.draftLineLimit)
           // Head truncation, not tail: once the session outgrows the block the
           // OLDEST lines go, so the bottom line is always the newest words.
@@ -839,7 +839,7 @@ private struct ListeningView: View {
   private var meter: some View {
     HStack(spacing: 8) {
       Image(systemName: "mic.fill")
-        .foregroundStyle(.red)
+        .foregroundStyle(HUDInk.listening)
         .font(.system(size: 15, weight: .medium))
 
       // The timeline phase adds a slow low-amplitude breathing so the meter

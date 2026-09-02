@@ -476,3 +476,43 @@ final class HUDPrompterSizingTests: XCTestCase {
     return view.fittingSize
   }
 }
+
+// MARK: - The dictation surfaces' ink
+
+/// One treatment, one implementation. The prompter, the pill's draft and the
+/// review card's editor all draw "finalized, then the volatile tail", and they
+/// used to draw it out of three different bases — and the live-microphone mark
+/// used to be the same `Color.red` as the error one glyph away from it.
+final class HUDInkTests: XCTestCase {
+  /// The two documented numbers, stated once: 92% finalized, 55% volatile. The
+  /// SwiftUI values the prompter and the pill read and the `NSColor` values the
+  /// review card's attributed suffix reads are the same two colours.
+  func testOneFinalizedAndOneVolatileInkAcrossTheDictationSurfaces() {
+    XCTAssertEqual(
+      NSColor(HUDInk.finalized).usingColorSpace(.sRGB),
+      HUDInk.nsFinalized.usingColorSpace(.sRGB)
+    )
+    XCTAssertEqual(
+      NSColor(HUDInk.volatile).usingColorSpace(.sRGB),
+      HUDInk.nsVolatile.usingColorSpace(.sRGB)
+    )
+    XCTAssertEqual(HUDInk.nsFinalized.alphaComponent, 0.92, accuracy: 0.001)
+    XCTAssertEqual(HUDInk.nsVolatile.alphaComponent, 0.55, accuracy: 0.001)
+  }
+
+  /// "The microphone is open" and "something failed" are the two states on this
+  /// surface that most need telling apart at a glance, and the bar drew them in
+  /// the same red. The listening mark is neither the error's red nor the
+  /// warning's orange — and it is not the recording surface's ember either,
+  /// which means the same thing but belongs to the recording components alone.
+  func testTheListeningMarkIsNeitherTheErrorNorTheWarningColour() {
+    let listening = NSColor(HUDInk.listening).usingColorSpace(.sRGB)
+    XCTAssertNotNil(listening)
+    for other in [Color.red, Color.red.opacity(0.95), Color.orange, Color.orange.opacity(0.95)] {
+      XCTAssertNotEqual(listening, NSColor(other).usingColorSpace(.sRGB))
+    }
+    for scheme in [ColorScheme.light, .dark] {
+      XCTAssertNotEqual(listening, NSColor(CraftTokens.ember(scheme)).usingColorSpace(.sRGB))
+    }
+  }
+}
