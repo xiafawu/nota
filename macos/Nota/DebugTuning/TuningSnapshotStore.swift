@@ -5,7 +5,6 @@ struct TuningSnapshotData: Codable {
   var statusPillH: Double
   var statusPillV: Double
   var statusHStackSpacing: Double
-  var toolbarStatusTintOpacity: Double
 
   var newButtonH: Double
   var newButtonV: Double
@@ -28,7 +27,6 @@ struct TuningSnapshotData: Codable {
     self.statusPillH = Double(store.statusPillH)
     self.statusPillV = Double(store.statusPillV)
     self.statusHStackSpacing = Double(store.statusHStackSpacing)
-    self.toolbarStatusTintOpacity = store.toolbarStatusTintOpacity
 
     self.newButtonH = Double(store.newButtonH)
     self.newButtonV = Double(store.newButtonV)
@@ -52,7 +50,6 @@ struct TuningSnapshotData: Codable {
     store.statusPillH = CGFloat(statusPillH)
     store.statusPillV = CGFloat(statusPillV)
     store.statusHStackSpacing = CGFloat(statusHStackSpacing)
-    store.toolbarStatusTintOpacity = toolbarStatusTintOpacity
 
     store.newButtonH = CGFloat(newButtonH)
     store.newButtonV = CGFloat(newButtonV)

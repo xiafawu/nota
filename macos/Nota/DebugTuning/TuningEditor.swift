@@ -129,7 +129,6 @@ struct TuningEditor: View {
         cgSlider("H Padding", value: $store.statusPillH, range: 0...40)
         cgSlider("V Padding", value: $store.statusPillV, range: 0...20)
         cgSlider("Stack Spacing", value: $store.statusHStackSpacing, range: 0...20)
-        dSlider("Tint Opacity", value: $store.toolbarStatusTintOpacity, range: 0...1)
       }
       Section("New Transcription Button") {
         cgSlider("H Padding", value: $store.newButtonH, range: 0...40)
@@ -190,9 +189,6 @@ struct TuningEditor: View {
           .padding(.horizontal, store.statusPillH)
           .padding(.vertical, store.statusPillV)
           .background(.regularMaterial, in: .capsule)
-          .overlay(
-            Capsule().strokeBorder(Color.secondary.opacity(store.toolbarStatusTintOpacity), lineWidth: 1)
-          )
         }
         previewSection("New Transcription Button") {
           HStack(spacing: store.newButtonStackSpacing) {

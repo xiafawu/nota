@@ -9,7 +9,6 @@ final class TuningStore: ObservableObject {
   @Published var statusPillH: CGFloat
   @Published var statusPillV: CGFloat
   @Published var statusHStackSpacing: CGFloat
-  @Published var toolbarStatusTintOpacity: Double
 
   @Published var newButtonH: CGFloat
   @Published var newButtonV: CGFloat
@@ -31,7 +30,6 @@ final class TuningStore: ObservableObject {
     self.statusPillH = Metrics.statusPillH
     self.statusPillV = Metrics.statusPillV
     self.statusHStackSpacing = Metrics.statusHStackSpacing
-    self.toolbarStatusTintOpacity = Tokens.toolbarStatusTintOpacity
 
     self.newButtonH = Metrics.newButtonH
     self.newButtonV = Metrics.newButtonV
@@ -54,7 +52,6 @@ final class TuningStore: ObservableObject {
     statusPillH = Metrics.statusPillH
     statusPillV = Metrics.statusPillV
     statusHStackSpacing = Metrics.statusHStackSpacing
-    toolbarStatusTintOpacity = Tokens.toolbarStatusTintOpacity
 
     newButtonH = Metrics.newButtonH
     newButtonV = Metrics.newButtonV

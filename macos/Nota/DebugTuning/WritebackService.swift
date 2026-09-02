@@ -35,7 +35,6 @@ struct WritebackService {
     ]
 
     let tokensUpdates: [(String, Double)] = [
-      ("toolbarStatusTintOpacity", store.toolbarStatusTintOpacity),
       ("primaryActionTintOpacity", store.primaryActionTintOpacity)
     ]
 

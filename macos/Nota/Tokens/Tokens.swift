@@ -2,7 +2,6 @@ import AppKit
 import SwiftUI
 
 enum Tokens {
-  static let toolbarStatusTintOpacity: Double = 0.1
   static let primaryActionTintOpacity: Double = 0.15
   static let tagPillFillOpacity: Double = 0.12
   static let dropFallbackStrokeIdleOpacity: Double = 0.2
@@ -13,7 +12,6 @@ enum Tokens {
   /// header once scrolled (0 = vanish, ~0.2 = ghost).
   static let docBodyFadeGhostOpacity: Double = 0.15
 
-  static let toolbarStatusTint: Color = .secondary.opacity(toolbarStatusTintOpacity)
   static let primaryActionTint: Color = .accentColor.opacity(primaryActionTintOpacity)
   static let dropAccent: Color = .accentColor
   static let dropFallbackStrokeIdle: Color = .secondary.opacity(dropFallbackStrokeIdleOpacity)

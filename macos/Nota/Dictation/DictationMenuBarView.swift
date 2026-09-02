@@ -299,7 +299,7 @@ private struct RecentDictationRow: View {
       .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
       .background(
         RoundedRectangle(cornerRadius: 6, style: .continuous)
-          .fill(Color.primary.opacity(isHovering ? 0.07 : 0))
+          .fill(Color.primary.opacity(isHovering ? Tokens.rowHoverWashOpacity : 0))
       )
     }
     .buttonStyle(.plain)
@@ -329,7 +329,13 @@ struct MenuRowButtonStyle: ButtonStyle {
         .contentShape(RoundedRectangle(cornerRadius: 6, style: .continuous))
         .background(
           RoundedRectangle(cornerRadius: 6, style: .continuous)
-            .fill(Color.primary.opacity(configuration.isPressed ? 0.14 : (isHovering ? 0.07 : 0)))
+            .fill(
+              Color.primary.opacity(
+                configuration.isPressed
+                  ? Tokens.rowPressedWashOpacity
+                  : (isHovering ? Tokens.rowHoverWashOpacity : 0)
+              )
+            )
         )
         .onHover { hovering in
           isHovering = hovering
