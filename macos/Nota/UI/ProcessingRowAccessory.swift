@@ -23,7 +23,7 @@ struct ProcessingRowLine: View {
     HStack(spacing: 6) {
       Text(status.text)
         .font(.caption2)
-        .foregroundStyle(status.tone == .failure ? Color.orange : Color.secondary)
+        .foregroundStyle(status.tone == .failure ? CraftTokens.failure : Color.secondary)
         .lineLimit(1)
         .truncationMode(.tail)
 

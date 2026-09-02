@@ -274,7 +274,7 @@ private struct SpeakerChipButton: View {
     case .failed:
       Image(systemName: "exclamationmark.circle.fill")
         .font(.system(size: 8))
-        .foregroundStyle(.red)
+        .foregroundStyle(CraftTokens.failure)
     case .none, .pending, .enrolled:
       EmptyView()
     }
@@ -371,7 +371,7 @@ struct EditableTagRow: View {
       if let message = state.errorMessage {
         Label(message, systemImage: "exclamationmark.triangle")
           .font(.caption)
-          .foregroundStyle(.red)
+          .foregroundStyle(CraftTokens.failure)
           .lineLimit(2)
       }
     }

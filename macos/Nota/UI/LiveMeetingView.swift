@@ -370,7 +370,7 @@ struct LiveMeetingView: View {
   private func errorBanner(message: String) -> some View {
     HStack(alignment: .top, spacing: CraftTokens.spacing12) {
       Image(systemName: "exclamationmark.triangle.fill")
-        .foregroundStyle(.red)
+        .foregroundStyle(CraftTokens.failure)
 
       VStack(alignment: .leading, spacing: CraftTokens.spacing4) {
         Text(LiveMeetingFormat.stateLabel(.failed(message)))
@@ -426,7 +426,7 @@ struct LiveMeetingView: View {
     .padding(CraftTokens.spacing16)
     .craftGlassPanel(
       in: RoundedRectangle(cornerRadius: CraftTokens.spacing12, style: .continuous),
-      tint: .red
+      tint: CraftTokens.stopRed
     )
     .padding(CraftTokens.spacing16)
   }

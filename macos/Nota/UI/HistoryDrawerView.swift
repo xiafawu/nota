@@ -447,7 +447,7 @@ struct HistoryDrawerView: View {
             Spacer(minLength: 4)
             Text(entry.status.label)
               .font(.caption.weight(.medium))
-              .foregroundStyle(entry.status == .failed ? .orange : .secondary)
+              .foregroundStyle(entry.status == .failed ? CraftTokens.failure : Color.secondary)
           }
           .font(.caption2)
           .foregroundStyle(.secondary)
@@ -470,7 +470,7 @@ struct HistoryDrawerView: View {
         HStack(spacing: 8) {
           Text(entry.status.label)
             .font(.caption.weight(.medium))
-            .foregroundStyle(entry.status == .failed ? .orange : .secondary)
+            .foregroundStyle(entry.status == .failed ? CraftTokens.failure : Color.secondary)
           Spacer()
           Button("Insert again") {
             dictationController.retryDictationHistory(entry.id)

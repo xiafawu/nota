@@ -537,7 +537,7 @@ struct SummaryRailView: View {
       if let message = enrichment.errorMessage, enrichment.errorField == .summary {
         Label(message, systemImage: "exclamationmark.triangle")
           .font(.subheadline)
-          .foregroundStyle(.red)
+          .foregroundStyle(CraftTokens.failure)
           .lineLimit(3)
       }
       Button(hasSummaryFailure ? "Try Again" : "Generate summary") {
@@ -682,7 +682,7 @@ struct SummaryRailView: View {
     if let message = enrichment.errorMessage, enrichment.errorField == .summary {
       Text(message)
         .font(.caption)
-        .foregroundStyle(.red)
+        .foregroundStyle(CraftTokens.failure)
         .lineLimit(2)
     }
   }

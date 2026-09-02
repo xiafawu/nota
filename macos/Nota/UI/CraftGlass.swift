@@ -53,6 +53,14 @@ enum CraftTokens {
 
   /// Strong saturated blue; white foreground on it holds ~4.6:1 contrast
   /// (WCAG AA for normal text) — deliberately a touch deeper than systemBlue.
+  ///
+  /// **Where the split with `accentColor` falls.** A *filled* confident action
+  /// is `primaryBlue`: the home screen's primary card, the recording cluster's
+  /// Mark, the island's Mark, the local cluster's prominent button. Everything
+  /// that is a link, a selection or a toggle keeps `Color.accentColor`, which
+  /// is the tint the owner picked in System Settings and is theirs to change.
+  /// Without the line the two loudest blue affordances in one window came from
+  /// two different blues that this comment says are deliberately different.
   static let primaryBlue: Color = Color(red: 0.13, green: 0.42, blue: 0.98)
   static let primaryForeground: Color = .white
 
@@ -65,7 +73,8 @@ enum CraftTokens {
 
   // MARK: Stop (the recording surface's one red)
 
-  /// Stop's colour on the recording cluster, and nowhere else.
+  /// Stop's colour on the recording cluster — the one red *fill* in the app.
+  /// The same red, as text and glyphs, is `failure` below.
   ///
   /// The owner chose red over the ember on 2026-08-11 **with the measurement in
   /// hand**, which is the part worth keeping: CIE76 ΔE from `systemRed` to the
@@ -84,6 +93,15 @@ enum CraftTokens {
   /// every other surface in this app already uses (the failed-session banner's
   /// tint, the destructive menu items), and it is per-scheme for free.
   static let stopRed: Color = Color(nsColor: .systemRed)
+
+  /// The one colour for a job that failed, wherever the owner is standing.
+  ///
+  /// One failed summary used to be orange in the drawer row, orange on the
+  /// receipt and red once the Details panel was opened to find out why — three
+  /// answers to one question. It is `stopRed` by construction rather than by
+  /// coincidence: Stop is that red as a fill and this is that red as ink, and
+  /// two spellings of one meaning is how the drift started.
+  static let failure: Color = stopRed
 
   // MARK: Recording accent (ember)
 

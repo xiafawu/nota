@@ -269,7 +269,7 @@ struct RecordReceiptView: View {
       if let status {
         Text(status.text)
           .font(.caption2)
-          .foregroundStyle(status.tone == .failure ? Color.orange : Color.white.opacity(0.6))
+          .foregroundStyle(status.tone == .failure ? CraftTokens.failure : Color.white.opacity(0.6))
           .lineLimit(1)
           .truncationMode(.tail)
         if status.retry == .summary, let onRetry {

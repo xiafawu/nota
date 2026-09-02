@@ -1804,3 +1804,53 @@ enum RenderProbe {
   }
 
 }
+
+// MARK: - One colour per meaning
+
+/// The app's colour vocabulary, asserted where it is declared rather than at
+/// each surface that reads it. Both of these were drift the owner could see:
+/// two blues for "the confident action" in one window, and one failed summary
+/// drawn orange in the drawer row, orange on the receipt and red once the
+/// Details panel was opened to find out why.
+@MainActor
+final class ColourVocabularyTests: XCTestCase {
+  /// A **filled** confident action is one blue, wherever it is drawn. The local
+  /// cluster's prominent button (Details, bottom-right) and the recording
+  /// cluster's Mark (bottom-centre) are the two loudest blue affordances in the
+  /// window, and the prominent button used to take `Color.accentColor` while
+  /// Mark took `CraftTokens.primaryBlue` — a difference the token's own comment
+  /// calls deliberate.
+  func testTheTwoFilledConfidentActionsAreOneBlue() {
+    XCTAssertEqual(
+      NSColor(LocalCluster.prominentTint).usingColorSpace(.sRGB),
+      NSColor(SessionClusterAction.mark.tint).usingColorSpace(.sRGB)
+    )
+    XCTAssertEqual(
+      NSColor(LocalCluster.prominentTint).usingColorSpace(.sRGB),
+      NSColor(CraftTokens.primaryBlue).usingColorSpace(.sRGB)
+    )
+  }
+
+  /// One word for failure. `CraftTokens.failure` is `stopRed` by construction —
+  /// Stop is that red as a fill, a failed job is that red as ink — so the
+  /// drawer row, the receipt's stage line, the Details panel's message and the
+  /// failed-session banner cannot disagree the way they did.
+  func testAFailedJobIsOneColour() {
+    for appearance in [NSAppearance(named: .aqua), NSAppearance(named: .darkAqua)] {
+      guard let appearance else { continue }
+      var failure: NSColor?
+      var stop: NSColor?
+      var orange: NSColor?
+      appearance.performAsCurrentDrawingAppearance {
+        failure = NSColor(CraftTokens.failure).usingColorSpace(.sRGB)
+        stop = NSColor(CraftTokens.stopRed).usingColorSpace(.sRGB)
+        orange = NSColor.systemOrange.usingColorSpace(.sRGB)
+      }
+      XCTAssertEqual(failure, stop, "failure ink and Stop's fill are one red")
+      XCTAssertNotEqual(
+        failure, orange,
+        "a failed job is red, never the orange half of the old split"
+      )
+    }
+  }
+}

@@ -90,6 +90,14 @@ private struct LiquidGlassButtonModifier: ViewModifier {
 enum LocalCluster {
   /// Matches the diameter a macOS 26 toolbar gives its glass items.
   static let diameter: CGFloat = 30
+
+  /// The prominent button's fill — `CraftTokens.primaryBlue`, the app's one
+  /// blue for a *filled* confident action (see the note on that token).
+  ///
+  /// It was `accentColor`, which put the two loudest blue affordances in one
+  /// window — this cluster at bottom-right and the recording cluster's Mark at
+  /// bottom-centre — on two different blues.
+  static let prominentTint: Color = CraftTokens.primaryBlue
 }
 
 private struct LocalClusterButtonModifier: ViewModifier {
@@ -107,12 +115,12 @@ private struct LocalClusterButtonModifier: ViewModifier {
 
     if reduceTransparency {
       if prominent {
-        base.background(Color.accentColor, in: .circle)
+        base.background(LocalCluster.prominentTint, in: .circle)
       } else {
         base.background(.regularMaterial, in: .circle)
       }
     } else if prominent {
-      base.glassEffect(.regular.tint(.accentColor).interactive(), in: .circle)
+      base.glassEffect(.regular.tint(LocalCluster.prominentTint).interactive(), in: .circle)
     } else {
       base.glassEffect(.regular.interactive(), in: .circle)
     }
