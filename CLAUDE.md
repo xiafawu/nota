@@ -1738,11 +1738,14 @@ never geometry — `testTheRimIsChromeAndOnlyTheDegradedMaterialDrawsIt`. Nothin
 moves: every number in
 `RecordingPaneMetrics` is a constant or is measured once from a font, and
 neither kind reads an `@Environment` value, so there is nothing for an
-accessibility setting to reach. Reduce Motion reaches exactly one thing here
-and it arrived with XIA-447: the Pause capsule grows into the word "Paused", so
-`RecordingMotion.pauseAnimation` returns nil and the two widths are a cut. That
-is the only transition on the surface. And the ember is untouched — it is a
-function of the colour scheme alone.
+accessibility setting to reach. Reduce Motion reaches exactly **two**
+transitions, and both take the ring's answer rather than the meter's — nothing
+is lost to a cut in either. XIA-447's: the Pause capsule grows into the word
+"Paused", so `RecordingMotion.pauseAnimation` returns nil and the two widths are
+a cut. And ADR 0007's: the jump-to-newest pill fades in and out
+(`Tokens.popIn`), and under the setting the scale goes while the fade stays, so
+it appears without travelling. And the ember is untouched — it is a function of
+the colour scheme alone.
 
 **Stop's red survives the degrade, and the mechanism is what makes that true.**
 `Glass.tint(_:)` is a property of the *effect*, and the degraded branch swaps
@@ -1967,11 +1970,67 @@ as a question the surface is still asking.
   which content padding satisfies perfectly — a test adjacent to the thing that
   mattered, which is how all of this stayed green. A failed session's transcript
   reserves nothing: nothing floats over it.
+- **The live transcript IS the document, in type and in column** (ADR 0007).
+  This was claimed everywhere in this file — "a run is the transcript arriving,
+  and the pane becomes the document without the window changing" — and measured
+  false on 2026-09-02 in six ways at once: a `.system(size: 14)` body against
+  the document's 18.5pt `NSFonts.readingBody`, full window width against a 34em
+  centred column, a 52pt gutter against 48, a timestamp on every turn start
+  against hover-only. Stop swapped one reading surface for a materially
+  different one, in place, and every one of those changed at the same instant.
+
+  So the live side takes the document's numbers **by reference, never by
+  agreement**: `RecordingPaneMetrics.transcriptFont` / `speakerFont` /
+  `gutterFont` wrap `NSFonts.readingBody` / `readingSpeaker` / `readingGutter`,
+  `gutterWidth` and `gutterGap` are `Metrics.gutterWidth` and
+  `Metrics.tsGutterTrailingGap`, and the column is asked of
+  `RichTextViewer.Column` — the document's own arithmetic — for both its width
+  and its inset. Two constants that happen to be equal today is exactly how the
+  4pt gutter drift started. `transcriptPaddingH` is **gone**: the column's inset
+  is what places the transcript horizontally, and a page padding on top of it
+  would fight the centring.
+
+  Three things fall out. The **timestamp is drawn only while the pointer is
+  over its row**, in the inset, right-aligned to the same offset
+  `HoverTimestampTextView` uses — and because it is an overlay the lane is still
+  reserved on every row, so nothing steps left when one appears or goes. The
+  **ember marker rule** moved with it: `markerRuleInset` is derived from the
+  gutter (`gutterGap + markerRuleWidth`) rather than from a page padding that no
+  longer exists, which lands it where the document draws a moment pip, and
+  `markerRuleLane` is `HoverTimestampTextView.pipLane`'s trick — the hover label
+  stops short of the rule whenever the transcript has any moments at all, or
+  hovering a marked line draws the timestamp over its own rule. And the settled
+  body draws at `GroundInk.Tier.reading` rather than `.body`, which is the
+  document's tier and is only *available* here because the live pane is 18.5pt
+  now: `.reading`'s 0.80 alpha clears a 4.5:1 bar instead of 7.0 precisely
+  because ≥18pt is WCAG large text.
+
+  `followSlack` was `spacing24`, written when the body was 14pt and laid out at
+  ~17. It is measured off the reading face now (one line plus the spacing under
+  it), because a slack shorter than one line makes the way back to the follow
+  harder than the scroll that left it.
 - **The transcript follows the newest line only while the owner is at the
-  bottom.** Scrolling up to re-read during a meeting works, scrolling back
-  within `followSlack` resumes the follow, and there is no control for it — the
-  volatile tail is rewritten many times a second, so the old unconditional
-  `scrollToNewest` snapped the view back before a line could be read.
+  bottom.** Scrolling up to re-read during a meeting works and scrolling back
+  within `followSlack` resumes the follow — the volatile tail is rewritten many
+  times a second, so the old unconditional `scrollToNewest` snapped the view
+  back before a line could be read.
+
+  There **is** a control now, and only while the follow is off
+  (`SessionJumpToNewestControl`, ADR 0007). The old rule was "there is
+  deliberately no control", which was a decision about not adding chrome and
+  came out as a surface with a mode nothing on it named: the newest line
+  silently stopped being chased and the only way back was to scroll to the
+  bottom by hand on a transcript that grows while you do it. So the pill is the
+  one thing that says the follow is off, and it disappears the instant it is
+  back on — a permanent one would be a button that does nothing for the whole
+  of an ordinary session. It is an **overlay** on the transcript, never a
+  member of the capsule row: the cluster is centred, so anything that joins it
+  splits its own width across both sides and steps Stop out from under the
+  pointer aiming at it (the `markerCountWidth` rule). Its bottom edge rests on
+  the top of `transcriptBottomReserve`, so the gap between it and the cluster
+  is space the reserve already accounts for and no number in the cluster's
+  geometry moves for it. Under Reduce Motion it fades and does not travel
+  (`Tokens.popIn`).
   **Content growth is not the owner scrolling away**: an appended row grows the
   content before the proxy scroll lands, so `LiveTranscriptFollow.decide`
   compares two geometries and switches the follow off only when the content and
@@ -1997,32 +2056,58 @@ as a question the surface is still asking.
   no surface draws those two now — they belong to `SessionMarkerList`, which has
   no caller. They stay as constants beside the view that reads them, not in the
   promise about what an owner sees.
-- **The transcript lays out a speaker column the pipeline does not fill yet.**
-  `LiveTranscriptLine.speaker` is nil today, `LiveTranscript.blocks` already
-  groups consecutive lines by it, and a turn draws the name above its text when
-  there is one. Realtime speaker labels are a known unresolved follow-up; the
-  grouping is not waiting to be written, it is waiting to be fed, and the day it
-  is the transcript gains names and not one number in `RecordingPaneMetrics`
-  moves. The volatile tail is a line like any other — it continues the turn it
+- **The speaker column is fed, and it is a column** (ADR 0008).
+  `LiveTranscript.lines` carries `LiveSegment.speaker` straight through — it was
+  hardcoded `nil` there, one line above the view that had reserved a slot for
+  it, which is why the slot had never drawn a name. `LiveTranscript.blocks`
+  groups consecutive lines by it and the name rides the row that **opens** the
+  turn, right-aligned in a column of its own with the words left-aligned on one
+  shared edge beside it.
+
+  The column is **reserved whether or not a name is known**, and it is a
+  *constant* — deliberately unlike the document's, which measures the longest
+  name it holds because it holds all of them already. Live, a name arrives
+  mid-meeting and the seal may add or correct one at Stop, so a column measured
+  over what has arrived would widen under the owner and move every line
+  sideways. `speakerColumnWidth` is seven ems of `NSFonts.readingSpeaker`, in
+  the idiom `Metrics.readingMeasure` uses. Nil is the ordinary state, not a gap:
+  a name is drawn only for a confident match, and nothing on screen may be a
+  guess. The volatile tail is a line like any other — it continues the turn it
   belongs to and differs only in being drawn at the `timestamp` ink tier.
+
+  The speaker used to be a **row of its own**, drawn above the turn. That is
+  gone, and the reason is the reservation: a header row appears when a name
+  arrives, which pushes the whole transcript down mid-meeting.
 - **…but the grouping may not cost the laziness, so the drawn model is flat.**
-  `LiveTranscript.rows` turns the blocks into one row per line plus a header row
-  where the speaker changes, and `LiveTranscriptView` puts those rows **directly**
-  in its `LazyVStack`. A `LazyVStack` defers only its direct children: nesting a
-  block's lines in an inner `VStack` made the whole session **one** child —
-  because every line's speaker is nil today, there is exactly one block — so a
-  90-minute meeting built and measured 800 `Text` views with
+  `LiveTranscript.rows` turns the blocks into exactly **one row per line** — no
+  header rows at all since the name became a column — and `LiveTranscriptView`
+  puts those rows **directly** in its `LazyVStack`. A `LazyVStack` defers only
+  its direct children: nesting a block's lines in an inner `VStack` made the
+  whole session **one** child — with no speaker labels there is exactly one
+  block — so a 90-minute meeting built and measured 800 `Text` views with
   `.fixedSize(vertical:)` on every render pass, on screen or off. Master had put
   each segment straight in the stack. The gutter timestamp belongs to whichever
-  row opens a turn and the rest reserve the cell and draw nothing in it, so
-  nothing steps left; the inter-turn gap is paid by the row that opens one,
-  since a flat stack has no blocks left to space apart.
+  row opens a turn, and it is drawn as an **overlay** in the column's own inset
+  rather than as a cell in the row, so no row is a different size for having one
+  and nothing steps left. The inter-turn gap is paid by the row that opens a
+  turn, since a flat stack has no blocks left to space apart.
 - **The row model is memoized against the transcript** (`LiveTranscriptRowCache`).
   Building it is O(all segments), and a render the transcript did not cause —
   a clock tick, anything that invalidates the window — must not pay for it. The
-  key is the segment count, the last segment's id, the partial, and the whole
+  key is the segment count, the last segment's id, the partial, the whole
   seconds of `elapsed` (all `elapsed` reaches is the volatile line's gutter
-  timestamp, which is drawn to the second).
+  timestamp, which is drawn to the second), a signature of every marker, and a
+  signature of **every segment's speaker**.
+
+  That last one is the `markerSignature` lesson arriving from the other
+  direction, and it is why the key is not just "which segments are in the
+  list". A live name lands **in place**: identification runs on a finalized turn
+  and writes the name back onto a segment already in the list, so the count does
+  not change and neither does the last id — and against those two alone the
+  transcript would go on drawing rows built before the name existed until an
+  unrelated turn arrived. Hover is *not* in the key and must not be: the cache
+  holds the row model, and which row draws a timestamp is view state applied at
+  draw time.
 - **There is one clock.** `LiveMeetingFormat.duration` delegates to
   `SessionTimerMetrics.text`. The gutter timestamp beside a transcript line,
   the time on a marker row and the clock in the cluster name the same
@@ -2821,7 +2906,7 @@ site, not the machine.
   (XIA-432): the microphone level was a `@Published` property of
   `LiveMeetingSession` — observed by `ContentView` and `LiveMeetingView` — and
   the transcript was one `LazyVStack` child, because grouping by a speaker label
-  the pipeline never fills produces exactly one block. So the level lives on its
+  that was hardcoded nil produces exactly one block. So the level lives on its
   own `MicLevelFeed` that only the meter observes and is gated to ~15 Hz, the
   transcript is a flat list of rows, and the row model is memoized against the
   transcript rather than recomputed per render. The same trap is already written

@@ -395,7 +395,11 @@ final class RecordingPaneTests: XCTestCase {
   /// the bar's hover bloom is gone with the bar — so there is not even a
   /// transition left for Reduce Motion to reach.
   func testNoPaneGeometryMovesUnderAnAccessibilitySetting() {
-    XCTAssertEqual(RecordingPaneMetrics.gutterWidth, 52)
+    // The gutter is **the document's**, not a number of its own any more
+    // (ADR 0007): it was 52 here and 48 there, so the words stepped 4pt at Stop
+    // on the surface the docs called one surface.
+    XCTAssertEqual(RecordingPaneMetrics.gutterWidth, Metrics.gutterWidth)
+    XCTAssertEqual(RecordingPaneMetrics.gutterGap, Metrics.tsGutterTrailingGap)
     XCTAssertEqual(RecordingPaneMetrics.clockBase, 30)
     // 43: the 30pt clock's 35pt line box plus 4 above and below. Measured from
     // the font rather than typed there, so this pins the *answer* while
@@ -686,7 +690,7 @@ final class RecordingPaneTests: XCTestCase {
     let live = cache.rows(segments: [spoken], partial: "still talking", elapsed: 14, markers: markers)
     XCTAssertEqual(
       live.filter(\.isMarked).map(\.id),
-      [LiveTranscriptRow.ID.line(LiveTranscript.volatileLineID)],
+      [LiveTranscript.volatileLineID],
       "a mark pressed mid-turn did not land on the in-flight line"
     )
 
@@ -694,16 +698,21 @@ final class RecordingPaneTests: XCTestCase {
     let settled = cache.rows(segments: [spoken, finalized], partial: nil, elapsed: 15, markers: markers)
     XCTAssertEqual(
       settled.filter(\.isMarked).map(\.id),
-      [LiveTranscriptRow.ID.line(finalized.id)],
+      [finalized.id],
       "the rule left the words it was drawn beside when the turn finalized"
     )
   }
 
-  /// The rule belongs beside the **words**, never beside a name. A speaker
-  /// header is a row like any other in a flat stack, so nothing structural
-  /// stops it taking a mark — only `rows(_:markedLineIDs:)` matching on line
-  /// ids does, and that is the assertion.
-  func testTheMarkerRuleNeverLandsOnASpeakerHeader() {
+  /// The rule belongs beside the **words**, and a named turn does not put a
+  /// second row anywhere for it to land on instead.
+  ///
+  /// This used to be "the rule never lands on a speaker header", and the header
+  /// is gone: the name is a column beside the words now (ADR 0008), which is
+  /// what makes the name column reservable in the first place. So what is left
+  /// to assert is the shape that replaced it — one row per line whether the
+  /// lines are named or not, so a name arriving inserts nothing and the mark
+  /// lands on the line whose words were being said.
+  func testAMarkLandsOnTheWordsAndANamedTurnAddsNoRowForItToMiss() {
     let lines = [
       line("hello", endingAt: 5, speaker: "Amara"),
       line("and then", endingAt: 12, speaker: "Bo")
@@ -711,13 +720,15 @@ final class RecordingPaneTests: XCTestCase {
     let marked = LiveTranscriptMarking.markedLineIDs(markers: [SessionMarker(at: 3)], lines: lines)
     let rows = LiveTranscript.rows(LiveTranscript.blocks(lines), markedLineIDs: marked)
 
-    let headers = rows.filter {
-      if case .speaker = $0.content { return true }
-      return false
-    }
-    XCTAssertEqual(headers.count, 2, "the fixture stopped producing speaker headers")
-    XCTAssertTrue(headers.allSatisfy { !$0.isMarked }, "a speaker header wore the ember rule")
-    XCTAssertEqual(rows.filter(\.isMarked).count, 1)
+    XCTAssertEqual(rows.count, lines.count, "a named turn grew a row of its own again")
+    XCTAssertEqual(rows.map(\.speaker), ["Amara", "Bo"], "the name did not reach its column")
+    XCTAssertEqual(rows.filter(\.isMarked).map(\.id), [lines[0].id])
+
+    // …and the same lines unnamed produce the same rows in the same places.
+    let anonymous = [line("hello", endingAt: 5), line("and then", endingAt: 12)]
+    let anonymousRows = LiveTranscript.rows(LiveTranscript.blocks(anonymous))
+    XCTAssertEqual(anonymousRows.count, rows.count)
+    XCTAssertEqual(anonymousRows.map(\.speaker), [nil, nil])
   }
 
   /// **The mark is a flag on a flat row, not a wrapper around a run of them.**
@@ -728,7 +739,7 @@ final class RecordingPaneTests: XCTestCase {
   /// The row *count* cannot fail for that reason — `LiveTranscript.rows`
   /// appends one row per line whether it is marked or not — so what is asserted
   /// is the model marking cannot break: the drawn model is exactly one row per
-  /// line plus one header per turn that has a speaker, the ids are byte for
+  /// line, the ids are byte for
   /// byte the unmarked ones, and marking changes nothing but the flag. What no
   /// test in this bundle can reach is `LiveTranscriptView`'s own hierarchy;
   /// that claim is carried by the `.overlay` in the row view and by this
@@ -739,14 +750,10 @@ final class RecordingPaneTests: XCTestCase {
     let plain = LiveTranscript.rows(blocks)
     let marked = LiveTranscript.rows(blocks, markedLineIDs: [lines[1].id, lines[6].id])
 
-    let headers = plain.filter {
-      if case .speaker = $0.content { return true }
-      return false
-    }
     XCTAssertEqual(
       plain.count,
-      lines.count + headers.count,
-      "the drawn model stopped being one row per line plus one header per named turn"
+      lines.count,
+      "the drawn model stopped being exactly one row per line"
     )
     XCTAssertEqual(plain.map(\.id), marked.map(\.id))
     XCTAssertEqual(plain.map(\.gutter), marked.map(\.gutter))
@@ -796,13 +803,13 @@ final class RecordingPaneTests: XCTestCase {
 
     let first = cache.rows(segments: segments, partial: nil, elapsed: 12, markers: early)
     XCTAssertEqual(cache.recomputeCount, 1)
-    XCTAssertEqual(first.filter(\.isMarked).map(\.id), [.line(segments[0].id)])
+    XCTAssertEqual(first.filter(\.isMarked).map(\.id), [segments[0].id])
 
     // Same count, different time — a different line entirely.
     let later = [SessionMarker(at: 9)]
     let second = cache.rows(segments: segments, partial: nil, elapsed: 12, markers: later)
     XCTAssertEqual(cache.recomputeCount, 2, "a marker that moved did not reach the row model")
-    XCTAssertEqual(second.filter(\.isMarked).map(\.id), [.line(segments[1].id)])
+    XCTAssertEqual(second.filter(\.isMarked).map(\.id), [segments[1].id])
 
     // Same count, same time, same id — only a label, written in place.
     var labelled = later[0]
@@ -822,11 +829,11 @@ final class RecordingPaneTests: XCTestCase {
   ///
   /// And the ember is bounded on **both** sides against derived numbers. Left
   /// of the body text is not enough — the whole gutter is left of it, so a
-  /// `markerRuleInset` typed to 0 would draw the rule inside the transcript's
-  /// content column and still pass. The claim is that the rule sits in the
-  /// margin `transcriptPaddingH` reserves and nowhere else, which is what makes
-  /// the `transcriptPaddingH / 2` derivation load-bearing rather than
-  /// decorative, plus that it is on screen at all.
+  /// `markerRuleInset` typed to 0 would draw the rule inside the reading column
+  /// and still pass. The claim is that the rule sits inside the gutter the
+  /// reading column's own inset reserves (ADR 0007) and nowhere else, which is
+  /// what makes the `gutterGap + markerRuleWidth` derivation load-bearing
+  /// rather than decorative, plus that it is on screen at all.
   func testTheEmberRuleSitsInsideTheMarginAndMovesNoText() {
     let lines = [line("the migration lands next Tuesday", endingAt: 12)]
     let blocks = LiveTranscript.blocks(lines)
@@ -849,22 +856,28 @@ final class RecordingPaneTests: XCTestCase {
       markedText,
       "flagging a moment moved the transcript's text (\(plainText) → \(markedText))"
     )
+    // The leftmost ink in the whole bitmap is the words themselves now: the
+    // gutter is empty until the pointer is over a row (ADR 0007), and an
+    // unhosted probe has no pointer. So this says what it can still say —
+    // flagging a moment moved no ink anywhere, not only in the content column.
     XCTAssertEqual(
       Self.leftmostInkColumn(plainRep),
       Self.leftmostInkColumn(markedRep),
-      "flagging a moment moved the gutter timestamp"
+      "flagging a moment moved the transcript's leftmost ink"
     )
 
     let scale = CGFloat(markedRep.pixelsWide) / Self.transcriptProbeSize.width
-    let margin = RecordingPaneMetrics.transcriptPaddingH * scale
+    let inset = RecordingPaneMetrics.readingColumnInset(
+      available: Self.transcriptProbeSize.width
+    ) * scale
     let rule = RecordingPaneMetrics.markerRuleWidth * scale
     XCTAssertGreaterThanOrEqual(
       CGFloat(ember), 0, "the rule was drawn off the leading edge of the window"
     )
     XCTAssertLessThanOrEqual(
       CGFloat(ember) + rule,
-      margin.rounded(.up),
-      "the rule left the margin the transcript reserves and entered its content column"
+      inset.rounded(.up),
+      "the rule left the gutter the reading column reserves and entered the column"
     )
     XCTAssertNil(
       Self.leftmostEmberColumn(plainRep),
@@ -944,19 +957,26 @@ final class RecordingPaneTests: XCTestCase {
   }
 
   /// Leftmost column of the **body text** — the ink at or right of where the
-  /// gutter cell ends. The gutter timestamp is the leftmost ink in the whole
-  /// bitmap and sits a whole cell away from the words, so measuring "the
-  /// leftmost dark pixel" measures a column that does not move when the
-  /// sentence does.
+  /// words' own left edge is. Everything left of it (the gutter's hover
+  /// timestamp, the ember rule) is chrome in the margin, and starting the scan
+  /// at the words means this measures a column that moves only when the
+  /// sentence really moves.
   private static func leftmostBodyTextColumn(_ rep: NSBitmapImageRep) -> Int? {
     let scale = CGFloat(rep.pixelsWide) / transcriptProbeSize.width
-    let contentStart = Int(
-      ((RecordingPaneMetrics.transcriptPaddingH + RecordingPaneMetrics.gutterWidth) * scale)
-        .rounded(.up)
-    )
+    let contentStart = Int((textLeadingEdge(available: transcriptProbeSize.width) * scale)
+      .rounded(.up))
     return leftmostColumn(rep, from: contentStart) { pixel in
       pixel.brightnessComponent < 0.65
     }
+  }
+
+  /// Where the **words** start, in the pane's own coordinates: the reading
+  /// column's inset, plus the reserved name column and the gap after it.
+  /// Composed from the constants the row is laid out with, never typed.
+  static func textLeadingEdge(available: CGFloat) -> CGFloat {
+    RecordingPaneMetrics.readingColumnInset(available: available)
+      + RecordingPaneMetrics.speakerColumnWidth
+      + RecordingPaneMetrics.speakerColumnGap
   }
 
   /// Leftmost column holding a dark, near-neutral pixel — the ink
@@ -1010,8 +1030,9 @@ final class RecordingPaneTests: XCTestCase {
     XCTAssertEqual(blocks[0].startedAt, 3, "a turn's gutter timestamp is where it started")
   }
 
-  /// The layout does not have to change when the labels arrive: the grouping is
-  /// already written and already correct, it is only waiting to be fed.
+  /// The layout does not change when the labels arrive: the grouping was
+  /// already written and already correct, and the name column is reserved
+  /// whether or not it has been fed (ADR 0008).
   func testSpeakerLabelsGroupIntoTurnsWithoutAnyLayoutChange() {
     let a1 = LiveTranscriptLine(id: UUID(), text: "one", endTime: 3, speaker: "Amara")
     let a2 = LiveTranscriptLine(id: UUID(), text: "two", endTime: 7, speaker: "Amara")
@@ -1693,7 +1714,7 @@ final class RecordingPaneTests: XCTestCase {
 
   /// The laziness invariant: **one row per line**, always. `LazyVStack` defers
   /// only its direct children, so a nested block would make the whole session
-  /// one child — which is what it was, since every line's speaker is nil today.
+  /// one child — which is what it was while every line's speaker was nil.
   func testEveryLineIsItsOwnRow() {
     let lines = (0..<50).map {
       LiveTranscriptLine(id: UUID(), text: "line \($0)", endTime: TimeInterval($0), speaker: nil)
@@ -1703,35 +1724,47 @@ final class RecordingPaneTests: XCTestCase {
     XCTAssertEqual(rows.count, 50, "…and 50 rows, or the stack has one child again")
     XCTAssertEqual(
       rows.map(\.id),
-      lines.map { LiveTranscriptRow.ID.line($0.id) },
+      lines.map(\.id),
       "rows are the lines, in order, each under its own id"
     )
   }
 
-  /// Grouping survives the flattening: the speaker name a block used to draw
-  /// above its lines is a row of its own, emitted where the speaker changes.
-  func testASpeakerHeaderIsARowEmittedWhereTheSpeakerChanges() {
+  /// Grouping survives the flattening, and it costs **no rows**: the name a
+  /// block used to draw in a header row of its own is carried on the row that
+  /// opens the turn and drawn in the reserved column beside it (ADR 0008).
+  ///
+  /// That is not tidying. A header row appears when a name arrives, which
+  /// pushes the whole transcript down mid-meeting — the movement ADR 0007
+  /// exists to forbid, and the one the reserved column removes.
+  func testTheTurnsNameRidesTheRowThatOpensItAndCostsNoRow() {
     let a1 = LiveTranscriptLine(id: UUID(), text: "one", endTime: 3, speaker: "Amara")
     let a2 = LiveTranscriptLine(id: UUID(), text: "two", endTime: 7, speaker: "Amara")
     let k1 = LiveTranscriptLine(id: UUID(), text: "three", endTime: 11, speaker: "Kenny")
     let rows = LiveTranscript.rows(LiveTranscript.blocks([a1, a2, k1]))
 
-    XCTAssertEqual(rows.count, 5, "two headers and three lines")
-    XCTAssertEqual(rows[0].content, .speaker("Amara"))
-    XCTAssertEqual(rows[1].content, .line(a1))
-    XCTAssertEqual(rows[2].content, .line(a2))
-    XCTAssertEqual(rows[3].content, .speaker("Kenny"))
-    XCTAssertEqual(rows[4].content, .line(k1))
+    XCTAssertEqual(rows.count, 3, "three lines, three rows — a name grew a row again")
+    XCTAssertEqual(rows.map(\.line), [a1, a2, k1])
+    XCTAssertEqual(
+      rows.map(\.speaker),
+      ["Amara", nil, "Kenny"],
+      "the name belongs to the row that opens the turn and to no other"
+    )
+    XCTAssertEqual(rows.map(\.id), [a1.id, a2.id, k1.id])
 
-    // A speaker header and its turn's first line share a block id, so the row
-    // ids have to be typed or the `ForEach` would collide on them.
-    XCTAssertEqual(rows[0].id, .speaker(a1.id))
-    XCTAssertEqual(rows[1].id, .line(a1.id))
-    XCTAssertNotEqual(rows[0].id, rows[1].id)
+    // The same three lines with nobody matched: the same rows, the same ids,
+    // the same gutters — only the column is empty.
+    let unnamed = [a1, a2, k1].map {
+      LiveTranscriptLine(id: $0.id, text: $0.text, endTime: $0.endTime, speaker: nil)
+    }
+    let anonymousRows = LiveTranscript.rows(LiveTranscript.blocks(unnamed))
+    XCTAssertEqual(anonymousRows.map(\.id), rows.map(\.id))
+    XCTAssertEqual(anonymousRows.map(\.speaker), [nil, nil, nil])
   }
 
-  /// The gutter belongs to whichever row opens a turn, and to nothing else —
-  /// a continuation reserves the cell and leaves it blank.
+  /// The gutter belongs to whichever row opens a turn, and to nothing else.
+  /// Every row reserves the lane all the same — the timestamp is an overlay
+  /// now, drawn on hover only (ADR 0007), so no row is a different size for
+  /// having one.
   func testOnlyTheRowThatOpensATurnCarriesTheGutterTimestamp() {
     let rows = LiveTranscript.rows(
       LiveTranscript.blocks(LiveTranscript.lines(

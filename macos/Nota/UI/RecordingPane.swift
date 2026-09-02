@@ -179,24 +179,88 @@ enum RecordingPaneMetrics {
     capsuleHeight + clusterBottomInset + clusterTranscriptGap
 
   // MARK: The transcript
+  //
+  // **One reading surface** (ADR 0007). Every number below is the document's,
+  // reached through `Metrics` / `NSFonts` / `RichTextViewer.Column` rather than
+  // restated here — the live pane and the finished transcript were measured on
+  // 2026-09-02 and differed in six ways at once (14pt vs 18.5pt body, full
+  // window width vs a 34em column, a 52pt gutter vs 48, a timestamp on every
+  // turn vs hover only), so Stop swapped one reading surface for a materially
+  // different one in place. A constant retyped here is that drift starting
+  // again, which is why these are `var`s that delegate rather than `let`s that
+  // agree today.
 
-  /// The timestamp gutter, mirroring the rich document pane so a live
-  /// transcript and a finished one are read the same way.
-  static let gutterWidth: CGFloat = 52
-  static let gutterGap: CGFloat = CraftTokens.spacing12
-  static let transcriptPaddingH: CGFloat = CraftTokens.spacing24
+  /// The timestamp gutter — **the document's**, and reserved at all times even
+  /// though nothing is drawn in it at rest. It is the lane the hover timestamp
+  /// and the ember marker rule live in, and a row that stepped left when a
+  /// timestamp appeared or vanished is the defect ADR 0007 exists to remove.
+  static var gutterWidth: CGFloat { Metrics.gutterWidth }
+  /// Between the gutter's trailing edge and the reading column. The document's
+  /// hover label is right-aligned to exactly this offset
+  /// (`HoverTimestampTextView.showGutter`), so the two surfaces put a timestamp
+  /// in the same place to the point.
+  static var gutterGap: CGFloat { Metrics.tsGutterTrailingGap }
   static let transcriptPaddingV: CGFloat = CraftTokens.spacing24
-  /// Between two blocks. Larger than between two lines *inside* one block —
-  /// that difference is what makes a per-speaker block read as a turn.
+  /// Between two turns. Larger than between two lines *inside* one turn — that
+  /// difference is what makes a per-speaker block read as a turn.
   static let blockSpacing: CGFloat = CraftTokens.spacing16
   static let lineSpacing: CGFloat = CraftTokens.spacing4
+
+  /// The reading column and where it sits, **asked of the document's own
+  /// arithmetic** rather than reimplemented: `RichTextViewer.Column` caps the
+  /// measure at `Metrics.readingMeasure`, splits the leftover evenly so the
+  /// column is centred, and never lets the inset fall below the gutter. The
+  /// live transcript has no `NSTextView` and therefore no `textContainerInset`
+  /// to carry it, so it applies the same two numbers as a width and a leading
+  /// pad — the drawn result is the same column in the same place.
+  static func readingColumnWidth(available: CGFloat) -> CGFloat {
+    RichTextViewer.Column.containerWidth(available: available)
+  }
+  static func readingColumnInset(available: CGFloat) -> CGFloat {
+    RichTextViewer.Column.inset(available: available)
+  }
+
+  /// **The speaker name column, reserved whether or not a name is known**
+  /// (ADR 0008). It is a *constant*, and that is the one place the live column
+  /// deliberately differs from the document's: the document measures the
+  /// longest name in a finished transcript, which it can only do because the
+  /// transcript is finished. Live, a name arrives mid-meeting — the seal is
+  /// authoritative and identification lands turn by turn — so a column measured
+  /// over the names that have arrived so far would widen under the owner and
+  /// move every line of the transcript sideways. Reserving the cap is
+  /// `SessionTimerMetrics.plateWidth`'s trick at the hour, for the same reason.
+  ///
+  /// Seven ems of the speaker face, in the idiom `Metrics.readingMeasure` uses
+  /// for the reading column — about thirteen characters of a semibold interface
+  /// face, which is the whole of an ordinary "Brian Demsky" with room over.
+  static let speakerColumnEms: CGFloat = 7
+  static let speakerColumnWidth: CGFloat = speakerColumnEms * NSFonts.readingSpeaker.pointSize
+  /// Between the name column's trailing edge and the words' shared left edge.
+  static let speakerColumnGap: CGFloat = CraftTokens.spacing12
+
   /// How near the bottom still counts as "at the bottom" for the follow
-  /// (`LiveTranscriptFollow`). One line of transcript plus the spacing under it
-  /// — 14pt text lays out at ~17pt and `lineSpacing` adds 4 — so the owner who
-  /// has not deliberately moved off the newest line is still following, and the
-  /// sub-point drift between an appended row and the proxy scroll landing on it
-  /// is absorbed rather than read as a scroll.
-  static let followSlack: CGFloat = CraftTokens.spacing24
+  /// (`LiveTranscriptFollow`). One line of transcript plus the spacing under
+  /// it, **measured** — it was `spacing24`, written when the body was 14pt and
+  /// laid out at ~17; an 18.5pt line at the document's leading is half as tall
+  /// again, and a slack shorter than one line makes the only way back to the
+  /// follow harder than the scroll that left it.
+  static let followSlack: CGFloat = {
+    let face = NSFonts.readingBody
+    let line = (face.ascender - face.descender).rounded(.up)
+    return line + Metrics.lineSpacingReading + lineSpacing
+  }()
+
+  /// **Jump to newest** — the pill that appears over the transcript while the
+  /// follow is off (ADR 0007). Four numbers, none of them a measurement of
+  /// anything else: it is a small control, deliberately smaller than a capsule
+  /// in the cluster, because it is not one of them and may never be mistaken
+  /// for one. Where it *sits* is derived — see `SessionJumpToNewestControl`,
+  /// which rests it on `bottomReserve` rather than typing a placement.
+  static let jumpPillGap: CGFloat = CraftTokens.spacing4
+  static let jumpPillPaddingH: CGFloat = CraftTokens.spacing12
+  static let jumpPillPaddingV: CGFloat = CraftTokens.spacing4
+  static let jumpPillIconSize: CGFloat = 10
+  static let jumpPillFont: Font = .system(size: 12, weight: .medium)
 
   // MARK: The marker rule (XIA-433)
 
@@ -204,21 +268,36 @@ enum RecordingPaneMetrics {
   /// bar — the one thing on the reading surface allowed to be warm, and the
   /// least of it that can still be seen.
   static let markerRuleWidth: CGFloat = 2
-  /// How far into the left margin the rule sits, measured from the row's own
-  /// leading edge. **Derived**, not typed: half the transcript's horizontal
-  /// padding, so the rule is centred in the margin the transcript already has
-  /// and can never be pushed off the window by a padding change. It is drawn
-  /// as an overlay, so this is an offset and not an inset — no text moves.
-  static var markerRuleInset: CGFloat { transcriptPaddingH / 2 }
+  /// How far left of the reading column the rule sits. **Derived**, not typed,
+  /// and derived from the gutter rather than from a page padding since the
+  /// column moved (ADR 0007): the rule's trailing edge lands exactly where the
+  /// document draws a moment pip — `gutterGap` clear of the words, inside the
+  /// 48pt lane the gutter already reserves — so a mark reads the same either
+  /// side of Stop. It is drawn as an overlay, so this is an offset and not an
+  /// inset: no text moves.
+  static var markerRuleInset: CGFloat { gutterGap + markerRuleWidth }
+  /// The lane the rule occupies, which the hover timestamp stops short of
+  /// whenever the session has any moments at all. Exactly
+  /// `HoverTimestampTextView.pipLane`'s reasoning: both are right-aligned to
+  /// the same edge on the same line box, so without it hovering a marked line
+  /// draws the timestamp straight over that line's rule — and the lane is
+  /// reserved for the whole transcript rather than per row, or the label would
+  /// jump sideways as the pointer crossed a marked line.
+  static var markerRuleLane: CGFloat { markerRuleWidth + CraftTokens.spacing4 }
 
   // MARK: Type
+  //
+  // The reading faces are the document's (ADR 0007), taken from `NSFonts` and
+  // wrapped rather than restated: the body is `readingBody`, which is 18.5pt
+  // and therefore WCAG **large**, which is what lets the ink draw at
+  // `GroundInk.Tier.reading` — see `LiveTranscriptView.rowView`.
 
   static let kindLineFont: Font = .system(size: 13, weight: .medium)
   static let markerTimeFont: Font = CraftTokens.metadataFont
   static let markerLabelFont: Font = .system(size: 12)
-  static let speakerFont: Font = .system(size: 12, weight: .semibold)
-  static let transcriptFont: Font = .system(size: 14)
-  static let gutterFont: Font = .system(size: 11, weight: .regular, design: .monospaced)
+  static let speakerFont: Font = Font(NSFonts.readingSpeaker)
+  static let transcriptFont: Font = Font(NSFonts.readingBody)
+  static let gutterFont: Font = Font(NSFonts.readingGutter)
 
   // There is no `volatileOpacity` here any more. The tail was dimmed to 55% to
   // match the HUD prompter — a number off the tier table, one point under
@@ -425,6 +504,18 @@ enum RecordingPaneCopy {
   static let stopTitle = "Stop"
   static let listening = "Listening…"
 
+  /// **The one thing on the surface that says the follow is off** (ADR 0007).
+  /// Scrolling up to re-read during a meeting stops the newest line being
+  /// chased — that is deliberate and has been since XIA-445 — but nothing on
+  /// screen said so and there was no way back except scrolling to the bottom by
+  /// hand, on a transcript that is still growing under the pointer.
+  ///
+  /// Two strings rather than one: the pill is a word and a chevron, and the
+  /// accessibility label has to say what pressing it *does* rather than name
+  /// the place it goes.
+  static let jumpToNewestTitle = "Newest"
+  static let jumpToNewestLabel = "Jump to the newest line"
+
   /// The pause capsule's two faces (XIA-447). One capsule, one job — stop
   /// capturing without ending the session, and start again — so it is one case
   /// in the table with a face that depends on whether the session is paused,
@@ -490,6 +581,11 @@ enum RecordingPaneCopy {
       pausedTitle,
       stopTitle,
       listening,
+      // Not a memo/meeting difference and never can be — it is a function of
+      // the scroll position alone — but it is a string the surface puts on
+      // screen, and this list is what keeps that promise honest.
+      jumpToNewestTitle,
+      jumpToNewestLabel,
       markersUnsaved,
     ]
   }
@@ -672,12 +768,13 @@ enum LiveTranscriptMarking {
 
 /// One line of live transcript as the pane needs to draw it.
 ///
-/// `speaker` is the field the realtime pipeline does not fill yet — AssemblyAI
-/// realtime speaker labels are a known unresolved follow-up. It is here anyway,
-/// and the grouping below already honours it, because the reference sweep's
-/// note was explicit (do #6): leave room for a speaker column *before* the
-/// labels exist, so the day they arrive the transcript gains names and loses
-/// no layout.
+/// `speaker` is carried straight off `LiveMeetingSession.LiveSegment` (ADR
+/// 0008). It is nil far more often than not and that is the ordinary state, not
+/// a gap: a name is drawn **only** for a confident match against an enrolled
+/// voiceprint, nothing on screen may be a guess, and the seal re-runs
+/// diarization over the whole audio and is authoritative. The column it is
+/// drawn in is reserved either way, so a name arriving mid-meeting moves no
+/// text.
 struct LiveTranscriptLine: Equatable, Identifiable {
   let id: UUID
   let text: String
@@ -688,7 +785,9 @@ struct LiveTranscriptLine: Equatable, Identifiable {
   var isVolatile: Bool = false
 }
 
-/// Consecutive lines from one speaker, drawn as a turn with the name above it.
+/// Consecutive lines from one speaker, drawn as one turn: the name in the
+/// reserved column beside the row that opens it, the rest of the turn's lines
+/// sharing the same left edge under it.
 struct LiveTranscriptBlock: Equatable, Identifiable {
   /// The first line's id, so a block is a stable scroll anchor across the
   /// updates that extend it.
@@ -699,46 +798,44 @@ struct LiveTranscriptBlock: Equatable, Identifiable {
   var lines: [LiveTranscriptLine]
 }
 
-/// One **drawn** row of the live transcript.
+/// One **drawn** row of the live transcript: exactly one per line, always.
 ///
 /// Rows are flat on purpose, and that is a correction rather than a style. A
 /// `LazyVStack` defers only its **direct** children; the first cut put each
 /// block in the stack and each block's lines in an inner `VStack`, and since
-/// `speaker` is nil for every line the pipeline produces today, the entire
-/// session was one block — one child — so every `Text` the meeting had ever
-/// drawn was built and measured on every render pass, on screen or not. Master
-/// put each segment directly in the stack and only built what was visible.
+/// `speaker` was nil for every line the pipeline produced, the entire session
+/// was one block — one child — so every `Text` the meeting had ever drawn was
+/// built and measured on every render pass, on screen or not. Master put each
+/// segment directly in the stack and only built what was visible.
 ///
-/// Flattening keeps that laziness and keeps the grouping: the speaker name a
-/// block used to draw above its lines is emitted as its own row where the
-/// speaker changes, which is the same picture with one less level of nesting.
+/// The speaker used to be a **row of its own**, emitted where the speaker
+/// changed and drawn above the turn's words. It is a **column** now (ADR 0008,
+/// off the owner's mark on a screenshot: "verbatim and names should separate
+/// out. words should left align, names right align"), which is also the only
+/// shape in which the name column can be *reserved*: a header row that appears
+/// when a name arrives inserts a row mid-meeting and pushes the whole
+/// transcript down, which is the movement ADR 0007 exists to forbid.
 struct LiveTranscriptRow: Equatable, Identifiable {
-  enum Content: Equatable {
-    /// A turn's speaker name. Emitted only where the speaker changes, so it is
-    /// absent entirely until the realtime pipeline fills the labels in.
-    case speaker(String)
-    case line(LiveTranscriptLine)
-  }
-
-  /// Typed, because a speaker row and its turn's first line would otherwise
-  /// share an id — a block anchors on its first line.
-  enum ID: Hashable {
-    case speaker(UUID)
-    case line(UUID)
-  }
-
-  let id: ID
-  /// The gutter timestamp, present only on the row that **starts** a turn. A
-  /// continuation row still reserves the cell and draws nothing in it, or its
-  /// text would step left under the line above it.
+  /// The line's own id. It was a two-case enum while a speaker header row
+  /// existed, because a header and its turn's first line would otherwise have
+  /// shared one; there is no header any more, so there is nothing left to
+  /// disambiguate.
+  let id: UUID
+  /// The gutter timestamp, present only on the row that **starts** a turn — and
+  /// drawn only while the pointer is over that row (ADR 0007). The lane is
+  /// reserved on every row whether or not anything is ever drawn in it.
   let gutter: TimeInterval?
-  let content: Content
+  /// The turn's speaker, on the row that opens the turn and nil everywhere else
+  /// — including on every row of a turn nobody was confidently matched to. The
+  /// column is the same width in all three cases.
+  let speaker: String?
+  let line: LiveTranscriptLine
   /// A moment was flagged during this line, so it wears the ember rule in the
-  /// left margin (XIA-433). A flag on the row rather than a wrapper around a
-  /// run of rows, for the reason the whole model is flat: anything that groups
-  /// rows into a container collapses the `LazyVStack` back into one child.
-  /// It is drawn as an **overlay**, so no marked line is a different size from
-  /// an unmarked one and no text moves when a mark lands.
+  /// gutter (XIA-433). A flag on the row rather than a wrapper around a run of
+  /// rows, for the reason the whole model is flat: anything that groups rows
+  /// into a container collapses the `LazyVStack` back into one child. It is
+  /// drawn as an **overlay**, so no marked line is a different size from an
+  /// unmarked one and no text moves when a mark lands.
   var isMarked: Bool = false
 
   /// Rows that start a turn take the larger inter-block gap. That difference is
@@ -761,7 +858,12 @@ enum LiveTranscript {
     elapsed: TimeInterval
   ) -> [LiveTranscriptLine] {
     var lines = segments.map {
-      LiveTranscriptLine(id: $0.id, text: $0.text, endTime: $0.endTime, speaker: nil)
+      // The speaker comes through (ADR 0008). It was hardcoded nil here, which
+      // was the whole of why the column had never drawn a name: the segment has
+      // carried the field since the live-identification helper landed, and the
+      // pane was throwing it away one line above the view that reserves the
+      // column for it.
+      LiveTranscriptLine(id: $0.id, text: $0.text, endTime: $0.endTime, speaker: $0.speaker)
     }
     if let partial, !partial.isEmpty {
       lines.append(
@@ -769,8 +871,10 @@ enum LiveTranscript {
           id: volatileLineID,
           text: partial,
           endTime: elapsed,
-          // Continues whoever was last speaking; nil today, and nil is a
+          // Continues whoever was last speaking — nil included, which is a
           // speaker value like any other as far as the grouping is concerned.
+          // The tail is never attributed on its own: it has not finalized, so
+          // nothing has been embedded and matched for it yet.
           speaker: lines.last?.speaker,
           isVolatile: true
         )
@@ -779,10 +883,10 @@ enum LiveTranscript {
     return lines
   }
 
-  /// Group consecutive lines by speaker. With no labels every line has the same
-  /// (nil) speaker, so today this produces exactly one block and reads as the
-  /// continuous transcript it is — the grouping is not waiting to be written,
-  /// it is waiting to be *fed*.
+  /// Group consecutive lines by speaker. With nobody enrolled — or nobody
+  /// confidently matched — every line has the same (nil) speaker and this
+  /// produces exactly one block, which reads as the continuous transcript it
+  /// is. That is the ordinary state of a meeting, not a placeholder.
   static func blocks(_ lines: [LiveTranscriptLine]) -> [LiveTranscriptBlock] {
     var blocks: [LiveTranscriptBlock] = []
     for line in lines {
@@ -805,35 +909,33 @@ enum LiveTranscript {
 
   /// The blocks, flattened into the rows the `LazyVStack` actually gets.
   ///
-  /// One row per line, always — that is the invariant the laziness rests on —
-  /// plus one header row per turn that has a speaker.
+  /// **One row per line, always** — that is the invariant the laziness rests
+  /// on, and since the speaker became a column (ADR 0008) it is the whole of
+  /// what this produces: no header rows, so the row count is the line count and
+  /// a name arriving cannot insert anything.
+  ///
+  /// The gutter and the name both belong to the row that **opens** the turn.
   /// `markedLineIDs` comes from `LiveTranscriptMarking`, which works on lines
   /// rather than blocks — the marking rule is about time, and blocks are a
-  /// grouping by speaker. A speaker header row is never marked: the rule
-  /// belongs beside the words that were being said, not beside a name.
+  /// grouping by speaker.
   static func rows(
     _ blocks: [LiveTranscriptBlock],
     markedLineIDs: Set<UUID> = []
   ) -> [LiveTranscriptRow] {
     var rows: [LiveTranscriptRow] = []
     for block in blocks {
-      // The gutter belongs to whichever row opens the turn: the speaker header
-      // if there is one, otherwise the turn's first line.
-      var gutter: TimeInterval? = block.startedAt
-      if let speaker = block.speaker {
-        rows.append(LiveTranscriptRow(id: .speaker(block.id), gutter: gutter, content: .speaker(speaker)))
-        gutter = nil
-      }
+      var opener = true
       for line in block.lines {
         rows.append(
           LiveTranscriptRow(
-            id: .line(line.id),
-            gutter: gutter,
-            content: .line(line),
+            id: line.id,
+            gutter: opener ? block.startedAt : nil,
+            speaker: opener ? block.speaker : nil,
+            line: line,
             isMarked: markedLineIDs.contains(line.id)
           )
         )
-        gutter = nil
+        opener = false
       }
     }
     return rows
@@ -854,9 +956,11 @@ enum LiveTranscript {
 /// elapsed ticker, and anything else that invalidates the window) would
 /// otherwise rebuild 400 line structs to redraw a clock.
 ///
-/// The key is cheap on purpose: a segment list is append-only, so its count and
-/// its last id say everything about it, and `elapsed` reaches the model only as
-/// the volatile line's gutter timestamp — which is drawn to the second.
+/// The key is cheap on purpose: a segment list is append-only *in length*, so
+/// its count and its last id say everything about which segments are in it, and
+/// `elapsed` reaches the model only as the volatile line's gutter timestamp —
+/// which is drawn to the second. It is not append-only in **content**, which is
+/// what `speakerSignature` is for.
 @MainActor
 final class LiveTranscriptRowCache {
   struct Key: Equatable {
@@ -874,6 +978,17 @@ final class LiveTranscriptRowCache {
     /// one pass over a list of tens and cannot be wrong about a mutation, which
     /// is the trade a memo of an O(all segments) rebuild should always take.
     let markerSignature: Int
+    /// Every segment's speaker, hashed — for the reason `markerSignature`
+    /// exists, arriving from the other direction. A live name lands **in
+    /// place**: identification runs on a finalized turn and writes the name
+    /// back onto a segment that is already in the list, so the count does not
+    /// change, the last id does not change, and against those two alone the
+    /// transcript would keep drawing the rows it built before the name existed
+    /// until an unrelated turn arrived. It is one pass over the segments, which
+    /// is the same order as the rebuild it prevents and a great deal cheaper —
+    /// hashing an `Optional<String>` that is nil is very nearly free, and nil
+    /// is what almost every entry is.
+    let speakerSignature: Int
   }
 
   /// The signature above. `at` is hashed by its bit pattern so two equal
@@ -886,6 +1001,14 @@ final class LiveTranscriptRowCache {
       hasher.combine(marker.at.bitPattern)
       hasher.combine(marker.label)
     }
+    return hasher.finalize()
+  }
+
+  /// The speaker signature above.
+  static func speakerSignature(of segments: [LiveMeetingSession.LiveSegment]) -> Int {
+    var hasher = Hasher()
+    hasher.combine(segments.count)
+    for segment in segments { hasher.combine(segment.speaker) }
     return hasher.finalize()
   }
 
@@ -907,7 +1030,8 @@ final class LiveTranscriptRowCache {
       lastSegmentID: segments.last?.id,
       partial: partial,
       elapsedSeconds: elapsed.isFinite && elapsed > 0 ? Int(elapsed) : 0,
-      markerSignature: Self.signature(of: markers)
+      markerSignature: Self.signature(of: markers),
+      speakerSignature: Self.speakerSignature(of: segments)
     )
     if next == key { return rows }
     key = next
@@ -1421,8 +1545,83 @@ enum LiveTranscriptFollow {
   }
 }
 
-/// The live transcript: gutter timestamps, a speaker slot above each turn, the
-/// volatile tail dimmed, newest text always in view.
+/// **Jump to newest**, and the only thing on the recording surface that says
+/// the follow is off (ADR 0007).
+///
+/// Scrolling up to re-read mid-meeting has stopped the newest line being chased
+/// since XIA-445, deliberately — but nothing said so, and the only way back was
+/// to scroll to the bottom by hand on a transcript that is growing while you do
+/// it. So there is a control now, and it exists **only** while the follow is
+/// off: a permanent one would be a button that does nothing for the whole of an
+/// ordinary session.
+///
+/// It is a view of its own, and not because the row view was long. The claim
+/// this control has to keep is that it is **not part of the capsule row**, and
+/// a claim about what a thing is *not* in has to be checkable: a test can host
+/// this in both states and measure that it draws nothing in one of them, and
+/// `SessionClusterAction.allCases` — the table the cluster draws with a
+/// `ForEach` — has no case for it, so it cannot be drawn there by accident.
+///
+/// That separation is the `markerCountWidth` rule rather than a preference: the
+/// cluster is horizontally centred, so anything joining it widens the row and
+/// splits the widening across both sides, stepping **Stop** sideways out from
+/// under the pointer most likely to be aiming at it.
+struct SessionJumpToNewestControl: View {
+  let isFollowing: Bool
+  /// Nothing to go back to on an empty transcript, whatever the flag says.
+  let hasRows: Bool
+  /// The band the capsule cluster floats in, which this control rests **on top
+  /// of** rather than inside: its bottom edge lands on the reserve's top edge,
+  /// so the `clusterTranscriptGap` between it and the cluster is space the
+  /// reserve already accounts for, and nothing about the reserve, the capsule
+  /// height or the cluster's geometry moves for it. Zero for a transcript with
+  /// no cluster over it — the failed session's.
+  var bottomReserve: CGFloat = 0
+  let action: () -> Void
+
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+
+  /// On screen only while the follow is off and there is something to go back
+  /// to. Pure, so "absent while following" is a fact a test reads rather than a
+  /// branch it has to drive a scroll view into.
+  static func isShown(isFollowing: Bool, hasRows: Bool) -> Bool {
+    !isFollowing && hasRows
+  }
+
+  var body: some View {
+    Group {
+      if Self.isShown(isFollowing: isFollowing, hasRows: hasRows) {
+        Button(action: action) {
+          HStack(spacing: RecordingPaneMetrics.jumpPillGap) {
+            Text(RecordingPaneCopy.jumpToNewestTitle)
+              .font(RecordingPaneMetrics.jumpPillFont)
+            Image(systemName: "chevron.down")
+              .font(.system(size: RecordingPaneMetrics.jumpPillIconSize, weight: .semibold))
+          }
+          .foregroundStyle(.ground(.body))
+          .padding(.horizontal, RecordingPaneMetrics.jumpPillPaddingH)
+          .padding(.vertical, RecordingPaneMetrics.jumpPillPaddingV)
+          .craftGlassPanel(in: Capsule(style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(RecordingPaneCopy.jumpToNewestLabel)
+        .help(RecordingPaneCopy.jumpToNewestLabel)
+        // Under Reduce Motion the scale goes and the fade stays — `Tokens.popIn`
+        // is the app's one answer to that, and it is the ring's answer rather
+        // than the meter's: nothing is lost by a control appearing without
+        // travelling, and a thing that slides in at the edge of vision during a
+        // meeting is what the setting is asking us not to do.
+        .transition(Tokens.popIn(reduceMotion: reduceMotion))
+        .padding(.bottom, bottomReserve)
+      }
+    }
+    .animation(Tokens.animSnap, value: isFollowing)
+  }
+}
+
+/// The live transcript: the document's reading column, a reserved speaker
+/// column, hover-only gutter timestamps, the volatile tail dimmed, and the
+/// newest text in view while the owner is at the bottom (ADR 0007, ADR 0008).
 struct LiveTranscriptView: View {
   /// Flat: every row here is a **direct** child of the `LazyVStack` below, which
   /// is the only arrangement in which the stack's laziness is worth anything.
@@ -1466,63 +1665,102 @@ struct LiveTranscriptView: View {
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
   /// Whether the newest line is being followed. See `LiveTranscriptFollow`:
-  /// the owner turns it off by scrolling up and back on by scrolling down, and
-  /// there is deliberately no control for it.
+  /// the owner turns it off by scrolling up and back on by scrolling down —
+  /// and, since ADR 0007, by pressing the one control on this surface that
+  /// says the follow is off at all.
   @State private var isFollowing = true
 
+  /// The row the pointer is over, which is the only row that draws a
+  /// timestamp (ADR 0007). It is view state and never reaches
+  /// `LiveTranscriptRowCache`: the cache holds the row *model*, and hovering
+  /// changes nothing about it, so a stale row is not a way this can fail.
+  @State private var hoveredRow: UUID?
+
   var body: some View {
-    ScrollViewReader { proxy in
-      ScrollView {
-        LazyVStack(alignment: .leading, spacing: RecordingPaneMetrics.lineSpacing) {
-          if rows.isEmpty {
-            listeningPlaceholder
+    GeometryReader { geometry in
+      // Both asked once, here, rather than per row. `anyMarked` reserves the
+      // rule's lane for the **whole** transcript — the same reasoning
+      // `HoverTimestampTextView.pipLane` is written down with, since otherwise
+      // the hover label jumps sideways as the pointer crosses a marked line —
+      // and asking it inside `rowView` would make one pass over the rows into
+      // one pass per row, on a feed that ticks many times a second.
+      let anyMarked = rows.contains(where: \.isMarked)
+      let column = RecordingPaneMetrics.readingColumnWidth(available: geometry.size.width)
+      let inset = RecordingPaneMetrics.readingColumnInset(available: geometry.size.width)
+      ScrollViewReader { proxy in
+        ScrollView {
+          LazyVStack(alignment: .leading, spacing: RecordingPaneMetrics.lineSpacing) {
+            if rows.isEmpty {
+              listeningPlaceholder
+            }
+            ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+              rowView(row, isFirst: index == 0, anyMarked: anyMarked).id(row.id)
+            }
           }
-          ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
-            rowView(row, isFirst: index == 0).id(row.id)
-          }
+          // The document's column, in the document's place (ADR 0007). The
+          // width caps the measure and the leading pad centres it; the gutter
+          // is drawn *in* that pad, as an overlay, exactly as the document
+          // draws its hover label inside `textContainerInset`. A horizontal
+          // padding of its own would fight the centring, which is why the
+          // transcript no longer has one.
+          .frame(width: column, alignment: .leading)
+          .padding(.leading, inset)
+          .frame(maxWidth: .infinity, alignment: .leading)
+          .padding(.vertical, RecordingPaneMetrics.transcriptPaddingV)
         }
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, RecordingPaneMetrics.transcriptPaddingH)
-        .padding(.top, RecordingPaneMetrics.transcriptPaddingV)
-        .padding(.bottom, RecordingPaneMetrics.transcriptPaddingV)
-      }
-      // The scroll view ends here; the cluster floats in the band below it as a
-      // sibling in the pane's `ZStack`, so the transcript still gives up no
-      // width and no *drawn* height to it — only the bottom of its own frame.
-      .padding(.bottom, bottomReserve)
-      .onScrollGeometryChange(for: LiveTranscriptFollow.Geometry.self) { geometry in
-        LiveTranscriptFollow.Geometry(
-          offsetY: geometry.contentOffset.y,
-          contentHeight: geometry.contentSize.height,
-          containerHeight: geometry.containerSize.height
-        )
-      } action: { previous, new in
-        isFollowing = LiveTranscriptFollow.decide(
-          following: isFollowing,
-          previous: previous,
-          new: new,
-          slack: RecordingPaneMetrics.followSlack
-        )
-      }
-      .onChange(of: rows.count) { previousCount, _ in
-        // A session that has just begun follows: the first row is the newest
-        // line, whatever the last session left the flag on.
-        if previousCount == 0 { isFollowing = true }
-        guard isFollowing else { return }
-        scrollToNewest(proxy)
-      }
-      .onChange(of: rows.last) { _, _ in
-        guard isFollowing else { return }
-        scrollToNewest(proxy)
+        // The scroll view ends here; the cluster floats in the band below it as a
+        // sibling in the pane's `ZStack`, so the transcript still gives up no
+        // width and no *drawn* height to it — only the bottom of its own frame.
+        .padding(.bottom, bottomReserve)
+        .onScrollGeometryChange(for: LiveTranscriptFollow.Geometry.self) { geometry in
+          LiveTranscriptFollow.Geometry(
+            offsetY: geometry.contentOffset.y,
+            contentHeight: geometry.contentSize.height,
+            containerHeight: geometry.containerSize.height
+          )
+        } action: { previous, new in
+          isFollowing = LiveTranscriptFollow.decide(
+            following: isFollowing,
+            previous: previous,
+            new: new,
+            slack: RecordingPaneMetrics.followSlack
+          )
+        }
+        .onChange(of: rows.count) { previousCount, _ in
+          // A session that has just begun follows: the first row is the newest
+          // line, whatever the last session left the flag on.
+          if previousCount == 0 { isFollowing = true }
+          guard isFollowing else { return }
+          scrollToNewest(proxy)
+        }
+        .onChange(of: rows.last) { _, _ in
+          guard isFollowing else { return }
+          scrollToNewest(proxy)
+        }
+        .overlay(alignment: .bottom) { jumpControl(proxy) }
       }
     }
   }
 
   private func scrollToNewest(_ proxy: ScrollViewProxy) {
     if let volatileID {
-      proxy.scrollTo(LiveTranscriptRow.ID.line(volatileID), anchor: .bottom)
+      proxy.scrollTo(volatileID, anchor: .bottom)
     } else if let last = rows.last {
       proxy.scrollTo(last.id, anchor: .bottom)
+    }
+  }
+
+  /// The jump-to-newest control, drawn as an **overlay** on the transcript and
+  /// never as a member of the capsule row — see `SessionJumpToNewestControl`,
+  /// which carries the reasoning and the geometry.
+  private func jumpControl(_ proxy: ScrollViewProxy) -> some View {
+    SessionJumpToNewestControl(
+      isFollowing: isFollowing,
+      hasRows: !rows.isEmpty,
+      bottomReserve: bottomReserve
+    ) {
+      isFollowing = true
+      scrollToNewest(proxy)
     }
   }
 
@@ -1537,47 +1775,58 @@ struct LiveTranscriptView: View {
     }
   }
 
-  /// One row: the gutter cell, then either a speaker name or a line of text.
+  /// One row: the reserved name column, then the words — with the gutter and
+  /// the ember rule hung off it as overlays, so neither costs the text a point
+  /// of width.
   ///
-  /// The speaker slot is a real row rather than a comment about a future one.
-  /// Today no line carries a speaker and no such row is ever emitted; the day
-  /// the pipeline fills the labels in, names appear and not one number in
-  /// `RecordingPaneMetrics` moves.
-  private func rowView(_ row: LiveTranscriptRow, isFirst: Bool) -> some View {
-    HStack(alignment: .firstTextBaseline, spacing: RecordingPaneMetrics.gutterGap) {
-      // The cell is reserved on every row and filled only where a turn starts,
-      // so a continuation never steps left under the line above it.
-      Text(row.gutter.map(LiveTranscript.timestamp) ?? "")
-        .font(RecordingPaneMetrics.gutterFont)
-        .foregroundStyle(.ground(.timestamp))
-        .frame(width: RecordingPaneMetrics.gutterWidth, alignment: .trailing)
+  /// **Two columns, and both edges hold still** (ADR 0008). The name is
+  /// right-aligned in a column that is the same width whether it holds a name
+  /// or nothing at all, so the words share one left edge for the whole meeting
+  /// and a name arriving mid-session moves no text. That is the half the live
+  /// surface owes: the seal re-runs diarization over the whole audio and may
+  /// add or correct a name at Stop, which ADR 0007 permits as content
+  /// arriving — and forbids from moving anything.
+  private func rowView(_ row: LiveTranscriptRow, isFirst: Bool, anyMarked: Bool) -> some View {
+    HStack(alignment: .firstTextBaseline, spacing: RecordingPaneMetrics.speakerColumnGap) {
+      Text(row.speaker ?? "")
+        .font(RecordingPaneMetrics.speakerFont)
+        .foregroundStyle(.ground(.speaker))
+        .lineLimit(1)
+        .frame(width: RecordingPaneMetrics.speakerColumnWidth, alignment: .trailing)
 
-      switch row.content {
-      case .speaker(let name):
-        Text(name)
-          .font(RecordingPaneMetrics.speakerFont)
-          .foregroundStyle(.ground(.speaker))
-          .frame(maxWidth: .infinity, alignment: .leading)
-      case .line(let line):
-        // The volatile tail is **a tier, not an `.opacity()` on the body tier**.
-        // It used to be body at 55%, which is a number nobody measured — a hair
-        // under the timestamp tier's 56% and off the table entirely. It cleared
-        // 3.0:1 (the solve needs 54% light, 40% dark); what it did not have was
-        // a measurement, on the one line that is being read while it is written.
-        // The tier is visually the same dimming and is on the swept side of it.
-        Text(line.text)
-          .font(RecordingPaneMetrics.transcriptFont)
-          .foregroundStyle(.ground(line.isVolatile ? .timestamp : .body))
-          .fixedSize(horizontal: false, vertical: true)
-          .frame(maxWidth: .infinity, alignment: .leading)
-      }
+      // The volatile tail is **a tier, not an `.opacity()` on the body tier**.
+      // It used to be body at 55%, which is a number nobody measured — a hair
+      // under the timestamp tier's 56% and off the table entirely. It cleared
+      // 3.0:1 (the solve needs 54% light, 40% dark); what it did not have was
+      // a measurement, on the one line that is being read while it is written.
+      // The tier is visually the same dimming and is on the swept side of it.
+      //
+      // The settled tier is `.reading` rather than `.body` since ADR 0007: it
+      // is the document's, and it is *available* to the live pane for the first
+      // time because the live pane is now set at 18.5pt. `.reading` draws at
+      // 0.80 against a 4.5:1 bar instead of 7.0 precisely because ≥18pt is WCAG
+      // large text — at 14pt the same alpha would have been under its bar.
+      Text(row.line.text)
+        .font(RecordingPaneMetrics.transcriptFont)
+        .lineSpacing(Metrics.lineSpacingReading)
+        .foregroundStyle(.ground(row.line.isVolatile ? .timestamp : .reading))
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+    }
+    // The gutter timestamp, drawn **only while the pointer is over this row**
+    // (ADR 0007) — the document's rule, for the document's reason: always-on
+    // timestamps in a document being read are noise, and the gutter is wanted
+    // for the moment pips. The lane is reserved at all times all the same,
+    // because this is an overlay: the row is exactly the same size hovered and
+    // not, so nothing steps left when a timestamp appears or goes away.
+    .overlay(alignment: Alignment(horizontal: .leading, vertical: .firstTextBaseline)) {
+      gutterCell(row, anyMarked: anyMarked)
     }
     // The ember rule for a flagged moment (XIA-433). An **overlay**, so it
     // occupies no layout at all: a mark that landed mid-sentence may not move
     // the sentence it landed in, and a row that has one is exactly the size of
-    // a row that has not. It rides in the left margin the transcript's own
-    // horizontal padding already reserves, so it costs the text no width
-    // either.
+    // a row that has not. It rides in the gutter the reading column's inset
+    // reserves, at the offset the document draws a moment pip at.
     //
     // **The ember still means one thing.** A row can only arrive here marked
     // while the microphone is open: `LiveMeetingView.drawnMarkers` withholds
@@ -1597,11 +1846,38 @@ struct LiveTranscriptView: View {
           .accessibilityHidden(true)
       }
     }
+    .contentShape(Rectangle())
+    .onHover { inside in
+      if inside {
+        hoveredRow = row.id
+      } else if hoveredRow == row.id {
+        hoveredRow = nil
+      }
+    }
     // A flat stack has no blocks left to space apart, so the gap between turns
     // is paid by the row that opens one.
     .padding(.top, row.startsTurn && !isFirst
       ? RecordingPaneMetrics.blockSpacing - RecordingPaneMetrics.lineSpacing
       : 0)
+  }
+
+  /// The gutter cell: right-aligned to `gutterGap` clear of the words, exactly
+  /// where `HoverTimestampTextView` puts the document's, and stopping short of
+  /// the rule's lane whenever this transcript has any moments in it.
+  ///
+  /// The string is emptied rather than the view removed, so the overlay keeps a
+  /// baseline to align to in both states.
+  private func gutterCell(_ row: LiveTranscriptRow, anyMarked: Bool) -> some View {
+    let lane = anyMarked ? RecordingPaneMetrics.markerRuleLane : 0
+    let width = RecordingPaneMetrics.gutterWidth - RecordingPaneMetrics.gutterGap - lane
+    let shown = hoveredRow == row.id ? row.gutter.map(LiveTranscript.timestamp) : nil
+    return Text(shown ?? "")
+      .font(RecordingPaneMetrics.gutterFont)
+      .foregroundStyle(.ground(.timestamp))
+      .lineLimit(1)
+      .frame(width: width, alignment: .trailing)
+      .offset(x: -(width + RecordingPaneMetrics.gutterGap + lane))
+      .allowsHitTesting(false)
   }
 }
 
