@@ -451,9 +451,15 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
     }
   }
 
+  /// The card leaves through the same fade the pill and the island do
+  /// (`PanelMotion.fadeOut`). The decision has already landed by the time this
+  /// runs, and the panel is inert for the whole fade — no clicks, no first
+  /// responder — so a card the owner just discarded cannot take a keystroke on
+  /// its way out. The key monitor goes first, as it always did.
   private func close() {
     removeKeyMonitor()
-    panel?.orderOut(nil)
+    guard let panel else { return }
+    PanelMotion.fadeOut(panel)
   }
 
   /// ⌘↩ and Escape, taken before the text view sees them.
@@ -738,10 +744,18 @@ final class DictationReviewPanel: NSPanel {
   ///
   /// Returns whether the card actually reached the screen — see
   /// `verifyWindowDevice`.
+  ///
+  /// It arrives through `PanelMotion`, the same fade the pill and the island
+  /// use. Only the alpha and the arrival rise are animated: the ordering, the
+  /// verification and the key request all happen inside this call, so a caller
+  /// still learns synchronously whether the card reached the screen.
   @discardableResult
   func present() -> Bool {
-    orderFrontRegardless()
-    guard verifyWindowDevice() else { return false }
+    let onScreen = PanelMotion.fadeIn(self) {
+      orderFrontRegardless()
+      return verifyWindowDevice()
+    }
+    guard onScreen else { return false }
     makeKey()
     focusEditor()
     return true

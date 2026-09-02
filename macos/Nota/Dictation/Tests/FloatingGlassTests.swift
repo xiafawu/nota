@@ -506,3 +506,106 @@ final class DictationPanelGlassTests: XCTestCase {
     return condition()
   }
 }
+
+// MARK: - One fade for all three panels
+
+/// The pill, the mini-recorder island and the review card arrive and leave the
+/// same way. Asserted through `PanelMotion.observer` rather than by watching
+/// alpha interpolate: a fade is a window-server effect and nothing in an
+/// unhosted bundle can see one, but "each successful show asked for exactly one
+/// fade-in" is a fact about the call and is what actually shipped wrong.
+@MainActor
+final class PanelMotionTests: XCTestCase {
+  private var fades: [PanelMotion.Fade] = []
+
+  override func setUp() {
+    super.setUp()
+    fades = []
+    PanelMotion.observer = { [weak self] fade in self?.fades.append(fade) }
+  }
+
+  override func tearDown() {
+    PanelMotion.observer = nil
+    super.tearDown()
+  }
+
+  /// The pill's own numbers, unchanged by the lift into a shared type.
+  func testTheSharedFadeKeepsThePillsNumbers() {
+    XCTAssertEqual(PanelMotion.panelFadeIn, 0.2, accuracy: 0.0001)
+    XCTAssertEqual(PanelMotion.panelFadeOut, 0.18, accuracy: 0.0001)
+    XCTAssertEqual(PanelMotion.panelRise, 8)
+  }
+
+  /// The rise is a movement, and Reduce Motion removes movements. The fade
+  /// itself stays: a panel that blinked into place under Reduce Motion would be
+  /// the hard cut this whole change is about.
+  func testReduceMotionDropsTheRiseAndNothingElse() {
+    XCTAssertEqual(PanelMotion.rise(reduceMotion: true), 0)
+    XCTAssertEqual(PanelMotion.rise(reduceMotion: false), PanelMotion.panelRise)
+  }
+
+  func testThePillArrivesAndLeavesThroughTheSharedFade() {
+    let panel = DictationHUDPanel()
+    defer { panel.orderOut(nil) }
+    panel.update(state: .listening(level: 0.3), draft: .empty, style: .pill)
+    panel.reposition()
+
+    XCTAssertTrue(panel.show(), "the pill never reached the screen")
+    XCTAssertEqual(fades.map(\.direction), [.arriving])
+    XCTAssertEqual(fades.first?.duration, PanelMotion.panelFadeIn)
+
+    panel.hide()
+    XCTAssertEqual(fades.map(\.direction), [.arriving, .leaving])
+    XCTAssertEqual(fades.last?.duration, PanelMotion.panelFadeOut)
+  }
+
+  /// The island is the surface that appears the instant the owner switches away
+  /// mid-session — the most jarring place in the app for a hard cut, and the
+  /// one that blinked.
+  func testTheIslandArrivesAndLeavesThroughTheSharedFade() {
+    let panel = MiniRecorderPanel(model: MiniIslandModel())
+    defer { panel.orderOut(nil) }
+    panel.reposition()
+
+    XCTAssertTrue(panel.present(), "the island never reached the screen")
+    XCTAssertEqual(fades.map(\.direction), [.arriving])
+
+    panel.dismiss()
+    XCTAssertEqual(fades.map(\.direction), [.arriving, .leaving])
+  }
+
+  /// …and the card, which still takes key focus inside the same call: the fade
+  /// animates alpha, never the panel's logical state.
+  func testTheReviewCardArrivesThroughTheSharedFadeAndStillTakesKey() {
+    let panel = DictationReviewPanel(model: DictationReviewModel())
+    defer { panel.orderOut(nil) }
+    panel.sizeToFitContent()
+    panel.reposition()
+
+    XCTAssertTrue(panel.present(), "the card never reached the screen")
+    XCTAssertEqual(fades.map(\.direction), [.arriving])
+    XCTAssertTrue(panel.isKeyWindow, "present() still hands the card the keyboard")
+    XCTAssertGreaterThan(panel.windowNumber, 0)
+  }
+
+  /// A present during a fade-out wins. Without the generation guard the
+  /// departing fade's completion handler orders the panel straight back out —
+  /// a live surface vanishing under a presenter that believes it is up.
+  func testAPresentDuringAFadeOutWins() {
+    let panel = DictationHUDPanel()
+    defer { panel.orderOut(nil) }
+    panel.update(state: .listening(level: 0.3), draft: .empty, style: .pill)
+    panel.reposition()
+
+    XCTAssertTrue(panel.show())
+    panel.hide()
+    XCTAssertTrue(panel.show(), "the pill did not come back while it was leaving")
+
+    let deadline = Date().addingTimeInterval(PanelMotion.panelFadeOut + 0.5)
+    while Date() < deadline {
+      RunLoop.current.run(until: Date().addingTimeInterval(0.02))
+    }
+    XCTAssertTrue(panel.isVisible, "the fade-out took down a panel that had been re-shown")
+    XCTAssertEqual(panel.alphaValue, 1, accuracy: 0.001, "a panel may not be left transparent")
+  }
+}

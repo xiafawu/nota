@@ -2637,6 +2637,19 @@ site, not the machine.
   per frame: this pane saves and calls `reloadSettings()` on every change, which
   restarts the hotkey event tap, and neither floating surface is on screen while
   Settings is — so a live preview would cost keystrokes for nothing.
+- **All three floating panels arrive and leave through one fade** —
+  `PanelMotion`, beside `HUDGlassMetrics` in `FloatingGlass.swift`. The numbers
+  are the pill's, unchanged (`panelFadeIn` 0.2, `panelFadeOut` 0.18, an 8pt
+  arrival rise); what changed is that the island and the review card used to
+  blink on and off while only the pill faded, and the island is the surface that
+  appears the instant the owner switches away mid-session. A panel's **logical**
+  state stays immediate — `fadeIn` orders the window front inside the call and
+  returns the caller's own verified result, so only `alphaValue` and the rise
+  are animated — and the rise, being a movement, is **zero under Reduce
+  Motion** while the fade stays. A present during a fade-out wins (the
+  departing fade's completion is guarded by a generation, or it would order a
+  re-shown panel straight back out), and a leaving panel is inert for its whole
+  0.18s, so a discarded review card cannot take a keystroke on the way out.
 - A review card is a **batch**, not a session (changed 2026-07-28 on user
   feedback). Pressing the trigger with one open continues it: the card stays,
   the new session's text is appended to whatever the owner has in the box, and

@@ -298,3 +298,170 @@ enum HUDGlassMetrics {
     }
   }
 }
+
+// MARK: - Panel motion
+
+/// How Nota's three floating panels arrive and leave: **one fade, named once.**
+///
+/// The pill, the mini-recorder island and the review card already share every
+/// other rule of a floating surface (an AppKit glass plate, `.darkAqua`, a
+/// verified `orderFrontRegardless`, their own position store). They did not
+/// share this one: the pill faded in with an 8pt rise and out over 0.18s while
+/// the other two blinked on and off — and the island is the surface that
+/// appears the instant the owner switches away mid-session, which is the most
+/// jarring place in the app for a hard cut. The numbers are the pill's,
+/// unchanged; what moved is where they live.
+///
+/// Two things this deliberately does **not** touch:
+///
+/// - **A panel's logical state stays immediate.** `fadeIn` orders the window
+///   front inside the call and hands back whatever the caller's own verified
+///   `orderFrontRegardless` returned; only `alphaValue` (and the arrival rise)
+///   is animated. A show that reached the screen reports so synchronously, as
+///   it always did, and a presenter's own bookkeeping never waits on a curve.
+/// - **The HUD's one frame-animation authority.** The rise is the same frame
+///   nudge `DictationHUDPanel.show()` has always made on the way in — it is
+///   over before `update` can animate a growth, and a drag still moves the
+///   window with `setFrameOrigin` and never through an animator.
+///
+/// The rise is a **movement**, so Reduce Motion drops it to zero and the panel
+/// simply fades — read from AppKit, since these are `NSPanel`s and a hosting
+/// view's SwiftUI environment says nothing about the window.
+@MainActor
+enum PanelMotion {
+  static let panelFadeIn: TimeInterval = 0.2
+  static let panelFadeOut: TimeInterval = 0.18
+  /// How far a panel is lifted as it arrives.
+  static let panelRise: CGFloat = 8
+
+  /// One arrival or departure, as a value.
+  ///
+  /// Test seam: a fade is a window-server effect and nothing in an unhosted
+  /// bundle can watch alpha interpolate, so what gets asserted instead is that
+  /// a successful show asked for exactly one fade-in and a dismissal for
+  /// exactly one fade-out.
+  struct Fade: Equatable {
+    enum Direction { case arriving, leaving }
+    var direction: Direction
+    var duration: TimeInterval
+    var rise: CGFloat
+  }
+
+  /// Set by tests only; nil on every shipping path.
+  static var observer: ((Fade) -> Void)?
+
+  static var reduceMotion: Bool {
+    NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+  }
+
+  /// The arrival rise, which is zero when the owner has asked for less motion.
+  static func rise(reduceMotion: Bool) -> CGFloat {
+    reduceMotion ? 0 : panelRise
+  }
+
+  /// Bookkeeping so a present during a fade-out cannot be undone by that
+  /// fade-out's completion handler — the one way a panel could end up ordered
+  /// out, or stuck transparent, while its presenter believes it is up.
+  private static var generations: [ObjectIdentifier: Int] = [:]
+
+  @discardableResult
+  private static func bump(_ window: NSWindow) -> Int {
+    let key = ObjectIdentifier(window)
+    let next = (generations[key] ?? 0) + 1
+    generations[key] = next
+    return next
+  }
+
+  /// Replace whatever alpha animation is in flight with an immediate value, so
+  /// a reversal starts from a value the window really has.
+  private static func haltFade(_ window: NSWindow, at alpha: CGFloat) {
+    NSAnimationContext.runAnimationGroup { context in
+      context.duration = 0
+      window.animator().alphaValue = alpha
+    }
+    window.alphaValue = alpha
+  }
+
+  /// Bring `window` on screen: transparent and `rise` points low, then up to
+  /// full over `panelFadeIn`.
+  ///
+  /// `order` is the caller's own ordering-and-verifying. It runs inside, after
+  /// the panel has been prepared and before the animation starts, and its
+  /// result comes back unchanged.
+  static func fadeIn<Result>(
+    _ window: NSWindow,
+    rise: CGFloat? = nil,
+    order: () -> Result
+  ) -> Result {
+    // A panel that is still on screen is either fully up or halfway through a
+    // fade-out. Either way it does not arrive again: it carries on from the
+    // alpha it has, with no rise, so a present during a departure reads as the
+    // departure being called off rather than as a second arrival.
+    let arriving = !window.isVisible
+    let lift = arriving ? (rise ?? self.rise(reduceMotion: reduceMotion)) : 0
+    bump(window)
+    haltFade(window, at: arriving ? 0 : window.alphaValue)
+    // A panel caught mid-dismissal had its clicks taken away; it is staying, so
+    // it gets them back.
+    window.ignoresMouseEvents = false
+
+    let destination = window.frame
+    if lift != 0 {
+      var start = destination
+      start.origin.y -= lift
+      window.setFrame(start, display: false)
+    }
+
+    let result = order()
+
+    observer?(Fade(direction: .arriving, duration: panelFadeIn, rise: lift))
+    NSAnimationContext.runAnimationGroup { context in
+      context.duration = panelFadeIn
+      context.timingFunction = CAMediaTimingFunction(name: .easeOut)
+      window.animator().alphaValue = 1
+      if lift != 0 { window.animator().setFrame(destination, display: true) }
+    }
+    return result
+  }
+
+  /// Take `window` off screen over `panelFadeOut`.
+  ///
+  /// The panel is inert for the whole fade: it stops taking clicks and gives up
+  /// its first responder immediately, so a card the owner has just discarded
+  /// cannot swallow a keystroke on its way out. The frame is untouched — a
+  /// departure is a fade and nothing else.
+  static func fadeOut(_ window: NSWindow, completion: (() -> Void)? = nil) {
+    let generation = bump(window)
+    guard window.isVisible else {
+      window.orderOut(nil)
+      window.alphaValue = 1
+      completion?()
+      return
+    }
+
+    let tookClicks = window.ignoresMouseEvents
+    window.ignoresMouseEvents = true
+    window.makeFirstResponder(nil)
+
+    observer?(Fade(direction: .leaving, duration: panelFadeOut, rise: 0))
+    NSAnimationContext.runAnimationGroup(
+      { context in
+        context.duration = panelFadeOut
+        context.timingFunction = CAMediaTimingFunction(name: .easeIn)
+        window.animator().alphaValue = 0
+      },
+      completionHandler: {
+        MainActor.assumeIsolated {
+          // Something asked for this panel again while it was leaving. That
+          // request wins: ordering it out here is the one way a live surface
+          // could vanish under the presenter that believes it is up.
+          guard generations[ObjectIdentifier(window)] == generation else { return }
+          window.orderOut(nil)
+          window.alphaValue = 1
+          window.ignoresMouseEvents = tookClicks
+          completion?()
+        }
+      }
+    )
+  }
+}

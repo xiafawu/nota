@@ -355,24 +355,16 @@ final class DictationHUDPanel: NSPanel {
   /// `verifyWindowDevice`.
   @discardableResult
   func show() -> Bool {
-    guard !isVisible else {
+    // Fade in with a small rise — HUDs that blink into place read as cheap.
+    // The numbers are `PanelMotion`'s now, and the island and the review card
+    // arrive by the same call. A pill that is already on screen takes no rise
+    // and no second arrival; that used to be a `guard` here and is now the
+    // shared type's own rule, which is also what makes a show land during a
+    // fade-out.
+    PanelMotion.fadeIn(self) {
       orderFrontRegardless()
       return verifyWindowDevice()
     }
-    // Fade in with a small rise — HUDs that blink into place read as cheap.
-    alphaValue = 0
-    var frame = self.frame
-    frame.origin.y -= 8
-    setFrame(frame, display: false)
-    orderFrontRegardless()
-    frame.origin.y += 8
-    NSAnimationContext.runAnimationGroup { context in
-      context.duration = 0.2
-      context.timingFunction = CAMediaTimingFunction(name: .easeOut)
-      animator().alphaValue = 1
-      animator().setFrame(frame, display: true)
-    }
-    return verifyWindowDevice()
   }
 
   /// True when AppKit gave this panel a server-side window.
@@ -399,14 +391,7 @@ final class DictationHUDPanel: NSPanel {
 
   func hide() {
     guard isVisible else { return }
-    NSAnimationContext.runAnimationGroup({ context in
-      context.duration = 0.18
-      context.timingFunction = CAMediaTimingFunction(name: .easeIn)
-      animator().alphaValue = 0
-    }, completionHandler: { [weak self] in
-      self?.orderOut(nil)
-      self?.alphaValue = 1
-    })
+    PanelMotion.fadeOut(self)
   }
 }
 

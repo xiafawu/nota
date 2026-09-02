@@ -229,17 +229,24 @@ final class MiniRecorderPanel: NSPanel, MiniRecorderWindowing {
 
   // MARK: Presentation
 
+  /// Arrives and leaves the way the pill and the review card do
+  /// (`PanelMotion`). This is the surface that appears the instant the owner
+  /// switches away mid-session, so a hard cut is felt here more than anywhere
+  /// else in the app; the ordering and its verification are still immediate,
+  /// and only the alpha and the arrival rise are animated.
   @discardableResult
   func present() -> Bool {
     // `orderFrontRegardless()` rather than `makeKeyAndOrderFront(_:)`: ordering
     // front from an inactive app is otherwise deferred until the app activates,
     // and nothing on this path ever activates Nota.
-    orderFrontRegardless()
-    return verifyWindowDevice()
+    PanelMotion.fadeIn(self) {
+      orderFrontRegardless()
+      return verifyWindowDevice()
+    }
   }
 
   func dismiss() {
-    orderOut(nil)
+    PanelMotion.fadeOut(self)
   }
 
   /// True when AppKit gave this panel a server-side window.
