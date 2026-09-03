@@ -104,9 +104,14 @@ enum RecordingPaneMetrics {
   /// A two-digit tally is wider than this and grows past it; one digit is
   /// round, which is what a badge should be at its most common value.
   static let markerBadgeDiameter: CGFloat = 18
-  /// Half the badge, so it straddles the capsule's rim rather than sitting
-  /// inside it (where the glyph is) or beside it (where nothing is).
-  static let markerBadgeInset: CGFloat = 6
+  /// The gap between the capsule's top rim and the badge above it. The badge
+  /// used to straddle the top-trailing rim, half in and half out, and the owner
+  /// read the two as not composing (2026-09-02: "the number should sit on top
+  /// of the save moment button") — a white disc cutting a blue circle's edge
+  /// is two shapes fighting, where a disc centred above it is a label. It is
+  /// still an overlay, so it moves nothing in the row; it lives in
+  /// `clusterTranscriptGap`, which is wider than badge plus gap.
+  static let markerBadgeGap: CGFloat = CraftTokens.spacing4
 
   /// **The Pause capsule says the word itself** (owner, 2026-08-12: "instead of
   /// adding a pill on top of the control, the pause button becomes ▶ Paused").
@@ -1446,7 +1451,7 @@ struct SessionCapsuleCluster: View {
       }
     }
     .buttonStyle(RecordingCapsuleButtonStyle(tint: action.tint))
-    .overlay(alignment: .topTrailing) {
+    .overlay(alignment: .top) {
       if action.carriesMarkerCount { markerCount }
     }
     // Per-action again since XIA-447: Mark is refused while paused (a moment
@@ -1504,9 +1509,10 @@ struct SessionCapsuleCluster: View {
           minHeight: RecordingPaneMetrics.markerBadgeDiameter
         )
         .background(.white, in: Capsule(style: .continuous))
-        // Far enough out to clear the capsule's own rim on both edges, and no
-        // further: a badge that floats free of its control belongs to nothing.
-        .offset(x: RecordingPaneMetrics.markerBadgeInset, y: -RecordingPaneMetrics.markerBadgeInset)
+        // Centred above the capsule with one small gap: clear of the rim, and no
+        // further, so a badge never floats free of the control it counts for.
+        .offset(
+          y: -(RecordingPaneMetrics.markerBadgeDiameter + RecordingPaneMetrics.markerBadgeGap))
         .allowsHitTesting(false)
     }
   }
