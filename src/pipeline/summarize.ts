@@ -47,6 +47,29 @@ const TAGS_PROMPT_BLOCK = `
 ### Tags
 3 to 6 short, lowercase topical tags on a single line, comma-separated (for example: planning, roadmap, hiring).`;
 
+/**
+ * The `### Style` instruction block shared by every prose prompt (the meeting
+ * summary, the memo, and both roll-ups). Distilled from the owner's own writing
+ * rules, so a generated summary reads the way they would have written it.
+ *
+ * Deliberately absent from {@link buildTagsPrompt}: that answer is one line of
+ * comma-separated tags, and prose rules on it are instructions the model has to
+ * read and can only be misled by.
+ */
+export const STYLE_PROMPT_BLOCK = `
+
+### Style
+Write every sentence in this response by these rules.
+1. Use plain technical words. No metaphors and no figurative phrases (not "carve-out", not "the heart of", not "laundered").
+2. Write short, full sentences. Put a period between clauses, never a semicolon. No arrow chains, no sentence fragments.
+3. Why before what. Open a topic or a decision with the problem it addresses, then state the decision.
+4. Name the actor. Write "Freya sends the email", never "it was decided" and never "the team".
+5. One sentence per point. Never restate a point in other words.
+6. Lead with the conclusion. The first sentence of the Summary is the outcome of the meeting.
+7. Keep a number's baseline in the same sentence: "42 ms, down from 90".
+8. Give counts, not frequency words: "three of five runs", never "always" and never "keeps happening".
+9. Inside a line use colons and parentheses, never dashes.`;
+
 export function buildSummaryPrompt(
   transcript: string,
   hasSpeakers: boolean = false,
@@ -64,26 +87,26 @@ ${hasSpeakers ? "\nNote: The transcript includes speaker labels (Speaker 1, Spea
 Produce the following sections in your response. Use exactly these headers:
 
 ### Title
-A concise, descriptive title for this meeting in at most 6 words. Plain text only — no quotes, no trailing punctuation.
+A concise, descriptive title for this meeting in at most 6 words. Plain text only. No quotes, no trailing punctuation.
 
 ### Summary
 Write a concise 2-4 sentence narrative summary of the meeting.
 
 ### Key Topics
 List each major topic discussed as a bullet point in the format:
-- **Topic name** — brief description
+- **Topic name**: brief description
 
 ### Decisions Made
 List each decision made during the meeting:
-- Decision — context and rationale
+- Decision: why it was made
 
 If no decisions were made, write "No explicit decisions were recorded."
 
 ### Action Items
 List each action item as a checkbox:
-- [ ] Action item — assigned to Person (if identifiable from the transcript)
+- [ ] Action item: owner (if identifiable from the transcript)
 
-If no action items were identified, write "No action items were identified."${tagsBlock}`;
+If no action items were identified, write "No action items were identified."${STYLE_PROMPT_BLOCK}${tagsBlock}`;
 }
 
 export function buildTagsPrompt(text: string): string {
@@ -121,16 +144,16 @@ ${hasSpeakers ? "\nNote: The transcript includes speaker labels (Speaker 1, Spea
 Produce the following sections in your response. Use exactly these headers:
 
 ### Title
-A concise title for this note in at most 4 words. Plain text only — no quotes, no trailing punctuation.
+A concise title for this note in at most 4 words. Plain text only. No quotes, no trailing punctuation.
 
 ### Note
-Rewrite the dictation as polished prose: remove filler ("um", "you know", false starts, repetition), fix grammar, keep the speaker's own wording where it is clear and specific, and keep the full content — nothing substantive is dropped. Use short paragraphs. Do not add a narrative summary of the note; the note is the content itself.
+Rewrite the dictation as polished prose: remove filler ("um", "you know", false starts, repetition), fix grammar, keep the speaker's own wording where it is clear and specific, and keep the full content: nothing substantive is dropped. Use short paragraphs. Do not add a narrative summary of the note. The note is the content itself.
 
 ### Action Items
 List any concrete next steps as a checkbox:
-- [ ] Action item — owner (if identifiable from the text)
+- [ ] Action item: owner (if identifiable from the text)
 
-Only include this section when at least one action item is clearly present. If none are present, write "No action items."`;
+Only include this section when at least one action item is clearly present. If none are present, write "No action items."${STYLE_PROMPT_BLOCK}`;
 }
 
 /**
@@ -138,7 +161,7 @@ Only include this section when at least one action item is clearly present. If n
  * per-section outputs are already cleaned notes; merge them into one note
  * without adding meeting scaffolding.
  */
-function buildMemoRollupPrompt(sectionNotes: string[]): string {
+export function buildMemoRollupPrompt(sectionNotes: string[]): string {
   const combined = sectionNotes
     .map((s, i) => `## Section ${i + 1}\n\n${s}`)
     .join("\n\n---\n\n");
@@ -152,19 +175,19 @@ ${combined}
 Produce the following sections in your response. Use exactly these headers:
 
 ### Title
-A concise title for this note in at most 4 words. Plain text only — no quotes, no trailing punctuation.
+A concise title for this note in at most 4 words. Plain text only. No quotes, no trailing punctuation.
 
 ### Note
 Merge the sections into one polished, continuous note. Remove repetition across section boundaries; keep every distinct point. Use short paragraphs.
 
 ### Action Items
 List any concrete next steps as a checkbox:
-- [ ] Action item — owner (if identifiable from the text)
+- [ ] Action item: owner (if identifiable from the text)
 
-Only include this section when at least one action item is clearly present. If none are present, write "No action items."`;
+Only include this section when at least one action item is clearly present. If none are present, write "No action items."${STYLE_PROMPT_BLOCK}`;
 }
 
-function buildRollupPrompt(sectionSummaries: string[], includeTags: boolean): string {
+export function buildRollupPrompt(sectionSummaries: string[], includeTags: boolean): string {
   const combined = sectionSummaries
     .map((s, i) => `## Section ${i + 1}\n\n${s}`)
     .join("\n\n---\n\n");
@@ -178,22 +201,22 @@ ${combined}
 Produce a unified summary with these sections using exactly these headers:
 
 ### Title
-A concise, descriptive title for the entire meeting in at most 6 words. Plain text only — no quotes, no trailing punctuation.
+A concise, descriptive title for the entire meeting in at most 6 words. Plain text only. No quotes, no trailing punctuation.
 
 ### Summary
 Write a concise 2-4 sentence narrative summary of the entire meeting.
 
 ### Key Topics
 Merge and deduplicate topics across all sections:
-- **Topic name** — brief description
+- **Topic name**: brief description
 
 ### Decisions Made
 Merge all decisions:
-- Decision — context and rationale
+- Decision: why it was made
 
 ### Action Items
 Merge all action items, deduplicating:
-- [ ] Action item — assigned to Person${includeTags ? TAGS_PROMPT_BLOCK : ""}`;
+- [ ] Action item: owner${STYLE_PROMPT_BLOCK}${includeTags ? TAGS_PROMPT_BLOCK : ""}`;
 }
 
 function cleanTitle(raw: string): string {

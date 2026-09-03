@@ -11,6 +11,8 @@ vi.mock("openai", () => ({
 
 import {
   buildMemoPrompt,
+  buildMemoRollupPrompt,
+  buildRollupPrompt,
   buildSummaryPrompt,
   buildSpeakerLabeledTranscript,
   buildTagsPrompt,
@@ -21,6 +23,7 @@ import {
   sampleTranscriptForTags,
   summarizeOnly,
   summarizeTranscript,
+  STYLE_PROMPT_BLOCK,
 } from "../../src/pipeline/summarize.js";
 import type { TranscriptSegment } from "../../src/pipeline/transcribe.js";
 
@@ -383,5 +386,111 @@ sync, roadmap
     const prompt = createMock.mock.calls.at(-1)![0].messages[0].content as string;
     expect(prompt).toContain("### Key Topics");
     expect(prompt).not.toContain("### Note");
+  });
+});
+
+
+// The prompts carry the owner's writing voice (STYLE_PROMPT_BLOCK) and colon
+// bullets. The parsers key on the "### " headers and the "- " / "- [ ]" bullet
+// prefixes, never on the separator, so the shape change is invisible to them.
+describe("STYLE_PROMPT_BLOCK", () => {
+  const proseBuilders: Array<[string, string]> = [
+    ["buildSummaryPrompt", buildSummaryPrompt("A transcript.")],
+    [
+      "buildSummaryPrompt (no tags)",
+      buildSummaryPrompt("A transcript.", false, { includeTags: false }),
+    ],
+    ["buildMemoPrompt", buildMemoPrompt("Some dictation.")],
+    ["buildMemoRollupPrompt", buildMemoRollupPrompt(["Note one.", "Note two."])],
+    ["buildRollupPrompt", buildRollupPrompt(["Section one.", "Section two."], true)],
+    [
+      "buildRollupPrompt (no tags)",
+      buildRollupPrompt(["Section one.", "Section two."], false),
+    ],
+  ];
+
+  it.each(proseBuilders)("is carried by %s", (_name, prompt) => {
+    expect(prompt).toContain(STYLE_PROMPT_BLOCK);
+    expect(prompt).toContain("### Style");
+  });
+
+  it("carries the rules the owner writes by", () => {
+    expect(STYLE_PROMPT_BLOCK).toContain("No metaphors");
+    expect(STYLE_PROMPT_BLOCK).toContain("never a semicolon");
+    expect(STYLE_PROMPT_BLOCK).toContain("Why before what");
+    expect(STYLE_PROMPT_BLOCK).toContain("Name the actor");
+    expect(STYLE_PROMPT_BLOCK).toContain("One sentence per point");
+    expect(STYLE_PROMPT_BLOCK).toContain("Lead with the conclusion");
+    expect(STYLE_PROMPT_BLOCK).toContain("down from 90");
+    expect(STYLE_PROMPT_BLOCK).toContain("three of five runs");
+    expect(STYLE_PROMPT_BLOCK).toContain("never dashes");
+  });
+
+  it("is absent from buildTagsPrompt", () => {
+    const prompt = buildTagsPrompt("We discussed hiring and the roadmap.");
+    expect(prompt).not.toContain(STYLE_PROMPT_BLOCK);
+    expect(prompt).not.toContain("### Style");
+  });
+
+  it.each(proseBuilders)("puts no em dash in %s", (_name, prompt) => {
+    const offenders = prompt.split("\n").filter((line) => line.includes("\u2014"));
+    expect(offenders).toEqual([]);
+  });
+
+  it("asks for colon bullets, never dash bullets", () => {
+    const meeting = buildSummaryPrompt("A transcript.");
+    expect(meeting).toContain("- **Topic name**: brief description");
+    expect(meeting).toContain("- Decision: why it was made");
+    expect(meeting).toContain("- [ ] Action item: owner");
+    expect(meeting).toContain(
+      "Plain text only. No quotes, no trailing punctuation.",
+    );
+    expect(buildMemoPrompt("d")).toContain("- [ ] Action item: owner");
+    expect(buildRollupPrompt(["s"], true)).toContain("- **Topic name**: brief description");
+    expect(buildMemoRollupPrompt(["n"])).toContain("- [ ] Action item: owner");
+  });
+
+  it("does not change what the parsers read: a colon bullet parses", () => {
+    const response = `### Title
+Weekly sync
+
+### Summary
+The team shipped the importer.
+
+### Key Topics
+- **Importer**: it landed on Tuesday
+
+### Decisions Made
+- Ship on Tuesday: the staging run was clean
+
+### Action Items
+- [ ] Send the release note: Freya
+
+### Tags
+importer, release
+`;
+    const summary = parseSummaryResponse(response);
+    expect(summary.title).toBe("Weekly sync");
+    expect(summary.keyTopics).toEqual(["**Importer**: it landed on Tuesday"]);
+    expect(summary.decisions).toEqual([
+      "Ship on Tuesday: the staging run was clean",
+    ]);
+    expect(summary.actionItems).toEqual(["[ ] Send the release note: Freya"]);
+    expect(summary.tags).toEqual(["importer", "release"]);
+  });
+
+  it("does not change what the memo parser reads either", () => {
+    const response = `### Title
+Grocery run
+
+### Note
+Picked up groceries.
+
+### Action Items
+- [ ] Water the plants: me
+`;
+    const summary = parseMemoResponse(response);
+    expect(summary.title).toBe("Grocery run");
+    expect(summary.actionItems).toEqual(["[ ] Water the plants: me"]);
   });
 });

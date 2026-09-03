@@ -50,7 +50,7 @@ Two pipeline paths controlled by `--provider`:
   - `chunk.ts` — splits audio >20MB into ~10min segments with 30s overlap (whisper only)
   - `transcribe.ts` — parallel Whisper API calls, exports `TranscriptSegment` interface (shared)
   - `merge.ts` — concatenates transcripts, deduplicates overlap regions (whisper only)
-  - `summarize.ts` — sends transcript to the resolved summary model (OpenAI or Gemini via the OpenAI-compatible endpoint); for >100k tokens, does section-by-section then roll-up. Branches to the subprocess caller when the resolved entry's execution kind is `cli`
+  - `summarize.ts` — sends transcript to the resolved summary model (OpenAI or Gemini via the OpenAI-compatible endpoint); for >100k tokens, does section-by-section then roll-up. Branches to the subprocess caller when the resolved entry's execution kind is `cli`. Every prose prompt (summary, memo, both roll-ups) carries a shared `STYLE_PROMPT_BLOCK` holding the owner's writing rules and asks for colon bullets (`- **Topic**: description`) rather than dashes; the parsers key on the `### ` headers and the `- ` / `- [ ]` prefixes only, so they do not depend on the separator, and the tags prompt carries no style block because a one-line tag answer needs no prose rules
   - `cli-engine.ts` — spawns `claude -p` / `codex exec` for a `cli` summary model: argv, stdin, env hygiene, timeout, failure contract, `--version` probe
   - `diarize.ts` — calls Python pyannote script, aligns speaker labels (whisper only)
   - `embed.ts` — computes ONNX WeSpeaker d-vectors in Node and compares them by cosine similarity
