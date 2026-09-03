@@ -398,11 +398,11 @@ struct SessionTimer: View {
   var base: CGFloat = 58
   /// The ground-ink tier the digits take, or nil for `.primary`.
   ///
-  /// The **receipt** hands it `.body`: it sits in the main window beside facts
-  /// that come from `GroundInk`, and a clock in `labelColor` four points from
-  /// facts in ground ink is one row drawn out of two colour systems. The
-  /// recording cluster and the island keep `.primary` — the island's panel is
-  /// forced `.darkAqua`, where `.primary` is exactly the white it wants.
+  /// The **receipt** and the **recording cluster** hand it a tier: both sit in
+  /// the main window beside text that comes from `GroundInk`, and a clock in
+  /// `labelColor` four points from ink-tier text is one row drawn out of two
+  /// colour systems. The island keeps `.primary` — its panel is forced
+  /// `.darkAqua`, where `.primary` is exactly the white it wants.
   var tier: GroundInk.Tier?
 
   var body: some View {

@@ -319,13 +319,20 @@ func renderMarkdownAsRichText(
 /// that opens with a heading look the same. Full ink rather than the reading
 /// tier — it is the largest and most important run on the surface, and that is
 /// the tier the pinned title already used.
-func renderDocumentTitle(_ title: String) -> NSAttributedString {
+///
+/// `indent` is the transcript's text edge (owner, 2026-09-02: "align the
+/// transcription verbatim with the recording title"): the title starts on the
+/// same left edge the spoken words do, so the names hang in the margin and the
+/// title and the words read as one block. Zero for a document with no speaker
+/// column, where the words already start at the column's edge.
+func renderDocumentTitle(_ title: String, indent: CGFloat = 0) -> NSAttributedString {
   let output = NSMutableAttributedString()
   appendPlainLine(
     title, to: output, font: NSFonts.readingH1, color: GroundInk.nsColor(.body),
     paragraphSpacing: Metrics.paraSpacingH1,
     // Nothing above the document's first line.
-    paragraphSpacingBefore: 0)
+    paragraphSpacingBefore: 0,
+    headIndent: indent)
   return output
 }
 
@@ -415,12 +422,15 @@ private func appendPlainLine(
   font: NSFont,
   color: NSColor = GroundInk.nsColor(.reading),
   paragraphSpacing: CGFloat = Metrics.paraSpacingTight,
-  paragraphSpacingBefore: CGFloat = 0
+  paragraphSpacingBefore: CGFloat = 0,
+  headIndent: CGFloat = 0
 ) {
   let paragraph = NSMutableParagraphStyle()
   paragraph.paragraphSpacing = paragraphSpacing
   paragraph.paragraphSpacingBefore = paragraphSpacingBefore
   paragraph.lineSpacing = Metrics.lineSpacingReading
+  paragraph.firstLineHeadIndent = headIndent
+  paragraph.headIndent = headIndent
   output.append(NSAttributedString(string: line, attributes: [
     .font: font,
     .foregroundColor: color,

@@ -1225,7 +1225,10 @@ struct SessionTimerCapsule: View {
         variant: RecordingPaneMetrics.meterVariant,
         isLive: isLive
       )
-      SessionTimer(elapsed: elapsed, base: RecordingPaneMetrics.clockBase)
+      // Ground ink, like every other run on this surface (ADR 0007): the
+      // receipt's clock already takes a tier, and `.primary` was the one
+      // colour in the live pane that came from a second system.
+      SessionTimer(elapsed: elapsed, base: RecordingPaneMetrics.clockBase, tier: .body)
     }
     .padding(.horizontal, RecordingPaneMetrics.timerPaddingH)
     .frame(height: RecordingPaneMetrics.capsuleHeight)

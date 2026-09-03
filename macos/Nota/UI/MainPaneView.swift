@@ -294,9 +294,22 @@ struct MainPaneView: View {
   ) -> NSAttributedString {
     let coloured = applySpeakerColors(to: document.body, chips: chips)
     guard let title = document.meta?.title, !title.isEmpty else { return coloured }
-    let output = NSMutableAttributedString(attributedString: renderDocumentTitle(title))
+    let output = NSMutableAttributedString(
+      attributedString: renderDocumentTitle(title, indent: transcriptTextEdge(of: coloured)))
     output.append(coloured)
     return output
+  }
+
+  /// The left edge the spoken words start on — read off the body's own first
+  /// paragraph rather than recomputed, so the title can never sit on an edge
+  /// the transcript was not drawn to. A body with no speaker column carries a
+  /// zero `headIndent` and the title stays at the column's edge.
+  static func transcriptTextEdge(of body: NSAttributedString) -> CGFloat {
+    guard body.length > 0,
+      let style = body.attribute(.paragraphStyle, at: 0, effectiveRange: nil)
+        as? NSParagraphStyle
+    else { return 0 }
+    return style.headIndent
   }
 
   /// Echo each chip's identity hue onto its transcript speaker runs.
