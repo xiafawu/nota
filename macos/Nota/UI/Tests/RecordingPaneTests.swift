@@ -2015,6 +2015,16 @@ enum RenderProbe {
   /// from `#d1662a` in RGB while being unmistakably the same colour. The
   /// saturation floor is what keeps the ring's 10% interior wash — a glow, not
   /// a fill — and ordinary near-neutral chrome out of the count.
+  ///
+  /// The floor is on **chroma** (saturation × brightness), not saturation
+  /// alone. The warm ground ink (`GroundInk.light`, `#1C1A16`, hue 30°,
+  /// saturation 0.26) sits inside the hue band, and once the cluster's clock
+  /// took that ink (2026-09-02) a saturation-only probe counted 306 pixels of
+  /// near-black digits as the recording accent. A near-black is not the ember
+  /// whatever its hue: CLAUDE.md's ember rule holds by saturation *and* the
+  /// ground's value never reaches ember's, and chroma is the one number that
+  /// says both. Ember is ≈0.66, a 55% ring stroke over white ≈0.38, the ink
+  /// ≈0.02, and the ink's antialiased fringe over white ≈0.19.
   static func emberPixels(_ rep: NSBitmapImageRep, scheme: ColorScheme) -> Int {
     guard let target = NSColor(CraftTokens.ember(scheme)).usingColorSpace(.sRGB) else { return 0 }
     let targetHue = target.hueComponent
@@ -2022,7 +2032,8 @@ enum RenderProbe {
     for x in stride(from: 0, to: rep.pixelsWide, by: 2) {
       for y in stride(from: 0, to: rep.pixelsHigh, by: 2) {
         guard let pixel = rep.colorAt(x: x, y: y)?.usingColorSpace(.sRGB) else { continue }
-        guard pixel.alphaComponent > 0.5, pixel.saturationComponent > 0.15 else { continue }
+        let chroma = pixel.saturationComponent * pixel.brightnessComponent
+        guard pixel.alphaComponent > 0.5, chroma > 0.25 else { continue }
         let dh = abs(pixel.hueComponent - targetHue)
         if min(dh, 1 - dh) < 0.04 { count += 1 }
       }
