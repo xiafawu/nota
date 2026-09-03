@@ -411,7 +411,7 @@ describe("STYLE_PROMPT_BLOCK", () => {
 
   it.each(proseBuilders)("is carried by %s", (_name, prompt) => {
     expect(prompt).toContain(STYLE_PROMPT_BLOCK);
-    expect(prompt).toContain("### Style");
+    expect(prompt).toContain("Style rules (instructions only");
   });
 
   it("carries the rules the owner writes by", () => {
@@ -429,7 +429,7 @@ describe("STYLE_PROMPT_BLOCK", () => {
   it("is absent from buildTagsPrompt", () => {
     const prompt = buildTagsPrompt("We discussed hiring and the roadmap.");
     expect(prompt).not.toContain(STYLE_PROMPT_BLOCK);
-    expect(prompt).not.toContain("### Style");
+    expect(prompt).not.toContain("Style rules (instructions only");
   });
 
   it.each(proseBuilders)("puts no em dash in %s", (_name, prompt) => {

@@ -48,7 +48,7 @@ const TAGS_PROMPT_BLOCK = `
 3 to 6 short, lowercase topical tags on a single line, comma-separated (for example: planning, roadmap, hiring).`;
 
 /**
- * The `### Style` instruction block shared by every prose prompt (the meeting
+ * The style instruction block shared by every prose prompt (the meeting
  * summary, the memo, and both roll-ups). Distilled from the owner's own writing
  * rules, so a generated summary reads the way they would have written it.
  *
@@ -58,7 +58,7 @@ const TAGS_PROMPT_BLOCK = `
  */
 export const STYLE_PROMPT_BLOCK = `
 
-### Style
+Style rules (instructions only, not a section of your response):
 Write every sentence in this response by these rules.
 1. Use plain technical words. No metaphors and no figurative phrases (not "carve-out", not "the heart of", not "laundered").
 2. Write short, full sentences. Put a period between clauses, never a semicolon. No arrow chains, no sentence fragments.
