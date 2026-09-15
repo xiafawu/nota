@@ -140,6 +140,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
   private var showLiveRecordObserver: NSObjectProtocol?
 
   func applicationDidFinishLaunching(_ notification: Notification) {
+    // The owner's Dock choice first, so the test-host override below still wins.
+    if DockIconSetting.isHidden { DockIconSetting.apply(hidden: true) }
     hideFromDockUnderTests()
     ensureShareInboxExists()
     enforceSingleInstance()

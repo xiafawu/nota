@@ -8,7 +8,7 @@ private enum SettingsTab: Hashable {
 
   var idealHeight: CGFloat {
     switch self {
-    case .general: 300
+    case .general: 350
     case .dictation: 600
     case .dictionary: 560
     case .models: 400
@@ -27,6 +27,7 @@ struct SettingsView: View {
   @State private var memoDiarization = NotaSettingsStore.memoDiarizationEnabled
   @AppStorage(AppearanceSetting.defaultsKey) private var appearanceRaw =
     AppearanceSetting.system.rawValue
+  @AppStorage(DockIconSetting.defaultsKey) private var hideDockIcon = false
   @StateObject private var speakers = SpeakersModel()
   @State private var selectedTab: SettingsTab = .general
 
@@ -121,6 +122,12 @@ struct SettingsView: View {
         .pickerStyle(.segmented)
         .onChange(of: appearanceRaw) { _, newValue in
           (AppearanceSetting(rawValue: newValue) ?? .system).apply()
+        }
+        Toggle(isOn: $hideDockIcon) {
+          SettingsLabel("Hide from Dock", caption: "Nota lives in the menu bar only. Use its menu-bar icon to open the window.")
+        }
+        .onChange(of: hideDockIcon) { _, newValue in
+          DockIconSetting.apply(hidden: newValue)
         }
       } footer: {
         SettingsCaption("Build \(buildStamp)")
