@@ -17,7 +17,15 @@ macos/Nota.xcodeproj/
 .claude/reviews/
 .claude/worktrees/
 .claude/handoffs/
+.claude/checkpoint-*.md
+.claude/codex-orphans/
+.claude/design-*/
+.claude/workflow-*/
 .playwright-mcp/
+.trace/
+
+# Unrelated local project that lives in this folder (pet art frames)
+hatch-pet-mochi/
 
 # Local agent tooling (session-local, not commit-worthy)
 .superpowers/
