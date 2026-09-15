@@ -8,7 +8,7 @@ struct DictationStatusLabel: View {
   var body: some View {
     // Icon-only status item; the full state text lives in the accessibility
     // label and the popover, not the menu bar.
-    Image(systemName: controller.state.symbolName)
+    menuBarImage
       .accessibilityLabel("Nota Dictation: \(controller.state.statusTitle)")
       .onAppear {
         controller.start()
@@ -19,6 +19,15 @@ struct DictationStatusLabel: View {
           NSApp.activate(ignoringOtherApps: true)
         }
       }
+  }
+
+  @ViewBuilder
+  private var menuBarImage: some View {
+    if let image = controller.state.menuBarImage {
+      Image(nsImage: image)
+    } else {
+      Image(systemName: controller.state.symbolName)
+    }
   }
 }
 
