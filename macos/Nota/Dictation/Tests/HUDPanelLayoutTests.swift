@@ -112,6 +112,73 @@ final class HUDPanelLayoutTests: XCTestCase {
     )
   }
 
+  // MARK: Which screen
+
+  /// The owner's setup on 2026-09-14, read off `NSScreen.screens`: the laptop
+  /// is primary (index 0, at the origin) and the LG 4K sits to its LEFT, 37pt
+  /// higher. Index order is arrangement order, which is why "first screen the
+  /// window touches" answered the laptop.
+  private static let laptop = NSRect(x: 0, y: 0, width: 1728, height: 1117)
+  private static let external = NSRect(x: -1920, y: 37, width: 1920, height: 1080)
+  private static let externalVisible = NSRect(x: -1920, y: 127, width: 1920, height: 990)
+
+  /// Dictating into a window on the external display puts the HUD there, even
+  /// with the mouse left on the laptop.
+  func testTheFocusedWindowsScreenWinsOverTheMouse() {
+    XCTAssertEqual(
+      HUDPanelLayout.activeScreenIndex(
+        anchor: NSRect(x: -1500, y: 300, width: 900, height: 600),
+        mouse: CGPoint(x: 400, y: 400),
+        screenFrames: [Self.laptop, Self.external]
+      ),
+      1
+    )
+  }
+
+  /// A window hanging 200pt onto the laptop still belongs to the display
+  /// holding the other 1500pt — first-intersection picked the laptop here.
+  func testAWindowStraddlingTwoScreensBelongsToTheOneHoldingMostOfIt() {
+    XCTAssertEqual(
+      HUDPanelLayout.activeScreenIndex(
+        anchor: NSRect(x: -1500, y: 200, width: 1700, height: 700),
+        mouse: .zero,
+        screenFrames: [Self.laptop, Self.external]
+      ),
+      1
+    )
+  }
+
+  func testWithNoReadableWindowTheMouseDecides() {
+    XCTAssertEqual(
+      HUDPanelLayout.activeScreenIndex(
+        anchor: nil,
+        mouse: CGPoint(x: -1226, y: 243),
+        screenFrames: [Self.laptop, Self.external]
+      ),
+      1
+    )
+    XCTAssertNil(
+      HUDPanelLayout.activeScreenIndex(
+        anchor: nil, mouse: CGPoint(x: 5000, y: -50),
+        screenFrames: [Self.laptop, Self.external]
+      )
+    )
+  }
+
+  /// The owner's real stored pin, dragged onto the laptop, is not honored while
+  /// they work on the external display: validation is against the active
+  /// screen alone.
+  func testAPinOnAnotherScreenIsNotHonoredOnTheActiveOne() {
+    XCTAssertNil(
+      HUDPanelLayout.validatedPinnedPoint(
+        CGPoint(x: 799, y: 141),
+        pillSize: Self.pillSize,
+        reservedHeight: 200,
+        visibleFrames: [Self.externalVisible]
+      )
+    )
+  }
+
   // MARK: The owner's own position
 
   private static let pillSize = CGSize(width: 420, height: 96)

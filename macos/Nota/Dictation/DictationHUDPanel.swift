@@ -257,33 +257,32 @@ final class DictationHUDPanel: NSPanel {
     )
     let reserved = style.reservedCardHeight ?? pillSize.height
 
-    // The owner's own position outranks the anchor window. Validated every
-    // time, never trusted: the screen it was recorded on may be gone, smaller,
-    // or arranged differently, and a HUD restored off-screen is a HUD that does
-    // not exist. A point no current screen can host is dropped — the automatic
-    // placement below is the self-heal.
+    // The screen is decided first, every press, by where the owner is working
+    // (owner, 2026-09-14, on two monitors: a pin dragged onto the laptop kept
+    // pulling the HUD there while they dictated into the external display).
+    let anchorFrame = Self.frontmostAppFocusedWindowFrame()
+    guard let screen = Self.activeScreen(anchor: anchorFrame) else { return }
+    let screenFrame = screen.visibleFrame
+
+    // The owner's own position outranks the anchor window — on the screen it
+    // was dragged on. Validated every time, never trusted. A pin on a screen
+    // that is merely not the active one is kept for when the owner is back
+    // there; only a point no current screen can host is dropped.
     if let pinned = pinnedPillBottomCenter {
       if let point = HUDPanelLayout.validatedPinnedPoint(
         pinned,
         pillSize: pillSize,
         reservedHeight: reserved,
-        visibleFrames: NSScreen.screens.map(\.visibleFrame)
+        visibleFrames: [screenFrame]
       ) {
         setFrameOrigin(NSPoint(x: point.x - pillSize.width / 2 - margin, y: point.y - margin))
         return
       }
-      pinnedPillBottomCenter = nil
-      HUDPositionStore.clear()
+      if !NSScreen.screens.contains(where: { $0.visibleFrame.contains(pinned) }) {
+        pinnedPillBottomCenter = nil
+        HUDPositionStore.clear()
+      }
     }
-
-    let anchorFrame = Self.frontmostAppFocusedWindowFrame()
-    guard let screen = anchorFrame.flatMap({ anchor in
-      NSScreen.screens.first { $0.frame.intersects(anchor) }
-    })
-      ?? NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) })
-      ?? NSScreen.main
-    else { return }
-    let screenFrame = screen.visibleFrame
 
     // Clamp the pill 8pt inside the visible screen, then convert back to a
     // window-frame origin by re-adding the shadow margin.
@@ -302,6 +301,19 @@ final class DictationHUDPanel: NSPanel {
     )
 
     setFrameOrigin(NSPoint(x: pillX - margin, y: pillY - margin))
+  }
+
+  /// The screen the owner is working on: the one holding most of the focused
+  /// window, else the one under the mouse, else the main screen. Shared with
+  /// the review card so both floating surfaces agree about "here".
+  static func activeScreen(anchor: NSRect?) -> NSScreen? {
+    let screens = NSScreen.screens
+    let index = HUDPanelLayout.activeScreenIndex(
+      anchor: anchor,
+      mouse: NSEvent.mouseLocation,
+      screenFrames: screens.map(\.frame)
+    )
+    return index.map { screens[$0] } ?? NSScreen.main
   }
 
   /// Frame (Cocoa coordinates) of the focused window of the frontmost app,
@@ -545,6 +557,35 @@ enum HUDPanelLayout {
     let hardFloor = screenFrame.minY + screenInset
     let restingFloor = min(hardFloor + restingBottomMargin, max(hardFloor, ceilingY))
     return max(restingFloor, min(desired, ceilingY))
+  }
+
+  /// Which screen a floating surface belongs on this press.
+  ///
+  /// The focused window decides, by **largest overlap** rather than first
+  /// intersection: a window that hangs a few points onto a neighbouring display
+  /// belongs to the display holding the rest of it, and `screens` order is
+  /// arrangement order, not where the owner is looking. With no readable window
+  /// (no AX grant, Nota frontmost) the mouse decides. Nil means neither did.
+  static func activeScreenIndex(
+    anchor: NSRect?,
+    mouse: CGPoint,
+    screenFrames: [NSRect]
+  ) -> Int? {
+    if let anchor {
+      let areas = screenFrames.map { frame -> CGFloat in
+        let overlap = frame.intersection(anchor)
+        return overlap.isNull ? 0 : overlap.width * overlap.height
+      }
+      if let best = areas.indices.max(by: { areas[$0] < areas[$1] }), areas[best] > 0 {
+        return best
+      }
+    }
+    // `NSMouseInRect` semantics: the top edge is inside, the bottom edge is not
+    // — Cocoa's y grows upward, so this is the half-open rect flipped.
+    return screenFrames.firstIndex { frame in
+      mouse.x >= frame.minX && mouse.x < frame.maxX
+        && mouse.y > frame.minY && mouse.y <= frame.maxY
+    }
   }
 
   /// The owner's dragged point, made safe to restore, or nil when no current

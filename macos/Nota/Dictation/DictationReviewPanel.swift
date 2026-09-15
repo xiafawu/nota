@@ -853,33 +853,32 @@ final class DictationReviewPanel: NSPanel {
       height: max(frame.height - margin * 2, 0)
     )
 
-    // The owner's own position outranks the anchor window, and is validated
-    // rather than trusted every single time: the display it was recorded on may
-    // be gone or smaller, and a card restored off-screen is a session's whole
-    // output invisible. A point no current screen can host is DROPPED and the
-    // automatic placement below is the self-heal — clamping it onto whatever
-    // display is left would call an arbitrary point the owner's choice.
+    // The screen comes first, every press: the one the owner is working on
+    // (`DictationHUDPanel.activeScreen`, shared so the pill and the card agree).
+    let anchor = DictationHUDPanel.frontmostAppFocusedWindowFrame()
+    guard let screen = DictationHUDPanel.activeScreen(anchor: anchor) else { return }
+    let visible = screen.visibleFrame
+
+    // The owner's own position outranks the anchor window — on the screen it
+    // was dragged on — and is validated rather than trusted every time: a card
+    // restored off-screen is a session's whole output invisible. A pin on
+    // another connected screen is kept for when the owner works there again;
+    // only a point no current screen can host is DROPPED, and the automatic
+    // placement below is the self-heal.
     if let pinned = pinnedCardTopLeft {
       if let topLeft = ReviewPanelLayout.validatedTopLeft(
         pinned,
         cardSize: card,
-        visibleFrames: NSScreen.screens.map(\.visibleFrame)
+        visibleFrames: [visible]
       ) {
         setFrameOrigin(NSPoint(x: topLeft.x - margin, y: topLeft.y - card.height - margin))
         return
       }
-      pinnedCardTopLeft = nil
-      ReviewPositionStore.clear()
+      if !NSScreen.screens.contains(where: { $0.visibleFrame.contains(pinned) }) {
+        pinnedCardTopLeft = nil
+        ReviewPositionStore.clear()
+      }
     }
-
-    let anchor = DictationHUDPanel.frontmostAppFocusedWindowFrame()
-    guard let screen = anchor.flatMap({ rect in
-      NSScreen.screens.first { $0.frame.intersects(rect) }
-    })
-      ?? NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) })
-      ?? NSScreen.main
-    else { return }
-    let visible = screen.visibleFrame
 
     let centerX = anchor?.midX ?? visible.midX
     // Under the anchor window if it fits, otherwise centered on the screen —
