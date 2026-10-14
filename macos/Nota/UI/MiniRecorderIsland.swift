@@ -165,11 +165,26 @@ enum MiniIslandAction: CaseIterable {
     self == .mark ? RecordingPaneCopy.markHelp : label
   }
 
-  /// The tooltip on the island's own capsule, which never names a key. The
-  /// island cannot bind one (see `shortcut`), and `.help` is the capsule's
-  /// accessibility hint as well as its tooltip — so "Mark ⌘K" there would be
-  /// read out on the one surface where ⌘K goes to the call app instead.
-  var islandHelp: String { label }
+  /// The tooltip on the island's own capsule: what the press **does**, which
+  /// the icon and the label do not say.
+  ///
+  /// `.help` is the capsule's accessibility hint as well as its tooltip, so two
+  /// things follow. It never names a key — the island cannot bind one (see
+  /// `shortcut`), and "Mark ⌘K" would be read out on the one surface where ⌘K
+  /// goes to the call app instead. And it is never the label again: a hint
+  /// equal to the label had VoiceOver read "Mark, button, Mark". The tooltip
+  /// stays, because the capsules are icon-only and a pointer user has no other
+  /// way to learn what `arrow.up.forward.app` does.
+  var islandHelp: String {
+    switch self {
+    case .mark: return "Flag this moment in the recording"
+    case .pause: return "Stop keeping audio until you resume"
+    case .resume: return "Continue into the same recording"
+    case .stop: return "End the session; it cannot be resumed"
+    case .show: return "Bring Nota forward on this session"
+    case .retry: return "Bring Nota forward and start a new session"
+    }
+  }
 
   /// Blue for a confident action, red for the one that ends the session — the
   /// cluster's vocabulary, unchanged, because the island is the cluster seen

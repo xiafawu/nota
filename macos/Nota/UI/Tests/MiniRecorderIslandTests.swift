@@ -253,12 +253,27 @@ final class MiniRecorderIslandTests: XCTestCase {
       XCTAssertFalse(
         action.islandHelp.contains("⌘"),
         "\(action) tells the owner about a key the island cannot bind: \(action.islandHelp)")
-      XCTAssertEqual(action.islandHelp, action.label)
     }
     XCTAssertTrue(MiniIslandAction.mark.help.contains("⌘"), "the menu row lost its ⌘K")
     let island = Self.uiSource("MiniRecorderIsland.swift")
     XCTAssertTrue(island.contains(".help(action.islandHelp)"))
     XCTAssertFalse(island.contains(".help(action.help)"), "the island capsule reads the menu row's tooltip")
+  }
+
+  /// **The island's hint says something the label does not.** `.help` is the
+  /// capsule's accessibility hint as well as its tooltip, so a help equal to
+  /// the label made VoiceOver read "Mark, button, Mark" on every capsule. It
+  /// names the effect instead, and still names no key.
+  func testTheIslandsHintIsNotItsLabelAgain() {
+    for action in MiniIslandAction.allCases {
+      XCTAssertNotEqual(
+        action.islandHelp, action.label,
+        "\(action)'s hint repeats its label, so VoiceOver reads the name twice")
+      XCTAssertFalse(
+        action.islandHelp.lowercased().hasPrefix(action.label.lowercased()),
+        "\(action)'s hint opens by restating its label: \(action.islandHelp)")
+      XCTAssertFalse(action.islandHelp.isEmpty, "\(action) lost its tooltip")
+    }
   }
 
   /// A UI source file, found relative to this test's own path. The test target
