@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 // MARK: - The header band is gone
@@ -141,6 +142,9 @@ private struct SpeakerChipButton: View {
   /// Set by the Return path so the popover's own dismissal does not commit the
   /// same draft a second time (P-C6).
   @State private var isCommitting = false
+  /// Set by Escape, BEFORE the popover is closed, so the close is judged as a
+  /// cancel rather than as a focus loss that commits (and enrols) the draft.
+  @State private var isCancelling = false
 
   private var displayName: String {
     chip.name.isEmpty ? chip.label : chip.name
@@ -251,15 +255,19 @@ private struct SpeakerChipButton: View {
     // Naming a chip enrols a voiceprint, so the guard is not decoration:
     // `draft` is seeded with `chip.name` on open, and an unchanged draft is a
     // dismissal that must enrol nothing. `isCommitting` keeps the Return path
-    // from arriving here a second time.
+    // from arriving here a second time, and `isCancelling` makes an Escape
+    // close a cancel — see `cancel()`.
     .onChange(of: showRenamePopover) { _, shown in
       guard !shown else { return }
+      let reason: InlineEditFocusLoss.Reason = isCancelling ? .escape : .focusLoss
+      isCancelling = false
       guard !isCommitting else {
         isCommitting = false
         return
       }
       guard
-        InlineEditFocusLoss.outcome(draft: draft, committed: chip.name) == .commit
+        InlineEditFocusLoss.outcome(draft: draft, committed: chip.name, reason: reason)
+          == .commit
       else { return }
       onRename(chip.label, draft.trimmingCharacters(in: .whitespacesAndNewlines))
     }
@@ -320,6 +328,10 @@ private struct SpeakerChipButton: View {
       TextField("Speaker name", text: $draft)
         .frame(width: Metrics.speakerPopoverFieldWidth)
         .onSubmit { commit() }
+        // The backup route only. NSPopover answers Escape itself, and so does
+        // the field editor, both before a SwiftUI handler on the field can —
+        // so the route that decides is `PopoverEscapeCatcher`, below.
+        .onExitCommand { cancel() }
       if let tooltip = chip.indicator.tooltip {
         Text(tooltip)
           .font(.caption2)
@@ -328,12 +340,102 @@ private struct SpeakerChipButton: View {
       }
     }
     .padding(12)
+    // Escape is taken off the popover's own window before AppKit dispatches
+    // it, so it cannot matter whether NSPopover would have closed first or the
+    // field editor would have answered first: the cancel flag is set before
+    // anything closes, and the popover's own Escape handling never runs.
+    .background(
+      PopoverEscapeCatcher(onEscape: cancel)
+        .frame(width: 0, height: 0)
+        .accessibilityHidden(true)
+    )
   }
 
   private func commit() {
     isCommitting = true
     showRenamePopover = false
     onRename(chip.label, draft.trimmingCharacters(in: .whitespacesAndNewlines))
+  }
+
+  /// Escape: close and enrol nothing. The flag is set BEFORE the popover is
+  /// closed so `onChange` judges the close as `.escape`; the draft is put back
+  /// to the chip's own name as a second defence, since an unchanged draft
+  /// discards under the focus-loss rule too.
+  private func cancel() {
+    isCancelling = true
+    draft = chip.name
+    showRenamePopover = false
+  }
+}
+
+/// Escape, taken before the popover — or the field editor inside it — sees it.
+///
+/// The rename popover's field had no Escape handler at all, so Escape either
+/// closed the popover (which `onChange` judged as a focus loss, committing the
+/// typed name and enrolling a voiceprint under it) or did nothing. A handler on
+/// the field is not enough to fix that: `NSPopover` and the field editor both
+/// answer `cancelOperation:` before SwiftUI's `.onExitCommand` can, and which
+/// one wins is AppKit's choice, not ours. A local monitor runs before the event
+/// is dispatched to any window — the dictation review card's ⌘↩/Escape route
+/// (`DictationReviewPresenter.installKeyMonitor`), for the same reason.
+///
+/// Scoped to the window this view is in, installed when it lands in one and
+/// removed when it leaves: a monitor left installed would swallow Escape
+/// everywhere else in the app. Zero-sized and hidden from accessibility, so it
+/// changes neither the popover's layout nor its focus chain.
+struct PopoverEscapeCatcher: NSViewRepresentable {
+  let onEscape: () -> Void
+
+  /// Whether a key-down is the owner's Escape for this window. An IME
+  /// composition owns Escape while it has marked text — it cancels the
+  /// composition, not the popover.
+  static func catches(keyCode: UInt16, isOwnWindow: Bool, hasMarkedText: Bool) -> Bool {
+    keyCode == 53 && isOwnWindow && !hasMarkedText
+  }
+
+  func makeNSView(context: Context) -> CatcherView {
+    let view = CatcherView(frame: .zero)
+    view.onEscape = onEscape
+    view.setAccessibilityElement(false)
+    return view
+  }
+
+  func updateNSView(_ view: CatcherView, context: Context) {
+    view.onEscape = onEscape
+  }
+
+  static func dismantleNSView(_ view: CatcherView, coordinator: ()) {
+    view.removeMonitor()
+  }
+
+  final class CatcherView: NSView {
+    var onEscape: () -> Void = {}
+    private var monitor: Any?
+
+    override func viewDidMoveToWindow() {
+      super.viewDidMoveToWindow()
+      removeMonitor()
+      guard window != nil else { return }
+      monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+        guard let self, let window = self.window else { return event }
+        let hasMarkedText = (window.firstResponder as? NSTextView)?.hasMarkedText() ?? false
+        guard
+          PopoverEscapeCatcher.catches(
+            keyCode: event.keyCode,
+            isOwnWindow: event.window === window,
+            hasMarkedText: hasMarkedText
+          )
+        else { return event }
+        self.onEscape()
+        return nil
+      }
+    }
+
+    func removeMonitor() {
+      guard let monitor else { return }
+      NSEvent.removeMonitor(monitor)
+      self.monitor = nil
+    }
   }
 }
 
@@ -347,6 +449,12 @@ private struct SpeakerChipButton: View {
 /// lose: a draft that is empty after trimming, or one still equal to the value
 /// already on the record — which is what keeps a speaker popover the owner
 /// merely opened and clicked away from enrolling a voiceprint.
+///
+/// **Escape is a reason, not a draft.** It used to be true only of the tag
+/// field: the popover's field had no Escape handler at all, so its close was
+/// judged as a focus loss and a changed draft — the wrong person's name — was
+/// committed and enrolled. Both editors now say *why* they closed, and the one
+/// rule answers Escape with `.discard` whatever was typed.
 enum InlineEditFocusLoss {
   enum Outcome: Equatable {
     /// The draft carries something new: commit it, through the same call
@@ -356,9 +464,21 @@ enum InlineEditFocusLoss {
     case discard
   }
 
+  /// Why the editor is closing. Return is not here: it commits through its own
+  /// call, and the closes it causes are short-circuited before this is asked.
+  enum Reason: Equatable {
+    /// A click elsewhere, the panel's backdrop, a popover closing on its own.
+    case focusLoss
+    /// The owner pressed Escape: "never mind", whatever the draft says.
+    case escape
+  }
+
   /// `committed` is the value already on the record — the empty string for a
   /// field that opens blank, like the add-tag chip.
-  static func outcome(draft: String, committed: String = "") -> Outcome {
+  static func outcome(
+    draft: String, committed: String = "", reason: Reason = .focusLoss
+  ) -> Outcome {
+    guard reason == .focusLoss else { return .discard }
     let value = draft.trimmingCharacters(in: .whitespacesAndNewlines)
     guard !value.isEmpty else { return .discard }
     guard value != committed.trimmingCharacters(in: .whitespacesAndNewlines) else {
@@ -535,18 +655,16 @@ private struct AddTagChip: View {
           .frame(minWidth: 56, maxWidth: 110)
           .focused($fieldFocused)
           .onSubmit { commit() }
-          .onExitCommand { cancel() }
+          .onExitCommand { close(.escape) }
           // Focus loss COMMITS (P-C6). Clicking anywhere else — including the
           // Details panel's own full-window backdrop — used to throw the typed
           // tag away with no prompt and no trace, one scroll below a summary
           // draft protected by a three-button alert. Escape still cancels, so
-          // the two gestures stop meaning the same thing.
+          // the two gestures stop meaning the same thing — and both ask the
+          // one rule, which knows why the field is closing.
           .onChange(of: fieldFocused) { _, focused in
             guard !focused else { return }
-            switch InlineEditFocusLoss.outcome(draft: draft) {
-            case .commit: commit()
-            case .discard: cancel()
-            }
+            close(.focusLoss)
           }
           .padding(.horizontal, Metrics.tagPillH)
           .padding(.vertical, Metrics.tagPillV)
@@ -595,6 +713,13 @@ private struct AddTagChip: View {
     isEditing = false
     fieldFocused = false
     draft = ""
+  }
+
+  private func close(_ reason: InlineEditFocusLoss.Reason) {
+    switch InlineEditFocusLoss.outcome(draft: draft, reason: reason) {
+    case .commit: commit()
+    case .discard: cancel()
+    }
   }
 }
 

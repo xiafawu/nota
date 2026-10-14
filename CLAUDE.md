@@ -1697,6 +1697,21 @@ with the chip's current name, so a popover the owner merely opened and clicked
 away from must enrol nothing. Escape still cancels, so the two gestures stop
 meaning the same thing.
 
+That last sentence was **false for the popover** until the human-layer pass:
+its field had no Escape handler, so Escape either closed the popover — judged
+as a focus loss, committing the name the owner had just thought better of and
+enrolling a voiceprint under it — or did nothing at all. Escape is now a
+**reason** the one rule is told (`InlineEditFocusLoss.outcome(…, reason:
+.escape)` is `.discard` whatever was typed), and both editors close through it.
+The popover cannot take Escape the way the tag field does: `NSPopover` and the
+field editor both answer `cancelOperation:` before `.onExitCommand` can, and
+which wins is AppKit's call. So `PopoverEscapeCatcher` takes it with a local
+key monitor scoped to the popover's own window — the review card's route,
+for the same reason — which runs before AppKit dispatches the event to
+anyone; the cancel flag is set and the draft put back to the chip's name
+*before* the popover is told to close. `.onExitCommand` stays on the field as
+the backup.
+
 **Names right, words left** (ADR 0008; owner, 2026-09-02: *"verbatim and names
 should separate out. words should left align, names right align"*). A speaker
 line is `tab + name + tab + text` with a **right**-aligned `NSTextTab` at the

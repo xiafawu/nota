@@ -1031,4 +1031,77 @@ final class InlineEditFocusLossTests: XCTestCase {
       .discard
     )
   }
+
+  /// Escape is "never mind": the popover's close used to be judged as a focus
+  /// loss, so the wrong person's name — typed, then thought better of — was
+  /// committed and enrolled as a voiceprint.
+  func testEscapeDiscardsWhateverWasTyped() {
+    XCTAssertEqual(
+      InlineEditFocusLoss.outcome(draft: "Kenny", committed: "", reason: .escape),
+      .discard
+    )
+    XCTAssertEqual(
+      InlineEditFocusLoss.outcome(draft: "Kenny Kim", committed: "Speaker 2", reason: .escape),
+      .discard
+    )
+    XCTAssertEqual(
+      InlineEditFocusLoss.outcome(draft: "self-awareness", reason: .escape),
+      .discard
+    )
+  }
+
+  /// The reason is new; what focus loss does is not.
+  func testFocusLossIsStillTheDefaultAndStillCommits() {
+    XCTAssertEqual(
+      InlineEditFocusLoss.outcome(draft: "Kenny Kim", committed: "Speaker 2", reason: .focusLoss),
+      .commit
+    )
+    XCTAssertEqual(
+      InlineEditFocusLoss.outcome(draft: "Kenny Kim", committed: "Speaker 2"),
+      InlineEditFocusLoss.outcome(draft: "Kenny Kim", committed: "Speaker 2", reason: .focusLoss)
+    )
+  }
+
+  /// The popover takes Escape off its own window before AppKit dispatches it —
+  /// never another window's, and never while an input method is composing.
+  func testThePopoverTakesOnlyItsOwnEscape() {
+    XCTAssertTrue(
+      PopoverEscapeCatcher.catches(keyCode: 53, isOwnWindow: true, hasMarkedText: false))
+    XCTAssertFalse(
+      PopoverEscapeCatcher.catches(keyCode: 53, isOwnWindow: false, hasMarkedText: false),
+      "a monitor that took Escape from every window would swallow it app-wide")
+    XCTAssertFalse(
+      PopoverEscapeCatcher.catches(keyCode: 53, isOwnWindow: true, hasMarkedText: true),
+      "Escape cancels an IME composition first")
+    XCTAssertFalse(
+      PopoverEscapeCatcher.catches(keyCode: 36, isOwnWindow: true, hasMarkedText: false),
+      "Return belongs to the field's onSubmit")
+  }
+
+  /// The order is the fix: the cancel flag has to be set before the popover is
+  /// told to close, or `onChange` judges the close as a focus loss and enrols
+  /// the draft. And the popover has to wear the catcher, or Escape is left to
+  /// whichever of NSPopover and the field editor answers it first.
+  func testThePopoverCancelsBeforeItCloses() {
+    let source = Self.uiSource("DocumentHeaderView.swift")
+    XCTAssertTrue(
+      source.contains("PopoverEscapeCatcher(onEscape: cancel)"),
+      "the rename popover no longer takes Escape before AppKit does")
+    guard let start = source.range(of: "private func cancel() {\n    isCancelling = true"),
+      let end = source.range(of: "showRenamePopover = false", range: start.upperBound..<source.endIndex)
+    else {
+      return XCTFail("the popover's cancel() no longer sets isCancelling before it closes")
+    }
+    XCTAssertTrue(source[start.upperBound..<end.lowerBound].contains("draft = chip.name"))
+  }
+
+  private static func uiSource(_ name: String) -> String {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent(name)
+    let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    XCTAssertFalse(text.isEmpty, "could not read \(name) beside this test")
+    return text
+  }
 }
