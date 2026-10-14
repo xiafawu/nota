@@ -617,8 +617,10 @@ goes into a small floating card instead of the target app:
   owner typed themselves. History follows the same rule — `openReview` records
   nothing for an empty card, and `extendReview` creates the entry the moment
   the batch first has text, so history never holds an empty dictation.
-- **Nothing is inserted until Apply.** ⌘↩ applies, Escape discards, and a
-  discard injects nothing at all — not an empty write. The panel is the only
+- **Nothing is inserted until Apply.** ⌘↩ applies, Escape discards (except
+  while an input method is composing: Escape then cancels the composition and
+  ⌘↩ beeps — see the key-monitor bullet below), and a discard injects nothing
+  at all — not an empty write. The panel is the only
   place in the pipeline where a session's text can be thrown away after it was
   recognized.
 - **Apply inserts what is in the box**, not what the pipeline produced. A
@@ -746,7 +748,9 @@ goes into a small floating card instead of the target app:
     separately on `PendingReview.polished` / `.offline`, because that is the
     `before` side of the diff Apply learns from and it must not see the edit it
     is being compared against.
-  - **⌘↩ applies the whole batch once; Escape discards the whole batch.** While
+  - **⌘↩ applies the whole batch once; Escape discards the whole batch** (not
+    while an input method is composing — Escape then cancels the composition
+    and ⌘↩ beeps; `ReviewKeyRoute`, in the key-monitor bullet above). While
     a continuation is recording, both are refused (buttons disabled, and
     `DictationReviewModel.apply/discard` beep) — the decision is about a batch
     that is still being spoken. `finishReview` refuses too, as the backstop.
