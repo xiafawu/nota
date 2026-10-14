@@ -751,6 +751,54 @@ final class RecordingStorageTests: XCTestCase {
     XCTAssertTrue(message.contains("remove that file yourself"))
   }
 
+  // MARK: - A delete chosen during a run (FB-4)
+
+  func testTheDeletionVerbsAreNotRefusedWhileAFileTranscriptionRuns() {
+    // P-C8: the drawer keeps Delete Audio… and Delete Record… live while a
+    // file transcription runs, on purpose — neither touches anything the
+    // pipeline owns. The model then refused both with `guard !isRunning`,
+    // AFTER the owner had read the confirmation and pressed the destructive
+    // button: a delete that silently did nothing. `NotaModel` cannot be built
+    // here (its init sweeps the real `~/.nota`), so this reads the two bodies.
+    let source = Self.notaModelSource
+    for signature in ["func deleteRecordingAudio(", "func deleteRecording("] {
+      let body = Self.body(of: signature, in: source)
+      XCTAssertFalse(body.isEmpty, "\(signature) not found in NotaModel.swift")
+      XCTAssertFalse(
+        body.contains("isRunning"),
+        "\(signature) is refused during a run again — a confirmed delete would do nothing"
+      )
+      XCTAssertTrue(body.contains("RecordingStore."), "\(signature) no longer reaches the store")
+    }
+    // The control: OPENING a record is still refused during a run (P-C8 keeps
+    // both), which is also what proves this reader can see a guard at all.
+    for signature in ["func openHistory(", "func newTranscription("] {
+      XCTAssertTrue(
+        Self.body(of: signature, in: source).contains("guard !isRunning"),
+        "\(signature) lost its run refusal, or the body reader is broken"
+      )
+    }
+  }
+
+  /// `NotaModel.swift`, found relative to this source file.
+  private static var notaModelSource: String {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()  // Tests
+      .deletingLastPathComponent()  // UI
+      .deletingLastPathComponent()  // Nota
+      .appendingPathComponent("App/NotaModel.swift")
+    return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+  }
+
+  /// A type-level function's body: from its signature to the first closing
+  /// brace back at the declaration's two-space indent.
+  private static func body(of signature: String, in source: String) -> String {
+    guard let start = source.range(of: signature),
+          let end = source.range(of: "\n  }\n", range: start.upperBound..<source.endIndex)
+    else { return "" }
+    return String(source[start.lowerBound..<end.upperBound])
+  }
+
   /// The committed CLI output, found relative to this source file. Deliberately
   /// not a bundle resource: the test target copies no resources, and a fixture
   /// that silently resolved to nil would be a test that cannot fail.

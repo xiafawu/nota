@@ -1694,8 +1694,11 @@ final class NotaModel: ObservableObject {
 
   /// Delete a record's recording and keep everything else (the containment
   /// rule's safe direction). The row stays; only its audio goes.
+  ///
+  /// Not refused while a file transcription runs (P-C8): the drawer keeps this
+  /// verb live on purpose, nothing here touches what the pipeline owns, and a
+  /// refusal after the owner confirmed was a delete that silently did nothing.
   func deleteRecordingAudio(_ record: RecordingStore.LocatedRecord) {
-    guard !isRunning else { return }
     let freed = record.audioBytes ?? 0
     if RecordingStore.deleteAudio(record, historyDirectory: notaHistoryDirectory()) {
       status = freed > 0
@@ -1714,8 +1717,9 @@ final class NotaModel: ObservableObject {
   /// the recording, the transcript record, the speaker clips. The open
   /// document resets if it was this one, because summary editing, the speaker
   /// chips and regeneration are all backed by the record that just went away.
+  /// Not refused while a file transcription runs, for the reason
+  /// `deleteRecordingAudio` is not.
   func deleteRecording(_ record: RecordingStore.LocatedRecord, entry: HistoryEntry) {
-    guard !isRunning else { return }
     if RecordingStore.deleteRecord(record) {
       status = "Deleted recording — the exported file was kept"
     } else {
