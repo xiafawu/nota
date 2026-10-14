@@ -1742,14 +1742,20 @@ final class DictationController: ObservableObject {
 
   // MARK: - History actions
 
-  func copyDictationHistory(_ id: UUID) {
-    guard let entry = historyStore.entry(id: id) else { return }
-    let pasteboard = NSPasteboard.general
+  /// Returns whether the text landed. The drawer row's expansion is the
+  /// receipt of this copy (decision 16), so a failure has to reach the row
+  /// that would otherwise claim it — `historyNotice` alone has no reader.
+  /// The pasteboard is a parameter so a test never writes the owner's own.
+  @discardableResult
+  func copyDictationHistory(_ id: UUID, to pasteboard: NSPasteboard = .general) -> Bool {
+    guard let entry = historyStore.entry(id: id) else { return false }
     pasteboard.clearContents()
     if pasteboard.setString(entry.text, forType: .string) {
       historyNotice = "Copied dictation"
+      return true
     } else {
       historyNotice = "Could not copy dictation"
+      return false
     }
   }
 

@@ -51,6 +51,24 @@ enum DictationSearch {
   }
 }
 
+// MARK: - Dictation row copy (decision 16, FB-6)
+
+/// What a dictation row says about the copy its expansion made. The expansion
+/// *is* the success receipt (decision 16), so success adds no words; only a
+/// copy that did not land is said out loud, or the row would claim it. Pure,
+/// so the wording and the hint are asserted without a drawer.
+enum DictationRowCopy {
+  static func failure(copied: Bool) -> String? {
+    copied ? nil : "Could not copy"
+  }
+
+  /// VoiceOver's account of what the row's button does — a press on an open
+  /// row collapses it and copies nothing.
+  static func hint(isExpanded: Bool) -> String {
+    isExpanded ? "Collapses the dictation" : "Copies the dictation and shows its actions"
+  }
+}
+
 // MARK: - History drawer
 
 /// S3 "Drawer" (XIA-393): a slide-over glass history panel anchored top-right
@@ -69,6 +87,9 @@ struct HistoryDrawerView: View {
   /// time; expansion is the receipt of the copy that happened on click).
   @State private var expandedDictationID: UUID?
   @State private var hoveredDictationID: UUID?
+  /// The row whose copy did not land. Read only while that row is expanded,
+  /// so each expansion's own copy decides it (`DictationRowCopy.failure`).
+  @State private var copyFailedDictationID: UUID?
 
   static let drawerWidth: CGFloat = 380
 
@@ -446,43 +467,56 @@ struct HistoryDrawerView: View {
   /// expansion is the receipt. One row open at a time. Insert Again / Delete
   /// are labelled buttons inside the expanded row; there is no pin icon and
   /// no bulk clear on this tab.
+  ///
+  /// The expanding half is a plain `Button`, not a tap gesture (PT-6): a
+  /// gesture is neither focusable nor a button to VoiceOver, so the copy, the
+  /// expansion and the two buttons that exist only inside it were all out of
+  /// reach without a pointer — while the transcript rows one tab away were
+  /// Buttons. Only the inner stack is wrapped, since the outer one holds
+  /// Insert Again and Delete and a button may not contain buttons. And the
+  /// receipt is honest: a copy that did not land says so on the row, because
+  /// an expansion alone would claim it (FB-6).
   private func dictationRow(_ entry: DictationHistoryEntry) -> some View {
     let isExpanded = expandedDictationID == entry.id
     return VStack(alignment: .leading, spacing: 6) {
-      VStack(alignment: .leading, spacing: 2) {
-        Text(entry.text)
-          .font(.callout)
-          .foregroundStyle(.primary)
-          .lineLimit(isExpanded ? nil : 2)
-          .truncationMode(.tail)
-
-        if !isExpanded {
-          HStack(spacing: 6) {
-            Text(entry.completedAt, format: .dateTime.hour().minute())
-            Text("·")
-            Text(entry.targetLabel)
-              .lineLimit(1)
-              .truncationMode(.tail)
-            Spacer(minLength: 4)
-            Text(entry.status.label)
-              .font(.caption.weight(.medium))
-              .foregroundStyle(entry.status == .failed ? CraftTokens.failure : Color.secondary)
-          }
-          .font(.caption2)
-          .foregroundStyle(.secondary)
-        }
-      }
-      .frame(maxWidth: .infinity, alignment: .leading)
-      .contentShape(Rectangle())
-      .onTapGesture {
+      Button {
         if isExpanded {
           expandedDictationID = nil
         } else {
           expandedDictationID = entry.id
-          dictationController.copyDictationHistory(entry.id)
+          let copied = dictationController.copyDictationHistory(entry.id)
+          copyFailedDictationID = copied ? nil : entry.id
         }
+      } label: {
+        VStack(alignment: .leading, spacing: 2) {
+          Text(entry.text)
+            .font(.callout)
+            .foregroundStyle(.primary)
+            .lineLimit(isExpanded ? nil : 2)
+            .truncationMode(.tail)
+
+          if !isExpanded {
+            HStack(spacing: 6) {
+              Text(entry.completedAt, format: .dateTime.hour().minute())
+              Text("·")
+              Text(entry.targetLabel)
+                .lineLimit(1)
+                .truncationMode(.tail)
+              Spacer(minLength: 4)
+              Text(entry.status.label)
+                .font(.caption.weight(.medium))
+                .foregroundStyle(entry.status == .failed ? CraftTokens.failure : Color.secondary)
+            }
+            .font(.caption2)
+            .foregroundStyle(.secondary)
+          }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .contentShape(Rectangle())
       }
+      .buttonStyle(.plain)
       .accessibilityLabel("\(entry.text). \(entry.status.label). \(entry.targetLabel).")
+      .accessibilityHint(DictationRowCopy.hint(isExpanded: isExpanded))
 
       if isExpanded {
         Divider()
@@ -490,6 +524,11 @@ struct HistoryDrawerView: View {
           Text(entry.status.label)
             .font(.caption.weight(.medium))
             .foregroundStyle(entry.status == .failed ? CraftTokens.failure : Color.secondary)
+          if let failure = DictationRowCopy.failure(copied: copyFailedDictationID != entry.id) {
+            Text(failure)
+              .font(.caption.weight(.medium))
+              .foregroundStyle(CraftTokens.failure)
+          }
           Spacer()
           Button("Insert Again") {
             dictationController.retryDictationHistory(entry.id)
@@ -656,6 +695,11 @@ private struct HistoryDrawerRow: View {
 /// `matchedGeometryEffect`. One indicator moving is the whole animation, and
 /// because it is a geometry match rather than two views appearing and
 /// disappearing, it interpolates properly instead of cross-fading in place.
+///
+/// Under Reduce Motion it does cross-fade in place, on purpose
+/// (`HistoryTabIndicator.slides`): the travel goes and the fade stays, which
+/// is the answer every other transition in the app gives — the badge on this
+/// same strip included. The slide used to run regardless.
 private struct HistoryTabStrip: View {
   @Binding var selection: HistoryDrawerTab
   /// Live-query match count for the tab that is NOT selected (decision 17).
@@ -698,13 +742,17 @@ private struct HistoryTabStrip: View {
         .contentShape(Capsule(style: .continuous))
         .background {
           if isSelected {
-            Capsule(style: .continuous)
-              .fill(.background)
-              .shadow(color: .black.opacity(0.12), radius: 1.5, y: 0.5)
-              // The ONE indicator, matched across both segments — this is
-              // what slides. Two independently appearing capsules would
-              // cross-fade in place instead.
-              .matchedGeometryEffect(id: "selection", in: indicator)
+            if HistoryTabIndicator.slides(reduceMotion: reduceMotion) {
+              selectionCapsule
+                // The ONE indicator, matched across both segments — this is
+                // what slides. Two independently appearing capsules would
+                // cross-fade in place instead.
+                .matchedGeometryEffect(id: "selection", in: indicator)
+            } else {
+              // Which is exactly what Reduce Motion asks for.
+              selectionCapsule
+                .transition(.opacity)
+            }
           } else if hoveredTab == tab {
             Capsule(style: .continuous)
               .fill(Color.primary.opacity(Tokens.rowHoverWashOpacity))
@@ -732,4 +780,18 @@ private struct HistoryTabStrip: View {
     .accessibilityLabel(tab.title)
     .accessibilityAddTraits(isSelected ? [.isSelected] : [])
   }
+
+  private var selectionCapsule: some View {
+    Capsule(style: .continuous)
+      .fill(.background)
+      .shadow(color: .black.opacity(0.12), radius: 1.5, y: 0.5)
+  }
+}
+
+/// Whether the tab strip's selection capsule travels between the tabs. Not
+/// under Reduce Motion: the capsule cross-fades in place there, the fade
+/// kept and the travel dropped, like `Tokens.popIn`. Pure, so the answer is
+/// pinned without a window — the environment value cannot be set from a test.
+enum HistoryTabIndicator {
+  static func slides(reduceMotion: Bool) -> Bool { !reduceMotion }
 }

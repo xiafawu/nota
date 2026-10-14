@@ -255,4 +255,15 @@ final class HistoryDrawerTabTests: XCTestCase {
     XCTAssertEqual(HistoryDrawerTab.transcripts.title, "Transcripts")
     XCTAssertEqual(HistoryDrawerTab.dictation.title, "Dictation")
   }
+
+  /// **The selection capsule does not travel under Reduce Motion** (FB-7).
+  /// It slid between the tabs whatever the setting said, while the badge on
+  /// the same strip had already dropped its scale. The settled answer: the
+  /// travel goes, the fade stays.
+  func testTheIndicatorFadesInPlaceUnderReduceMotion() {
+    XCTAssertTrue(HistoryTabIndicator.slides(reduceMotion: false))
+    XCTAssertFalse(
+      HistoryTabIndicator.slides(reduceMotion: true),
+      "the tab indicator still travels with Reduce Motion on")
+  }
 }

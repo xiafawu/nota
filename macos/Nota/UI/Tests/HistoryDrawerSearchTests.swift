@@ -153,3 +153,64 @@ final class HistoryRowAvailabilityTests: XCTestCase {
     )
   }
 }
+
+// MARK: - Dictation rows (PT-6, FB-6)
+
+/// **A dictation row opens from the keyboard, and a failed copy says so.**
+///
+/// The row's expand-and-copy was an `.onTapGesture` on a plain stack: not
+/// focusable, not a button to VoiceOver, so the copy, the expansion and the
+/// Insert Again / Delete buttons that only exist inside it were unreachable
+/// without a pointer. And the expansion — decision 16's receipt of the copy —
+/// appeared whether or not the copy landed.
+final class DictationRowTests: XCTestCase {
+  /// Success adds no words (the expansion is the receipt); failure does.
+  func testOnlyAFailedCopyIsSaidOutLoud() {
+    XCTAssertNil(DictationRowCopy.failure(copied: true))
+    XCTAssertEqual(DictationRowCopy.failure(copied: false), "Could not copy")
+  }
+
+  /// A press on an open row collapses it and copies nothing; the hint may not
+  /// promise a copy there.
+  func testTheHintSaysWhatAPressWillDo() {
+    XCTAssertTrue(DictationRowCopy.hint(isExpanded: false).contains("Copies"))
+    XCTAssertFalse(DictationRowCopy.hint(isExpanded: true).contains("Copies"))
+  }
+
+  /// Focus and the button trait need a window server, and SwiftUI publishes no
+  /// accessibility tree for an unhosted hosting view, so the row's shape is
+  /// read from the source: a plain Button whose label is the inner stack, no
+  /// tap gesture left anywhere in the row, and Insert Again outside it.
+  func testTheRowIsAButtonAndNotATapGesture() throws {
+    let source = Self.uiSource("HistoryDrawerView.swift")
+    let start = try XCTUnwrap(source.range(of: "private func dictationRow("))
+    let end = try XCTUnwrap(
+      source.range(
+        of: "// MARK: - Drawer row (transcripts)", range: start.upperBound..<source.endIndex))
+    let row = String(source[start.lowerBound..<end.lowerBound])
+    XCTAssertFalse(
+      row.contains(".onTapGesture"),
+      "the dictation row is back on a tap gesture a keyboard cannot reach")
+    let button = try XCTUnwrap(row.range(of: "Button {"), "the row's expansion is not a Button")
+    let label = try XCTUnwrap(
+      row.range(of: "} label: {", range: button.upperBound..<row.endIndex))
+    let plain = try XCTUnwrap(
+      row.range(of: ".buttonStyle(.plain)", range: label.upperBound..<row.endIndex))
+    let insertAgain = try XCTUnwrap(row.range(of: "Button(\"Insert Again\")"))
+    XCTAssertLessThan(
+      plain.lowerBound, insertAgain.lowerBound,
+      "Insert Again is inside the expanding Button — a button may not hold buttons")
+  }
+
+  /// A UI source file, found relative to this test's own path. The test target
+  /// copies no resources, so a bundle lookup would silently resolve to nil.
+  private static func uiSource(_ name: String) -> String {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent(name)
+    let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    XCTAssertFalse(text.isEmpty, "could not read \(name) beside this test")
+    return text
+  }
+}

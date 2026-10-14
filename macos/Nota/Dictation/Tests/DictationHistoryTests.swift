@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import XCTest
 
@@ -91,5 +92,45 @@ final class DictationHistoryTests: XCTestCase {
     let attributes = try FileManager.default.attributesOfItem(atPath: fileURL.path)
     let permissions = try XCTUnwrap(attributes[.posixPermissions] as? NSNumber)
     XCTAssertEqual(permissions.intValue & 0o777, 0o600)
+  }
+}
+
+/// **A copy says whether it landed** (FB-6). The drawer row's expansion is the
+/// receipt of this copy (decision 16), and it used to appear whether or not
+/// the write reached the pasteboard: the result went only to `historyNotice`,
+/// which nothing reads. A private named pasteboard keeps the owner's clipboard
+/// out of it.
+@MainActor
+final class DictationHistoryCopyTests: XCTestCase {
+  private var directory: URL!
+  private var pasteboard: NSPasteboard!
+
+  override func setUp() {
+    super.setUp()
+    directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("nota-dictation-copy-tests-\(UUID().uuidString)", isDirectory: true)
+    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    pasteboard = NSPasteboard(name: NSPasteboard.Name("nota-tests-\(UUID().uuidString)"))
+  }
+
+  override func tearDown() {
+    pasteboard.releaseGlobally()
+    pasteboard = nil
+    try? FileManager.default.removeItem(at: directory)
+    super.tearDown()
+  }
+
+  func testTheCopyReportsWhetherTheTextLanded() throws {
+    let store = DictationHistoryStore(
+      fileURL: directory.appendingPathComponent("dictation-history.json"))
+    let id = try XCTUnwrap(store.record(text: "Ship the drawer fix"))
+    let controller = DictationController(review: StubReviewPresenter(), historyStore: store)
+
+    XCTAssertTrue(controller.copyDictationHistory(id, to: pasteboard))
+    XCTAssertEqual(pasteboard.string(forType: .string), "Ship the drawer fix")
+
+    XCTAssertFalse(
+      controller.copyDictationHistory(UUID(), to: pasteboard),
+      "a copy of an entry that is not there claimed success")
   }
 }
