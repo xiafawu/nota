@@ -379,6 +379,40 @@ final class HUDPanelLayoutTests: XCTestCase {
     XCTAssertFalse(drag.isDragging)
   }
 
+  /// **`update` actually asks the drag.** `animatesFrameChange(isDragging:)`
+  /// and `rebaseDragAnchor()` are each pinned above, but both are worth nothing
+  /// if `update` stops passing the drag in: the parameter defaults to false, so
+  /// dropping it compiles and every resize mid-drag animates under the pointer
+  /// again. `update` cannot be driven here — it reads the real mouse button —
+  /// so the wiring is read from the source. Whitespace is collapsed so a
+  /// reformat does not fail it; a removed argument does.
+  func testUpdateWithholdsTheClampAndTheAnimationAndRebasesWhileDragging() throws {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("DictationHUDPanel.swift")
+    let source = try String(contentsOf: url, encoding: .utf8)
+    let start = try XCTUnwrap(
+      source.range(of: "  func update(\n"), "could not find update in DictationHUDPanel.swift")
+    let end = try XCTUnwrap(
+      source.range(of: "\n  }\n", range: start.upperBound..<source.endIndex))
+    let body = String(source[start.upperBound..<end.lowerBound])
+      .split(whereSeparator: \.isWhitespace).joined(separator: " ")
+
+    XCTAssertTrue(
+      body.contains("let isDragging = dragView.isDragging"),
+      "update no longer asks the drag view whether a drag is under way")
+    XCTAssertTrue(
+      body.contains("if !isDragging { frame = Self.clamped("),
+      "update clamps a dragged panel back toward the frame the drag is leaving")
+    XCTAssertTrue(
+      body.contains("isVisible: isVisible, isDragging: isDragging )"),
+      "update no longer tells animatesFrameChange about the drag, so growth animates under the pointer")
+    XCTAssertTrue(
+      body.contains("if isDragging { dragView.rebaseDragAnchor() }"),
+      "a resize mid-drag no longer rebases the drag, so the next drag event snaps the panel back")
+  }
+
   /// A window frame placed with `reservedHeight` and then grown to the cap the
   /// way `DictationHUDPanel.update` grows it: origin fixed, height up, bottom
   /// edge pinned.
