@@ -262,6 +262,12 @@ struct DictationMenuBarView: View {
 /// copies; hover replaces the status text with "↩ Insert Again" and the same
 /// click then retries insertion into the focused app. No ⌥-click modifier —
 /// the hover state is the visible mode switch.
+///
+/// A keyboard or VoiceOver press never hovers, so it always copies, and
+/// Insert Again had no route at all without a pointer (PT-3, FS-1, KB-5). Both
+/// verbs are therefore named accessibility actions on the row, mirroring the
+/// two the row already shows; the hover switch itself is untouched, and
+/// whether a pointer click should copy is the owner's question.
 private struct RecentDictationRow: View {
   let entry: DictationHistoryEntry
   let onCopy: () -> Void
@@ -315,6 +321,8 @@ private struct RecentDictationRow: View {
     .onHover { isHovering = $0 }
     .help(isHovering ? "Insert again into the focused app" : "Copy the text")
     .accessibilityLabel("\(entry.text). \(entry.status.label). \(entry.targetLabel).")
+    .accessibilityAction(named: "Copy") { onCopy() }
+    .accessibilityAction(named: "Insert Again") { onInsertAgain() }
   }
 }
 

@@ -600,6 +600,16 @@ struct EditableTagRow: View {
 ///
 /// `hovering` seeds the state so the invariant can be laid out both ways in a
 /// test (`testATagPillIsTheSameWidthHoveredAndNot`); nothing in the app passes it.
+///
+/// **Removing a tag is not a pointer-only verb** (PT-5, KB-7). The × is drawn
+/// and hit-testable only under the pointer, so keyboard and VoiceOver users
+/// could add a tag and never remove one. The pill is therefore ONE accessible
+/// element — the tag's name — carrying a named "Remove tag" action that runs
+/// the same `onRemove` as the ×. `.ignore`, not `.combine`: combining would
+/// fold the × button in as the element's *default* action, so the plain
+/// activate gesture on a tag's name would delete it. Nothing visible changes;
+/// when the × is drawn is still E2's (hover only), and a focus reveal is the
+/// owner's call.
 struct RemovableTagChip: View {
   let tag: String
   let onRemove: () -> Void
@@ -638,7 +648,13 @@ struct RemovableTagChip: View {
       }
       .onHover { isHovering = $0 }
       .animation(Tokens.animSnap, value: isHovering)
+      .accessibilityElement(children: .ignore)
+      .accessibilityLabel(tag)
+      .accessibilityAction(named: Self.removeActionName) { onRemove() }
   }
+
+  /// The named accessibility action that removes this tag.
+  static let removeActionName = "Remove tag"
 }
 
 /// Always-visible dashed "+ add tag" chip; clicking reveals an inline field

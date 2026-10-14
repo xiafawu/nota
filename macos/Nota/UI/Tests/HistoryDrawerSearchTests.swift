@@ -152,6 +152,22 @@ final class HistoryRowAvailabilityTests: XCTestCase {
       "Open this transcript"
     )
   }
+
+  /// **Pin is reachable without a pointer** (KB-7). On an unpinned row the pin
+  /// button is drawn only under the pointer, so the row's own element carries
+  /// the verb by name, in the word its tooltip already uses.
+  func testPinIsANamedActionOnTheRow() throws {
+    XCTAssertEqual(HistoryRowAvailability.pinActionName(isPinned: false), "Pin")
+    XCTAssertEqual(HistoryRowAvailability.pinActionName(isPinned: true), "Unpin")
+    let source = drawerUISource("HistoryDrawerView.swift")
+    let start = try XCTUnwrap(source.range(of: "private struct HistoryDrawerRow: View {"))
+    let end = try XCTUnwrap(source.range(of: "\n}\n", range: start.upperBound..<source.endIndex))
+    let row = String(source[start.lowerBound..<end.upperBound])
+    XCTAssertTrue(
+      row.contains(
+        ".accessibilityAction(named: HistoryRowAvailability.pinActionName(isPinned: isPinned))"),
+      "pinning a transcript is a pointer-only verb again")
+  }
 }
 
 // MARK: - Dictation rows (PT-6, FB-6)
@@ -182,7 +198,7 @@ final class DictationRowTests: XCTestCase {
   /// read from the source: a plain Button whose label is the inner stack, no
   /// tap gesture left anywhere in the row, and Insert Again outside it.
   func testTheRowIsAButtonAndNotATapGesture() throws {
-    let source = Self.uiSource("HistoryDrawerView.swift")
+    let source = drawerUISource("HistoryDrawerView.swift")
     let start = try XCTUnwrap(source.range(of: "private func dictationRow("))
     let end = try XCTUnwrap(
       source.range(
@@ -201,16 +217,16 @@ final class DictationRowTests: XCTestCase {
       plain.lowerBound, insertAgain.lowerBound,
       "Insert Again is inside the expanding Button — a button may not hold buttons")
   }
+}
 
-  /// A UI source file, found relative to this test's own path. The test target
-  /// copies no resources, so a bundle lookup would silently resolve to nil.
-  private static func uiSource(_ name: String) -> String {
-    let url = URL(fileURLWithPath: #filePath)
-      .deletingLastPathComponent()
-      .deletingLastPathComponent()
-      .appendingPathComponent(name)
-    let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
-    XCTAssertFalse(text.isEmpty, "could not read \(name) beside this test")
-    return text
-  }
+/// A UI source file, found relative to this test's own path. The test target
+/// copies no resources, so a bundle lookup would silently resolve to nil.
+private func drawerUISource(_ name: String) -> String {
+  let url = URL(fileURLWithPath: #filePath)
+    .deletingLastPathComponent()
+    .deletingLastPathComponent()
+    .appendingPathComponent(name)
+  let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+  XCTAssertFalse(text.isEmpty, "could not read \(name) beside this test")
+  return text
 }

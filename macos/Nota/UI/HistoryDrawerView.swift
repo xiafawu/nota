@@ -584,6 +584,12 @@ enum HistoryRowAvailability {
   static func help(isRunning: Bool) -> String {
     isRunning ? "Busy — a transcription is running" : "Open this transcript"
   }
+
+  /// The named accessibility action that mirrors the row's pin button — the
+  /// same word its tooltip uses.
+  static func pinActionName(isPinned: Bool) -> String {
+    isPinned ? "Unpin" : "Pin"
+  }
 }
 
 private struct HistoryDrawerRow: View {
@@ -648,6 +654,13 @@ private struct HistoryDrawerRow: View {
       }
       .buttonStyle(.plain)
       .disabled(!canOpen)
+      // Pin without a pointer (KB-7). On an unpinned row the pin button is
+      // drawn only under the pointer, so keyboard and VoiceOver users could
+      // never pin; the row's own element carries the verb by name instead.
+      // Nothing visible changes — the pin still appears on hover.
+      .accessibilityAction(named: HistoryRowAvailability.pinActionName(isPinned: isPinned)) {
+        onTogglePin()
+      }
 
       // Hover actions live OUTSIDE the open button so they never double-fire.
       HStack(spacing: 2) {

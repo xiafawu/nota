@@ -134,3 +134,29 @@ final class DictationHistoryCopyTests: XCTestCase {
       "a copy of an entry that is not there claimed success")
   }
 }
+
+/// **Both verbs on a recent dictation are reachable without a pointer**
+/// (PT-3, FS-1, KB-5). The menu-bar row picks its verb by hover (decision 24),
+/// and a keyboard or VoiceOver press never hovers — so it always copied and
+/// Insert Again had no route at all. Read from the source: the row is private,
+/// and SwiftUI publishes no accessibility tree for an unhosted hosting view.
+final class RecentDictationRowAccessibilityTests: XCTestCase {
+  func testCopyAndInsertAgainAreNamedActionsOnTheRow() throws {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("DictationMenuBarView.swift")
+    let source = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    let start = try XCTUnwrap(
+      source.range(of: "private struct RecentDictationRow: View {"),
+      "could not find the recent-dictation row in DictationMenuBarView.swift")
+    let end = try XCTUnwrap(source.range(of: "\n}\n", range: start.upperBound..<source.endIndex))
+    let row = String(source[start.lowerBound..<end.upperBound])
+    XCTAssertTrue(
+      row.contains(".accessibilityAction(named: \"Insert Again\") { onInsertAgain() }"),
+      "Insert Again is reachable only by a pointer hovering the row")
+    XCTAssertTrue(
+      row.contains(".accessibilityAction(named: \"Copy\") { onCopy() }"),
+      "Copy is not named on the row")
+  }
+}

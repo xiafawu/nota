@@ -367,6 +367,29 @@ final class ReadingColumnTests: XCTestCase {
         + "chip after it on the row moves when the pointer arrives")
   }
 
+  /// **A tag can be removed without a pointer** (PT-5, KB-7).
+  ///
+  /// The × is drawn and hit-testable only under the pointer (E2), so a
+  /// keyboard or VoiceOver user could add a tag and never remove one. The pill
+  /// carries the verb as a named accessibility action instead, with no visual
+  /// change. Read from the source because SwiftUI publishes no accessibility
+  /// tree for an unhosted hosting view; `.ignore` rather than `.combine` is
+  /// part of the claim, since combining would make the × the element's
+  /// default action and the plain activate gesture on a tag would delete it.
+  func testATagCanBeRemovedWithoutThePointer() throws {
+    XCTAssertEqual(RemovableTagChip.removeActionName, "Remove tag")
+    let source = Self.uiSource("DocumentHeaderView.swift")
+    let start = try XCTUnwrap(source.range(of: "struct RemovableTagChip: View {"))
+    let end = try XCTUnwrap(source.range(of: "\n}\n", range: start.upperBound..<source.endIndex))
+    let chip = String(source[start.lowerBound..<end.upperBound])
+    XCTAssertTrue(
+      chip.contains(".accessibilityAction(named: Self.removeActionName) { onRemove() }"),
+      "removing a tag is a pointer-only verb again")
+    XCTAssertTrue(
+      chip.contains(".accessibilityElement(children: .ignore)"),
+      "the tag pill is not one element — its × can become the default action")
+  }
+
   /// **A speaker suggestion is the only chip state that asks anything.**
   ///
   /// Putting the chips behind a button costs exactly one thing: they are the
