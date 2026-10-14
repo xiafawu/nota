@@ -1556,6 +1556,17 @@ enum LiveTranscriptFollow {
     var distanceFromBottom: CGFloat { contentHeight - containerHeight - offsetY }
   }
 
+  /// How far past the rest an upward move has to land before it counts as the
+  /// owner leaving (TP-1).
+  ///
+  /// Not measured, and not the owner's: a tolerance. The follow's own landing
+  /// is pixel-snapped, so it can come to rest up to a pixel off `restDistance`
+  /// — and a pixel is a whole point on a 1x display. The 0.5 this replaced was
+  /// inside that error, so the follow's own `scrollTo` could read as the owner
+  /// scrolling away and bring up the jump-to-newest pill. A deliberate nudge
+  /// is a few trackpad points and still clears 2.
+  static let leaveMargin: CGFloat = 2
+
   /// The new following flag.
   ///
   /// - Parameters:
@@ -1591,7 +1602,7 @@ enum LiveTranscriptFollow {
     // up to the rest, and that must not read as the owner leaving. A rubber band
     // settling from an overscroll never gets past the rest either.
     if let previous, ownerMovedTheOffset, new.offsetY < previous.offsetY,
-      new.distanceFromBottom > restDistance + 0.5
+      new.distanceFromBottom > restDistance + leaveMargin
     {
       return false
     }

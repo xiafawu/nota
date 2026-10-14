@@ -2226,7 +2226,11 @@ as a question the surface is still asking.
   content below the newest row and `scrollTo(anchor: .bottom)` aligns the row,
   so the follow's own scroll lifting an offset the owner left in the padding
   back up to the rest must not read as leaving; nor does a rubber band settling.
-  The cost, accepted: a nudge of a point or two brings up the jump-to-newest
+  "Past the rest" means past it by `LiveTranscriptFollow.leaveMargin` (2pt), a
+  tolerance rather than a measurement: the follow's own landing is
+  pixel-snapped and can settle a point or so off the rest on a 1x display, and
+  the 0.5 that margin replaced read that as the owner leaving. The cost,
+  accepted: a deliberate nudge of more than 2pt brings up the jump-to-newest
   pill. It is a geometry rule rather than a scroll-phase one
   (`onScrollPhaseChange`), because nothing in this bundle can check how a
   non-animated `proxy.scrollTo` reports its phase or which of the two callbacks

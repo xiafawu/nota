@@ -1912,6 +1912,34 @@ final class RecordingPaneTests: XCTestCase {
       "a rubber band settling from an overscroll switched the follow off")
   }
 
+  /// **The follow's own landing is not the owner leaving, even a pixel off**
+  /// (TP-1). `scrollTo` lands pixel-snapped, so the offset can settle a point
+  /// or so past the rest on a 1x display; a margin of 0.5 read that as an
+  /// upward move by the owner and switched the follow off. A deliberate 5pt
+  /// nudge still clears the margin.
+  func testASettleAPixelPastTheRestKeepsTheFollowAndANudgeStillStopsIt() {
+    let rest = RecordingPaneMetrics.transcriptPaddingV
+    let margin = LiveTranscriptFollow.leaveMargin
+    XCTAssertLessThan(
+      rest + margin, RecordingPaneMetrics.followSlack,
+      "the margin reaches past the slack, so a settle inside it proves nothing")
+    func at(offset: CGFloat) -> LiveTranscriptFollow.Geometry {
+      .init(offsetY: offset, contentHeight: 1000, containerHeight: 400)
+    }
+    func decide(from previous: CGFloat, to new: CGFloat) -> Bool {
+      LiveTranscriptFollow.decide(
+        following: true, previous: at(offset: previous), new: at(offset: new),
+        slack: RecordingPaneMetrics.followSlack, restDistance: rest)
+    }
+
+    XCTAssertTrue(
+      decide(from: 600 - rest, to: 600 - rest - 1.5),
+      "a 1.5pt pixel-snapped settle past the rest switched the follow off")
+    XCTAssertFalse(
+      decide(from: 600 - rest, to: 600 - rest - 5),
+      "a deliberate 5pt nudge up from the rest kept the follow")
+  }
+
   /// …and scrolling back down resumes it. This is the gesture's way back; the
   /// jump-to-newest pill (`SessionJumpToNewestControl`, ADR 0007) is the other.
   func testScrollingBackToTheBottomResumesTheFollow() {
