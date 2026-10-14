@@ -2973,7 +2973,8 @@ site, not the machine.
   admits whatever conforms to it — measured, `public.mpeg-4` offers .m4v and
   `org.xiph.ogg-audio` offers .opus and .oga — so the panel also carries a
   delegate (`OpenPanelGate` → `FileIntake.enablesInOpenPanel`) that greys out
-  any item `isSupported` refuses, folders excepted. `.qta` stays
+  any item `isSupported` refuses, folders excepted (a package such as an .app
+  is a file to the panel, so it is not excepted). `.qta` stays
   openable whatever the system declares — `.data` is the last resort for an
   undeclared type, safe because both `accept` and the panel's gate check the
   extension itself.

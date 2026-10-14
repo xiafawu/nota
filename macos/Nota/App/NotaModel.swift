@@ -116,14 +116,17 @@ enum HistoryDrawerTab: String, CaseIterable, Identifiable {
 
 /// ⌘O's second gate (PT-2): greys out what `accept` would refuse, through
 /// `FileIntake.enablesInOpenPanel`. The decision is there; this only reads
-/// the one fact the decision needs from the disk.
+/// the one fact the decision needs from the disk. A package (an .app, an
+/// .rtfd) is a directory on disk and a file to the panel, so it does not
+/// count as one: enabling it would leave its refusal to the panel's type
+/// filter alone, an AND with this delegate nobody here has measured.
 @MainActor
 private final class OpenPanelGate: NSObject, NSOpenSavePanelDelegate {
   func panel(_ sender: Any, shouldEnable url: URL) -> Bool {
-    FileIntake.enablesInOpenPanel(
-      url,
-      isDirectory: (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
-    )
+    FileIntake.enablesInOpenPanel(url, isDirectory: {
+      let values = try? url.resourceValues(forKeys: [.isDirectoryKey, .isPackageKey])
+      return values?.isDirectory == true && values?.isPackage != true
+    }())
   }
 }
 

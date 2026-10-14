@@ -238,6 +238,12 @@ final class FileIntakeTests: XCTestCase {
       Self.body(of: "private final class OpenPanelGate", in: model)
         .contains("FileIntake.enablesInOpenPanel("),
       "the gate decides something other than what accept checks")
+    // A package is a folder on disk and a file in the panel: it must not
+    // ride the folder exemption past the extension check.
+    XCTAssertTrue(
+      Self.body(of: "private final class OpenPanelGate", in: model)
+        .contains("values?.isPackage != true"),
+      "a package (.app, .rtfd) is enabled as if it were a folder")
   }
 
   /// Three files dropped at once: the first was taken and the other two
