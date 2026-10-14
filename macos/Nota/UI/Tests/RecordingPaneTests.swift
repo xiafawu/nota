@@ -1871,6 +1871,47 @@ final class RecordingPaneTests: XCTestCase {
     )
   }
 
+  /// **A slow scroll up stops the follow even inside the slack** (TP-1). Each
+  /// trackpad event moves the view a few points, so a tentative scroll never
+  /// clears the slack between two rewrites of the volatile tail, and with the
+  /// slack asked first every rewrite snapped the view back under the owner's
+  /// fingers. The slack is the way *back*; an upward move past where the follow
+  /// rests is the owner leaving.
+  ///
+  /// Two moves that look alike and are not the owner leaving stay following:
+  /// the follow's own `scrollTo` lifting an offset left in the padding back up
+  /// to its rest (the audit's first fix, `distance > 0.5`, read that as leaving
+  /// and broke the resume), and a rubber band settling from an overscroll.
+  func testASlowScrollUpStopsTheFollowInsideTheSlack() {
+    let rest = RecordingPaneMetrics.transcriptPaddingV
+    XCTAssertLessThan(
+      rest, RecordingPaneMetrics.followSlack,
+      "the follow rests outside its own slack, so this rule could never resume")
+    func at(offset: CGFloat) -> LiveTranscriptFollow.Geometry {
+      .init(offsetY: offset, contentHeight: 1000, containerHeight: 400)
+    }
+    func decide(from previous: CGFloat, to new: CGFloat) -> Bool {
+      LiveTranscriptFollow.decide(
+        following: true, previous: at(offset: previous), new: at(offset: new),
+        slack: RecordingPaneMetrics.followSlack, restDistance: rest)
+    }
+
+    let nudged = at(offset: 600 - rest - 5)
+    XCTAssertLessThan(
+      nudged.distanceFromBottom, RecordingPaneMetrics.followSlack,
+      "the nudge has to stay inside the slack, or this proves nothing")
+    XCTAssertFalse(
+      decide(from: 600 - rest, to: 600 - rest - 5),
+      "a 5pt scroll up from the rest kept the follow, so the next rewrite snaps it back")
+
+    XCTAssertTrue(
+      decide(from: 600, to: 600 - rest),
+      "the follow's own scrollTo, lifting the offset to its rest, switched the follow off")
+    XCTAssertTrue(
+      decide(from: 610, to: 603),
+      "a rubber band settling from an overscroll switched the follow off")
+  }
+
   /// …and scrolling back down resumes it. There is no control, so this is the
   /// only way back.
   func testScrollingBackToTheBottomResumesTheFollow() {

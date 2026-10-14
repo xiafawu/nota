@@ -2154,6 +2154,21 @@ as a question the surface is still asking.
   compares two geometries and switches the follow off only when the content and
   the container were the size they already were — i.e. only when the owner moved
   the offset themselves.
+  **The slack is the way back, not the way out** (TP-1). An upward move the
+  owner made stops the follow as soon as it passes where the follow *rests*,
+  even inside `followSlack`: asked first, the slack kept the follow on through a
+  slow two-finger scroll that never cleared one line between two rewrites of the
+  volatile tail, and every rewrite snapped the view back under the owner's
+  fingers. The rest is `transcriptPaddingV`, not zero, because that padding is
+  content below the newest row and `scrollTo(anchor: .bottom)` aligns the row,
+  so the follow's own scroll lifting an offset the owner left in the padding
+  back up to the rest must not read as leaving; nor does a rubber band settling.
+  The cost, accepted: a nudge of a point or two brings up the jump-to-newest
+  pill. It is a geometry rule rather than a scroll-phase one
+  (`onScrollPhaseChange`), because nothing in this bundle can check how a
+  non-animated `proxy.scrollTo` reports its phase or which of the two callbacks
+  lands first, and a phase gate wrong about either would make the fix a silent
+  no-op.
 - **The kind reaches the surface as one word, in the idle state.** The cluster
   draws no kind at all now, so `RecordingPaneCopy.kindLine` is read only by
   `idleView` — and it stays in `all(kind:controls:)`, which

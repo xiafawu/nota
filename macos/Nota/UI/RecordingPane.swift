@@ -1562,21 +1562,42 @@ enum LiveTranscriptFollow {
   ///   - previous: the geometry before the change; nil at session start, which
   ///     follows — the first row of a meeting is the newest line.
   ///   - new: the geometry after it.
-  ///   - slack: how near the bottom still counts as the bottom.
+  ///   - slack: how near the bottom still counts as the bottom, for
+  ///     **resuming** the follow.
+  ///   - restDistance: how far above the true bottom the follow comes to rest.
+  ///     `scrollToNewest` aligns the newest row's bottom with the visible
+  ///     bottom, and the transcript's vertical padding is content below that
+  ///     row — so the rest is `transcriptPaddingV`, not zero.
   static func decide(
     following: Bool,
     previous: Geometry?,
     new: Geometry,
-    slack: CGFloat
+    slack: CGFloat,
+    restDistance: CGFloat = RecordingPaneMetrics.transcriptPaddingV
   ) -> Bool {
-    // Landing within slack of the bottom always resumes the follow: it is the
-    // only way back, since there is no control.
-    if new.distanceFromBottom <= slack { return true }
-    guard let previous else { return true }
     // The owner moved the offset only if nothing else moved.
     let ownerMovedTheOffset =
-      new.contentHeight == previous.contentHeight
-      && new.containerHeight == previous.containerHeight
+      previous.map {
+        new.contentHeight == $0.contentHeight && new.containerHeight == $0.containerHeight
+      } ?? false
+    // **An upward move the owner made, past where the follow rests, stops it —
+    // inside the slack too** (TP-1). Checked before the slack, because the
+    // slack is the threshold for coming *back*: asked first, it kept the follow
+    // on through a slow two-finger scroll that never cleared one line between
+    // two rewrites of the volatile tail, and each rewrite snapped the view back
+    // to the bottom under the owner's fingers. Past the rest, not past zero: the
+    // follow's own `scrollTo` lifts an offset the owner left in the padding back
+    // up to the rest, and that must not read as the owner leaving. A rubber band
+    // settling from an overscroll never gets past the rest either.
+    if let previous, ownerMovedTheOffset, new.offsetY < previous.offsetY,
+      new.distanceFromBottom > restDistance + 0.5
+    {
+      return false
+    }
+    // Landing within slack of the bottom resumes the follow. It is the
+    // gesture's way back; the jump-to-newest control (ADR 0007) is the other.
+    if new.distanceFromBottom <= slack { return true }
+    guard previous != nil else { return true }
     return ownerMovedTheOffset ? false : following
   }
 }
@@ -1760,7 +1781,8 @@ struct LiveTranscriptView: View {
             following: isFollowing,
             previous: previous,
             new: new,
-            slack: RecordingPaneMetrics.followSlack
+            slack: RecordingPaneMetrics.followSlack,
+            restDistance: RecordingPaneMetrics.transcriptPaddingV
           )
         }
         .onChange(of: rows.count) { previousCount, _ in
