@@ -706,7 +706,17 @@ goes into a small floating card instead of the target app:
 - **⌘↩ and Escape come from a local key monitor**, not `.keyboardShortcut`
   alone: `NSTextView` answers `cancelOperation:` itself, so Escape would never
   reach a SwiftUI cancel button. The monitor is scoped to the panel's own events
-  and removed with it.
+  and removed with it. **Neither key is the card's while an input method is
+  composing** (`ReviewKeyRoute`, asked of the first responder's
+  `hasMarkedText()`): the monitor runs before the editor's
+  `NSTextInputContext`, so Escape pressed to back out of a Japanese or Chinese
+  conversion discarded the whole batch — every continuation and every edit —
+  as a side effect of a text-input gesture. Escape now goes on to the input
+  method. ⌘↩ is **refused with a beep** rather than passed on, and that is not
+  an inconsistency: a ⌘-modified key reaches the key window's
+  `performKeyEquivalent` — the Apply button's own shortcut — before any
+  `keyDown`, so handing it on would apply the half-typed word by the button
+  instead of by the monitor. Return commits the composition; ⌘↩ then applies.
 - **The pill stands down** while the panel is open (`isReviewing` short-circuits
   `HUDState.compute`). Two pieces of feedback for one session is one too many,
   and the pill's success snippet would claim an insertion that has not happened.

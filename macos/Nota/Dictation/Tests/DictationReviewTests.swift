@@ -1699,6 +1699,49 @@ final class ReviewPanelLayoutTests: XCTestCase {
   }
 }
 
+// MARK: - The key monitor's routing
+
+/// The card's key monitor runs before the editor's input method, so the two
+/// keys it claims have to be handed back while a composition is open. Escape
+/// there is the input method's "back out of this conversion"; taken by the
+/// card it discarded the whole batch.
+final class ReviewKeyRouteTests: XCTestCase {
+  private let escape = ReviewKeyRoute.escapeKeyCode
+  private let returnKey = ReviewKeyRoute.returnKeyCode
+
+  func testOutsideACompositionTheCardKeepsItsTwoKeys() {
+    XCTAssertEqual(ReviewKeyRoute.route(keyCode: escape, command: false, hasMarkedText: false), .discard)
+    XCTAssertEqual(ReviewKeyRoute.route(keyCode: returnKey, command: true, hasMarkedText: false), .primary)
+  }
+
+  func testEscapeDuringACompositionGoesToTheInputMethodNotToDiscard() {
+    XCTAssertEqual(
+      ReviewKeyRoute.route(keyCode: escape, command: false, hasMarkedText: true),
+      .toEditor,
+      "cancelling a conversion must not throw the batch away"
+    )
+  }
+
+  /// Not handed on: a ⌘-modified key reaches the Apply button's own shortcut
+  /// through `performKeyEquivalent` before the input method sees it, so passing
+  /// it through would apply the half-typed buffer by another route.
+  func testCommandReturnDuringACompositionIsRefusedRatherThanApplied() {
+    XCTAssertEqual(ReviewKeyRoute.route(keyCode: returnKey, command: true, hasMarkedText: true), .refuse)
+  }
+
+  /// Plain Return is how a composition is committed, and is the editor's key
+  /// in every state.
+  func testAPlainReturnIsAlwaysTheEditors() {
+    XCTAssertEqual(ReviewKeyRoute.route(keyCode: returnKey, command: false, hasMarkedText: true), .toEditor)
+    XCTAssertEqual(ReviewKeyRoute.route(keyCode: returnKey, command: false, hasMarkedText: false), .toEditor)
+  }
+
+  func testEveryOtherKeyIsTheEditors() {
+    XCTAssertEqual(ReviewKeyRoute.route(keyCode: 0, command: false, hasMarkedText: false), .toEditor)
+    XCTAssertEqual(ReviewKeyRoute.route(keyCode: 0, command: true, hasMarkedText: true), .toEditor)
+  }
+}
+
 // MARK: - The presenter
 
 /// Every route out of the panel has to deliver exactly one decision. The close

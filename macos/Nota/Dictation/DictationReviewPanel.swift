@@ -180,6 +180,54 @@ enum ReviewDraftMetrics {
   }
 }
 
+// MARK: - ReviewKeyRoute
+
+/// What the card's key monitor does with one key-down, decided without a
+/// window: the monitor reads three facts off the event and the panel and acts
+/// on the answer.
+///
+/// The monitor runs inside `NSApplication.sendEvent`, before the editor's
+/// `NSTextInputContext` sees anything. So while an input method is composing —
+/// a Japanese or Chinese conversion with its candidate window open — the two
+/// keys the card claims belong to the input method first, not to the batch.
+/// Escape there means "back out of this conversion"; taken by the card it threw
+/// away every continuation and every edit in the box, the one place a session's
+/// text can be thrown away after it was recognized. ⌘↩ there applied a buffer
+/// with a word still half-typed in it.
+enum ReviewKeyRoute: Equatable {
+  /// Escape: `model.discard()`, which is itself refused while a session records.
+  case discard
+  /// ⌘↩: `model.primaryAction()` — Finish while recording, Apply otherwise.
+  case primary
+  /// Not the card's key, or not the card's key *yet*: the event goes on to the
+  /// editor untouched. Escape mid-composition is here, and reaches the input
+  /// method through `keyDown` → `interpretKeyEvents` like any other key.
+  case toEditor
+  /// ⌘↩ mid-composition: swallowed with a beep, and nothing is applied.
+  ///
+  /// Not `toEditor`, because handing it on does not reach the input method. A
+  /// ⌘-modified key-down goes to the key window's `performKeyEquivalent` before
+  /// any `keyDown`, which is where the Apply button's own `.keyboardShortcut`
+  /// lives — so "passing it through" would apply the half-typed buffer by the
+  /// button instead of by the monitor. Return (no ⌘) commits a composition;
+  /// ⌘↩ after it applies.
+  case refuse
+
+  static let escapeKeyCode: UInt16 = 53
+  static let returnKeyCode: UInt16 = 36
+
+  static func route(keyCode: UInt16, command: Bool, hasMarkedText: Bool) -> ReviewKeyRoute {
+    switch keyCode {
+    case escapeKeyCode:
+      return hasMarkedText ? .toEditor : .discard
+    case returnKeyCode where command:
+      return hasMarkedText ? .refuse : .primary
+    default:
+      return .toEditor
+    }
+  }
+}
+
 // MARK: - Presenting
 
 /// One review's contract with whatever shows it.
@@ -477,19 +525,31 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
   /// shortcut and the button cannot drift apart. They did not differ in code
   /// when ⌘↩ was dropping text (that was the physically-held ⌘ — see
   /// `ModifierClearance`), and this is what keeps that true.
+  ///
+  /// Neither key is the card's while an input method is composing in the
+  /// editor (`ReviewKeyRoute`): Escape goes on to the input method, and ⌘↩ is
+  /// refused rather than applying a buffer with a half-typed word in it.
   private func installKeyMonitor(for panel: NSPanel) {
     removeKeyMonitor()
     keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self, weak panel] event in
       guard let self, let panel, event.window === panel else { return event }
       let flags = event.modifierFlags.intersection(.deviceIndependentFlagsMask)
-      switch event.keyCode {
-      case 53: // Escape
+      let composing = (panel.firstResponder as? NSTextInputClient)?.hasMarkedText() == true
+      switch ReviewKeyRoute.route(
+        keyCode: event.keyCode,
+        command: flags.contains(.command),
+        hasMarkedText: composing
+      ) {
+      case .discard:
         self.model.discard()
         return nil
-      case 36 where flags.contains(.command): // Return
+      case .primary:
         self.model.primaryAction()
         return nil
-      default:
+      case .refuse:
+        NSSound.beep()
+        return nil
+      case .toEditor:
         return event
       }
     }
