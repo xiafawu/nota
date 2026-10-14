@@ -3009,7 +3009,12 @@ site, not the machine.
   a card that is already up. The slider itself commits on mouse-up rather than
   per frame: this pane saves and calls `reloadSettings()` on every change, which
   restarts the hotkey event tap, and neither floating surface is on screen while
-  Settings is — so a live preview would cost keystrokes for nothing.
+  Settings is — so a live preview would cost keystrokes for nothing. Only a
+  **pointer drag** is deferred (`GlassOpacityWrite`, keyed on the slider's own
+  editing callbacks): any other write is saved as it happens, because a draft
+  saved only on editing-end would be lost for an adjustment that never sends
+  one, and whether keyboard or VoiceOver steps do is unverified (TP-10,
+  hardening).
 - **All three floating panels arrive and leave through one fade** —
   `PanelMotion`, beside `HUDGlassMetrics` in `FloatingGlass.swift`. The numbers
   are the pill's, unchanged (`panelFadeIn` 0.2, `panelFadeOut` 0.18, an 8pt

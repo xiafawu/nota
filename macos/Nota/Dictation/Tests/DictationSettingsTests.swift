@@ -94,6 +94,18 @@ final class DictationSettingsStoreTests: XCTestCase {
     // owner's saved settings (2026-07-28: polish model, HUD style).
     XCTAssertNotEqual(DictationSettingsStore.defaults, UserDefaults.standard)
   }
+
+  /// **Only a pointer drag of the Glass opacity slider is held as a draft**
+  /// (TP-10, hardening). The draft is saved on the slider's editing-end, so a
+  /// write that arrives with no drag in progress has no editing-end coming to
+  /// save it — it goes straight to settings, or a keyboard or VoiceOver step
+  /// would move the knob and be thrown away when Settings closed.
+  func testOnlyAPointerDragOfTheGlassSliderIsHeldAsADraft() {
+    XCTAssertEqual(GlassOpacityWrite.route(0.4, isDragging: true), .holdDraft(0.4))
+    XCTAssertEqual(
+      GlassOpacityWrite.route(0.4, isDragging: false), .save(0.4),
+      "a write outside a drag was held for an editing-end that may never come")
+  }
 }
 
 final class PolishClientErrorTests: XCTestCase {

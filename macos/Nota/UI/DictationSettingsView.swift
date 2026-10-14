@@ -11,6 +11,10 @@ struct DictationSettingsView: View {
   /// The glass slider mid-drag; nil when it is not being dragged. See
   /// `hudSection`.
   @State private var glassOpacityDraft: Double?
+  /// Whether a pointer drag of the glass slider is in progress — set by the
+  /// slider's own editing callbacks, and the only time a write is held as a
+  /// draft rather than saved (`GlassOpacityWrite`).
+  @State private var isDraggingGlassOpacity = false
 
   var body: some View {
     Form {
@@ -239,7 +243,8 @@ struct DictationSettingsView: View {
       // `reloadSettings()` on every change — which restarts the hotkey event tap.
       // Doing that at slider-drag frame rate would cost the owner keystrokes for
       // a preview they cannot see anyway: neither floating surface is on screen
-      // while Settings is.
+      // while Settings is. Only a pointer drag is deferred; a write outside one
+      // (a keyboard or VoiceOver step, say) is saved as it happens.
       Slider(
         value: glassOpacityBinding,
         in: GlassTint.range,
@@ -247,6 +252,7 @@ struct DictationSettingsView: View {
         minimumValueLabel: { Text("Clear").settingsCaptionFont() },
         maximumValueLabel: { Text("Solid").settingsCaptionFont() },
         onEditingChanged: { editing in
+          isDraggingGlassOpacity = editing
           guard !editing, let value = glassOpacityDraft else { return }
           glassOpacityDraft = nil
           settings.hudGlassOpacity = value
@@ -275,11 +281,36 @@ struct DictationSettingsView: View {
   // MARK: - Helpers
 
   /// Reads the drag while there is one and the saved value otherwise, so the
-  /// knob follows the pointer without a save behind every frame of it.
+  /// knob follows the pointer without a save behind every frame of it. A write
+  /// outside a pointer drag is saved straight away (`GlassOpacityWrite`).
   private var glassOpacityBinding: Binding<Double> {
     Binding(
       get: { glassOpacityDraft ?? settings.hudGlassOpacity },
-      set: { glassOpacityDraft = $0 }
+      set: { value in
+        switch GlassOpacityWrite.route(value, isDragging: isDraggingGlassOpacity) {
+        case .holdDraft(let draft): glassOpacityDraft = draft
+        case .save(let saved): settings.hudGlassOpacity = saved
+        }
+      }
     )
+  }
+}
+
+/// Where one write from the Glass opacity slider lands (TP-10, hardening).
+///
+/// The save is deferred only for what the deferral was argued for: a pointer
+/// drag, where saving and `reloadSettings()` at frame rate would restart the
+/// hotkey event tap for a preview nobody can see. Every other write is saved
+/// as it happens. Before this, the binding only ever wrote the draft and the
+/// draft was saved only on the slider's editing-end — so an adjustment that
+/// never sends editing begin/end (whether Full Keyboard Access arrows or a
+/// VoiceOver increment do is framework behaviour, unverified) would move the
+/// knob and be thrown away when Settings closed.
+enum GlassOpacityWrite: Equatable {
+  case holdDraft(Double)
+  case save(Double)
+
+  static func route(_ value: Double, isDragging: Bool) -> GlassOpacityWrite {
+    isDragging ? .holdDraft(value) : .save(value)
   }
 }
