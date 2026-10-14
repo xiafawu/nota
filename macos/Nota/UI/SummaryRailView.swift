@@ -77,6 +77,9 @@ struct SummaryRailView: View {
   /// How tall the narrative reads when it is not being edited, so the editor
   /// can open at that height rather than jumping to a fixed minimum.
   @State private var narrativeHeight: CGFloat = 0
+  /// True while the tag row's add-tag field is open — the one inline editor
+  /// that shares this panel with Generate Summary. See `generateShortcut`.
+  @State private var isAddingTag = false
 
   // MARK: The details half's inputs
   //
@@ -458,7 +461,7 @@ struct SummaryRailView: View {
       }
 
       if let tagEditing {
-        EditableTagRow(state: tagEditing)
+        EditableTagRow(state: tagEditing, isAddingTag: $isAddingTag)
       } else if let meta, !meta.tags.isEmpty {
         FlowLayout(spacing: Metrics.tagSpacing, lineSpacing: Metrics.tagSpacing) {
           ForEach(meta.tags, id: \.self) { tag in
@@ -682,12 +685,26 @@ struct SummaryRailView: View {
       // Return reaches it. This is the one control in the panel that spends a
       // model call and it is otherwise mouse-only: the panel takes no initial
       // focus, and Escape (the hidden `.cancelAction`) was the only key wired
-      // to it. There is no editor in this state to compete for the key — the
-      // slot is drawn precisely when there is no narrative to edit.
-      .keyboardShortcut(.defaultAction)
+      // to it.
+      //
+      // Except while the add-tag field is open. This used to say there was no
+      // editor in this state to compete for the key, and that was false: the
+      // tag row is drawn whenever there is a record, which is exactly when this
+      // slot is, and Return in a single-line field also fires the window's
+      // default button — so adding a tag could start a paid summary run.
+      .keyboardShortcut(Self.generateShortcut(isAddingTag: isAddingTag))
     }
     .frame(maxWidth: .infinity, alignment: .leading)
     .padding(.vertical, 8)
+  }
+
+  /// Which key Generate Summary / Try Again answers to. `.defaultAction`
+  /// (Return) whenever no inline field in the panel is being typed into, and
+  /// none while the add-tag field is: a Return meant for a tag may never be a
+  /// press of the one button that spends money. Pure, so the gate is asserted
+  /// without a window.
+  static func generateShortcut(isAddingTag: Bool) -> KeyboardShortcut? {
+    isAddingTag ? nil : .defaultAction
   }
 
   /// True when the empty slot is empty *because* something went wrong, which

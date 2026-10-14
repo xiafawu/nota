@@ -1672,7 +1672,13 @@ inert to clicks), so it carries `.accessibilityAddTraits(.isModal)` and the
 backdrop is `.accessibilityHidden` — otherwise the assistive cursor goes on
 walking a transcript and a Details button nothing can reach. Generate Summary
 takes `.defaultAction`, since it is the one control that spends money and the
-panel takes no initial focus.
+panel takes no initial focus — **except while the add-tag field is open**
+(`SummaryRailView.generateShortcut(isAddingTag:)`). The tag row is drawn
+whenever there is a record, which is exactly when the Generate slot is, and a
+Return typed to commit a tag also pressed the window's default button: naming
+a tag started a paid summary run. The field's open state is owned by the panel
+for that reason (`EditableTagRow`'s `isAddingTag` binding), so the key can be
+let go of while someone is typing into the one field that shares it.
 
 **Opening the history drawer is a phase leave, and ⌘L was the one route that
 skipped the policy.** The drawer slid in *under* the rail's backdrop — drawn in

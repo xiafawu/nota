@@ -113,6 +113,22 @@ final class SummaryRailContentTests: XCTestCase {
     XCTAssertFalse(SummaryRailView.summaryIsInFlight(.idle))
   }
 
+  /// **Return in the add-tag field adds a tag and spends nothing** (KB-4).
+  ///
+  /// Generate Summary carries `.defaultAction`, and the tag row is drawn
+  /// whenever there is a record — which is exactly when the Generate slot is.
+  /// A Return typed to commit a tag also pressed the window's default button,
+  /// so naming a tag started a paid summary run. The comment beside the
+  /// shortcut said no editor could compete for the key; the tag field could.
+  func testReturnInTheTagFieldIsNotAPressOfGenerateSummary() {
+    XCTAssertNil(
+      SummaryRailView.generateShortcut(isAddingTag: true),
+      "Return meant for a tag still reaches the button that spends a model call")
+    XCTAssertEqual(
+      SummaryRailView.generateShortcut(isAddingTag: false), .defaultAction,
+      "Generate Summary lost its key when no field was open")
+  }
+
   /// **The panel does not state a document has no record while it is still
   /// looking.**
   ///

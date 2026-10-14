@@ -513,6 +513,11 @@ struct EnrichmentTagEditing {
 /// Internal for the reason `SpeakerChipStrip` is: the Details panel draws it.
 struct EditableTagRow: View {
   let state: EnrichmentTagEditing
+  /// True while the add-tag field is open. Owned by the Details panel, because
+  /// the panel's Generate Summary button holds Return (`.defaultAction`) and
+  /// has to let go of it while this field is the one being typed into. No
+  /// default: a constant here would be an add-tag chip that never opens.
+  let isAddingTag: Binding<Bool>
 
   @State private var showGenerateConfirm = false
 
@@ -535,7 +540,7 @@ struct EditableTagRow: View {
         } else {
           generateButton
         }
-        AddTagChip(onAdd: state.onAdd)
+        AddTagChip(onAdd: state.onAdd, isEditing: isAddingTag)
       }
       if let message = state.errorMessage {
         Label(message, systemImage: "exclamationmark.triangle")
@@ -641,8 +646,8 @@ struct RemovableTagChip: View {
 /// `InlineEditFocusLoss`).
 private struct AddTagChip: View {
   let onAdd: (String) -> Void
+  @Binding var isEditing: Bool
 
-  @State private var isEditing = false
   @State private var draft = ""
   @FocusState private var fieldFocused: Bool
 
