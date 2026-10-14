@@ -1,6 +1,7 @@
 import AppKit
 import Combine
 import SwiftUI
+import UserNotifications
 
 // MARK: - The seam
 
@@ -148,6 +149,25 @@ final class MiniRecorderIslandController {
   /// next session asks the window server again.
   private(set) var reportedUnavailable = false
 
+  /// Posts the once-per-run notification that the island is unavailable (FB-1).
+  ///
+  /// The status line `reportUnavailable` writes is drawn nowhere while a
+  /// session runs with Nota in the background — which is the only time the
+  /// island is asked for — so on its own the report reached nobody. The pill
+  /// already answers the same failure with a notification
+  /// (`DictationHUDController.postUnavailableNotification`); this is that
+  /// shape, for this surface. Injected so a test can count it; the live one
+  /// is inert under XCTest, because a unit bundle may not post on the owner's
+  /// machine and other tests reach this branch without injecting anything.
+  private let postUnavailableNotice: @MainActor () -> Void
+
+  /// Once per RUN, never cleared — unlike `reportedUnavailable`, which is per
+  /// session. A window server that refused one island will usually refuse the
+  /// next, and the notification says something that stays true: the session
+  /// is still recording and the menu bar still shows it. Saying it again every
+  /// session would be noise about a fault the owner already knows.
+  private(set) var postedUnavailableNotice = false
+
   /// `presenter` is optional rather than defaulted to a real one: a default
   /// argument expression is evaluated in a nonisolated context, and the real
   /// presenter is main-actor isolated. Same shape as
@@ -160,9 +180,13 @@ final class MiniRecorderIslandController {
     /// Injected by tests only. `start(model:)` installs the live pair when these
     /// are nil, and leaves injected ones alone.
     source: (@MainActor () -> IslandSource)? = nil,
-    verbs: IslandVerbs? = nil
+    verbs: IslandVerbs? = nil,
+    unavailableNotice: (@MainActor () -> Void)? = nil
   ) {
     self.presenter = presenter ?? MiniRecorderPresenter()
+    self.postUnavailableNotice = unavailableNotice ?? {
+      MiniRecorderIslandController.postUnavailableNotification()
+    }
     // `NSApp.isActive`, read at decision time and never cached — the same rule
     // `CompletionNotifier.appIsFrontmost` keeps, and the reason it is a closure
     // is that a test has no NSApplication to be active.
@@ -256,11 +280,46 @@ final class MiniRecorderIslandController {
         // where the owner is already looking — **once**.
         reportedUnavailable = true
         verbs?.reportUnavailable()
+        if !postedUnavailableNotice {
+          postedUnavailableNotice = true
+          postUnavailableNotice()
+        }
         stopTicking()
         return
       }
     }
     scheduleTick(inputs)
+  }
+
+  /// What the notification says. The island is the indicator that a session is
+  /// flowing, so the one thing its absence may not imply is that the session
+  /// stopped — the body says it did not, and where it is still shown.
+  static let unavailableNoticeTitle = "Recording indicator unavailable"
+  static let unavailableNoticeBody =
+    "Your session is still recording. The menu bar still shows it."
+
+  /// The live poster. Option B for this report (say it in the menu bar item
+  /// instead) is a swap of this one function.
+  private static func postUnavailableNotification() {
+    // An unhosted test bundle has no notification center to reach, and a test
+    // must never post on the owner's machine.
+    guard !FieldEngine.isUnderTest else { return }
+    Task {
+      let center = UNUserNotificationCenter.current()
+      guard let granted = try? await center.requestAuthorization(options: [.alert]),
+            granted
+      else { return }
+      let content = UNMutableNotificationContent()
+      content.title = unavailableNoticeTitle
+      content.body = unavailableNoticeBody
+      try? await center.add(
+        UNNotificationRequest(
+          identifier: "com.xiafawu.nota.recording.island-unavailable",
+          content: content,
+          trigger: nil
+        )
+      )
+    }
   }
 
   /// The owner's Glass opacity and material, read at the moment a card goes up.

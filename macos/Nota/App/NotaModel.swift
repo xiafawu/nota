@@ -1412,9 +1412,12 @@ final class NotaModel: ObservableObject {
     return sessionMarkers.markers.first
   }
 
-  /// The island could not be put on screen after one recreate. Said in the
-  /// status line because there is no island to say it on — the same reasoning
-  /// that puts a review card's failure back on the HUD pill.
+  /// The island could not be put on screen after one recreate. Recorded in the
+  /// status line because there is no island to say it on. The status line is
+  /// not on screen while Nota is in the background, though — the only time the
+  /// island is asked for — so the owner is TOLD by the controller's
+  /// once-per-run notification (`MiniRecorderIslandController
+  /// .postUnavailableNotice`, FB-1), not by this line.
   func reportIslandUnavailable() {
     let notice = "Recording indicator unavailable — the session is still running."
     // `status` is `@Published` and republishes on every assignment, including

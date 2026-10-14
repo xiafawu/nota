@@ -938,6 +938,7 @@ final class MiniRecorderIslandTests: XCTestCase {
     let presenter = StubIslandPresenter()
     presenter.succeeds = false
     var reports = 0
+    var notices = 0
     var spy = VerbSpy().verbs
     spy.reportUnavailable = { reports += 1 }
     var state = LiveMeetingSession.SessionState.recording
@@ -947,13 +948,18 @@ final class MiniRecorderIslandTests: XCTestCase {
       clock: { 100 },
       settings: { DictationSettings() },
       source: { .fake(state: state) },
-      verbs: spy
+      verbs: spy,
+      unavailableNotice: { notices += 1 }
     )
 
     for _ in 0..<25 { controller.refresh() }
     XCTAssertEqual(presenter.showAttempts, 1, "it kept building panels for a dead window server")
     XCTAssertEqual(reports, 1, "it kept rewriting the status line")
     XCTAssertTrue(controller.reportedUnavailable)
+    // FB-1: the status line is drawn nowhere while Nota is in the background,
+    // which is the only time the island is asked for — so the owner is told
+    // by a notification, exactly once.
+    XCTAssertEqual(notices, 1, "the owner was never told the island is missing")
 
     // The latch is per session: when there is nothing to show, it clears, and
     // the next session asks the window server again.
@@ -963,6 +969,22 @@ final class MiniRecorderIslandTests: XCTestCase {
     state = .recording
     controller.refresh()
     XCTAssertEqual(presenter.showAttempts, 2)
+    XCTAssertEqual(reports, 2)
+    // The notification is once per RUN: it says something still true (the
+    // session records, the menu bar shows it) about a fault already reported.
+    XCTAssertEqual(notices, 1, "a second failing session posted a second notification")
+  }
+
+  /// What the notification says may not read as "the session stopped" — the
+  /// island's absence is exactly what a stopped session looks like.
+  func testTheUnavailableNoticeSaysTheSessionIsStillRecording() {
+    XCTAssertEqual(
+      MiniRecorderIslandController.unavailableNoticeTitle,
+      "Recording indicator unavailable"
+    )
+    let body = MiniRecorderIslandController.unavailableNoticeBody
+    XCTAssertTrue(body.contains("still recording"))
+    XCTAssertTrue(body.contains("menu bar"))
   }
 
   /// The owner's Glass opacity reaches the island. It did not: the presenter
