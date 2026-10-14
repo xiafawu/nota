@@ -12,7 +12,8 @@
 set -euo pipefail
 
 XCODE_VERSION="$(xcodebuild -version | awk 'NR==1{ver=$2} END{print ver}')"
-if [[ ! "$XCODE_VERSION" =~ ^26 ]]; then
+XCODE_MAJOR="${XCODE_VERSION%%.*}"
+if [[ ! "$XCODE_MAJOR" =~ ^[0-9]+$ ]] || (( XCODE_MAJOR < 26 )); then
   echo "Error: Xcode 26+ required (found: $XCODE_VERSION)"
   exit 1
 fi
