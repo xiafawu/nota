@@ -654,14 +654,6 @@ private struct HistoryDrawerRow: View {
       }
       .buttonStyle(.plain)
       .disabled(!canOpen)
-      // Pin with VoiceOver or Switch Control (KB-7). On an unpinned row the
-      // pin button is drawn only under the pointer, so keyboard and VoiceOver
-      // users could never pin; the row's own element carries the verb by name
-      // instead. A named action does not reach Full Keyboard Access on its
-      // own. Nothing visible changes — the pin still appears on hover.
-      .accessibilityAction(named: HistoryRowAvailability.pinActionName(isPinned: isPinned)) {
-        onTogglePin()
-      }
 
       // Hover actions live OUTSIDE the open button so they never double-fire.
       HStack(spacing: 2) {
@@ -691,6 +683,22 @@ private struct HistoryDrawerRow: View {
     .animation(Tokens.animSnap, value: isHovered)
     .onHover { isHovered = $0 }
     .contentShape(Rectangle())
+    // Pin with VoiceOver or Switch Control (KB-7). On an unpinned row the
+    // pin button is drawn only under the pointer, so keyboard and VoiceOver
+    // users could never pin; the row carries the verb by name instead. A
+    // named action does not reach Full Keyboard Access on its own. Nothing
+    // visible changes — the pin still appears on hover.
+    //
+    // On the row, not on the open button: that button is `.disabled` while a
+    // transcription runs, and whether assistive tech still offers a disabled
+    // element's custom actions is not ours to decide (not measured) — so the
+    // one verb P-C8 promises stays live rode on the one element that is not.
+    // The row is a container, so the open and pin buttons inside it are still
+    // elements of their own.
+    .accessibilityElement(children: .contain)
+    .accessibilityAction(named: HistoryRowAvailability.pinActionName(isPinned: isPinned)) {
+      onTogglePin()
+    }
   }
 }
 
