@@ -124,8 +124,11 @@ final class NotaModel: ObservableObject {
   @Published var isDropTargeted = false
   /// The window's one alert (FB-1): a verb that did not do what the owner
   /// asked. Mounted once, in `ContentView`. Set only through
-  /// `presentOwnerAlert`, once per action — never on a tick.
+  /// `presentOwnerAlert`, once per action — never on a tick — and cleared by
+  /// the alert's own dismissal, which calls `ownerAlertDismissed`.
   @Published var ownerAlert: OwnerAlert?
+  /// What is on screen and what is waiting behind it, oldest first.
+  private var ownerAlerts = OwnerAlertQueue()
   @Published var identifySpeakers: Bool = (UserDefaults.standard.object(forKey: "identifySpeakers") as? Bool) ?? true {
     didSet { UserDefaults.standard.set(identifySpeakers, forKey: "identifySpeakers") }
   }
@@ -1801,10 +1804,23 @@ final class NotaModel: ObservableObject {
   /// destructive button of a confirmation dialog that is still dismissing, and
   /// a second presentation asked for in that same turn is one SwiftUI is
   /// entitled to drop. The hop lets the dialog finish leaving first.
+  ///
+  /// An alert raised while another is up waits its turn (`OwnerAlertQueue`)
+  /// rather than replacing the one the owner may be halfway through reading.
   func presentOwnerAlert(_ alert: OwnerAlert) {
     Task { @MainActor [weak self] in
+      guard let alert = self?.ownerAlerts.raise(alert) else { return }
       self?.ownerAlert = alert
     }
+  }
+
+  /// The alert on screen was dismissed (`ContentView` has already cleared
+  /// it). The next one waiting goes up through `presentOwnerAlert`, whose hop
+  /// is the same reason as above: a presentation asked for in the turn an
+  /// alert is leaving is one SwiftUI may drop.
+  func ownerAlertDismissed() {
+    guard let next = ownerAlerts.dismissCurrent() else { return }
+    presentOwnerAlert(next)
   }
 
   // `deleteHistory(_:)` is gone (XIA-436), and with it the drawer row's trash

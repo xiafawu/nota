@@ -261,7 +261,11 @@ The status line used to be the whole report, and it is drawn nowhere outside a
 run, so a delete that did not land read exactly like one that did. Delete
 Audio…, Delete Record… and Discard… each hand a failure to `NotaModel.ownerAlert`,
 the window's **one** alert, mounted once in `ContentView` — not on the surface
-that asked, because Discard takes its own pane down. The words are
+that asked, because Discard takes its own pane down. One mount is not one
+value: a report raised while another is still up waits behind it rather than
+replacing it (`OwnerAlertQueue`, oldest first, an exact repeat dropped), and
+dismissing one puts the next up after the same one-hop wait
+`presentOwnerAlert` uses. The words are
 `RecordingDeletionCopy.audioFailure` / `recordFailure` / `discardFailure`, and
 each says what failed, what is still on disk, and whether choosing the verb
 again can help. What is on disk is **asked after the failure** rather than

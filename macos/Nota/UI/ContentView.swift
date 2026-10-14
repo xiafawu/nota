@@ -173,12 +173,17 @@ struct ContentView: View {
     .navigationTitle(navigationTitle)
     // The window's one alert (FB-1). Mounted here rather than on the surface
     // that asked, because that surface can be gone by the time the answer is:
-    // a discard takes its own pane down.
+    // a discard takes its own pane down. A dismissal hands the turn to the
+    // next alert waiting, if any (`OwnerAlertQueue`).
     .alert(
       model.ownerAlert?.title ?? "",
       isPresented: Binding(
         get: { model.ownerAlert != nil },
-        set: { if !$0 { model.ownerAlert = nil } }
+        set: { presented in
+          guard !presented, model.ownerAlert != nil else { return }
+          model.ownerAlert = nil
+          model.ownerAlertDismissed()
+        }
       ),
       presenting: model.ownerAlert
     ) { _ in
