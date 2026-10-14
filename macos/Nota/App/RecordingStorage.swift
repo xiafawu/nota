@@ -385,11 +385,18 @@ extension RecordingStore {
         failure: nil
       )
     }
+    // The two failures are different events and get different words: before
+    // the unlink nothing went, after it the recording is gone and only the
+    // record's own rewrite failed. "Could not delete the audio" is false for
+    // the second.
+    let stillOnDisk = recordingStillOnDisk(record)
     return RecordingDeletionReport(
-      status: "Could not delete the audio",
+      status: stillOnDisk
+        ? "Could not delete the audio"
+        : "Deleted the audio, but could not update its record",
       failure: RecordingDeletionCopy.audioFailure(
         title: title,
-        recordingStillOnDisk: recordingStillOnDisk(record)
+        recordingStillOnDisk: stillOnDisk
       )
     )
   }
@@ -698,15 +705,29 @@ enum RecordingDeletionCopy {
   /// Each of these says what failed, what is still on disk, and whether
   /// choosing the verb again can help — and offers it only when it can.
 
+  /// The Delete Audio… verb is offered again only while the recording is still on disk.
+  /// Once the unlink has landed, nothing can repeat the step: the row's menu
+  /// measures the file, finds none and draws no delete button, `deleteAudio`
+  /// returns early on a record with no audio, and `nota history delete-audio`
+  /// skips any record whose file is gone before it reaches the primitive. So
+  /// that alert says what happened and names no retry — sending the owner to
+  /// a verb that silently does nothing is the false success this section
+  /// exists to prevent.
   static func audioFailure(title: String?, recordingStillOnDisk: Bool) -> OwnerAlert {
     let named = title.map { "The audio for “\($0)”" } ?? "The audio"
-    let message = recordingStillOnDisk
-      ? "Nothing was deleted: the recording is still on disk, and the transcript, "
+    guard recordingStillOnDisk else {
+      return OwnerAlert(
+        title: "\(named) was deleted, but its record was not updated",
+        message: "The recording file is gone, but its record could not be rewritten "
+          + "and still names it. The transcript, summary and markers are untouched, "
+          + "and Nota counts this record as keeping no audio."
+      )
+    }
+    return OwnerAlert(
+      title: "\(named) could not be deleted",
+      message: "Nothing was deleted: the recording is still on disk, and the transcript, "
         + "summary and markers are untouched. You can choose \(deleteAudioVerbTitle) again."
-      : "The recording file was removed, but its record could not be updated, so "
-        + "Nota may still count its size. The transcript, summary and markers are "
-        + "untouched. Choosing \(deleteAudioVerbTitle) again finishes the job."
-    return OwnerAlert(title: "\(named) could not be deleted", message: message)
+    )
   }
 
   static func recordFailure(title: String, recordingStillOnDisk: Bool) -> OwnerAlert {

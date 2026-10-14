@@ -827,11 +827,39 @@ final class RecordingStorageTests: XCTestCase {
       located, title: nil, historyDirectory: historyDir
     )
 
+    // The audio DID go, so neither the status nor the title may say it could
+    // not be deleted.
+    XCTAssertEqual(report.status, "Deleted the audio, but could not update its record")
     let alert = try XCTUnwrap(report.failure)
-    XCTAssertEqual(alert.title, "The audio could not be deleted")
+    XCTAssertEqual(alert.title, "The audio was deleted, but its record was not updated")
     XCTAssertFalse(alert.message.contains("Nothing was deleted"))
-    XCTAssertTrue(alert.message.contains("recording file was removed"))
-    XCTAssertTrue(alert.message.contains(RecordingDeletionCopy.deleteAudioVerbTitle))
+    XCTAssertTrue(alert.message.contains("recording file is gone"))
+    XCTAssertTrue(alert.message.contains("still names it"))
+    // Nothing is miscounted: every size figure measures the file, not the field.
+    XCTAssertFalse(alert.message.contains("may still count"))
+
+    // And no retry is named, because none exists. The row's menu measures the
+    // file and draws no delete button for a record that keeps no audio, and
+    // the primitive returns early on one — leaving the stale field in place.
+    // `nota history delete-audio` skips the record the same way (its filter is
+    // `audioBytes !== null`, measured from the file). If any of this changes,
+    // the copy may name a retry again; until then it may not.
+    XCTAssertFalse(alert.message.contains(RecordingDeletionCopy.deleteAudioVerbTitle))
+    XCTAssertFalse(alert.message.contains("delete-audio"))
+    XCTAssertFalse(alert.message.contains("again"))
+    let again = try XCTUnwrap(
+      RecordingStore.locate(outputPath: output, historyDirectory: historyDir)
+    )
+    XCTAssertNil(again.audioBytes, "the menu would offer a delete button")
+    try fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: historyDir.path)
+    XCTAssertTrue(RecordingStore.deleteAudio(again, historyDirectory: historyDir))
+    let json = try XCTUnwrap(
+      LiveSessionPersistence.loadRecord(id: "half", historyDirectory: historyDir)
+    )
+    XCTAssertNotNil(
+      json["audioPath"],
+      "a retry now clears the stale field — the alert can name the verb again"
+    )
   }
 
   func testADeleteAudioThatLandsRaisesNoAlert() throws {

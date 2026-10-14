@@ -266,10 +266,18 @@ that asked, because Discard takes its own pane down. The words are
 each says what failed, what is still on disk, and whether choosing the verb
 again can help. What is on disk is **asked after the failure** rather than
 inferred from where it failed: `deleteAudio` can fail before the unlink or
-after it, and "nothing was deleted" is false in the second case. The drawer
-verbs offer themselves again, because the row is still there and a retry can
-work; a failed Discard offers nothing in the app, because its record has no
-row, and names `nota history delete <id>` instead. The value is written once
+after it, and "nothing was deleted" is false in the second case. A drawer verb
+offers itself again only when a retry can work. Delete Record… always can, since
+the record is still there. Delete Audio… can only while the recording is
+still on disk. Once the unlink has landed and only the record's rewrite failed,
+nothing can repeat the step: the row's menu measures the file and draws no
+delete button, `deleteAudio` returns early on a record with no audio, and
+`nota history delete-audio` filters on `audioBytes !== null` (measured from the
+file) before it reaches the primitive. So that alert says the audio was
+deleted and the record still names it, and names no retry. It also does not
+claim the size is still counted, because every size figure measures the file,
+not the field. A failed Discard offers nothing in the app, because its record
+has no row, and names `nota history delete <id>` instead. The value is written once
 per action through `presentOwnerAlert`, one main-actor hop late so the
 confirmation dialog it follows has finished leaving, and never on a tick.
 
