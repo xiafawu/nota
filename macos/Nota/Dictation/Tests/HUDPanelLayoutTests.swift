@@ -337,10 +337,16 @@ final class HUDPanelLayoutTests: XCTestCase {
   /// A resize mid-drag re-anchors the drag on the resized frame, so the next
   /// drag event continues from where the panel now is instead of snapping it
   /// back to the frame the press saw.
+  ///
+  /// The pointer is the test's, not the desk's: every read goes through
+  /// `HUDDragView.mouseLocation`, so a real mouse moving during the run cannot
+  /// move the panel between two assertions.
   func testADragContinuesFromAFrameThatWasResizedUnderIt() throws {
     let panel = DictationHUDPanel()
     defer { panel.orderOut(nil) }
     let drag = try XCTUnwrap(panel.contentView as? HUDDragView)
+    var pointer = NSPoint(x: 500, y: 400)
+    drag.mouseLocation = { pointer }
     let press = try XCTUnwrap(
       NSEvent.mouseEvent(
         with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
@@ -361,6 +367,13 @@ final class HUDPanelLayoutTests: XCTestCase {
     drag.rebaseDragAnchor()
     drag.mouseDragged(with: press)
     XCTAssertEqual(panel.frame.origin, resized.origin, "the drag snapped back to the pre-resize anchor")
+
+    // …and a move after the rebase is measured from the resized frame.
+    pointer = NSPoint(x: 512, y: 395)
+    drag.mouseDragged(with: press)
+    XCTAssertEqual(
+      panel.frame.origin, NSPoint(x: resized.origin.x + 12, y: resized.origin.y - 5),
+      "a move after the rebase was not measured from the resized frame")
 
     drag.mouseUp(with: press)
     XCTAssertFalse(drag.isDragging)

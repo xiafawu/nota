@@ -456,6 +456,12 @@ final class HUDDragView: GlassBackingView {
   private var windowOriginAtMouseDown: NSPoint?
   private var moved = false
 
+  /// Where the pointer is, in screen coordinates. The press, every drag event
+  /// and a rebase all read it here rather than off `NSEvent.mouseLocation`
+  /// directly, so a test can hold the pointer still — the real one moves under
+  /// a test run, and a drag measured against it is only as steady as the desk.
+  var mouseLocation: () -> NSPoint = { NSEvent.mouseLocation }
+
   /// Claim every point in the view. The HUD has no controls, and SwiftUI would
   /// otherwise decide per-pixel whether a drag starts.
   override func hitTest(_ point: NSPoint) -> NSView? {
@@ -482,7 +488,7 @@ final class HUDDragView: GlassBackingView {
       }
     }
     isDragging = true
-    mouseDownLocation = NSEvent.mouseLocation
+    mouseDownLocation = mouseLocation()
     windowOriginAtMouseDown = window?.frame.origin
     moved = false
   }
@@ -491,16 +497,16 @@ final class HUDDragView: GlassBackingView {
   /// current position, after `DictationHUDPanel.update` resized the panel
   /// under it. Once per resize, never per event — so this is not the
   /// per-event delta summing `mouseDragged` refuses.
-  func rebaseDragAnchor(mouse: NSPoint = NSEvent.mouseLocation) {
+  func rebaseDragAnchor() {
     guard isDragging, let window else { return }
-    mouseDownLocation = mouse
+    mouseDownLocation = mouseLocation()
     windowOriginAtMouseDown = window.frame.origin
   }
 
   override func mouseDragged(with event: NSEvent) {
     guard let window, let start = mouseDownLocation, let origin = windowOriginAtMouseDown
     else { return }
-    let now = NSEvent.mouseLocation
+    let now = mouseLocation()
     // Against the mouse-down anchor, never accumulated per event: summing
     // deltas drifts, and the pointer is the thing the owner is watching.
     window.setFrameOrigin(
