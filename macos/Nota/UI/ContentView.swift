@@ -171,6 +171,21 @@ struct ContentView: View {
     .toolbarBackground(.hidden, for: .windowToolbar)
     .toolbar { toolbarContent }
     .navigationTitle(navigationTitle)
+    // The window's one alert (FB-1). Mounted here rather than on the surface
+    // that asked, because that surface can be gone by the time the answer is:
+    // a discard takes its own pane down.
+    .alert(
+      model.ownerAlert?.title ?? "",
+      isPresented: Binding(
+        get: { model.ownerAlert != nil },
+        set: { if !$0 { model.ownerAlert = nil } }
+      ),
+      presenting: model.ownerAlert
+    ) { _ in
+      Button("OK", role: .cancel) {}
+    } message: { alert in
+      Text(alert.message)
+    }
     .onChange(of: model.isRunning) { _, running in
       if !running {
         usageProvider.invalidateCache()

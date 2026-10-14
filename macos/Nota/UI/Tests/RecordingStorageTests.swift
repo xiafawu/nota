@@ -780,6 +780,156 @@ final class RecordingStorageTests: XCTestCase {
     }
   }
 
+  // MARK: - A delete that did not land is reported as one (FB-1)
+
+  func testADeleteAudioThatCouldNotUnlinkRaisesAnAlertSayingNothingWent() throws {
+    // The status line was the whole report, and it is drawn nowhere outside a
+    // run — so a failed delete read exactly like one that worked.
+    let output = historyDir.appendingPathComponent("stuck.summary.md")
+    try "# n".write(to: output, atomically: true, encoding: .utf8)
+    try seedRecord(id: "stuck", audioBytes: 1024, outputPath: output.path)
+    let located = try XCTUnwrap(
+      RecordingStore.locate(outputPath: output, historyDirectory: historyDir)
+    )
+    try fileManager.setAttributes([.posixPermissions: 0o500], ofItemAtPath: located.assetsURL.path)
+
+    let report = RecordingStore.deleteAudioReporting(
+      located, title: "Standup", historyDirectory: historyDir
+    )
+
+    XCTAssertEqual(report.status, "Could not delete the audio")
+    let alert = try XCTUnwrap(report.failure, "a failed delete raised no alert")
+    XCTAssertEqual(alert.title, "The audio for “Standup” could not be deleted")
+    XCTAssertTrue(alert.message.contains("Nothing was deleted"))
+    XCTAssertTrue(alert.message.contains("still on disk"))
+    // The row is still there and the verb can work, so it is named.
+    XCTAssertTrue(alert.message.contains(RecordingDeletionCopy.deleteAudioVerbTitle))
+    XCTAssertTrue(fileManager.fileExists(atPath: try XCTUnwrap(located.audioURL).path))
+  }
+
+  func testADeleteAudioThatUnlinkedButCouldNotRewriteSaysTheFileWent() throws {
+    // `deleteAudio` can fail AFTER the unlink: the file is gone and the record
+    // still names it. "Nothing was deleted" would be false there.
+    let output = historyDir.appendingPathComponent("half.summary.md")
+    try "# n".write(to: output, atomically: true, encoding: .utf8)
+    try seedRecord(id: "half", audioBytes: 1024, outputPath: output.path)
+    let located = try XCTUnwrap(
+      RecordingStore.locate(outputPath: output, historyDirectory: historyDir)
+    )
+    // The assets folder stays writable (the unlink lands); the history folder
+    // does not, so the atomic rewrite of the record cannot.
+    try fileManager.setAttributes([.posixPermissions: 0o500], ofItemAtPath: historyDir.path)
+    defer {
+      try? fileManager.setAttributes([.posixPermissions: 0o755], ofItemAtPath: historyDir.path)
+    }
+
+    let report = RecordingStore.deleteAudioReporting(
+      located, title: nil, historyDirectory: historyDir
+    )
+
+    let alert = try XCTUnwrap(report.failure)
+    XCTAssertEqual(alert.title, "The audio could not be deleted")
+    XCTAssertFalse(alert.message.contains("Nothing was deleted"))
+    XCTAssertTrue(alert.message.contains("recording file was removed"))
+    XCTAssertTrue(alert.message.contains(RecordingDeletionCopy.deleteAudioVerbTitle))
+  }
+
+  func testADeleteAudioThatLandsRaisesNoAlert() throws {
+    let output = historyDir.appendingPathComponent("ok.summary.md")
+    try "# n".write(to: output, atomically: true, encoding: .utf8)
+    try seedRecord(id: "ok", audioBytes: 2048, outputPath: output.path)
+    let located = try XCTUnwrap(
+      RecordingStore.locate(outputPath: output, historyDirectory: historyDir)
+    )
+
+    let report = RecordingStore.deleteAudioReporting(
+      located, title: "Standup", historyDirectory: historyDir
+    )
+
+    XCTAssertNil(report.failure)
+    XCTAssertEqual(report.status, "Deleted \(StorageFormat.bytes(2048)) of audio — transcript kept")
+  }
+
+  func testADeleteRecordThatFailsRaisesAnAlertNamingWhatIsLeft() throws {
+    let output = historyDir.appendingPathComponent("stuck.summary.md")
+    try "# n".write(to: output, atomically: true, encoding: .utf8)
+    try seedRecord(id: "stuck", audioBytes: 1024, outputPath: output.path)
+    let located = try XCTUnwrap(
+      RecordingStore.locate(outputPath: output, historyDirectory: historyDir)
+    )
+    try fileManager.setAttributes([.posixPermissions: 0o500], ofItemAtPath: located.assetsURL.path)
+
+    let report = RecordingStore.deleteRecordReporting(located, title: "Standup")
+
+    XCTAssertEqual(report.status, "Could not delete the record")
+    let alert = try XCTUnwrap(report.failure, "a failed delete raised no alert")
+    XCTAssertEqual(alert.title, "“Standup” could not be deleted")
+    XCTAssertTrue(alert.message.contains("still in Nota's history"))
+    XCTAssertTrue(alert.message.contains("transcript, summary and recording"))
+    XCTAssertTrue(alert.message.contains(".md file was not touched"))
+    XCTAssertTrue(alert.message.contains(RecordingDeletionCopy.deleteRecordVerbTitle))
+  }
+
+  func testADeleteRecordThatLandsRaisesNoAlert() throws {
+    let output = historyDir.appendingPathComponent("ok.summary.md")
+    try "# n".write(to: output, atomically: true, encoding: .utf8)
+    try seedRecord(id: "ok", outputPath: output.path)
+    let located = try XCTUnwrap(
+      RecordingStore.locate(outputPath: output, historyDirectory: historyDir)
+    )
+
+    XCTAssertNil(RecordingStore.deleteRecordReporting(located, title: "Standup").failure)
+  }
+
+  func testADiscardThatDidNotLandSaysWhatWasKeptAndOffersNoRetry() {
+    // The record was settled as a failed session and has no drawer row (no
+    // .md was ever written), so nothing in the app can try again. The alert
+    // may not offer what cannot work; it names the one verb that can.
+    XCTAssertNil(RecordingStore.discardReport(.deleted, recordID: "abc").failure)
+
+    let report = RecordingStore.discardReport(.keptAfterFailure, recordID: "abc")
+    XCTAssertEqual(report.status, "Could not discard — the recording was kept")
+    let alert = report.failure
+    XCTAssertEqual(alert?.title, "This recording could not be discarded")
+    let message = alert?.message ?? ""
+    XCTAssertTrue(message.contains("still on disk"))
+    XCTAssertTrue(message.contains("failed session"))
+    XCTAssertTrue(message.contains("nota history delete abc"))
+    XCTAssertFalse(message.contains(RecordingDeletionCopy.discardVerbTitle))
+    XCTAssertFalse(message.contains("You can choose"))
+  }
+
+  func testEveryDeletionVerbRaisesItsFailureThroughTheWindowsOneAlert() {
+    // The decisions above are only worth what the model does with them: each
+    // verb has to hand its failure to the one alert `ContentView` mounts, and
+    // that alert has to be mounted. `NotaModel` cannot be built here.
+    let model = Self.notaModelSource
+    for signature in [
+      "func deleteRecordingAudio(", "func deleteRecording(", "func discardLiveSession(",
+    ] {
+      XCTAssertTrue(
+        Self.body(of: signature, in: model).contains("presentOwnerAlert(failure)"),
+        "\(signature) no longer reports a delete that did not land"
+      )
+    }
+    // Written once per action through the one function, never anywhere else —
+    // the model is observed by the whole window and the island controller.
+    XCTAssertEqual(model.components(separatedBy: "ownerAlert = ").count - 1, 1)
+    XCTAssertTrue(
+      Self.body(of: "func presentOwnerAlert(", in: model).contains("self?.ownerAlert = alert")
+    )
+    let contentView = Self.uiSource("ContentView.swift")
+    XCTAssertTrue(contentView.contains("presenting: model.ownerAlert"))
+  }
+
+  private static func uiSource(_ name: String) -> String {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent(name)
+    return (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+  }
+
   /// `NotaModel.swift`, found relative to this source file.
   private static var notaModelSource: String {
     let url = URL(fileURLWithPath: #filePath)

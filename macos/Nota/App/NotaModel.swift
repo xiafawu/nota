@@ -122,6 +122,10 @@ final class NotaModel: ObservableObject {
   @Published var status = "Drop audio to transcribe"
   @Published var isRunning = false
   @Published var isDropTargeted = false
+  /// The window's one alert (FB-1): a verb that did not do what the owner
+  /// asked. Mounted once, in `ContentView`. Set only through
+  /// `presentOwnerAlert`, once per action — never on a tick.
+  @Published var ownerAlert: OwnerAlert?
   @Published var identifySpeakers: Bool = (UserDefaults.standard.object(forKey: "identifySpeakers") as? Bool) ?? true {
     didSet { UserDefaults.standard.set(identifySpeakers, forKey: "identifySpeakers") }
   }
@@ -1279,12 +1283,14 @@ final class NotaModel: ObservableObject {
     // Discard is also a way out of the live pane, and it hands nothing off.
     isLiveSessionHandedOff = true
     if let started = liveRecords.beginStop() {
-      switch liveRecords.discard(started) {
-      case .deleted:
-        status = "Recording discarded"
-      case .keptAfterFailure:
-        status = "Could not discard — the recording was kept"
-      }
+      let report = RecordingStore.discardReport(
+        liveRecords.discard(started),
+        recordID: started.historyID
+      )
+      status = report.status
+      // A discard that did not land settled the record and kept everything;
+      // the pane that asked is about to go, so the window says it (FB-1).
+      if let failure = report.failure { presentOwnerAlert(failure) }
       liveRecords.finishedStopping()
     }
     liveSession.cancel()
@@ -1699,15 +1705,22 @@ final class NotaModel: ObservableObject {
   /// verb live on purpose, nothing here touches what the pipeline owns, and a
   /// refusal after the owner confirmed was a delete that silently did nothing.
   func deleteRecordingAudio(_ record: RecordingStore.LocatedRecord) {
-    let freed = record.audioBytes ?? 0
-    if RecordingStore.deleteAudio(record, historyDirectory: notaHistoryDirectory()) {
-      status = freed > 0
-        ? "Deleted \(StorageFormat.bytes(freed)) of audio — transcript kept"
-        : "No audio was kept for this recording"
-    } else {
-      status = "Could not delete the audio"
-    }
+    let report = RecordingStore.deleteAudioReporting(
+      record,
+      title: historyTitle(outputPath: record.outputPath),
+      historyDirectory: notaHistoryDirectory()
+    )
+    status = report.status
+    if let failure = report.failure { presentOwnerAlert(failure) }
     refreshHistory()
+  }
+
+  /// The drawer row's title for a record, so a failure can name what it was
+  /// about. The row's call site passes only the record.
+  private func historyTitle(outputPath: String?) -> String? {
+    guard let outputPath else { return nil }
+    let target = URL(fileURLWithPath: outputPath).standardizedFileURL.path
+    return history.first { $0.url.standardizedFileURL.path == target }?.title
   }
 
   /// Delete a record, its audio included. The exported `.md` is never touched.
@@ -1720,13 +1733,23 @@ final class NotaModel: ObservableObject {
   /// Not refused while a file transcription runs, for the reason
   /// `deleteRecordingAudio` is not.
   func deleteRecording(_ record: RecordingStore.LocatedRecord, entry: HistoryEntry) {
-    if RecordingStore.deleteRecord(record) {
-      status = "Deleted recording — the exported file was kept"
-    } else {
-      status = "Could not delete the record"
-    }
+    let report = RecordingStore.deleteRecordReporting(record, title: entry.title)
+    status = report.status
+    if let failure = report.failure { presentOwnerAlert(failure) }
     if selectedHistoryID == entry.id { newTranscription() }
     refreshHistory()
+  }
+
+  /// Raise the window's one alert.
+  ///
+  /// One main-actor hop, not a timer: the callers so far run from the
+  /// destructive button of a confirmation dialog that is still dismissing, and
+  /// a second presentation asked for in that same turn is one SwiftUI is
+  /// entitled to drop. The hop lets the dialog finish leaving first.
+  func presentOwnerAlert(_ alert: OwnerAlert) {
+    Task { @MainActor [weak self] in
+      self?.ownerAlert = alert
+    }
   }
 
   // `deleteHistory(_:)` is gone (XIA-436), and with it the drawer row's trash

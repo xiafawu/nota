@@ -352,6 +352,95 @@ extension LiveSessionOwner {
   }
 }
 
+// MARK: - What a deletion verb tells the owner
+
+/// The status line a deletion verb has always written, and — only when the
+/// delete did not land — the alert that says so (FB-1).
+///
+/// The status line alone was the whole report, and it is not on screen where
+/// these verbs are chosen: the drawer and the failure banner sit over the
+/// window, and outside a run the line is drawn nowhere at all. So a delete
+/// that only half happened read exactly like one that worked, which is the
+/// thing "a delete that only half happened is a failure, and is reported as
+/// one" forbids.
+struct RecordingDeletionReport: Equatable {
+  let status: String
+  let failure: OwnerAlert?
+}
+
+extension RecordingStore {
+  /// `deleteAudio`, and what to tell the owner about it. `title` is the row's
+  /// title when the caller can name it.
+  static func deleteAudioReporting(
+    _ record: LocatedRecord,
+    title: String?,
+    historyDirectory: URL
+  ) -> RecordingDeletionReport {
+    let freed = record.audioBytes ?? 0
+    if deleteAudio(record, historyDirectory: historyDirectory) {
+      return RecordingDeletionReport(
+        status: freed > 0
+          ? "Deleted \(StorageFormat.bytes(freed)) of audio — transcript kept"
+          : "No audio was kept for this recording",
+        failure: nil
+      )
+    }
+    return RecordingDeletionReport(
+      status: "Could not delete the audio",
+      failure: RecordingDeletionCopy.audioFailure(
+        title: title,
+        recordingStillOnDisk: recordingStillOnDisk(record)
+      )
+    )
+  }
+
+  /// `deleteRecord`, and what to tell the owner about it.
+  static func deleteRecordReporting(
+    _ record: LocatedRecord,
+    title: String
+  ) -> RecordingDeletionReport {
+    if deleteRecord(record) {
+      return RecordingDeletionReport(
+        status: "Deleted recording — the exported file was kept",
+        failure: nil
+      )
+    }
+    return RecordingDeletionReport(
+      status: "Could not delete the record",
+      failure: RecordingDeletionCopy.recordFailure(
+        title: title,
+        recordingStillOnDisk: recordingStillOnDisk(record)
+      )
+    )
+  }
+
+  /// A Discard press, and what to tell the owner about it.
+  static func discardReport(
+    _ outcome: DiscardOutcome,
+    recordID: String
+  ) -> RecordingDeletionReport {
+    switch outcome {
+    case .deleted:
+      return RecordingDeletionReport(status: "Recording discarded", failure: nil)
+    case .keptAfterFailure:
+      return RecordingDeletionReport(
+        status: "Could not discard — the recording was kept",
+        failure: RecordingDeletionCopy.discardFailure(recordID: recordID)
+      )
+    }
+  }
+
+  /// Asked AFTER a failed delete rather than inferred from where it failed:
+  /// `deleteAudio` can fail before the unlink (nothing went) or after it (the
+  /// file went, the record still names it), and a recursive folder removal
+  /// can stop partway. What is on disk is the one answer that is right in
+  /// every case.
+  private static func recordingStillOnDisk(_ record: LocatedRecord) -> Bool {
+    guard let audio = record.audioURL else { return false }
+    return FileManager.default.fileExists(atPath: audio.path)
+  }
+}
+
 // MARK: - The storage summary the CLI computes
 
 /// One record's footprint. Decoded from `nota history storage --json`; the
@@ -602,6 +691,50 @@ enum RecordingDeletionCopy {
       + "Either it was imported, or its record has already been deleted — "
       + "Nota never deletes an exported .md file, so the row stays until you "
       + "remove that file yourself."
+
+  // MARK: - When a delete does not land (FB-1)
+
+  /// A delete that only half happened is a failure, and is reported as one.
+  /// Each of these says what failed, what is still on disk, and whether
+  /// choosing the verb again can help — and offers it only when it can.
+
+  static func audioFailure(title: String?, recordingStillOnDisk: Bool) -> OwnerAlert {
+    let named = title.map { "The audio for “\($0)”" } ?? "The audio"
+    let message = recordingStillOnDisk
+      ? "Nothing was deleted: the recording is still on disk, and the transcript, "
+        + "summary and markers are untouched. You can choose \(deleteAudioVerbTitle) again."
+      : "The recording file was removed, but its record could not be updated, so "
+        + "Nota may still count its size. The transcript, summary and markers are "
+        + "untouched. Choosing \(deleteAudioVerbTitle) again finishes the job."
+    return OwnerAlert(title: "\(named) could not be deleted", message: message)
+  }
+
+  static func recordFailure(title: String, recordingStillOnDisk: Bool) -> OwnerAlert {
+    let kept = recordingStillOnDisk
+      ? "The record is still in Nota's history, with its transcript, summary and recording."
+      : "The record is still in Nota's history, with its transcript and summary. "
+        + "Its recording was already removed, and some of its other files may be too."
+    return OwnerAlert(
+      title: "“\(title)” could not be deleted",
+      message: "\(kept) The exported .md file was not touched. "
+        + "You can choose \(deleteRecordVerbTitle) again."
+    )
+  }
+
+  /// A Discard that did not land. The record was settled as a failed session
+  /// rather than walked away from, so everything is still on disk — and it has
+  /// no drawer row (no `.md` was ever written), so nothing in the app can try
+  /// again. The alert says so and names the one verb that can remove it.
+  static func discardFailure(recordID: String) -> OwnerAlert {
+    OwnerAlert(
+      title: "This recording could not be discarded",
+      message: "It was kept instead: the audio and this session's record are still "
+        + "on disk in Nota's history, saved as a failed session, and Nota will not "
+        + "delete them on its own. It has no row in the history drawer, so there is "
+        + "nothing to try again here. To remove it, run "
+        + "“nota history delete \(recordID)” in Terminal."
+    )
+  }
 
   // MARK: - Discard
 

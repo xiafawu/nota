@@ -45,3 +45,17 @@ struct ToolbarStatusPillState {
   /// half of it. Same reasoning as the stale-summary banner (P-D8).
   var truncatesFromTail: Bool { !isRunning }
 }
+
+/// One alert the window shows on the owner's behalf: a verb that did not do
+/// what was asked, said once, in plain words, with OK as the only answer
+/// (FB-1). `ContentView` mounts it a single time for the whole window, because
+/// the surface that asked can be gone by the time the answer exists — a
+/// discard takes its own pane down.
+///
+/// Written per action and never on a tick: `NotaModel` is observed by the
+/// whole window and by the island controller, so a value that changed on a
+/// timer would re-render both at that rate (the XIA-432 trap).
+struct OwnerAlert: Equatable {
+  let title: String
+  let message: String
+}
