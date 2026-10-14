@@ -181,9 +181,23 @@ final class DictationHUDPanel: NSPanel {
     // never walks the card off the top of the screen.
     frame.origin.x -= (size.width - frame.size.width) / 2
     frame.size = size
-    frame = Self.clamped(frame, to: screen ?? NSScreen.main)
 
-    if Self.animatesFrameChange(style: style, styleChanged: styleChanged, isVisible: isVisible) {
+    // The owner's hand is on the panel: the size still changes (a resize is
+    // content arriving), but nothing animates under the pointer and nothing
+    // clamps it back toward where the drag is taking it away from. The drag
+    // anchor is moved to the resized frame, so the next drag event continues
+    // from here instead of snapping back to the frame the press saw.
+    // The button is asked as well as the flag: a panel ordered out mid-drag
+    // may never see its mouse-up, and a flag left standing would withhold the
+    // growth animation from every session after it.
+    let isDragging = dragView.isDragging && NSEvent.pressedMouseButtons & 1 != 0
+    if !isDragging {
+      frame = Self.clamped(frame, to: screen ?? NSScreen.main)
+    }
+
+    if Self.animatesFrameChange(
+      style: style, styleChanged: styleChanged, isVisible: isVisible, isDragging: isDragging
+    ) {
       NSAnimationContext.runAnimationGroup { context in
         context.duration = HUDPillMetrics.frameDuration
         context.timingFunction = HUDPillMetrics.frameTiming
@@ -191,12 +205,17 @@ final class DictationHUDPanel: NSPanel {
       }
     } else {
       setFrame(frame, display: true)
+      if isDragging { dragView.rebaseDragAnchor() }
     }
   }
 
   /// Whether this frame change may be animated.
   ///
-  /// Two reasons it may not. The bar is a constant size, so the only frame
+  /// Three reasons it may not. A **drag** owns the frame while it lasts: the
+  /// drag moves the window from an anchor of its own on every event, so an
+  /// animation started under it is a second writer to one frame, pulled back
+  /// by the next drag event and still pulling toward a destination computed
+  /// from wherever the pointer was. The bar is a constant size, so the only frame
   /// change it can ever produce is the one-off switch into or out of the style,
   /// and animating that would be animating growth the style promises not to
   /// have. And a **style switch** is not growth in any style: the caller
@@ -207,9 +226,10 @@ final class DictationHUDPanel: NSPanel {
   static func animatesFrameChange(
     style: HUDStyle,
     styleChanged: Bool,
-    isVisible: Bool
+    isVisible: Bool,
+    isDragging: Bool = false
   ) -> Bool {
-    isVisible && style.animatesGrowth && !styleChanged
+    isVisible && style.animatesGrowth && !styleChanged && !isDragging
   }
 
   /// Shift (never resize) a window frame so the pill inside it stays 8pt
@@ -418,8 +438,12 @@ final class DictationHUDPanel: NSPanel {
 /// when the pointer actually travelled.
 ///
 /// **The window frame is still animated in exactly one place.** A drag calls
-/// `setFrameOrigin` directly — no animation, no `animator()` — so it can never
-/// be in flight against the growth animation in `DictationHUDPanel.update`.
+/// `setFrameOrigin` directly — no animation, no `animator()` — and it is kept
+/// from ever being in flight against the growth animation in
+/// `DictationHUDPanel.update` from both directions, rather than by hoping the
+/// two never meet: the press stops any growth animation already running, and
+/// `isDragging` is what `update` reads to withhold a new one (a resize mid-drag
+/// is a plain `setFrame`, followed by `rebaseDragAnchor()`).
 ///
 /// It is a `GlassBackingView` because the HUD's material is an AppKit
 /// `NSGlassEffectView` and the drag handle is the one view that already spans
@@ -441,10 +465,36 @@ final class HUDDragView: GlassBackingView {
   /// AppKit's own background-drag must stay out of it: two movers, one frame.
   override var mouseDownCanMoveWindow: Bool { false }
 
+  /// True from the press to the release. Set on the press rather than on the
+  /// first drag event: an `update` landing between the two would otherwise
+  /// start the very animation the press just stopped.
+  private(set) var isDragging = false
+
   override func mouseDown(with event: NSEvent) {
+    // Stop a growth animation already in flight, so the frame read below is
+    // where the panel is rather than where it was heading. A zero-duration
+    // `animator()` write is what replaces a running frame animation; a plain
+    // `setFrame` would leave it running underneath the drag.
+    if let window {
+      NSAnimationContext.runAnimationGroup { context in
+        context.duration = 0
+        window.animator().setFrame(window.frame, display: false)
+      }
+    }
+    isDragging = true
     mouseDownLocation = NSEvent.mouseLocation
     windowOriginAtMouseDown = window?.frame.origin
     moved = false
+  }
+
+  /// Re-anchor the drag on the window's current frame and the pointer's
+  /// current position, after `DictationHUDPanel.update` resized the panel
+  /// under it. Once per resize, never per event — so this is not the
+  /// per-event delta summing `mouseDragged` refuses.
+  func rebaseDragAnchor(mouse: NSPoint = NSEvent.mouseLocation) {
+    guard isDragging, let window else { return }
+    mouseDownLocation = mouse
+    windowOriginAtMouseDown = window.frame.origin
   }
 
   override func mouseDragged(with event: NSEvent) {
@@ -464,6 +514,7 @@ final class HUDDragView: GlassBackingView {
       mouseDownLocation = nil
       windowOriginAtMouseDown = nil
       moved = false
+      isDragging = false
     }
     guard moved else { return }
     onDragEnded?()

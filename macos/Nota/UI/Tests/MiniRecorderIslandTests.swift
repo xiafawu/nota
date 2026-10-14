@@ -243,6 +243,36 @@ final class MiniRecorderIslandTests: XCTestCase {
     }
   }
 
+  /// **The island never advertises a key it cannot bind.** ⌘K is the menu
+  /// row's and the window's; pressed while the island is up it goes to the call
+  /// app. `.help` is the capsule's accessibility hint too, so a key named there
+  /// is announced as well as shown. The menu row keeps naming it — that row
+  /// really does bind it (`testEveryMenuRowWithAShortcutSaysWhatTheKeyIs`).
+  func testTheIslandsCapsulesNameNoKey() {
+    for action in MiniIslandAction.allCases {
+      XCTAssertFalse(
+        action.islandHelp.contains("⌘"),
+        "\(action) tells the owner about a key the island cannot bind: \(action.islandHelp)")
+      XCTAssertEqual(action.islandHelp, action.label)
+    }
+    XCTAssertTrue(MiniIslandAction.mark.help.contains("⌘"), "the menu row lost its ⌘K")
+    let island = Self.uiSource("MiniRecorderIsland.swift")
+    XCTAssertTrue(island.contains(".help(action.islandHelp)"))
+    XCTAssertFalse(island.contains(".help(action.help)"), "the island capsule reads the menu row's tooltip")
+  }
+
+  /// A UI source file, found relative to this test's own path. The test target
+  /// copies no resources, so a bundle lookup would silently resolve to nil.
+  private static func uiSource(_ name: String) -> String {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent(name)
+    let text = (try? String(contentsOf: url, encoding: .utf8)) ?? ""
+    XCTAssertFalse(text.isEmpty, "could not read \(name) beside this test")
+    return text
+  }
+
   func testTheOrdinalOfAMomentReadsAsEnglish() {
     let expected = [
       1: "1st", 2: "2nd", 3: "3rd", 4: "4th",

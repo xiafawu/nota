@@ -3050,8 +3050,17 @@ site, not the machine.
   reverse on 2026-08-01, which is what commits `29f36f0`/`9a5075a` implemented
   and what `HUDPanelLayout.pillOriginY`'s reserve exists for.) A drag is the one
   frame change that does not go through the animation authority — it calls
-  `setFrameOrigin` directly, so it can never be in flight against the growth
-  animation.
+  `setFrameOrigin` directly — and "never in flight against the growth
+  animation" is enforced from both ends rather than hoped for. It was only the
+  first half for a while: `update` read the mid-drag frame, recentred it,
+  clamped it and animated toward it, while the next drag event put the origin
+  back where the press's anchor said, so a pill that grew while the owner was
+  moving it jumped sideways and was tugged toward a stale destination. Now the
+  press stops any growth animation already running (a zero-duration
+  `animator()` write — a plain `setFrame` would leave it running underneath),
+  `HUDDragView.isDragging` makes `animatesFrameChange` false, and a resize
+  mid-drag is a plain `setFrame` with no clamp, followed by
+  `rebaseDragAnchor()` so the drag continues from the resized frame.
 - The HUD's three styles (`DictationSettings.hudStyle`) are three shapes for one
   panel, not three HUDs. `.pill` is the default and the shape whose geometry is
   pinned tightest — `HUDPillBaselineTests` asserts its exact height per draft

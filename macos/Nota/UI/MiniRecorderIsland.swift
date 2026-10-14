@@ -159,9 +159,17 @@ enum MiniIslandAction: CaseIterable {
     }
   }
 
+  /// The tooltip and accessibility hint of a **menu-bar row**, which binds ⌘K
+  /// and so names it. Not the island's: see `islandHelp`.
   var help: String {
     self == .mark ? RecordingPaneCopy.markHelp : label
   }
+
+  /// The tooltip on the island's own capsule, which never names a key. The
+  /// island cannot bind one (see `shortcut`), and `.help` is the capsule's
+  /// accessibility hint as well as its tooltip — so "Mark ⌘K" there would be
+  /// read out on the one surface where ⌘K goes to the call app instead.
+  var islandHelp: String { label }
 
   /// Blue for a confident action, red for the one that ends the session — the
   /// cluster's vocabulary, unchanged, because the island is the cluster seen
@@ -580,7 +588,7 @@ struct MiniRecorderIslandView: View {
         // No `.keyboardShortcut` here on purpose — see `MiniIslandAction
         // .shortcut`. This panel never becomes key, so one would never fire.
         .accessibilityLabel(action.label)
-        .help(action.help)
+        .help(action.islandHelp)
       }
     }
   }

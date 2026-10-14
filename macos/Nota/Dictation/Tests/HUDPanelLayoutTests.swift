@@ -318,6 +318,54 @@ final class HUDPanelLayoutTests: XCTestCase {
     }
   }
 
+  /// **A drag owns the frame while it lasts.** The drag moves the window from
+  /// its own anchor on every event, so growth animated under it is a second
+  /// writer to one frame — undone by the next drag event and still pulling
+  /// toward a destination computed from wherever the pointer was. Including
+  /// the two styles that otherwise animate every resize.
+  func testNoStyleAnimatesItsGrowthUnderADrag() {
+    for style in HUDStyle.allCases {
+      XCTAssertFalse(
+        DictationHUDPanel.animatesFrameChange(
+          style: style, styleChanged: false, isVisible: true, isDragging: true
+        ),
+        "\(style) animated a resize under the owner's pointer"
+      )
+    }
+  }
+
+  /// A resize mid-drag re-anchors the drag on the resized frame, so the next
+  /// drag event continues from where the panel now is instead of snapping it
+  /// back to the frame the press saw.
+  func testADragContinuesFromAFrameThatWasResizedUnderIt() throws {
+    let panel = DictationHUDPanel()
+    defer { panel.orderOut(nil) }
+    let drag = try XCTUnwrap(panel.contentView as? HUDDragView)
+    let press = try XCTUnwrap(
+      NSEvent.mouseEvent(
+        with: .leftMouseDown, location: .zero, modifierFlags: [], timestamp: 0,
+        windowNumber: panel.windowNumber, context: nil, eventNumber: 0, clickCount: 1,
+        pressure: 1
+      )
+    )
+    panel.setFrame(NSRect(x: 100, y: 100, width: 248, height: 92), display: false)
+
+    drag.mouseDown(with: press)
+    XCTAssertTrue(drag.isDragging, "the press is the start of the drag")
+    drag.mouseDragged(with: press)
+
+    // What `update` does to a dragged panel: a plain resize, recentred, then a
+    // rebase. The pointer has not moved, so the panel must stay where it was put.
+    let resized = NSRect(x: 60, y: 100, width: 328, height: 140)
+    panel.setFrame(resized, display: false)
+    drag.rebaseDragAnchor()
+    drag.mouseDragged(with: press)
+    XCTAssertEqual(panel.frame.origin, resized.origin, "the drag snapped back to the pre-resize anchor")
+
+    drag.mouseUp(with: press)
+    XCTAssertFalse(drag.isDragging)
+  }
+
   /// A window frame placed with `reservedHeight` and then grown to the cap the
   /// way `DictationHUDPanel.update` grows it: origin fixed, height up, bottom
   /// edge pinned.
