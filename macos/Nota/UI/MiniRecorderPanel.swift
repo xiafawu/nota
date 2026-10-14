@@ -298,29 +298,27 @@ final class MiniRecorderPanel: NSPanel, MiniRecorderWindowing {
   func reposition() {
     let margin = MiniIslandMetrics.shadowMargin
     let card = MiniIslandMetrics.cardSize
-    let visibleFrames = NSScreen.screens.map(\.visibleFrame)
 
-    // The owner's own position outranks the automatic placement, and is
-    // validated rather than trusted every time: a point no current screen can
-    // host is DROPPED and the automatic placement is the self-heal. Clamping it
-    // onto whatever display is left would call an arbitrary point their choice.
-    if let pinned = pinnedCardTopLeft {
-      if let topLeft = IslandPanelLayout.validatedTopLeft(
-        pinned,
-        cardSize: card,
-        visibleFrames: visibleFrames
-      ) {
-        setFrameOrigin(NSPoint(x: topLeft.x - margin, y: topLeft.y - card.height - margin))
-        return
-      }
+    // The automatic placement goes on the screen the owner is working on — the
+    // one holding the meeting app's focused window, since Nota is not frontmost
+    // while the island is up — through the same picker the HUD and the review
+    // card use, so the three floating surfaces agree about "here". It used to be
+    // the screen under the mouse alone, which on two monitors put the island on
+    // the laptop while the call ran fullscreen on the external display.
+    let anchor = DictationHUDPanel.frontmostAppFocusedWindowFrame()
+    guard let active = DictationHUDPanel.activeScreen(anchor: anchor)?.visibleFrame else { return }
+
+    let placement = IslandPanelLayout.placement(
+      pinned: pinnedCardTopLeft,
+      cardSize: card,
+      visibleFrames: NSScreen.screens.map(\.visibleFrame),
+      activeVisible: active
+    )
+    if placement.dropsPin {
       pinnedCardTopLeft = nil
       IslandPositionStore.clear()
     }
-
-    let screen = NSScreen.screens.first(where: { NSMouseInRect(NSEvent.mouseLocation, $0.frame, false) })
-      ?? NSScreen.main
-    guard let visible = screen?.visibleFrame else { return }
-    let topLeft = IslandPanelLayout.defaultTopLeft(cardSize: card, visible: visible)
+    let topLeft = placement.topLeft
     setFrameOrigin(NSPoint(x: topLeft.x - margin, y: topLeft.y - card.height - margin))
   }
 }
@@ -387,6 +385,29 @@ enum IslandPanelLayout {
   /// `HUDPanelLayout.restingBottomMargin` — the last few points of a screen read
   /// as half off it.
   static let restingBottomMargin: CGFloat = 56
+
+  /// Where the island goes on a show, and whether the stored pin is dropped.
+  ///
+  /// **The owner's own position outranks the automatic placement, on any
+  /// screen that can still host it** — including one that is not the active
+  /// screen. Validated rather than trusted every time: a point no current
+  /// screen can host is DROPPED and the automatic placement is the self-heal.
+  /// Clamping it onto whatever display is left would call an arbitrary point
+  /// their choice. Only the automatic placement follows `activeVisible` (the
+  /// screen the owner is working on); whether a pin should follow it too is
+  /// the owner's question, not this function's.
+  static func placement(
+    pinned: CGPoint?,
+    cardSize: CGSize,
+    visibleFrames: [NSRect],
+    activeVisible: NSRect
+  ) -> (topLeft: CGPoint, dropsPin: Bool) {
+    if let pinned,
+       let topLeft = validatedTopLeft(pinned, cardSize: cardSize, visibleFrames: visibleFrames) {
+      return (topLeft, false)
+    }
+    return (defaultTopLeft(cardSize: cardSize, visible: activeVisible), pinned != nil)
+  }
 
   static func defaultTopLeft(cardSize: CGSize, visible: NSRect) -> CGPoint {
     let x = min(

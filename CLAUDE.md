@@ -2583,6 +2583,16 @@ own** `IslandPositionStore` — the HUD pins a bottom-center and the review card
 top-left, so one shared point would mean dragging either surface moved the other
 through an anchor that means nothing on the far side.
 
+**Its automatic placement rests on the screen being worked on**, through the
+HUD's own picker (`DictationHUDPanel.activeScreen(anchor:)` on the meeting app's
+focused window) rather than the screen under the mouse, which on two monitors
+put it on the laptop while the call ran fullscreen on the external display.
+A **pin** any current screen can still hold keeps winning, on whichever screen
+it is (`IslandPanelLayout.placement`) — unlike the HUD and the review card,
+which honour a pin only on the active screen since 2026-09-14. Whether a pinned
+island should follow the active screen too is an open owner question, so the
+difference is pinned by test rather than left to look like an oversight.
+
 **A failure report may not feed the thing that reports it.** `reportIslandUnavailable`
 writes `NotaModel.status`, which is `@Published`, and the controller subscribes
 to `model.objectWillChange` and calls `refresh()` — so a failed `show` wrote a

@@ -552,6 +552,45 @@ final class MiniRecorderIslandTests: XCTestCase {
     XCTAssertLessThanOrEqual(resting.x + card.width, screen.maxX)
   }
 
+  /// **Two monitors.** The automatic placement goes on the screen being worked
+  /// on (the meeting app's), not wherever the mouse happens to be — and a pin
+  /// the owner dragged onto the OTHER screen still wins, because a pin any
+  /// current screen can hold is theirs. Making a pin follow the active screen
+  /// is an open owner question; this test is what makes the current answer a
+  /// decision rather than an accident.
+  func testTheIslandRestsOnTheActiveScreenAndAPinElsewhereStillWins() {
+    let laptop = NSRect(x: 0, y: 0, width: 1512, height: 944)
+    let external = NSRect(x: 1512, y: 0, width: 2560, height: 1415)
+    let screens = [laptop, external]
+    let card = MiniIslandMetrics.cardSize
+
+    // No pin: the resting place on the active screen, never on the other one.
+    let unpinned = IslandPanelLayout.placement(
+      pinned: nil, cardSize: card, visibleFrames: screens, activeVisible: external
+    )
+    XCTAssertEqual(unpinned.topLeft, IslandPanelLayout.defaultTopLeft(cardSize: card, visible: external))
+    XCTAssertTrue(external.contains(unpinned.topLeft))
+    XCTAssertFalse(unpinned.dropsPin)
+
+    // A pin on the laptop while the owner works on the external display: kept,
+    // and honoured where it is.
+    let onLaptop = CGPoint(x: 200, y: 600)
+    let pinned = IslandPanelLayout.placement(
+      pinned: onLaptop, cardSize: card, visibleFrames: screens, activeVisible: external
+    )
+    XCTAssertEqual(pinned.topLeft, onLaptop)
+    XCTAssertFalse(pinned.dropsPin, "a pin a current screen holds was thrown away")
+
+    // A pin no current screen holds (the display it was on is unplugged): dropped,
+    // and the self-heal lands on the active screen.
+    let orphan = IslandPanelLayout.placement(
+      pinned: CGPoint(x: 5000, y: 600), cardSize: card, visibleFrames: screens,
+      activeVisible: external
+    )
+    XCTAssertTrue(orphan.dropsPin)
+    XCTAssertEqual(orphan.topLeft, unpinned.topLeft)
+  }
+
   /// The card is **placed** before it is ordered on, or the first frame appears
   /// wherever AppKit last left the window and then jumps.
   func testTheCardIsPlacedBeforeItIsOrderedOn() {
