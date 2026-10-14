@@ -187,6 +187,59 @@ final class FileIntakeTests: XCTestCase {
     XCTAssertTrue(chooser.contains("panel.allowedContentTypes = FileIntake.openPanelTypes()"))
   }
 
+  /// **The panel and `accept` agree item by item.** A type admits whatever
+  /// conforms to it, so `.mp4`'s `public.mpeg-4` offered .m4v and `.ogg`'s
+  /// type offered .opus and .oga — each then refused by `accept`. The panel's
+  /// second gate asks the extension check itself.
+  func testTheOpenPanelGreysOutWhatAcceptWouldRefuse() {
+    func enables(_ path: String, directory: Bool = false) -> Bool {
+      FileIntake.enablesInOpenPanel(URL(fileURLWithPath: path), isDirectory: directory)
+    }
+    for ext in supportedExtensions {
+      XCTAssertTrue(enables("/tmp/a.\(ext)"), ".\(ext) is greyed out but accepted")
+      XCTAssertTrue(enables("/tmp/A.\(ext.uppercased())"), "an upper-case .\(ext) is greyed out")
+    }
+    for ext in ["m4v", "opus", "oga", "avi", "txt", "pdf"] {
+      XCTAssertFalse(enables("/tmp/a.\(ext)"), ".\(ext) is offered and then refused")
+    }
+    XCTAssertTrue(enables("/tmp/Recordings", directory: true), "a folder cannot be opened to browse")
+    XCTAssertTrue(enables("/tmp/Meetings.m4v", directory: true), "a folder is named like a file")
+
+    // Whatever the panel's types admit beyond the list, the gate refuses: the
+    // two gates together offer exactly what `accept` takes.
+    let types = FileIntake.openPanelTypes()
+    for ext in ["m4v", "opus", "oga", "m4b", "aifc", "3gp", "mpg"] {
+      guard let type = UTType(filenameExtension: ext),
+        types.contains(where: { type.conforms(to: $0) })
+      else { continue }
+      XCTAssertFalse(enables("/tmp/a.\(ext)"), "the panel's types admit .\(ext) and nothing refuses it")
+    }
+
+    // A supported file never pays the disk read the folder check makes.
+    var stats = 0
+    func isDirectory() -> Bool {
+      stats += 1
+      return false
+    }
+    _ = FileIntake.enablesInOpenPanel(URL(fileURLWithPath: "/tmp/a.m4a"), isDirectory: isDirectory())
+    XCTAssertEqual(stats, 0)
+    _ = FileIntake.enablesInOpenPanel(URL(fileURLWithPath: "/tmp/a.txt"), isDirectory: isDirectory())
+    XCTAssertEqual(stats, 1)
+
+    // The panel is told: the delegate is set, kept alive for the modal run
+    // (`delegate` is weak), and decides through the pure check above.
+    let model = Self.source("App/NotaModel.swift")
+    let chooser = Self.body(of: "func chooseFile(", in: model)
+    XCTAssertTrue(chooser.contains("panel.delegate = gate"), "the panel has no second gate")
+    XCTAssertTrue(
+      chooser.contains("withExtendedLifetime(gate, { panel.runModal() })"),
+      "the gate can be released before the panel lists anything")
+    XCTAssertTrue(
+      Self.body(of: "private final class OpenPanelGate", in: model)
+        .contains("FileIntake.enablesInOpenPanel("),
+      "the gate decides something other than what accept checks")
+  }
+
   /// Three files dropped at once: the first was taken and the other two
   /// vanished without a sign. Now the first is taken and the rest are named
   /// as not opened — and every way several files arrive passes the count.

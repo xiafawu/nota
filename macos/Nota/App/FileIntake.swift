@@ -164,6 +164,23 @@ enum FileIntake {
     return types
   }
 
+  /// Whether ⌘O's panel lets the owner pick this item: the panel's second
+  /// gate, asking the same extension check `accept` asks.
+  ///
+  /// The types alone are wider than the list. A type admits everything that
+  /// conforms to it, and measured on macOS 26: `public.mpeg-4` (for .mp4)
+  /// admits .m4v, and `org.xiph.ogg-audio` (for .ogg) admits .opus and .oga —
+  /// each offered and then refused. A folder stays enabled, or the panel could
+  /// not be navigated at all; `isDirectory` is asked only for an item the
+  /// extension check turned down, since this runs once per listed item.
+  static func enablesInOpenPanel(
+    _ url: URL,
+    isDirectory: @autoclosure () -> Bool,
+    extensions: Set<String> = supportedExtensions
+  ) -> Bool {
+    isSupported(url, extensions: extensions) || isDirectory()
+  }
+
   private static func othersNotOpened(_ count: Int) -> String {
     switch count {
     case ..<1: return ""

@@ -114,6 +114,19 @@ enum HistoryDrawerTab: String, CaseIterable, Identifiable {
   }
 }
 
+/// ⌘O's second gate (PT-2): greys out what `accept` would refuse, through
+/// `FileIntake.enablesInOpenPanel`. The decision is there; this only reads
+/// the one fact the decision needs from the disk.
+@MainActor
+private final class OpenPanelGate: NSObject, NSOpenSavePanelDelegate {
+  func panel(_ sender: Any, shouldEnable url: URL) -> Bool {
+    FileIntake.enablesInOpenPanel(
+      url,
+      isDirectory: (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
+    )
+  }
+}
+
 @MainActor
 final class NotaModel: ObservableObject {
   @Published var selectedURL: URL?
@@ -526,8 +539,14 @@ final class NotaModel: ObservableObject {
     // PT-2: built from the one list `accept` checks, so the panel offers
     // nothing it would then refuse (`.movie` used to offer .avi and .m4v).
     panel.allowedContentTypes = FileIntake.openPanelTypes()
+    // …and the types alone still admit what conforms to them (.m4v under
+    // .mp4's type, .opus and .oga under .ogg's), so the panel also asks the
+    // extension check itself. `delegate` is weak, and a local is free to be
+    // released after its last use — hence the extended lifetime.
+    let gate = OpenPanelGate()
+    panel.delegate = gate
 
-    if panel.runModal() == .OK, let url = panel.url {
+    if withExtendedLifetime(gate, { panel.runModal() }) == .OK, let url = panel.url {
       accept(url)
     }
   }

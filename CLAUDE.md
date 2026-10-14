@@ -2969,9 +2969,14 @@ site, not the machine.
   target, was taken, and nothing happened. There is one list,
   `supportedExtensions` (the TS twin is `validate.ts`): `FileIntake.isSupported`
   reads it and `FileIntake.openPanelTypes` builds ⌘O's panel from it, where it
-  used to offer `.audio` and `.movie` whole and then refuse .avi. `.qta` stays
+  used to offer `.audio` and `.movie` whole and then refuse .avi. A type still
+  admits whatever conforms to it — measured, `public.mpeg-4` offers .m4v and
+  `org.xiph.ogg-audio` offers .opus and .oga — so the panel also carries a
+  delegate (`OpenPanelGate` → `FileIntake.enablesInOpenPanel`) that greys out
+  any item `isSupported` refuses, folders excepted. `.qta` stays
   openable whatever the system declares — `.data` is the last resort for an
-  undeclared type, safe only because `accept` checks the extension itself.
+  undeclared type, safe because both `accept` and the panel's gate check the
+  extension itself.
   Several files at once are taken one: the first, with an alert saying the
   rest were not opened, raised only once the file is in so a Keep Editing that
   declines the switch says nothing.
