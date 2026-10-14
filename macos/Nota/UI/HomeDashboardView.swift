@@ -352,6 +352,8 @@ struct HomeDashboardView: View {
     model: NotaModel
   ) -> Bool {
     guard let provider = providers.first else { return false }
+    // Only the first file is taken; `accept` says what became of the rest (PT-2).
+    let alsoDropped = providers.count - 1
     provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
       let url: URL?
       if let data = item as? Data {
@@ -362,7 +364,7 @@ struct HomeDashboardView: View {
         url = nil
       }
       if let url {
-        Task { @MainActor in model.accept(url) }
+        Task { @MainActor in model.accept(url, alsoDropped: alsoDropped) }
       }
     }
     return true

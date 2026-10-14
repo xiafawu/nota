@@ -300,7 +300,7 @@ struct ContentView: View {
       )),
       isDropTargeted: $model.isDropTargeted,
       speakerChips: $model.speakerChips,
-      onDropURL: { url in model.accept(url) }
+      onDropURL: { url, others in model.accept(url, alsoDropped: others) }
     )
   }
 
@@ -316,7 +316,7 @@ struct ContentView: View {
       )),
       isDropTargeted: $model.isDropTargeted,
       speakerChips: $model.speakerChips,
-      onDropURL: { url in model.accept(url) }
+      onDropURL: { url, others in model.accept(url, alsoDropped: others) }
     )
   }
 
@@ -327,7 +327,7 @@ struct ContentView: View {
       content: .liveMeeting,
       isDropTargeted: $model.isDropTargeted,
       speakerChips: $model.speakerChips,
-      onDropURL: { url in model.accept(url) }
+      onDropURL: { url, others in model.accept(url, alsoDropped: others) }
     )
   }
 

@@ -2906,7 +2906,19 @@ site, not the machine.
   `!isRunning`); taken mid-session, it started a second paid pipeline behind
   the live pane. The file already running, arriving again, is ignored rather
   than refused: a Finder open can reach `accept` through both `.onOpenURL` and
-  `application(_:open:)`.
+  `application(_:open:)`. The **type** is checked in `accept` too, first, and
+  a refusal names the file and every type Nota takes (PT-2): the old check sat
+  in `performAccept`, after the dismissal policy, and wrote "Unsupported file
+  type" to a status line drawn only during a run — so a dropped .pdf lit the
+  target, was taken, and nothing happened. There is one list,
+  `supportedExtensions` (the TS twin is `validate.ts`): `FileIntake.isSupported`
+  reads it and `FileIntake.openPanelTypes` builds ⌘O's panel from it, where it
+  used to offer `.audio` and `.movie` whole and then refuse .avi. `.qta` stays
+  openable whatever the system declares — `.data` is the last resort for an
+  undeclared type, safe only because `accept` checks the extension itself.
+  Several files at once are taken one: the first, with an alert saying the
+  rest were not opened, raised only once the file is in so a Keep Editing that
+  declines the switch says nothing.
 - Model registry (`src/registry.ts`) is the single source of truth: model id → task, provider, required API key env, base URL. Transcription models are statically curated; summary models are sourced dynamically from the auto-refreshed catalog (`src/catalog.ts` + `~/.nota/models-catalog.json`) with a baked in-repo fallback. Only the API keys the resolved models actually need are required.
 - Summary model ids are auto-admitted weekly: mainline chat models (gpt-5.x, gemini flash/pro, deepseek v4+) matching allowlist predicates. Run `nota models list` for the current set.
 - Summary default is key-aware: `deepseek-v4-flash` > `gpt-5.4-mini` > `gemini-3.6-flash` based on which API key is set. A hint is printed when DeepSeek is skipped despite being the cheapest option. CLI engines never join that chain (ADR 0003).

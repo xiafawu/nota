@@ -16,7 +16,9 @@ struct MainPaneView: View {
   /// echoes each chip's identity hue onto its speaker runs
   /// (`applySpeakerColors`), and the Details button's dot reads them.
   @Binding var speakerChips: [SpeakerChip]
-  let onDropURL: (URL) -> Void
+  /// The first dropped file, and how many others came with it — only the first
+  /// is taken, and `accept` says so (PT-2).
+  let onDropURL: (_ url: URL, _ alsoDropped: Int) -> Void
 
   var body: some View {
     ZStack {
@@ -130,6 +132,7 @@ struct MainPaneView: View {
       guard let provider = providers.first else {
         return false
       }
+      let alsoDropped = providers.count - 1
 
       provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
         let url: URL?
@@ -143,7 +146,7 @@ struct MainPaneView: View {
 
         if let url {
           Task { @MainActor in
-            onDropURL(url)
+            onDropURL(url, alsoDropped)
           }
         }
       }
@@ -436,7 +439,7 @@ private struct RichDocumentPane: View {
     content: .empty(PreviewMocks.emptyMainIdle),
     isDropTargeted: .constant(false),
     speakerChips: .constant([]),
-    onDropURL: { _ in }
+    onDropURL: { _, _ in }
   )
   .environmentObject(NotaModel())
   .frame(width: 720, height: 540)
@@ -447,7 +450,7 @@ private struct RichDocumentPane: View {
     content: .empty(PreviewMocks.emptyMainIdle),
     isDropTargeted: .constant(true),
     speakerChips: .constant([]),
-    onDropURL: { _ in }
+    onDropURL: { _, _ in }
   )
   .environmentObject(NotaModel())
   .frame(width: 720, height: 540)
@@ -458,7 +461,7 @@ private struct RichDocumentPane: View {
     content: .rich(PreviewMocks.sampleDocument),
     isDropTargeted: .constant(false),
     speakerChips: .constant([]),
-    onDropURL: { _ in }
+    onDropURL: { _, _ in }
   )
   .environmentObject(NotaModel())
   .frame(width: 720, height: 540)
@@ -469,7 +472,7 @@ private struct RichDocumentPane: View {
     content: .liveMeeting,
     isDropTargeted: .constant(false),
     speakerChips: .constant([]),
-    onDropURL: { _ in }
+    onDropURL: { _, _ in }
   )
   .environmentObject(NotaModel())
   .frame(width: 720, height: 540)

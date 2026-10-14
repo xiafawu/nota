@@ -258,7 +258,7 @@ final class NotaModel: ObservableObject {
         return
       }
       Task { @MainActor in
-        self.accept(first)
+        self.accept(first, alsoDropped: urls.count - 1)
       }
     }
     // The menu-bar popover's "Show all N in Nota →" (decision 26) posts this
@@ -520,14 +520,9 @@ final class NotaModel: ObservableObject {
     panel.allowsMultipleSelection = false
     panel.canChooseDirectories = false
     panel.canChooseFiles = true
-    panel.allowedContentTypes = [
-      .audio,
-      .movie,
-      UTType(filenameExtension: "qta") ?? .data,
-      UTType(filenameExtension: "caf") ?? .audio,
-      UTType(filenameExtension: "webm") ?? .movie,
-      UTType(filenameExtension: "flac") ?? .audio
-    ]
+    // PT-2: built from the one list `accept` checks, so the panel offers
+    // nothing it would then refuse (`.movie` used to offer .avi and .m4v).
+    panel.allowedContentTypes = FileIntake.openPanelTypes()
 
     if panel.runModal() == .OK, let url = panel.url {
       accept(url)
@@ -552,19 +547,31 @@ final class NotaModel: ObservableObject {
     )
   }
 
-  func accept(_ url: URL) {
+  /// Take a file in — or say why not.
+  ///
+  /// - Parameter alsoDropped: how many other files arrived with this one (a
+  ///   multi-file drop, or several files opened from Finder at once). Only the
+  ///   first is ever taken, and that is now said rather than left to vanish
+  ///   (PT-2).
+  func accept(_ url: URL, alsoDropped: Int = 0) {
     // PT-1 / FB-3: refuse BEFORE anything else runs. `performAccept` rewrites
     // the display name, the path and `selectedURL` before `performTranscribe`
     // finds a run already going, so a file taken mid-run retitled the running
     // screen and was then never transcribed — and the dismissal policy below
     // could close the Details panel for a file that was never going to open.
-    // The share sheet, the Dock and Finder have no stroke to keep off, so the
-    // refusal is said in the window's alert rather than by silence.
+    // PT-2: the type is checked here for the same reason, and said: the old
+    // check wrote "Unsupported file type" to a status line drawn only during a
+    // run. A refused file switches no record, so checking before the
+    // dismissal policy weakens nothing — every file that is taken still goes
+    // through it. The share sheet, the Dock and Finder have no stroke to keep
+    // off, so every refusal is said in the window's alert.
     let fileURL = Self.resolveSharedURL(url)
     let fileName = Self.sharedDisplayName(from: url) ?? fileURL.lastPathComponent
     switch FileIntake.decide(
       fileURL: fileURL,
       fileName: fileName,
+      isSupported: isSupportedAudio(fileURL),
+      alsoDropped: alsoDropped,
       canTake: canTakeFile,
       isRunning: isRunning,
       runningURL: originalSelectedURL,
@@ -575,13 +582,15 @@ final class NotaModel: ObservableObject {
     case .refuse(let refusal):
       presentOwnerAlert(refusal)
       return
-    case .take:
-      break
-    }
-    // Decisions 6/7: a new file is a record switch — close the rail, resolving
-    // any dirty draft first, before the incoming file replaces the record.
-    requestSummaryRailDismissal { [weak self] in
-      self?.performAccept(url)
+    case .take(let note):
+      // Decisions 6/7: a new file is a record switch — close the rail,
+      // resolving any dirty draft first, before the incoming file replaces the
+      // record. The note is said only once the file is in, so a Keep Editing
+      // that declines the switch raises nothing.
+      requestSummaryRailDismissal { [weak self] in
+        self?.performAccept(url)
+        if let note { self?.presentOwnerAlert(note) }
+      }
     }
   }
 
@@ -595,11 +604,7 @@ final class NotaModel: ObservableObject {
     // query item. Prefer that for display, falling back to the basename for
     // plain drag-drop (where it's already the real name).
     let friendlyName = Self.sharedDisplayName(from: url) ?? fileURL.lastPathComponent
-
-    guard isSupportedAudio(fileURL) else {
-      status = "Unsupported file type"
-      return
-    }
+    // The type was checked, and a refusal said, in `accept` (PT-2).
 
     markdown = ""
     openDocument.changed(to: nil)
@@ -2213,7 +2218,7 @@ final class NotaModel: ObservableObject {
   }
 
   private func isSupportedAudio(_ url: URL) -> Bool {
-    supportedExtensions.contains(url.pathExtension.lowercased())
+    FileIntake.isSupported(url)
   }
 
   private func makeStableInputCopy(from url: URL) throws -> URL {

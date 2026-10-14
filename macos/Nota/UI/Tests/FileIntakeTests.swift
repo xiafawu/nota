@@ -1,3 +1,4 @@
+import UniformTypeIdentifiers
 import XCTest
 @testable import Nota
 
@@ -72,21 +73,21 @@ final class FileIntakeTests: XCTestCase {
 
     XCTAssertEqual(
       FileIntake.decide(
-        fileURL: dropped, fileName: "b.m4a", canTake: true,
+        fileURL: dropped, fileName: "b.m4a", isSupported: true, canTake: true,
         isRunning: false, runningURL: nil, runningName: ""
       ),
-      .take
+      .take(note: nil)
     )
 
     guard case .refuse(let midRun) = FileIntake.decide(
-      fileURL: dropped, fileName: "b.m4a", canTake: false,
+      fileURL: dropped, fileName: "b.m4a", isSupported: true, canTake: false,
       isRunning: true, runningURL: running, runningName: "a.m4a"
     ) else { return XCTFail("a file arriving mid-run was taken") }
     XCTAssertEqual(midRun.title, "“b.m4a” was not opened")
     XCTAssertTrue(midRun.message.contains("transcribing “a.m4a”"), midRun.message)
 
     guard case .refuse(let midSession) = FileIntake.decide(
-      fileURL: dropped, fileName: "b.m4a", canTake: false,
+      fileURL: dropped, fileName: "b.m4a", isSupported: true, canTake: false,
       isRunning: false, runningURL: nil, runningName: ""
     ) else { return XCTFail("a file arriving during a session was taken") }
     XCTAssertEqual(midSession.title, "“b.m4a” was not opened")
@@ -99,18 +100,133 @@ final class FileIntakeTests: XCTestCase {
     let running = URL(fileURLWithPath: "/tmp/sub/../a.m4a")
     XCTAssertEqual(
       FileIntake.decide(
-        fileURL: URL(fileURLWithPath: "/tmp/a.m4a"), fileName: "a.m4a", canTake: false,
+        fileURL: URL(fileURLWithPath: "/tmp/a.m4a"), fileName: "a.m4a", isSupported: true, canTake: false,
         isRunning: true, runningURL: running, runningName: "a.m4a"
       ),
       .ignore
     )
     // Only while it is the RUNNING file: during a session it is refused.
     if case .ignore = FileIntake.decide(
-      fileURL: URL(fileURLWithPath: "/tmp/a.m4a"), fileName: "a.m4a", canTake: false,
+      fileURL: URL(fileURLWithPath: "/tmp/a.m4a"), fileName: "a.m4a", isSupported: true, canTake: false,
       isRunning: false, runningURL: running, runningName: "a.m4a"
     ) {
       XCTFail("a file arriving during a live session was dropped silently")
     }
+  }
+
+  // MARK: - PT-2: a file Nota does not transcribe is refused, and said
+
+  /// A dropped .avi used to light the target, be taken, and then do nothing:
+  /// the refusal went to a status line drawn only during a run. It is an
+  /// alert now, naming the file and every type Nota would have taken.
+  func testAnUnsupportedFileIsRefusedNamingItAndEveryTypeNotaTakes() {
+    XCTAssertTrue(FileIntake.isSupported(URL(fileURLWithPath: "/tmp/memo.QTA")))
+    XCTAssertTrue(FileIntake.isSupported(URL(fileURLWithPath: "/tmp/a.m4a")))
+    XCTAssertFalse(FileIntake.isSupported(URL(fileURLWithPath: "/tmp/clip.avi")))
+    XCTAssertFalse(FileIntake.isSupported(URL(fileURLWithPath: "/tmp/notes.pdf")))
+    XCTAssertFalse(FileIntake.isSupported(URL(fileURLWithPath: "/tmp/Folder", isDirectory: true)))
+
+    let avi = URL(fileURLWithPath: "/tmp/clip.avi")
+    // Refused whether or not anything else is going on — the type is the
+    // answer worth giving first.
+    for canTake in [true, false] {
+      guard case .refuse(let refusal) = FileIntake.decide(
+        fileURL: avi, fileName: "clip.avi", isSupported: false, canTake: canTake,
+        isRunning: !canTake, runningURL: nil, runningName: "a.m4a"
+      ) else { return XCTFail("an unsupported file was taken (canTake: \(canTake))") }
+      XCTAssertEqual(refusal.title, "Nota can't transcribe “clip.avi”")
+      for ext in supportedExtensions {
+        XCTAssertTrue(refusal.message.contains(ext.uppercased()), "\(ext) missing: \(refusal.message)")
+      }
+    }
+    XCTAssertEqual(FileIntake.supportedTypesList(["mp3"]), "MP3")
+    XCTAssertEqual(FileIntake.supportedTypesList(["wav", "mp3", "aac"]), "AAC, MP3 and WAV")
+  }
+
+  /// The check runs in `accept`, ahead of the summary rail's dismissal policy
+  /// (a file about to be refused could close the Details panel or raise its
+  /// Keep Editing alert), and the old silent branch in `performAccept` is gone.
+  func testTheTypeIsCheckedInAcceptBeforeTheDismissalPolicy() {
+    let model = Self.source("App/NotaModel.swift")
+    let accept = Self.body(of: "func accept(", in: model)
+    let checkAt = accept.range(of: "isSupported: isSupportedAudio(fileURL)")
+    let dismissalAt = accept.range(of: "requestSummaryRailDismissal")
+    XCTAssertNotNil(checkAt, "accept(_:) no longer checks the type")
+    if let checkAt, let dismissalAt {
+      XCTAssertLessThan(checkAt.lowerBound, dismissalAt.lowerBound)
+    }
+    XCTAssertFalse(model.contains("status = \"Unsupported file type\""), "the invisible refusal is back")
+    XCTAssertTrue(
+      Self.body(of: "private func isSupportedAudio(", in: model).contains("FileIntake.isSupported(")
+    )
+  }
+
+  /// The panel is built from the one list. It used to offer `.audio` and
+  /// `.movie` whole, so .avi was offered and then refused.
+  func testTheOpenPanelOffersTheSupportedTypesAndNothingWider() {
+    let types = FileIntake.openPanelTypes()
+    for ext in supportedExtensions {
+      guard let type = UTType(filenameExtension: ext) else { continue }
+      XCTAssertTrue(types.contains(type), "\(ext) is not openable from the panel")
+    }
+    XCTAssertFalse(types.contains(.audio))
+    XCTAssertFalse(types.contains(.movie))
+    XCTAssertFalse(types.contains(.data), "every file is offered again")
+    let avi = UTType(filenameExtension: "avi")!
+    XCTAssertFalse(types.contains { avi.conforms(to: $0) }, ".avi is offered and then refused")
+
+    // A system that declares nothing for .qta still lets it be opened — the
+    // last-resort `.data`, which `accept`'s own check then guards.
+    let undeclared = FileIntake.openPanelTypes(extensions: ["m4a", "qta"]) {
+      $0 == "qta" ? nil : UTType(filenameExtension: $0)
+    }
+    XCTAssertTrue(undeclared.contains(.data), ".qta became unopenable")
+    XCTAssertTrue(undeclared.contains(UTType(filenameExtension: "m4a")!))
+
+    let chooser = Self.body(of: "func chooseFile(", in: Self.source("App/NotaModel.swift"))
+    XCTAssertTrue(chooser.contains("panel.allowedContentTypes = FileIntake.openPanelTypes()"))
+  }
+
+  /// Three files dropped at once: the first was taken and the other two
+  /// vanished without a sign. Now the first is taken and the rest are named
+  /// as not opened — and every way several files arrive passes the count.
+  func testAMultiFileDropSaysOnlyTheFirstWasTaken() {
+    let a = URL(fileURLWithPath: "/tmp/a.m4a")
+    XCTAssertEqual(
+      FileIntake.decide(
+        fileURL: a, fileName: "a.m4a", isSupported: true, alsoDropped: 0, canTake: true,
+        isRunning: false, runningURL: nil, runningName: ""
+      ),
+      .take(note: nil)
+    )
+    guard case .take(let note?) = FileIntake.decide(
+      fileURL: a, fileName: "a.m4a", isSupported: true, alsoDropped: 2, canTake: true,
+      isRunning: false, runningURL: nil, runningName: ""
+    ) else { return XCTFail("a three-file drop said nothing about two of them") }
+    XCTAssertEqual(note.title, "Only “a.m4a” was opened")
+    XCTAssertTrue(note.message.contains("the other 2 files were not opened"), note.message)
+    XCTAssertTrue(
+      FileIntake.onlyFirstNote(fileName: "a.m4a", alsoDropped: 1)?.message
+        .contains("the other file was not opened") ?? false
+    )
+    // A refused first file says the rest went nowhere either.
+    XCTAssertTrue(
+      FileIntake.unsupportedRefusal(fileName: "x.pdf", alsoDropped: 1).message
+        .hasSuffix("The other file was not opened either.")
+    )
+
+    // The note is said only once the file is in (inside the dismissal
+    // closure), and each multi-file route passes its count.
+    let model = Self.source("App/NotaModel.swift")
+    XCTAssertTrue(Self.body(of: "func accept(", in: model).contains("if let note { self?.presentOwnerAlert(note) }"))
+    XCTAssertTrue(model.contains("self.accept(first, alsoDropped: urls.count - 1)"))
+    XCTAssertTrue(Self.source("UI/MainPaneView.swift").contains("let alsoDropped = providers.count - 1"))
+    XCTAssertTrue(Self.source("UI/HomeDashboardView.swift").contains("model.accept(url, alsoDropped: alsoDropped)"))
+    XCTAssertEqual(
+      Self.source("UI/ContentView.swift")
+        .components(separatedBy: "model.accept(url, alsoDropped: others)").count - 1,
+      3
+    )
   }
 
   // MARK: - Source helpers
