@@ -222,20 +222,70 @@ final class HoverTimestampTextView: NSTextView {
 
   override func mouseExited(with event: NSEvent) {
     super.mouseExited(with: event)
-    setGutter(visible: false)
+    showGutter(nil)
+  }
+
+  // MARK: The pointer, without an event
+
+  /// The line whose timestamp the gutter is showing, and where — nil while it
+  /// is hidden. What `refreshGutter(pointerInView:)` compares against, so a
+  /// scroll that leaves the pointer on the same line starts nothing.
+  struct GutterLine: Equatable {
+    var timestamp: String
+    var frame: NSRect
+  }
+
+  private(set) var shownGutter: GutterLine?
+
+  /// Re-asks the hover question for wherever the pointer is now, for the moves
+  /// no `mouseMoved` reports: a two-finger scroll moves the text under a still
+  /// pointer, and the label — a subview of this view — rides away with the
+  /// line it was on. Called on every clip-view bounds change, so it is cheap
+  /// when nothing changed and answers only in the key window, which is the only
+  /// window the tracking area (`.activeInKeyWindow`) hovers in.
+  func refreshGutterForPointer() {
+    guard let window, window.isKeyWindow else { return }
+    refreshGutter(pointerInView: convert(window.mouseLocationOutsideOfEventStream, from: nil))
+  }
+
+  /// The seam under `refreshGutterForPointer`, taking the pointer in this
+  /// view's coordinates. Shows, moves or hides the label only when the line
+  /// under the pointer (or whether there is one) changed, and says whether it
+  /// did — a scroll must not start a fade on every frame.
+  @discardableResult
+  func refreshGutter(pointerInView point: NSPoint) -> Bool {
+    let line = visibleRect.contains(point) ? gutterLine(at: point) : nil
+    guard line != shownGutter else { return false }
+    showGutter(line)
+    return true
   }
 
   /// Find the line under `point`; if it carries a `.notaTimestamp`, position and
   /// fade in the gutter label aligned to that line. Otherwise fade out.
   private func updateGutter(at point: NSPoint) {
+    showGutter(gutterLine(at: point))
+  }
+
+  private func showGutter(_ line: GutterLine?) {
+    shownGutter = line
+    if let line {
+      gutterLabel.stringValue = line.timestamp
+      gutterLabel.frame = line.frame
+    }
+    setGutter(visible: line != nil)
+  }
+
+  /// The timestamped line under `point` and the label frame beside it, or nil.
+  /// Writes the label's string as it goes, because the label's own intrinsic
+  /// size is the measurement; the caller then shows exactly that line.
+  private func gutterLine(at point: NSPoint) -> GutterLine? {
     guard
       let layoutManager,
       let textContainer,
       let textStorage,
       textStorage.length > 0
     else {
-      setGutter(visible: false)
-      return
+      return nil
     }
 
     let inset = textContainerInset
@@ -247,8 +297,7 @@ final class HoverTimestampTextView: NSTextView {
     // the vertical band of the line's used rect to avoid phantom reveals when
     // hovering below the last line.
     guard containerPoint.y >= usedRect.minY, containerPoint.y <= usedRect.maxY else {
-      setGutter(visible: false)
-      return
+      return nil
     }
 
     let charIndex = layoutManager.characterIndexForGlyph(at: glyphIndex)
@@ -256,8 +305,7 @@ final class HoverTimestampTextView: NSTextView {
       charIndex < textStorage.length,
       let timestamp = textStorage.attribute(.notaTimestamp, at: charIndex, effectiveRange: nil) as? String
     else {
-      setGutter(visible: false)
-      return
+      return nil
     }
 
     let lineRect = layoutManager.lineFragmentRect(forGlyphAt: glyphIndex, effectiveRange: nil)
@@ -273,8 +321,10 @@ final class HoverTimestampTextView: NSTextView {
     let width = min(size.width, available)
     let x = inset.width - Metrics.tsGutterTrailingGap - lane - width
     let y = lineRect.minY + inset.height + (lineRect.height - size.height) / 2
-    gutterLabel.frame = NSRect(x: x, y: y, width: width, height: size.height)
-    setGutter(visible: true)
+    return GutterLine(
+      timestamp: timestamp,
+      frame: NSRect(x: x, y: y, width: width, height: size.height)
+    )
   }
 
   private func setGutter(visible: Bool) {

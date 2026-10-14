@@ -57,8 +57,8 @@ enum Tokens {
   static let animSnap: Animation = .easeInOut(duration: hoverDuration)
 
   /// One transition for anything that pops into place — a stage checkmark, a
-  /// drawer badge, the toolbar status pill. Under Reduce Motion the scale goes
-  /// and the fade stays: a scale is a movement, and `ContentView` already
+  /// drawer badge. Under Reduce Motion the scale goes and the fade stays: a
+  /// scale is a movement, and `ContentView` already
   /// branches its `.move` transitions the same way (P-B9).
   static func popIn(reduceMotion: Bool) -> AnyTransition {
     reduceMotion ? .opacity : .opacity.combined(with: .scale(scale: popInScale))

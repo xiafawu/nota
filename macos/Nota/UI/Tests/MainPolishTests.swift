@@ -25,6 +25,23 @@ final class MainPolishTests: XCTestCase {
     XCTAssertTrue(Tokens.popInScales(reduceMotion: false))
   }
 
+  /// **The toolbar status pill claims no transition it cannot play** (FB-8).
+  /// It is inserted by a bare `if` inside a `ToolbarItemGroup` with nothing
+  /// animating the insertion, so a `.transition` on its own body never fired
+  /// while its comment promised a fade. Source-level, because toolbar
+  /// insertion needs a window server; if the owner wants the pop-in to play,
+  /// it belongs at the ContentView call site with an animation driving it.
+  func testTheToolbarStatusPillClaimsNoTransitionItCannotPlay() throws {
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("ToolbarStatusPill.swift"),
+      encoding: .utf8)
+    XCTAssertFalse(
+      source.contains(".transition("),
+      "a transition on the pill's own body never plays inside the toolbar group")
+  }
+
   /// One hover speed, in one place: `animSnap` is built out of
   /// `Tokens.hoverDuration`, which is also what `HoverTimestampTextView`'s
   /// AppKit fade reads. Three hover durations used to ship (0, 0.15, 0.18) and

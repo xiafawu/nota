@@ -241,6 +241,93 @@ final class ReadingColumnTests: XCTestCase {
     XCTAssertFalse(RichTextViewer.Column.needsRelayout(from: 900, to: 0))
   }
 
+  /// **The hover timestamp follows the pointer through a trackpad scroll**
+  /// (TP-5). A two-finger scroll moves the text under a still pointer and sends
+  /// no `mouseMoved`, and the label is a subview of the text view — so it rode
+  /// away with the line it was on, naming a line the pointer had left, until
+  /// the pointer next moved.
+  ///
+  /// Driven through the seam the clip view's bounds observer calls, with the
+  /// pointer held at one spot in the *visible* area while the document scrolls
+  /// under it: the same line answers nothing (a scroll may not restart a fade
+  /// on every frame), a new line moves the label onto it, and a pointer outside
+  /// the visible area hides it.
+  @MainActor
+  func testTheHoverTimestampFollowsThePointerThroughAScroll() throws {
+    let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 620, height: 400))
+    let view = HoverTimestampTextView(frame: NSRect(x: 0, y: 0, width: 620, height: 400))
+    view.textContainer?.widthTracksTextView = false
+    view.textContainer?.lineFragmentPadding = 0
+    view.isVerticallyResizable = true
+    view.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude, height: CGFloat.greatestFiniteMagnitude)
+    scrollView.documentView = view
+    view.textStorage?.setAttributedString(renderMarkdownAsRichText(
+      (0..<40).map { "[00:\(String(format: "%02d", $0))] **Alice:** line \($0)" }
+        .joined(separator: "\n") + "\n",
+      sections: .whole))
+    RichTextViewer.layout(view, in: view.bounds.width)
+    view.layoutManager?.ensureLayout(for: view.textContainer!)
+    view.sizeToFit()
+    let clip = scrollView.contentView
+    XCTAssertGreaterThan(view.frame.height, clip.bounds.height * 2, "the document cannot scroll")
+
+    // The laid-out lines, in this view's coordinates: where a pointer resting
+    // on a line is, and where the label beside it belongs.
+    let inset = view.textContainerInset
+    var lines: [(used: NSRect, fragment: NSRect)] = []
+    view.layoutManager?.enumerateLineFragments(
+      forGlyphRange: view.layoutManager!.glyphRange(for: view.textContainer!)
+    ) { fragment, used, _, _, _ in
+      lines.append((
+        used.offsetBy(dx: inset.width, dy: inset.height),
+        fragment.offsetBy(dx: inset.width, dy: inset.height)))
+    }
+    XCTAssertGreaterThan(lines.count, 8)
+
+    // One spot on the screen, on line 3 of the unscrolled document, expressed
+    // in the document's coordinates at the current scroll position — which is
+    // all a still pointer is.
+    let still = NSPoint(x: inset.width + 20, y: lines[3].used.midY)
+    func pointer() -> NSPoint { NSPoint(x: still.x, y: clip.bounds.minY + still.y) }
+    func scroll(by delta: CGFloat) {
+      clip.scroll(to: NSPoint(x: 0, y: clip.bounds.minY + delta))
+      scrollView.reflectScrolledClipView(clip)
+    }
+
+    XCTAssertTrue(
+      view.refreshGutter(pointerInView: pointer()),
+      "no label under a pointer on a line (pointer \(pointer()), visible \(view.visibleRect))")
+    let before = try XCTUnwrap(view.shownGutter)
+    XCTAssertFalse(
+      view.refreshGutter(pointerInView: pointer()),
+      "a scroll frame that left the pointer on the same line restarted the fade")
+
+    // Three lines' worth of two-finger scroll: the pointer has not moved, the
+    // text under it has.
+    scroll(by: lines[6].used.minY - lines[3].used.minY)
+    XCTAssertTrue(
+      view.refreshGutter(pointerInView: pointer()),
+      "the text scrolled under a still pointer and the label stayed on the old line")
+    let after = try XCTUnwrap(view.shownGutter)
+    XCTAssertNotEqual(after.timestamp, before.timestamp)
+    XCTAssertTrue(
+      lines[6].fragment.minY <= after.frame.midY && after.frame.midY <= lines[6].fragment.maxY,
+      "the label is not beside the line under the pointer (\(after.frame) vs \(lines[6].fragment))")
+
+    XCTAssertTrue(view.refreshGutter(pointerInView: NSPoint(x: still.x, y: clip.bounds.maxY + 40)))
+    XCTAssertNil(view.shownGutter, "a pointer outside the visible area kept a timestamp up")
+
+    // …and the observer that sees a trackpad scroll is the one that asks.
+    let source = try String(
+      contentsOf: URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent().deletingLastPathComponent()
+        .appendingPathComponent("RichTextViewer.swift"),
+      encoding: .utf8)
+    XCTAssertTrue(
+      source.contains("textView?.refreshGutterForPointer()"),
+      "the clip view's bounds observer no longer re-asks the hover question on a scroll")
+  }
+
   // MARK: - The title, and the band that used to hold it
 
   /// **Nothing is pinned above the transcript, and the document's metadata

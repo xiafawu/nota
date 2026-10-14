@@ -95,9 +95,13 @@ struct RichTextViewer: NSViewRepresentable {
       forName: NSView.boundsDidChangeNotification,
       object: scrollView.contentView,
       queue: .main
-    ) { [weak coordinator = context.coordinator] note in
+    ) { [weak textView, weak coordinator = context.coordinator] note in
       guard let clipView = note.object as? NSClipView else { return }
       coordinator?.onScroll?(clipView.bounds.origin.y)
+      // A trackpad scroll moves the text under a still pointer and sends no
+      // `mouseMoved`, so the hover timestamp is re-asked here or it stays on
+      // the line the pointer has left.
+      textView?.refreshGutterForPointer()
     }
 
     // The column is a function of the current width, and with

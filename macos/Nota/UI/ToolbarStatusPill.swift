@@ -3,8 +3,6 @@ import SwiftUI
 struct ToolbarStatusPill: View {
   let state: ToolbarStatusPillState
 
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-
   var body: some View {
     HStack(spacing: Metrics.statusHStackSpacing) {
       if state.isRunning {
@@ -27,9 +25,13 @@ struct ToolbarStatusPill: View {
     // one glass capsule around both. The tint this dropped was
     // `.secondary.opacity(0.1)` — a neutral wash, never a semantic signal — so
     // nothing the pill *says* travelled on it.
-    // A scale is a movement, so it goes under Reduce Motion and the fade
-    // stays (P-B9).
-    .transition(Tokens.popIn(reduceMotion: reduceMotion))
+    //
+    // No `.transition` either (FB-8). One sat here for months and never
+    // played: the pill is inserted by a bare `if` inside a `ToolbarItemGroup`
+    // with no animation driving it, so it appears and goes abruptly whatever
+    // this line said. A transition that cannot fire reads as covered
+    // behaviour that does not exist. Making it play is the owner's open
+    // choice, and it would belong at the ContentView call site, not here.
   }
 }
 
