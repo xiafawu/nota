@@ -182,6 +182,11 @@ final class LiveMeetingViewTests: XCTestCase {
   /// running session that used to light the full-bleed accept stroke and then
   /// run `transcribe()`, which clears the open document and starts a second
   /// pipeline behind a pane the live phase pins in front.
+  ///
+  /// The running file transcription's pane refuses as well (PT-1, FB-3). This
+  /// test used to assert that it *accepts* — a contrast case added by a polish
+  /// pass, not an owner ruling — and a drop there retitled the progress screen
+  /// to the dropped file, which was then never transcribed.
   func testALiveMeetingRefusesADroppedFile() {
     let empty = MainPaneContent.empty(
       EmptyMainState(isRunning: false, displayName: "", displayPath: "", phase: "")
@@ -192,7 +197,7 @@ final class LiveMeetingViewTests: XCTestCase {
     let rich = MainPaneContent.rich(DocumentRender(meta: nil, body: NSAttributedString(string: "x")))
 
     XCTAssertTrue(MainPaneDrop.accepts(content: empty, isStartingLiveSession: false))
-    XCTAssertTrue(MainPaneDrop.accepts(content: running, isStartingLiveSession: false))
+    XCTAssertFalse(MainPaneDrop.accepts(content: running, isStartingLiveSession: false))
     XCTAssertTrue(MainPaneDrop.accepts(content: rich, isStartingLiveSession: false))
     XCTAssertFalse(MainPaneDrop.accepts(content: .liveMeeting, isStartingLiveSession: false))
   }

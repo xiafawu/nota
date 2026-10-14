@@ -2890,6 +2890,23 @@ site, not the machine.
   a write that did not land is a record saying Transcribed with no transcript
   in it, and a status flipped first turns a crash into a record the launch
   sweep will never look at again. See Record Lifecycle → the session lifecycle.
+- The app takes **one file at a time, and only when nothing else is on**
+  (PT-1, FB-3). A file reaches `NotaModel.accept(_:)` five ways — a drop, ⌘O,
+  the Dock, Finder's Open With, the share sheet — and all of them ask one
+  predicate, `FileIntake.isOpen` (`NotaModel.canTakeFile`): no file
+  transcription running and no live session on screen, the live half being
+  `LivePhaseGate`'s answer so a starting session refuses and a handed-off one
+  does not. The drop target keeps its stroke off (`MainPaneDrop`, now refusing
+  the running pane too), ⌘O is disabled (`TranscribeFileCommand`, a view of its
+  own because the predicate reads `liveSession.state` and the model does not
+  republish it), and `accept` refuses **before** the summary rail's dismissal
+  policy runs, saying so through `ownerAlert` — the share sheet and the Dock
+  have no stroke to keep off. Taken mid-run, a file retitled the progress
+  screen and was then never transcribed (`performTranscribe` returns at
+  `!isRunning`); taken mid-session, it started a second paid pipeline behind
+  the live pane. The file already running, arriving again, is ignored rather
+  than refused: a Finder open can reach `accept` through both `.onOpenURL` and
+  `application(_:open:)`.
 - Model registry (`src/registry.ts`) is the single source of truth: model id → task, provider, required API key env, base URL. Transcription models are statically curated; summary models are sourced dynamically from the auto-refreshed catalog (`src/catalog.ts` + `~/.nota/models-catalog.json`) with a baked in-repo fallback. Only the API keys the resolved models actually need are required.
 - Summary model ids are auto-admitted weekly: mainline chat models (gpt-5.x, gemini flash/pro, deepseek v4+) matching allowlist predicates. Run `nota models list` for the current set.
 - Summary default is key-aware: `deepseek-v4-flash` > `gpt-5.4-mini` > `gemini-3.6-flash` based on which API key is set. A hint is printed when DeepSeek is skipped despite being the cheapest option. CLI engines never join that chain (ADR 0003).

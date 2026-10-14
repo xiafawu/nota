@@ -76,10 +76,7 @@ struct NotaApp: App {
         .keyboardShortcut("m")
         .disabled(model.isRunning)
 
-        Button("Transcribe File…") {
-          model.chooseFile()
-        }
-        .keyboardShortcut("o")
+        TranscribeFileCommand(model: model, liveSession: model.liveSession)
 
         Button("Transcribe") {
           model.transcribe()
@@ -120,6 +117,30 @@ struct NotaApp: App {
     }
     .windowResizability(.contentSize)
     #endif
+  }
+}
+
+/// File ▸ Transcribe File… (⌘O), disabled exactly when `accept(_:)` would
+/// refuse the file it picked (PT-1): the one predicate, `canTakeFile`.
+///
+/// A view of its own rather than a `Button` in the group, because `.commands`
+/// is re-evaluated only when `model` publishes, and half of that predicate is
+/// `liveSession.state` — a separate object the model does not republish. Left
+/// in the group, ⌘O could stay enabled behind a live meeting that the model
+/// had not yet said anything about. It re-evaluates on every publish the
+/// session makes, the volatile tail included; that is the XIA-432 rate, but its
+/// breadth is one menu item, and `ContentView` already observes the same object
+/// for the whole window.
+private struct TranscribeFileCommand: View {
+  @ObservedObject var model: NotaModel
+  @ObservedObject var liveSession: LiveMeetingSession
+
+  var body: some View {
+    Button("Transcribe File…") {
+      model.chooseFile()
+    }
+    .keyboardShortcut("o")
+    .disabled(!model.canTakeFile)
   }
 }
 

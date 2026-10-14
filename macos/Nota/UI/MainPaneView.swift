@@ -116,12 +116,12 @@ struct MainPaneView: View {
     }
     .animation(Tokens.animSnap, value: isDropTargeted)
     .animation(Tokens.animFast, value: isRichContent)
-    // P-C9: a live session refuses the drop rather than queueing it. Binding
-    // `isTargeted` to a constant is what keeps the accept stroke off the
-    // screen — a target that lights up over a running meeting promises to
-    // accept a file the surface would then hide, and `performAccept` would
-    // clear the open document and start a second pipeline behind the live
-    // phase.
+    // P-C9: a live session — or a running file transcription (PT-1, FB-3) —
+    // refuses the drop rather than queueing it. Binding `isTargeted` to a
+    // constant is what keeps the accept stroke off the screen — a target that
+    // lights up over a running meeting promises to accept a file the surface
+    // would then hide, and `performAccept` would clear the open document and
+    // start a second pipeline behind the live phase.
     .onDrop(
       of: [UTType.fileURL.identifier],
       isTargeted: acceptsDrop ? $isDropTargeted : .constant(false)
@@ -487,11 +487,23 @@ private struct RichDocumentPane: View {
 /// `!isRunning`. `isStartingLiveSession` is refused for the same reason: a
 /// Start press is accepted the instant it is seen, and the seconds-long start
 /// window is exactly when a stray drop would land.
+///
+/// A running file transcription refuses too (PT-1, FB-3). The running pane is
+/// an `.empty` content carrying `isRunning`, and taking a drop there retitled
+/// the progress screen to the dropped file while the first one kept running —
+/// and then the dropped file was never transcribed, because that same
+/// `!isRunning` guard returned without a word. The answer is
+/// `FileIntake.isOpen`, the predicate ⌘O and `accept(_:)` ask as well.
 enum MainPaneDrop {
   static func accepts(content: MainPaneContent, isStartingLiveSession: Bool) -> Bool {
-    if isStartingLiveSession { return false }
-    if case .liveMeeting = content { return false }
-    return true
+    var isRunning = false
+    var liveSessionShown = isStartingLiveSession
+    switch content {
+    case .empty(let state): isRunning = state.isRunning
+    case .liveMeeting: liveSessionShown = true
+    case .rich: break
+    }
+    return FileIntake.isOpen(isRunning: isRunning, liveSessionShown: liveSessionShown)
   }
 }
 

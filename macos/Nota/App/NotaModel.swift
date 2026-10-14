@@ -534,7 +534,50 @@ final class NotaModel: ObservableObject {
     }
   }
 
+  /// Whether a file may be taken in right now (PT-1, FB-3): no file
+  /// transcription running and no live session on screen. The one predicate —
+  /// ⌘O's `.disabled` reads this, and `accept(_:)` refuses on it — so the menu
+  /// item and the verb cannot disagree. The live half is asked of
+  /// `LivePhaseGate` with exactly the arguments `ContentView` passes it, so it
+  /// means "the window is showing a session", which is what a file would land
+  /// behind.
+  var canTakeFile: Bool {
+    FileIntake.isOpen(
+      isRunning: isRunning,
+      liveSessionShown: LivePhaseGate.showsLiveSession(
+        isStarting: isStartingLiveSession,
+        sessionIsIdle: liveSession.state == .idle,
+        handedOff: isLiveSessionHandedOff
+      )
+    )
+  }
+
   func accept(_ url: URL) {
+    // PT-1 / FB-3: refuse BEFORE anything else runs. `performAccept` rewrites
+    // the display name, the path and `selectedURL` before `performTranscribe`
+    // finds a run already going, so a file taken mid-run retitled the running
+    // screen and was then never transcribed — and the dismissal policy below
+    // could close the Details panel for a file that was never going to open.
+    // The share sheet, the Dock and Finder have no stroke to keep off, so the
+    // refusal is said in the window's alert rather than by silence.
+    let fileURL = Self.resolveSharedURL(url)
+    let fileName = Self.sharedDisplayName(from: url) ?? fileURL.lastPathComponent
+    switch FileIntake.decide(
+      fileURL: fileURL,
+      fileName: fileName,
+      canTake: canTakeFile,
+      isRunning: isRunning,
+      runningURL: originalSelectedURL,
+      runningName: displayName
+    ) {
+    case .ignore:
+      return
+    case .refuse(let refusal):
+      presentOwnerAlert(refusal)
+      return
+    case .take:
+      break
+    }
     // Decisions 6/7: a new file is a record switch — close the rail, resolving
     // any dirty draft first, before the incoming file replaces the record.
     requestSummaryRailDismissal { [weak self] in
