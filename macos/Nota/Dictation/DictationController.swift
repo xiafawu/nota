@@ -72,7 +72,6 @@ final class DictationController: ObservableObject {
   /// Completed dictations retained locally for recovery when insertion is
   /// refused, unsupported, or otherwise cannot be confirmed.
   @Published private(set) var dictationHistory: [DictationHistoryEntry] = []
-  @Published private(set) var historyNotice: String?
   var dictationHistoryRetentionLimit: Int { historyStore.retentionLimit }
   /// The recognizer's un-finalized tail — the rough draft the HUD shows.
   ///
@@ -1744,47 +1743,50 @@ final class DictationController: ObservableObject {
 
   /// Returns whether the text landed. The drawer row's expansion is the
   /// receipt of this copy (decision 16), so a failure has to reach the row
-  /// that would otherwise claim it — `historyNotice` alone has no reader.
+  /// that would otherwise claim it — nothing else carries the result.
   /// The pasteboard is a parameter so a test never writes the owner's own.
   @discardableResult
   func copyDictationHistory(_ id: UUID, to pasteboard: NSPasteboard = .general) -> Bool {
     guard let entry = historyStore.entry(id: id) else { return false }
     pasteboard.clearContents()
-    if pasteboard.setString(entry.text, forType: .string) {
-      historyNotice = "Copied dictation"
-      return true
-    } else {
-      historyNotice = "Could not copy dictation"
-      return false
-    }
+    return pasteboard.setString(entry.text, forType: .string)
   }
 
   func deleteDictationHistory(_ id: UUID) {
     historyStore.delete(id: id)
     syncDictationHistory()
-    historyNotice = "Dictation removed"
   }
 
   func clearDictationHistory() {
     historyStore.clear()
     syncDictationHistory()
-    historyNotice = "Dictation history cleared"
   }
 
   /// Retry a selected entry against its original process when that process is
   /// still alive. Otherwise use the currently focused app, but refuse to send
   /// text back into Nota itself.
-  func retryDictationHistory(_ id: UUID) {
+  ///
+  /// The outcome is reported through `state` — the HUD's failure path — and
+  /// the entry's delivery status, and nowhere else. `resolvingTarget` replaces
+  /// the live process/focus lookup so a test never reads the owner's frontmost
+  /// app.
+  func retryDictationHistory(
+    _ id: UUID,
+    resolvingTarget: ((DictationHistoryEntry) async -> FocusedTarget?)? = nil
+  ) {
     guard let entry = historyStore.entry(id: id), !entry.text.isEmpty else { return }
-    historyNotice = "Retrying insertion…"
     state = .injecting
 
     Task {
-      let target = await retryTarget(for: entry)
+      let target: FocusedTarget?
+      if let resolvingTarget {
+        target = await resolvingTarget(entry)
+      } else {
+        target = await retryTarget(for: entry)
+      }
       guard let target else {
         let reason = "Open the app where you want the dictation inserted, then try again."
         updateHistoryDelivery(id, status: .failed, detail: reason)
-        historyNotice = reason
         state = .failed(message: reason)
         return
       }
@@ -1802,10 +1804,8 @@ final class DictationController: ObservableObject {
 
       switch result {
       case .refused(let reason), .failed(_, let reason):
-        historyNotice = reason
         state = .failed(message: reason)
       case .delivered, .attempted:
-        historyNotice = "Insertion attempted"
         state = .idle
       }
     }

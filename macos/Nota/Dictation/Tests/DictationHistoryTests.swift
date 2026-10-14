@@ -97,9 +97,9 @@ final class DictationHistoryTests: XCTestCase {
 
 /// **A copy says whether it landed** (FB-6). The drawer row's expansion is the
 /// receipt of this copy (decision 16), and it used to appear whether or not
-/// the write reached the pasteboard: the result went only to `historyNotice`,
-/// which nothing reads. A private named pasteboard keeps the owner's clipboard
-/// out of it.
+/// the write reached the pasteboard: the result went only to a published
+/// notice that nothing read (deleted since, FB-1). A private named pasteboard
+/// keeps the owner's clipboard out of it.
 @MainActor
 final class DictationHistoryCopyTests: XCTestCase {
   private var directory: URL!
@@ -132,6 +132,73 @@ final class DictationHistoryCopyTests: XCTestCase {
     XCTAssertFalse(
       controller.copyDictationHistory(UUID(), to: pasteboard),
       "a copy of an entry that is not there claimed success")
+  }
+}
+
+/// **A failed Insert Again reaches the failure state** (FB-1). The retry's
+/// reason used to be written to a published notice that nothing read, beside
+/// the `state` write that actually surfaces it. The notice is gone, so the
+/// only route left must keep working: the reason lands in `.failed(message:)`
+/// and on the entry, for both ways a retry fails. The target resolver is
+/// injected so the test never reads the owner's frontmost app.
+@MainActor
+final class DictationHistoryRetryTests: XCTestCase {
+  private var directory: URL!
+
+  override func setUp() {
+    super.setUp()
+    directory = FileManager.default.temporaryDirectory
+      .appendingPathComponent("nota-dictation-retry-tests-\(UUID().uuidString)", isDirectory: true)
+    try? FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+  }
+
+  override func tearDown() {
+    try? FileManager.default.removeItem(at: directory)
+    super.tearDown()
+  }
+
+  private func makeController() throws -> (DictationController, DictationHistoryStore, UUID) {
+    let store = DictationHistoryStore(
+      fileURL: directory.appendingPathComponent("dictation-history.json"))
+    let id = try XCTUnwrap(store.record(text: "Ship the drawer fix"))
+    return (DictationController(review: StubReviewPresenter(), historyStore: store), store, id)
+  }
+
+  /// The retry lands its outcome on a Task, so wait for the failure rather
+  /// than for a fixed time.
+  private func failure(of controller: DictationController) async -> String? {
+    for _ in 0..<300 {
+      if case .failed(let message) = controller.state { return message }
+      try? await Task.sleep(nanoseconds: 10_000_000)
+    }
+    return nil
+  }
+
+  func testARetryWithNoTargetReachesTheFailureState() async throws {
+    let (controller, store, id) = try makeController()
+
+    controller.retryDictationHistory(id, resolvingTarget: { _ in nil })
+
+    let message = await failure(of: controller)
+    XCTAssertEqual(
+      message, "Open the app where you want the dictation inserted, then try again.")
+    XCTAssertEqual(store.entry(id: id)?.status, .failed)
+  }
+
+  func testARetryTheInjectorRefusesReachesTheFailureState() async throws {
+    let (controller, store, id) = try makeController()
+    let secureField = FocusedTarget(
+      bundleID: "com.apple.TextEdit",
+      isSecureInput: true,
+      accessibilityElement: nil,
+      processID: 4242
+    )
+
+    controller.retryDictationHistory(id, resolvingTarget: { _ in secureField })
+
+    let message = await failure(of: controller)
+    XCTAssertEqual(message, "Cannot dictate into a password or secure field")
+    XCTAssertEqual(store.entry(id: id)?.status, .failed)
   }
 }
 
