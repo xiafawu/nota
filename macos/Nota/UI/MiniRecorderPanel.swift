@@ -305,15 +305,22 @@ final class MiniRecorderPanel: NSPanel, MiniRecorderWindowing {
     // card use, so the three floating surfaces agree about "here". It used to be
     // the screen under the mouse alone, which on two monitors put the island on
     // the laptop while the call ran fullscreen on the external display.
-    let anchor = DictationHUDPanel.frontmostAppFocusedWindowFrame()
-    guard let active = DictationHUDPanel.activeScreen(anchor: anchor)?.visibleFrame else { return }
-
-    let placement = IslandPanelLayout.placement(
-      pinned: pinnedCardTopLeft,
-      cardSize: card,
-      visibleFrames: NSScreen.screens.map(\.visibleFrame),
-      activeVisible: active
-    )
+    //
+    // Asked only when the placement needs it. The anchor is a synchronous
+    // Accessibility call into the meeting app — IPC into a process that may
+    // not answer, on the main actor — and a pin a screen can still hold wins
+    // without it, so a pinned island used to pay that call on every show for
+    // an answer nothing read.
+    guard
+      let placement = IslandPanelLayout.placement(
+        pinned: pinnedCardTopLeft,
+        cardSize: card,
+        visibleFrames: NSScreen.screens.map(\.visibleFrame),
+        activeVisible: DictationHUDPanel.activeScreen(
+          anchor: DictationHUDPanel.frontmostAppFocusedWindowFrame()
+        )?.visibleFrame
+      )
+    else { return }
     if placement.dropsPin {
       pinnedCardTopLeft = nil
       IslandPositionStore.clear()
@@ -396,17 +403,23 @@ enum IslandPanelLayout {
   /// their choice. Only the automatic placement follows `activeVisible` (the
   /// screen the owner is working on); whether a pin should follow it too is
   /// the owner's question, not this function's.
+  ///
+  /// `activeVisible` is evaluated only when the pin does not win: finding the
+  /// active screen costs an Accessibility round trip into another app. Nil when
+  /// it is needed and there is no screen to rest on — the caller places nothing
+  /// and keeps the pin, which no screen could validate anyway.
   static func placement(
     pinned: CGPoint?,
     cardSize: CGSize,
     visibleFrames: [NSRect],
-    activeVisible: NSRect
-  ) -> (topLeft: CGPoint, dropsPin: Bool) {
+    activeVisible: @autoclosure () -> NSRect?
+  ) -> (topLeft: CGPoint, dropsPin: Bool)? {
     if let pinned,
        let topLeft = validatedTopLeft(pinned, cardSize: cardSize, visibleFrames: visibleFrames) {
       return (topLeft, false)
     }
-    return (defaultTopLeft(cardSize: cardSize, visible: activeVisible), pinned != nil)
+    guard let active = activeVisible() else { return nil }
+    return (defaultTopLeft(cardSize: cardSize, visible: active), pinned != nil)
   }
 
   static func defaultTopLeft(cardSize: CGSize, visible: NSRect) -> CGPoint {

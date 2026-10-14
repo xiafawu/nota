@@ -573,16 +573,16 @@ final class MiniRecorderIslandTests: XCTestCase {
   /// current screen can hold is theirs. Making a pin follow the active screen
   /// is an open owner question; this test is what makes the current answer a
   /// decision rather than an accident.
-  func testTheIslandRestsOnTheActiveScreenAndAPinElsewhereStillWins() {
+  func testTheIslandRestsOnTheActiveScreenAndAPinElsewhereStillWins() throws {
     let laptop = NSRect(x: 0, y: 0, width: 1512, height: 944)
     let external = NSRect(x: 1512, y: 0, width: 2560, height: 1415)
     let screens = [laptop, external]
     let card = MiniIslandMetrics.cardSize
 
     // No pin: the resting place on the active screen, never on the other one.
-    let unpinned = IslandPanelLayout.placement(
+    let unpinned = try XCTUnwrap(IslandPanelLayout.placement(
       pinned: nil, cardSize: card, visibleFrames: screens, activeVisible: external
-    )
+    ))
     XCTAssertEqual(unpinned.topLeft, IslandPanelLayout.defaultTopLeft(cardSize: card, visible: external))
     XCTAssertTrue(external.contains(unpinned.topLeft))
     XCTAssertFalse(unpinned.dropsPin)
@@ -590,20 +590,73 @@ final class MiniRecorderIslandTests: XCTestCase {
     // A pin on the laptop while the owner works on the external display: kept,
     // and honoured where it is.
     let onLaptop = CGPoint(x: 200, y: 600)
-    let pinned = IslandPanelLayout.placement(
+    let pinned = try XCTUnwrap(IslandPanelLayout.placement(
       pinned: onLaptop, cardSize: card, visibleFrames: screens, activeVisible: external
-    )
+    ))
     XCTAssertEqual(pinned.topLeft, onLaptop)
     XCTAssertFalse(pinned.dropsPin, "a pin a current screen holds was thrown away")
 
     // A pin no current screen holds (the display it was on is unplugged): dropped,
     // and the self-heal lands on the active screen.
-    let orphan = IslandPanelLayout.placement(
+    let orphan = try XCTUnwrap(IslandPanelLayout.placement(
       pinned: CGPoint(x: 5000, y: 600), cardSize: card, visibleFrames: screens,
       activeVisible: external
-    )
+    ))
     XCTAssertTrue(orphan.dropsPin)
     XCTAssertEqual(orphan.topLeft, unpinned.topLeft)
+  }
+
+  /// **A pin that wins never asks which screen is active.** Finding the active
+  /// screen is a synchronous Accessibility call into the meeting app, and a
+  /// pinned island used to make it on every show for an answer nothing read.
+  /// The lookup is counted here; an eager argument would count one either way.
+  func testAWinningPinNeverLooksUpTheActiveScreen() throws {
+    let laptop = NSRect(x: 0, y: 0, width: 1512, height: 944)
+    let external = NSRect(x: 1512, y: 0, width: 2560, height: 1415)
+    let card = MiniIslandMetrics.cardSize
+    var lookups = 0
+    func lookUpActive() -> NSRect {
+      lookups += 1
+      return external
+    }
+
+    let pinned = try XCTUnwrap(IslandPanelLayout.placement(
+      pinned: CGPoint(x: 200, y: 600), cardSize: card, visibleFrames: [laptop, external],
+      activeVisible: lookUpActive()
+    ))
+    XCTAssertEqual(pinned.topLeft, CGPoint(x: 200, y: 600))
+    XCTAssertEqual(lookups, 0, "a pin that wins still paid for the active-screen lookup")
+
+    _ = IslandPanelLayout.placement(
+      pinned: nil, cardSize: card, visibleFrames: [laptop, external],
+      activeVisible: lookUpActive()
+    )
+    XCTAssertEqual(lookups, 1, "the automatic placement must still ask")
+
+    // No screen to rest on: nothing is placed, and nothing is dropped either.
+    XCTAssertNil(IslandPanelLayout.placement(
+      pinned: CGPoint(x: 200, y: 600), cardSize: card, visibleFrames: [], activeVisible: nil
+    ))
+  }
+
+  /// `placement` can only skip the lookup if `reposition` hands it over
+  /// unevaluated: hoisting the Accessibility call into a `let` above the call
+  /// compiles and pays it again on every show. Read from the source, because
+  /// `reposition` reads the real screens and the real frontmost app.
+  func testRepositionHandsTheAccessibilityLookupOverUnevaluated() throws {
+    let url = URL(fileURLWithPath: #filePath)
+      .deletingLastPathComponent()
+      .deletingLastPathComponent()
+      .appendingPathComponent("MiniRecorderPanel.swift")
+    let source = try String(contentsOf: url, encoding: .utf8)
+    let start = try XCTUnwrap(source.range(of: "  func reposition() {"))
+    let end = try XCTUnwrap(source.range(of: "\n  }\n", range: start.upperBound..<source.endIndex))
+    let body = source[start.upperBound..<end.lowerBound]
+    let call = try XCTUnwrap(body.range(of: "IslandPanelLayout.placement("))
+    let lookup = try XCTUnwrap(body.range(of: "frontmostAppFocusedWindowFrame()"))
+    XCTAssertGreaterThan(
+      lookup.lowerBound, call.upperBound,
+      "the Accessibility lookup runs before placement, so a winning pin pays for it")
   }
 
   /// The card is **placed** before it is ordered on, or the first frame appears
