@@ -1766,13 +1766,15 @@ as a focus loss, committing the name the owner had just thought better of and
 enrolling a voiceprint under it — or did nothing at all. Escape is now a
 **reason** the one rule is told (`InlineEditFocusLoss.outcome(…, reason:
 .escape)` is `.discard` whatever was typed), and both editors close through it.
-The popover cannot take Escape the way the tag field does: `NSPopover` and the
-field editor both answer `cancelOperation:` before `.onExitCommand` can, and
-which wins is AppKit's call. So `PopoverEscapeCatcher` takes it with a local
-key monitor scoped to the popover's own window — the review card's route,
-for the same reason — which runs before AppKit dispatches the event to
-anyone; the cancel flag is set and the draft put back to the chip's name
-*before* the popover is told to close. `.onExitCommand` stays on the field as
+The popover does not rest on `.onExitCommand` the way the tag field does:
+`NSPopover` and the field editor may each answer `cancelOperation:` before
+`.onExitCommand` can, and which gets there first is AppKit's call. That is a
+reason to defend, not a measured failure — nobody watched it happen, and the
+tag field's own Escape relies on `.onExitCommand`. So `PopoverEscapeCatcher`
+takes it with a local key monitor scoped to the popover's own window — the
+review card's route, for the same reason — which runs before AppKit
+dispatches the event to anyone; the cancel flag is set and the draft put back
+to the chip's name *before* the popover is told to close. `.onExitCommand` stays on the field as
 the backup.
 
 **Names right, words left** (ADR 0008; owner, 2026-09-02: *"verbatim and names

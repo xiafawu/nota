@@ -1912,8 +1912,8 @@ final class RecordingPaneTests: XCTestCase {
       "a rubber band settling from an overscroll switched the follow off")
   }
 
-  /// …and scrolling back down resumes it. There is no control, so this is the
-  /// only way back.
+  /// …and scrolling back down resumes it. This is the gesture's way back; the
+  /// jump-to-newest pill (`SessionJumpToNewestControl`, ADR 0007) is the other.
   func testScrollingBackToTheBottomResumesTheFollow() {
     let scrolledUp = LiveTranscriptFollow.Geometry(
       offsetY: 200, contentHeight: 1000, containerHeight: 400

@@ -202,8 +202,9 @@ final class DictationHistoryRetryTests: XCTestCase {
   }
 }
 
-/// **Both verbs on a recent dictation are reachable without a pointer**
-/// (PT-3, FS-1, KB-5). The menu-bar row picks its verb by hover (decision 24),
+/// **Both verbs on a recent dictation are reachable with VoiceOver or Switch
+/// Control** (PT-3, FS-1, KB-5) — named actions, which Full Keyboard Access
+/// alone does not reach. The menu-bar row picks its verb by hover (decision 24),
 /// and a keyboard or VoiceOver press never hovers — so it always copied and
 /// Insert Again had no route at all. Read from the source: the row is private,
 /// and SwiftUI publishes no accessibility tree for an unhosted hosting view.

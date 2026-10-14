@@ -654,10 +654,11 @@ private struct HistoryDrawerRow: View {
       }
       .buttonStyle(.plain)
       .disabled(!canOpen)
-      // Pin without a pointer (KB-7). On an unpinned row the pin button is
-      // drawn only under the pointer, so keyboard and VoiceOver users could
-      // never pin; the row's own element carries the verb by name instead.
-      // Nothing visible changes — the pin still appears on hover.
+      // Pin with VoiceOver or Switch Control (KB-7). On an unpinned row the
+      // pin button is drawn only under the pointer, so keyboard and VoiceOver
+      // users could never pin; the row's own element carries the verb by name
+      // instead. A named action does not reach Full Keyboard Access on its
+      // own. Nothing visible changes — the pin still appears on hover.
       .accessibilityAction(named: HistoryRowAvailability.pinActionName(isPinned: isPinned)) {
         onTogglePin()
       }

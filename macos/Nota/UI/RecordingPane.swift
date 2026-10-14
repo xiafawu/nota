@@ -1525,9 +1525,10 @@ struct SessionCapsuleCluster: View {
 /// The live surface pins the newest row on every recognizer tick, and the
 /// volatile tail is rewritten many times a second — so scrolling up to re-read
 /// what someone said two minutes ago used to be impossible: the view snapped
-/// back before a line could be read. The follow is now the owner's, without a
-/// control: at the bottom it follows, scrolled away it does not, and scrolling
-/// back down resumes it.
+/// back before a line could be read. The follow is now the owner's: at the
+/// bottom it follows, scrolled away it does not, and scrolling back down — or
+/// the jump-to-newest pill, which is drawn only while the follow is off
+/// (ADR 0007) — resumes it.
 ///
 /// **Content growth is not the owner scrolling away**, and that is the whole
 /// of why this is a comparison of two geometries rather than a predicate on

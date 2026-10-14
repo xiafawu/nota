@@ -266,7 +266,9 @@ struct DictationMenuBarView: View {
 /// A keyboard or VoiceOver press never hovers, so it always copies, and
 /// Insert Again had no route at all without a pointer (PT-3, FS-1, KB-5). Both
 /// verbs are therefore named accessibility actions on the row, mirroring the
-/// two the row already shows; the hover switch itself is untouched, and
+/// two the row already shows. A named action reaches VoiceOver and Switch
+/// Control, not Full Keyboard Access on its own, so a keyboard-only owner
+/// still has no Insert Again here. The hover switch itself is untouched, and
 /// whether a pointer click should copy is the owner's question.
 private struct RecentDictationRow: View {
   let entry: DictationHistoryEntry

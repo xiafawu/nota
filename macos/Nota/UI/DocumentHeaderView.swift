@@ -328,9 +328,10 @@ private struct SpeakerChipButton: View {
       TextField("Speaker name", text: $draft)
         .frame(width: Metrics.speakerPopoverFieldWidth)
         .onSubmit { commit() }
-        // The backup route only. NSPopover answers Escape itself, and so does
-        // the field editor, both before a SwiftUI handler on the field can —
-        // so the route that decides is `PopoverEscapeCatcher`, below.
+        // The backup route only. NSPopover and the field editor may each answer
+        // Escape before a SwiftUI handler on the field can — not measured, but
+        // not ours to decide either — so the route that decides is
+        // `PopoverEscapeCatcher`, below.
         .onExitCommand { cancel() }
       if let tooltip = chip.indicator.tooltip {
         Text(tooltip)
@@ -373,11 +374,14 @@ private struct SpeakerChipButton: View {
 /// The rename popover's field had no Escape handler at all, so Escape either
 /// closed the popover (which `onChange` judged as a focus loss, committing the
 /// typed name and enrolling a voiceprint under it) or did nothing. A handler on
-/// the field is not enough to fix that: `NSPopover` and the field editor both
-/// answer `cancelOperation:` before SwiftUI's `.onExitCommand` can, and which
-/// one wins is AppKit's choice, not ours. A local monitor runs before the event
-/// is dispatched to any window — the dictation review card's ⌘↩/Escape route
-/// (`DictationReviewPresenter.installKeyMonitor`), for the same reason.
+/// the field is not something to rest that fix on: `NSPopover` and the field
+/// editor may each answer `cancelOperation:` before SwiftUI's `.onExitCommand`
+/// can, and which one gets there first is AppKit's choice, not ours. That was
+/// not measured — the add-tag field relies on `.onExitCommand` working — so the
+/// catcher is a defence, not a workaround for a seen failure. A local monitor
+/// runs before the event is dispatched to any window — the dictation review
+/// card's ⌘↩/Escape route (`DictationReviewPresenter.installKeyMonitor`), for
+/// the same reason.
 ///
 /// Scoped to the window this view is in, installed when it lands in one and
 /// removed when it leaves: a monitor left installed would swallow Escape
@@ -601,15 +605,17 @@ struct EditableTagRow: View {
 /// `hovering` seeds the state so the invariant can be laid out both ways in a
 /// test (`testATagPillIsTheSameWidthHoveredAndNot`); nothing in the app passes it.
 ///
-/// **Removing a tag is not a pointer-only verb** (PT-5, KB-7). The × is drawn
-/// and hit-testable only under the pointer, so keyboard and VoiceOver users
-/// could add a tag and never remove one. The pill is therefore ONE accessible
-/// element — the tag's name — carrying a named "Remove tag" action that runs
-/// the same `onRemove` as the ×. `.ignore`, not `.combine`: combining would
-/// fold the × button in as the element's *default* action, so the plain
-/// activate gesture on a tag's name would delete it. Nothing visible changes;
-/// when the × is drawn is still E2's (hover only), and a focus reveal is the
-/// owner's call.
+/// **Removing a tag is reachable with VoiceOver or Switch Control** (PT-5,
+/// KB-7). The × is drawn and hit-testable only under the pointer, so keyboard
+/// and VoiceOver users could add a tag and never remove one. The pill is
+/// therefore ONE accessible element — the tag's name — carrying a named
+/// "Remove tag" action that runs the same `onRemove` as the ×. `.ignore`, not
+/// `.combine`: combining would fold the × button in as the element's *default*
+/// action, so the plain activate gesture on a tag's name would delete it.
+/// Nothing visible changes; when the × is drawn is still E2's (hover only).
+/// A named action does not reach Full Keyboard Access on its own, so a
+/// keyboard-only owner still cannot remove a tag — a focus reveal of the × is
+/// the owner's call.
 struct RemovableTagChip: View {
   let tag: String
   let onRemove: () -> Void

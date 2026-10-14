@@ -153,9 +153,10 @@ final class HistoryRowAvailabilityTests: XCTestCase {
     )
   }
 
-  /// **Pin is reachable without a pointer** (KB-7). On an unpinned row the pin
-  /// button is drawn only under the pointer, so the row's own element carries
-  /// the verb by name, in the word its tooltip already uses.
+  /// **Pin is reachable with VoiceOver or Switch Control** (KB-7). On an
+  /// unpinned row the pin button is drawn only under the pointer, so the row's
+  /// own element carries the verb by name, in the word its tooltip already
+  /// uses. A named action does not reach Full Keyboard Access on its own.
   func testPinIsANamedActionOnTheRow() throws {
     XCTAssertEqual(HistoryRowAvailability.pinActionName(isPinned: false), "Pin")
     XCTAssertEqual(HistoryRowAvailability.pinActionName(isPinned: true), "Unpin")
