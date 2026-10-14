@@ -156,16 +156,18 @@ final class MiniRecorderIslandController {
   /// island is asked for — so on its own the report reached nobody. The pill
   /// already answers the same failure with a notification
   /// (`DictationHUDController.postUnavailableNotification`); this is that
-  /// shape, for this surface. Injected so a test can count it; the live one
-  /// is inert under XCTest, because a unit bundle may not post on the owner's
+  /// shape, for this surface. Injected, and handed the title and body it
+  /// posts, so a test can see what the owner would read; the live one is
+  /// inert under XCTest, because a unit bundle may not post on the owner's
   /// machine and other tests reach this branch without injecting anything.
-  private let postUnavailableNotice: @MainActor () -> Void
+  private let postUnavailableNotice: @MainActor (_ title: String, _ body: String) -> Void
 
   /// Once per RUN, never cleared — unlike `reportedUnavailable`, which is per
   /// session. A window server that refused one island will usually refuse the
-  /// next, and the notification says something that stays true: the session
-  /// is still recording and the menu bar still shows it. Saying it again every
-  /// session would be noise about a fault the owner already knows.
+  /// next, and saying it again every session would be noise about a fault the
+  /// owner already knows. That is also why the notice may claim nothing about
+  /// the session it was posted during: it is the only one the owner gets, and
+  /// it can be posted in any island phase.
   private(set) var postedUnavailableNotice = false
 
   /// `presenter` is optional rather than defaulted to a real one: a default
@@ -181,11 +183,11 @@ final class MiniRecorderIslandController {
     /// are nil, and leaves injected ones alone.
     source: (@MainActor () -> IslandSource)? = nil,
     verbs: IslandVerbs? = nil,
-    unavailableNotice: (@MainActor () -> Void)? = nil
+    unavailableNotice: (@MainActor (_ title: String, _ body: String) -> Void)? = nil
   ) {
     self.presenter = presenter ?? MiniRecorderPresenter()
-    self.postUnavailableNotice = unavailableNotice ?? {
-      MiniRecorderIslandController.postUnavailableNotification()
+    self.postUnavailableNotice = unavailableNotice ?? { title, body in
+      MiniRecorderIslandController.postUnavailableNotification(title: title, body: body)
     }
     // `NSApp.isActive`, read at decision time and never cached — the same rule
     // `CompletionNotifier.appIsFrontmost` keeps, and the reason it is a closure
@@ -282,7 +284,7 @@ final class MiniRecorderIslandController {
         verbs?.reportUnavailable()
         if !postedUnavailableNotice {
           postedUnavailableNotice = true
-          postUnavailableNotice()
+          postUnavailableNotice(Self.unavailableNoticeTitle, Self.unavailableNoticeBody)
         }
         stopTicking()
         return
@@ -291,16 +293,27 @@ final class MiniRecorderIslandController {
     scheduleTick(inputs)
   }
 
-  /// What the notification says. The island is the indicator that a session is
-  /// flowing, so the one thing its absence may not imply is that the session
-  /// stopped — the body says it did not, and where it is still shown.
+  /// What the notification says.
+  ///
+  /// The island's absence is what a stopped session looks like, so the notice
+  /// may not imply the session stopped — and it may not imply anything else
+  /// about it either. The first failed show can happen in any phase the island
+  /// draws (`MiniIslandVisibility.phase`): recording, a mark confirmation,
+  /// paused, failed, or the handoff after Stop. A body that said "still
+  /// recording" told a paused owner — who often paused for privacy — that
+  /// audio was being kept, a failed session that it was fine, and a stopped one
+  /// that it was still going, with "the menu bar still shows it" false for the
+  /// handoff too. Because the notice is once per run, that one wrong sentence
+  /// was all the owner ever got. So the body names what failed and where the
+  /// session's real state is, and claims nothing about that state.
   static let unavailableNoticeTitle = "Recording indicator unavailable"
   static let unavailableNoticeBody =
-    "Your session is still recording. The menu bar still shows it."
+    "Nota could not show its floating recording controls. "
+      + "Open Nota to see where your session stands."
 
   /// The live poster. Option B for this report (say it in the menu bar item
   /// instead) is a swap of this one function.
-  private static func postUnavailableNotification() {
+  private static func postUnavailableNotification(title: String, body: String) {
     // An unhosted test bundle has no notification center to reach, and a test
     // must never post on the owner's machine.
     guard !FieldEngine.isUnderTest else { return }
@@ -310,8 +323,8 @@ final class MiniRecorderIslandController {
             granted
       else { return }
       let content = UNMutableNotificationContent()
-      content.title = unavailableNoticeTitle
-      content.body = unavailableNoticeBody
+      content.title = title
+      content.body = body
       try? await center.add(
         UNNotificationRequest(
           identifier: "com.xiafawu.nota.recording.island-unavailable",

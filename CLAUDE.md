@@ -2656,13 +2656,24 @@ coat: the *rate* of a publisher and the *breadth* of its observers multiply.
 nowhere while Nota is in the background, which is the only time the island is
 asked for, so on its own it told nobody. The controller therefore also posts
 the pill's answer to the same failure: a notification, **"Recording indicator
-unavailable"**, whose body says the session is still recording and the menu
-bar still shows it — the island's absence is what a stopped session looks
-like, so the one thing the notice may not imply is that it stopped. It is
+unavailable"**, whose body says Nota could not show its floating recording
+controls and to open Nota to see where the session stands. **It claims nothing
+about the session.** The island's absence is what a stopped session looks like,
+so the notice may not imply it stopped, and it may not imply anything else
+either. The first failed show can come in any phase the island draws:
+recording, paused, failed, or the handoff after Stop. The first cut said
+"still recording" and "the menu bar still shows it". That told a paused owner,
+who had often paused for privacy, that audio was being kept. It was false for
+a failure and false for a stopped session in both halves. It is
 once per **run**, never cleared (`postedUnavailableNotice`), unlike the
 per-session latch beside it: a window server that refused one island usually
-refuses the next, and the fault is already known. The poster is injected, so
-the same test counts it, and the live one is inert under XCTest. Saying it in
+refuses the next, and the fault is already known. That is also why the wording
+has to be phase-neutral: whatever phase the first failure lands in, that one
+notice is all the owner gets. The poster is injected and handed the title and
+body it posts, so
+`testTheUnavailableNoticeClaimsNothingAboutTheSessionInAnyPhase` drives each
+phase to its first failed show and reads back what would have been posted. The
+live poster is inert under XCTest. Saying it in
 the menu bar item instead is the other answer the owner was offered; that is a
 swap of `postUnavailableNotification` alone.
 

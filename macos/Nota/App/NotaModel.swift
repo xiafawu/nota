@@ -1466,8 +1466,12 @@ final class NotaModel: ObservableObject {
   /// island is asked for — so the owner is TOLD by the controller's
   /// once-per-run notification (`MiniRecorderIslandController
   /// .postUnavailableNotice`, FB-1), not by this line.
+  ///
+  /// Like that notification, it claims nothing about the session: the island
+  /// can fail in any phase it draws, including a failed session and the
+  /// handoff after Stop, where "the session is still running" was false.
   func reportIslandUnavailable() {
-    let notice = "Recording indicator unavailable — the session is still running."
+    let notice = "Recording indicator unavailable"
     // `status` is `@Published` and republishes on every assignment, including
     // one that changes nothing — and the island's controller is subscribed to
     // this object. Writing the same sentence again is a wake-up for every

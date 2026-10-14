@@ -949,7 +949,7 @@ final class MiniRecorderIslandTests: XCTestCase {
       settings: { DictationSettings() },
       source: { .fake(state: state) },
       verbs: spy,
-      unavailableNotice: { notices += 1 }
+      unavailableNotice: { _, _ in notices += 1 }
     )
 
     for _ in 0..<25 { controller.refresh() }
@@ -970,21 +970,64 @@ final class MiniRecorderIslandTests: XCTestCase {
     controller.refresh()
     XCTAssertEqual(presenter.showAttempts, 2)
     XCTAssertEqual(reports, 2)
-    // The notification is once per RUN: it says something still true (the
-    // session records, the menu bar shows it) about a fault already reported.
+    // The notification is once per RUN: a fault already reported is not
+    // reported again for the next session.
     XCTAssertEqual(notices, 1, "a second failing session posted a second notification")
   }
 
-  /// What the notification says may not read as "the session stopped" — the
-  /// island's absence is exactly what a stopped session looks like.
-  func testTheUnavailableNoticeSaysTheSessionIsStillRecording() {
-    XCTAssertEqual(
-      MiniRecorderIslandController.unavailableNoticeTitle,
-      "Recording indicator unavailable"
-    )
-    let body = MiniRecorderIslandController.unavailableNoticeBody
-    XCTAssertTrue(body.contains("still recording"))
-    XCTAssertTrue(body.contains("menu bar"))
+  /// **The notice claims nothing about the session**, because the first failed
+  /// show can happen in any phase the island draws and the notice is the only
+  /// one the run ever posts.
+  ///
+  /// The body used to say "Your session is still recording. The menu bar still
+  /// shows it." Posted during a pause — often taken for privacy — that told the
+  /// owner audio was being kept when it was not; posted on a failure, that the
+  /// session was fine; posted during the handoff after Stop, that a stopped
+  /// session was still going, on a menu bar that shows nothing for it. Each
+  /// phase is driven to the first failed show and what was actually handed to
+  /// the poster is read back.
+  func testTheUnavailableNoticeClaimsNothingAboutTheSessionInAnyPhase() {
+    let cases: [(name: String, source: IslandSource, expected: MiniIslandPhase)] = [
+      ("paused", .fake(state: .paused), .paused),
+      ("recording", .fake(state: .recording), .recording),
+      ("failed", .fake(state: .failed("Connection lost")), .failure("Connection lost")),
+      ("handoff", .fake(state: .idle, isHandoffProcessing: true), .handoff(secondsAgo: 0)),
+    ]
+    for item in cases {
+      let presenter = StubIslandPresenter()
+      presenter.succeeds = false
+      var posted: [(title: String, body: String)] = []
+      let source = item.source
+      let controller = MiniRecorderIslandController(
+        presenter: presenter,
+        frontmost: { false },
+        clock: { 100 },
+        settings: { DictationSettings() },
+        source: { source },
+        verbs: VerbSpy().verbs,
+        unavailableNotice: { title, body in posted.append((title, body)) }
+      )
+
+      controller.refresh()
+
+      XCTAssertEqual(
+        presenter.rendered.last?.phase, item.expected,
+        "\(item.name): the failed show was not in the phase under test"
+      )
+      XCTAssertEqual(posted.count, 1, "\(item.name): the owner was not told")
+      guard let notice = posted.first else { continue }
+      XCTAssertEqual(notice.title, "Recording indicator unavailable", item.name)
+      XCTAssertEqual(notice.body, MiniRecorderIslandController.unavailableNoticeBody, item.name)
+      for claim in ["still recording", "menu bar", "stopped", "ended", "is recording"] {
+        XCTAssertFalse(
+          notice.body.localizedCaseInsensitiveContains(claim),
+          "\(item.name): the notice claims “\(claim)” about a session in an unknown phase"
+        )
+      }
+      // It still says what failed and where the real state is.
+      XCTAssertTrue(notice.body.contains("could not show"), item.name)
+      XCTAssertTrue(notice.body.contains("Open Nota"), item.name)
+    }
   }
 
   /// The owner's Glass opacity reaches the island. It did not: the presenter
