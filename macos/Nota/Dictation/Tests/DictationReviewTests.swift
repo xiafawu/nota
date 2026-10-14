@@ -1912,6 +1912,125 @@ final class DictationReviewPresenterTests: XCTestCase {
     presenter.model.onDragEnded?()
     XCTAssertNotNil(ReviewPositionStore.load(), "a dropped drag must record where the card was put")
   }
+
+  /// FS-4. The pill is hidden for as long as a card exists, so the card is
+  /// the only thing that can tell a VoiceOver user a session started, has
+  /// something to apply, or failed. One whole review, driven in the order the
+  /// controller drives it — note `setListening(false)` lands *before* the
+  /// stopped session's text does — speaks exactly three times: the recognizer's
+  /// many ticks, a repeated failure and the card going away say nothing.
+  func testAReviewSpeaksListeningReadyAndFailedExactlyOnceEach() {
+    let presenter = DictationReviewPresenter()
+    var heard: [String] = []
+    presenter.announcer = { heard.append($0) }
+
+    presenter.present(DictationReviewRequest(text: "", onApply: { _ in }, onDiscard: {}))
+    XCTAssertEqual(heard, [], "an empty card opened for a session says nothing until it records")
+
+    presenter.setListening(true)
+    presenter.setListening(true)
+    presenter.setDraft(HUDDraft(finalized: "Ship the", volatileTail: "genc2rust"))
+    presenter.setListening(false)
+    XCTAssertEqual(heard, ["Dictation listening"], "a stop with nothing in the box is not decidable")
+
+    presenter.replaceEditorText("Ship the genc2rust patch.")
+    presenter.replaceEditorText("Ship the genc2rust patch. Then land it.")
+    presenter.setError("Polish timed out")
+    presenter.setError("Polish timed out")
+    presenter.setError(nil)
+    presenter.dismiss()
+
+    XCTAssertEqual(
+      heard,
+      ["Dictation listening", "Ready to apply", "Dictation failed. Polish timed out"]
+    )
+  }
+
+  /// A continuation on a decidable card: pressing again speaks "listening",
+  /// and the stop speaks "ready" — once, even though the appended text lands
+  /// after the card has already stopped listening.
+  func testAContinuationSpeaksListeningThenReadyOnce() {
+    let presenter = DictationReviewPresenter()
+    var heard: [String] = []
+    presenter.announcer = { heard.append($0) }
+
+    presenter.present(request(onDiscard: {}))
+    XCTAssertEqual(heard, ["Ready to apply"], "a card opened holding a batch is already decidable")
+
+    presenter.setListening(true)
+    presenter.setListening(false)
+    presenter.replaceEditorText("Ship the genc2rust patch. Then land it.")
+    presenter.dismiss()
+
+    XCTAssertEqual(heard, ["Ready to apply", "Dictation listening", "Ready to apply"])
+  }
+
+  /// No card, no announcement — every write is refused before it can speak.
+  func testNothingIsSpokenWithoutACard() {
+    let presenter = DictationReviewPresenter()
+    var heard: [String] = []
+    presenter.announcer = { heard.append($0) }
+
+    presenter.setListening(true)
+    presenter.replaceEditorText("anything")
+    presenter.setError("anything")
+
+    XCTAssertEqual(heard, [])
+  }
+}
+
+// MARK: - The card's announcements
+
+/// The table behind FS-4, without a panel.
+final class ReviewAnnouncementTests: XCTestCase {
+  func testThePhaseIsReadOffListeningAndTheTrimmedText() {
+    XCTAssertEqual(ReviewAnnouncement.Phase.of(isListening: true, text: "words"), .recording)
+    XCTAssertEqual(ReviewAnnouncement.Phase.of(isListening: true, text: ""), .recording)
+    XCTAssertEqual(ReviewAnnouncement.Phase.of(isListening: false, text: " \n "), .empty)
+    XCTAssertEqual(ReviewAnnouncement.Phase.of(isListening: false, text: "words"), .deciding)
+  }
+
+  func testOnlyArrivalsSpeak() {
+    XCTAssertEqual(ReviewAnnouncement.between(nil, .recording), "Dictation listening")
+    XCTAssertEqual(ReviewAnnouncement.between(.deciding, .recording), "Dictation listening")
+    XCTAssertEqual(ReviewAnnouncement.between(.empty, .deciding), "Ready to apply")
+    XCTAssertEqual(ReviewAnnouncement.between(.recording, .deciding), "Ready to apply")
+    XCTAssertEqual(ReviewAnnouncement.between(nil, .deciding), "Ready to apply")
+
+    XCTAssertNil(ReviewAnnouncement.between(.recording, .recording), "a recognizer tick")
+    XCTAssertNil(ReviewAnnouncement.between(.deciding, .deciding), "more text on a decidable card")
+    XCTAssertNil(ReviewAnnouncement.between(.recording, .empty), "a stop with nothing to apply")
+    XCTAssertNil(ReviewAnnouncement.between(nil, .empty), "an empty card opened for a session")
+    XCTAssertNil(ReviewAnnouncement.between(.deciding, nil), "the card going away")
+    XCTAssertNil(ReviewAnnouncement.between(nil, nil))
+  }
+
+  func testOnlyANewFailureSpeaks() {
+    XCTAssertEqual(
+      ReviewAnnouncement.failure(old: nil, new: "Polish timed out"),
+      "Dictation failed. Polish timed out"
+    )
+    XCTAssertEqual(
+      ReviewAnnouncement.failure(old: "Microphone unavailable", new: "Polish timed out"),
+      "Dictation failed. Polish timed out"
+    )
+    XCTAssertNil(ReviewAnnouncement.failure(old: "Polish timed out", new: "Polish timed out"))
+    XCTAssertNil(ReviewAnnouncement.failure(old: "Polish timed out", new: nil), "a cleared error")
+    XCTAssertNil(ReviewAnnouncement.failure(old: nil, new: ""))
+  }
+
+  /// Not "inserted": Apply takes the card down before injection runs, and the
+  /// pill announces what injection did.
+  func testTheCardHasExactlyThreeThingsToSay() {
+    let phases: [ReviewAnnouncement.Phase?] = [nil, .recording, .empty, .deciding]
+    var said = Set<String>()
+    for old in phases {
+      for new in phases {
+        if let message = ReviewAnnouncement.between(old, new) { said.insert(message) }
+      }
+    }
+    XCTAssertEqual(said, ["Dictation listening", "Ready to apply"])
+  }
 }
 
 // MARK: - The panel itself

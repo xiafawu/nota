@@ -228,6 +228,65 @@ enum ReviewKeyRoute: Equatable {
   }
 }
 
+// MARK: - ReviewAnnouncement
+
+/// Which of the card's states a VoiceOver user is told about, and when.
+///
+/// The pill announces "Dictation listening", "Dictation inserted" and
+/// "Dictation failed" on its own transitions, and those announcements are the
+/// only feedback a VoiceOver user gets. While a card exists the pill is hidden
+/// outright (`isReviewing`), so the card is the one surface a review session
+/// has — and it inherits the duty. Three announcements and no more: the card
+/// starts recording, the card holds text that can be applied, a failure landed
+/// on the card. Not "inserted": Apply takes the card down before injection
+/// runs, and the pill already announces what injection did.
+enum ReviewAnnouncement {
+  static let listening = "Dictation listening"
+  static let readyToApply = "Ready to apply"
+
+  /// The card's state as the announcement table sees it. Derived, never stored:
+  /// the presenter reads it off the model before and after each write.
+  enum Phase: Equatable {
+    /// A session is recording into the card.
+    case recording
+    /// Nothing recording and nothing in the box — nothing to decide about.
+    case empty
+    /// Nothing recording and text in the box: Apply is live.
+    case deciding
+
+    /// Blank text is `empty` for the reason Apply is disabled on it: emptying
+    /// the box and applying is a discard by another name.
+    static func of(isListening: Bool, text: String) -> Phase {
+      if isListening { return .recording }
+      return text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .empty : .deciding
+    }
+  }
+
+  /// What to say when the card moves from `old` to `new` — nil for no card.
+  ///
+  /// Only arrivals speak. A tick that changes nothing, a card going away, and a
+  /// card that stopped recording with nothing to show all say nothing: the
+  /// recognizer feeds the card many times a second, and an announcement per
+  /// tick would drown out the one that matters.
+  static func between(_ old: Phase?, _ new: Phase?) -> String? {
+    guard let new, new != old else { return nil }
+    switch new {
+    case .recording: return listening
+    case .deciding: return readyToApply
+    case .empty: return nil
+    }
+  }
+
+  /// What to say when the card's status line changes from `old` to `new`.
+  ///
+  /// `state`'s `didSet` feeds the card on every assignment, including the same
+  /// failure assigned twice, so only a message that is newly there speaks.
+  static func failure(old: String?, new: String?) -> String? {
+    guard let new, !new.isEmpty, new != old else { return nil }
+    return "Dictation failed. \(new)"
+  }
+}
+
 // MARK: - Presenting
 
 /// One review's contract with whatever shows it.
@@ -353,16 +412,26 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
 
   var editorText: String? { pending == nil ? nil : model.text }
 
+  /// Where the card's VoiceOver announcements go. Nil is production: posted at
+  /// high priority against the panel — and nowhere at all under XCTest, so a
+  /// test bundle that drives a real card never speaks over the owner's
+  /// VoiceOver. A test that wants to read them installs a recorder here.
+  var announcer: ((String) -> Void)?
+
   @discardableResult
   func replaceEditorText(_ text: String) -> Bool {
     guard pending != nil else { return false }
+    let before = phase
     model.text = text
+    announce(ReviewAnnouncement.between(before, phase))
     return true
   }
 
   func setListening(_ listening: Bool) {
     guard pending != nil else { return }
+    let before = phase
     model.isListening = listening
+    announce(ReviewAnnouncement.between(before, phase))
     // The draft belongs to the session, so it goes when the session does — the
     // controller clears it too, and this is the backstop for a card that
     // stopped listening by some other route.
@@ -381,7 +450,9 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
 
   func setError(_ message: String?) {
     guard pending != nil else { return }
+    let before = model.errorMessage
     model.errorMessage = message
+    announce(ReviewAnnouncement.failure(old: before, new: message))
   }
 
   @discardableResult
@@ -415,6 +486,10 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
       )
       return false
     }
+    // Only a card that reached the screen speaks. A card opened empty for a
+    // session about to record says nothing here — `setListening(true)` is what
+    // announces it — and one opened holding a batch is already decidable.
+    announce(ReviewAnnouncement.between(nil, phase))
     return true
   }
 
@@ -424,6 +499,33 @@ final class DictationReviewPresenter: NSObject, DictationReviewPresenting {
   }
 
   // MARK: - Private
+
+  /// The card's state as `ReviewAnnouncement` reads it; nil when there is no
+  /// card. Read before and after each write, never stored.
+  private var phase: ReviewAnnouncement.Phase? {
+    guard pending != nil else { return nil }
+    return .of(isListening: model.isListening, text: model.text)
+  }
+
+  private func announce(_ message: String?) {
+    guard let message else { return }
+    if let announcer { return announcer(message) }
+    let env = ProcessInfo.processInfo.environment
+    guard env["XCTestConfigurationFilePath"] == nil,
+          env["XCTestBundlePath"] == nil,
+          env["XCTestSessionIdentifier"] == nil
+    else { return }
+    let element: Any
+    if let panel { element = panel } else { element = NSApplication.shared }
+    NSAccessibility.post(
+      element: element,
+      notification: .announcementRequested,
+      userInfo: [
+        .announcement: message,
+        .priority: NSAccessibilityPriorityLevel.high.rawValue,
+      ]
+    )
+  }
 
   /// Get the card on screen, with one bounded heal.
   ///

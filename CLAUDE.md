@@ -803,6 +803,19 @@ goes into a small floating card instead of the target app:
     The split stays total because `isReviewing` is exactly "a card exists":
     when `present` fails the controller clears `pendingReview`, and the failure
     comes back out on the pill. An error always has one home, never two.
+    **The card speaks for the pill, too.** The pill's VoiceOver announcements
+    are the only feedback a VoiceOver user gets, and a hidden pill says
+    nothing — so for a whole review session they heard nothing at all. While
+    a card exists the presenter posts exactly three, at high priority:
+    "Dictation listening" when it starts recording, "Ready to apply" when it
+    holds text that can be applied, and "Dictation failed. <message>" when a
+    failure lands in its status line. Only arrivals speak
+    (`ReviewAnnouncement.between` / `.failure`, pure). A recognizer tick, the same
+    failure assigned twice, and a stop with nothing in the box all stay silent.
+    A continuation's stop speaks "ready" once even though `setListening(false)`
+    lands before the appended text does. There is no "inserted": Apply takes
+    the card down before injection runs, and the pill reports what injection
+    did. Under XCTest nothing is posted (`announcer` is the test seam).
   - **The card shows the session's live draft, in the editor itself**
     (2026-08-03, twice over. First the card had to show a draft at all — with the
     pill down for the whole time a card is up, a continuation's words appeared
