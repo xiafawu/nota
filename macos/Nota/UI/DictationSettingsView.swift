@@ -181,7 +181,7 @@ struct DictationSettingsView: View {
           SettingsCaption("Text is only ever added, never rewritten — a sentence the polish model improves late still arrives in the order you said it. If polish fails for a sentence, its local formatting is inserted instead.")
           SettingsCaption("Insertion stays in the app that had focus when you started speaking, even if you switch apps mid-sentence.")
           if settings.engine == .assemblyAIRealtime {
-            SettingsCaption("With \(EngineChoice.assemblyAIRealtime.label), each phrase is inserted when you pause after it.")
+            SettingsCaption("With \(EngineChoice.assemblyAIRealtime.label), each phrase is inserted as a sentence when you pause after it — a long pause mid-sentence ends one there.")
           }
         case .review:
           SettingsCaption("The panel takes keyboard focus without bringing Nota to the front, so the app you were dictating into stays where it is. Applying inserts there, not into whatever is frontmost.")

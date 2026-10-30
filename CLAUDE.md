@@ -491,7 +491,10 @@ mic → DictationTranscriber → volatile tail ───────────
     ask for `format_turns`, so turns arrive unpunctuated, and
     `SentenceSegmenter` would hold every one of them until the 240-char valve or
     the end of the session. Delivered as one whole sentence it gets the capital,
-    the period and polish exactly as Apple's sentences do.
+    the period and polish exactly as Apple's sentences do. The cost, named in
+    the Delivery footer: a pause long enough to close a turn mid-clause ends a
+    sentence there ("We agreed to. Move the launch."), where batch AssemblyAI
+    formats the joined transcript once. Inherent to delivering per turn.
   - **One segment per `turn_order`, ever.** With `format_turns=true` the v3
     server finalizes each turn twice (raw, then `turn_is_formatted: true`);
     append-only delivery would type the sentence twice. The first final wins,

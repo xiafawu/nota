@@ -609,6 +609,25 @@ final class CursorMarkPanelTests: XCTestCase {
     XCTAssertTrue(panel.contentView is GlassBackingView, "an AppKit glass plate, not SwiftUI glass")
   }
 
+  /// The note is sized from its own text: a one-line note must measure as one
+  /// line of words plus its padding, never as zero (which would make the note
+  /// a zero-width window that silently never appears) and never wider than
+  /// its cap.
+  func testTheNoteMeasuresItsOwnText() {
+    let margin = CursorMarkMetrics.glassMargin
+    let short = CursorNoteView.measuredSize(
+      for: CursorProblem(kind: .error, message: "Nota could not insert the text")
+    )
+    XCTAssertGreaterThan(short.width, 2 * margin + 60, "measured \(short)")
+    XCTAssertEqual(short.height, CursorMarkMetrics.noteHeight + 2 * margin, accuracy: 0.5)
+
+    let long = CursorNoteView.measuredSize(
+      for: CursorProblem(kind: .warning, message: String(repeating: "polish failed ", count: 40))
+    )
+    XCTAssertEqual(long.width, CursorMarkMetrics.noteMaxWidth + 2 * margin, accuracy: 0.5)
+    XCTAssertGreaterThan(long.width, short.width)
+  }
+
   /// `PanelMotion.fadeIn` gives a panel its clicks back by default (a panel
   /// caught mid-dismissal had them taken away). The mark must not get them.
   func testFadingInLeavesItClickThrough() {

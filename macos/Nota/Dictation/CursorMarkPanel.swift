@@ -196,12 +196,6 @@ final class CursorMarkPanel: NSPanel {
     hostingView.rootView = AnyView(view)
   }
 
-  /// The content's own size, glass margin included.
-  var contentFittingSize: CGSize {
-    hostingView.layoutSubtreeIfNeeded()
-    return hostingView.fittingSize
-  }
-
   /// See `DictationHUDPanel.verifyWindowDevice`: `orderFrontRegardless` can
   /// return having produced no window at all, and only `windowNumber` says so.
   @discardableResult
@@ -305,6 +299,20 @@ struct CursorNoteView: View {
     .frame(maxWidth: CursorMarkMetrics.noteMaxWidth)
     .padding(CursorMarkMetrics.glassMargin)
     .environment(\.colorScheme, .dark)
+  }
+
+  /// The note's own size, glass margin included.
+  ///
+  /// Measured on a throwaway hosting view with AppKit's default sizing, the
+  /// pattern every fitting-size baseline in this target uses — not on the
+  /// panel's own hosting view, which has `sizingOptions = []` so it can never
+  /// push a size back onto a window the controller sizes, and which therefore
+  /// has no intrinsic size to report.
+  @MainActor
+  static func measuredSize(for problem: CursorProblem) -> CGSize {
+    let probe = NSHostingView(rootView: CursorNoteView(problem: problem))
+    probe.layoutSubtreeIfNeeded()
+    return probe.fittingSize
   }
 
   private var swatch: Color {
@@ -503,7 +511,7 @@ final class DictationCursorMarkController {
       style(notePanel, input)
       notePanel.setContent(CursorNoteView(problem: problem))
       let margin = CursorMarkMetrics.glassMargin
-      let fitting = notePanel.contentFittingSize
+      let fitting = CursorNoteView.measuredSize(for: problem)
       let noteRect = CursorMarkPlacement.noteFrame(
         mark: markRect,
         noteSize: CGSize(width: fitting.width - margin * 2, height: fitting.height - margin * 2),
