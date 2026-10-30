@@ -562,7 +562,9 @@ extension HUDStyle {
   /// clamp on every line it gains — the "it grows downward again" report.
   var reservedCardHeight: CGFloat? {
     switch self {
-    case .bar:
+    case .bar, .cursor:
+      // The cursor mark is not the pill panel's to place at all: it has its
+      // own panel, anchored to the caret.
       return nil
     case .pill:
       return HUDPillMetrics.maxCardHeight
@@ -599,6 +601,11 @@ struct DictationHUDRootView: View {
         DictationHUDBarView(state: state, draft: draft)
       case .prompter:
         DictationHUDPrompterView(state: state, draft: draft)
+      case .cursor:
+        // Never drawn here. The controller routes a Cursor session to
+        // `CursorMarkPanel` and keeps this panel hidden; an empty view is the
+        // honest answer if anything ever asks.
+        Color.clear.frame(width: 0, height: 0)
       }
     }
   }

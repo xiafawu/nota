@@ -223,6 +223,16 @@ struct DictationSettingsView: View {
           }
         }
         .pickerStyle(.radioGroup)
+
+        // Only the Cursor style reads it, so only the Cursor style shows it.
+        if settings.hudStyle == .cursor {
+          Picker("Position", selection: $settings.cursorMarkPosition) {
+            ForEach(CursorMarkPosition.allCases, id: \.self) { position in
+              Text(position.label).tag(position)
+            }
+          }
+          .pickerStyle(.radioGroup)
+        }
       }
 
       // Not gated on `showHUD` (nor is the slider below): the review card is
@@ -272,6 +282,11 @@ struct DictationSettingsView: View {
             )
           {
             SettingsCaption(caveat)
+          }
+          if settings.hudStyle == .cursor {
+            ForEach(HUDStyle.cursorCaveats(mode: settings.deliveryMode), id: \.self) {
+              SettingsCaption($0)
+            }
           }
         }
       }

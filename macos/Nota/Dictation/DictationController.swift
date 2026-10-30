@@ -114,7 +114,12 @@ final class DictationController: ObservableObject {
   // P2: speech + injection session state
   private var speechStream: (any SpeechStream)?
   private var holdBeganAt: Date?
-  private var isSessionPending = false
+  /// True from the hotkey press until the recognizer and microphone are up.
+  ///
+  /// Published for the Cursor HUD style: its mark appears at the caret the
+  /// moment the key goes down ("Fn down → dot at caret"), and for a cloud
+  /// engine that is a socket handshake before `state` reads `.listening`.
+  @Published private(set) var isSessionPending = false
   private let injector = TextInjector()
 
   /// What the user was looking at when this session began (plan 02). Captured
@@ -160,6 +165,10 @@ final class DictationController: ObservableObject {
   /// only the un-finalized fragment and is *cleared* the moment a segment
   /// finalizes, which is precisely when this grows.
   @Published private(set) var finalizedDraft = ""
+  /// Sentences of a streaming session accepted and not yet in the target app
+  /// (`StreamingDeliveryQueue.inFlightCount`). The Cursor style's "working"
+  /// wave. Moves once per sentence.
+  @Published private(set) var sentencesInFlight = 0
   /// Concurrent polish calls in flight; `isPolishInProgress` is this > 0.
   private var polishInFlight = 0
   /// Terms auto-learn may still store this session. Streaming polishes once
@@ -890,7 +899,12 @@ final class DictationController: ObservableObject {
       }
     }
 
-    return StreamingDeliveryQueue(refine: refine, deliver: deliver)
+    let queue = StreamingDeliveryQueue(refine: refine, deliver: deliver)
+    queue.onInFlightChange = { [weak self] count in
+      guard let self, epoch == self.sessionEpoch else { return }
+      self.sentencesInFlight = count
+    }
+    return queue
   }
 
   private func beginPolish(epoch: UInt64) {
@@ -1055,6 +1069,7 @@ final class DictationController: ObservableObject {
     isLiveDraftSession = false
     segmenter = SentenceSegmenter()
     segmentsAreUtterances = false
+    sentencesInFlight = 0
     finalizedDraft = ""
     roughDraft = ""
   }

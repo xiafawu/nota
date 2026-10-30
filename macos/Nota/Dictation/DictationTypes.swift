@@ -483,9 +483,10 @@ enum DeliveryMode: String, Codable, CaseIterable, Sendable {
 ///
 /// `.pill` is the default *and* the regression baseline: nothing on its path
 /// branches on this setting, so a pill session renders exactly as it did before
-/// the setting existed. The other two are different answers to "how much of
-/// what you are saying belongs on screen" — one always-one-line strip, or a
-/// card holding the whole session.
+/// the setting existed. The others are different answers to "how much of what
+/// you are saying belongs on screen" — one always-one-line strip, a card
+/// holding the whole session, or (`.cursor`) none of it: a mark at the caret
+/// and the text itself as the only preview.
 enum HUDStyle: String, Codable, CaseIterable, Sendable {
   /// Today's capsule: meter, and a two-line rough draft above it when there is
   /// one. Grows once when text starts, then holds still.
@@ -494,12 +495,17 @@ enum HUDStyle: String, Codable, CaseIterable, Sendable {
   case bar
   /// A 600pt card showing the whole session, growing to a six-line cap.
   case prompter
+  /// No preview at all: one small glass mark at the text caret — a breathing
+  /// dot, a waveform while the voice is heard — drawn by its own click-through
+  /// panel (`CursorMarkPanel`), never by the pill's.
+  case cursor
 
   var label: String {
     switch self {
     case .pill: return "Pill"
     case .bar: return "Bar"
     case .prompter: return "Prompter"
+    case .cursor: return "Cursor"
     }
   }
 
@@ -511,6 +517,8 @@ enum HUDStyle: String, Codable, CaseIterable, Sendable {
       return "A slim strip that never changes size — the newest words stay at the right edge and older ones fade out to the left."
     case .prompter:
       return "A wide card showing everything you have said this session, with the words still being recognized dimmed."
+    case .cursor:
+      return "No preview — a small glass mark sits at your text cursor while you dictate: a breathing dot when you are quiet, a waveform while you talk. The text appears right there."
     }
   }
 
@@ -525,8 +533,9 @@ enum HUDStyle: String, Codable, CaseIterable, Sendable {
   /// empty when the session produces no live draft.
   ///
   /// The pill shows a rough draft too, but it is a compact meter first and
-  /// reads as finished without one.
-  var isAboutLiveText: Bool { self != .pill }
+  /// reads as finished without one. The cursor mark shows no text by design —
+  /// the document is its preview — so it has nothing to sit empty about.
+  var isAboutLiveText: Bool { self == .bar || self == .prompter }
 
   /// Why a live-text style will show no text under this configuration, or nil
   /// when it will show text.
@@ -548,6 +557,33 @@ enum HUDStyle: String, Codable, CaseIterable, Sendable {
       Live text needs an engine that reports as you speak — \(engine.label) \
       delivers only at the end of a session, so the panel shows status only.
       """
+  }
+
+  /// What the Settings pane says under the Cursor style, for `mode`.
+  ///
+  /// The fallback is always stated, because it is the ordinary experience in a
+  /// whole class of apps rather than a failure: browser and Electron text
+  /// fields commonly do not report their caret over Accessibility. Review
+  /// gets its own line because the mark does not appear there at all — the
+  /// card is that mode's one surface — and an owner who picked Cursor and sees
+  /// a card deserves to be told it is on purpose.
+  static func cursorCaveats(mode: DeliveryMode) -> [String] {
+    var lines = [
+      """
+      Apps that do not report their text cursor — many browsers and Electron \
+      apps — get the mark at the corner of the text field, or where the pill \
+      would be.
+      """,
+    ]
+    if mode == .review {
+      lines.append(
+        """
+        With \(DeliveryMode.review.label), the review card is the surface — \
+        the cursor mark does not appear.
+        """
+      )
+    }
+    return lines
   }
 }
 
@@ -582,6 +618,10 @@ struct DictationSettings: Codable, Equatable, Sendable {
   /// Which Liquid Glass material the floating surfaces use — frosted (the
   /// diffusing plate) or clear (sharp backdrop, refractive rim).
   var hudGlassMaterial: GlassMaterial = .standard
+  /// Where the Cursor style's mark sits relative to the caret. Read only by
+  /// that style; kept when another style is picked, so switching back finds
+  /// the owner's choice where they left it.
+  var cursorMarkPosition: CursorMarkPosition = .standard
   /// How the finished text reaches the target app.
   ///
   /// Default `.immediate`, and deliberately so: the other two modes each change
@@ -598,6 +638,7 @@ struct DictationSettings: Codable, Equatable, Sendable {
     case hudStyle
     case hudGlassOpacity
     case hudGlassMaterial
+    case cursorMarkPosition
   }
 
   /// The boolean this enum replaced. Read to migrate a payload written before
@@ -653,6 +694,11 @@ struct DictationSettings: Codable, Equatable, Sendable {
     hudGlassMaterial =
       (try? container.decode(GlassMaterial.self, forKey: .hudGlassMaterial))
       ?? defaults.hudGlassMaterial
+    // Same rule again: no key (a payload from before the Cursor style) or an
+    // unknown raw value both mean the default, beside the caret.
+    cursorMarkPosition =
+      (try? container.decode(CursorMarkPosition.self, forKey: .cursorMarkPosition))
+      ?? defaults.cursorMarkPosition
   }
 
   /// Writes both the enum and the bool it replaced.
@@ -678,6 +724,7 @@ struct DictationSettings: Codable, Equatable, Sendable {
     try container.encode(hudStyle, forKey: .hudStyle)
     try container.encode(hudGlassOpacity, forKey: .hudGlassOpacity)
     try container.encode(hudGlassMaterial, forKey: .hudGlassMaterial)
+    try container.encode(cursorMarkPosition, forKey: .cursorMarkPosition)
 
     var legacy = encoder.container(keyedBy: LegacyCodingKeys.self)
     try legacy.encode(deliveryMode == .streaming, forKey: .streamingDelivery)

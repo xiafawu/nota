@@ -288,6 +288,9 @@ enum HUDGlassMetrics {
       return HUDBarMetrics.cornerRadius
     case .prompter:
       return HUDPrompterMetrics.cornerRadius
+    case .cursor:
+      // The mark is a capsule in every phase: half its height.
+      return CursorMarkMetrics.height / 2
     case .pill:
       switch state {
       case .warning, .error:
@@ -391,6 +394,7 @@ enum PanelMotion {
   static func fadeIn<Result>(
     _ window: NSWindow,
     rise: CGFloat? = nil,
+    clickThrough: Bool = false,
     order: () -> Result
   ) -> Result {
     // A panel that is still on screen is either fully up or halfway through a
@@ -402,8 +406,10 @@ enum PanelMotion {
     bump(window)
     haltFade(window, at: arriving ? 0 : window.alphaValue)
     // A panel caught mid-dismissal had its clicks taken away; it is staying, so
-    // it gets them back.
-    window.ignoresMouseEvents = false
+    // it gets them back — unless it never takes clicks at all. The cursor mark
+    // sits beside the owner's text caret, and a panel there that took clicks
+    // would swallow the very click that moves the caret.
+    window.ignoresMouseEvents = clickThrough
 
     let destination = window.frame
     if lift != 0 {

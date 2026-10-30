@@ -421,6 +421,24 @@ final class StreamingDeliveryQueue {
   /// Number of sentences accepted this session.
   private(set) var enqueuedCount = 0
 
+  /// Sentences accepted and not yet delivered (or found to have nothing to
+  /// deliver) — the ones still being refined or waiting their turn.
+  ///
+  /// The Cursor HUD style rolls its wave while this is above zero and the
+  /// owner is not talking: "a sentence is being processed" is exactly the
+  /// stretch between a segment finalizing and its text landing. It changes
+  /// once per sentence, seconds apart, so publishing it is not the
+  /// rate-times-breadth trap.
+  private(set) var inFlightCount = 0 {
+    didSet {
+      guard inFlightCount != oldValue else { return }
+      onInFlightChange?(inFlightCount)
+    }
+  }
+
+  /// Told every time `inFlightCount` moves, on the main actor.
+  var onInFlightChange: ((Int) -> Void)?
+
   /// Submit a completed segment. Returns immediately; refinement runs
   /// concurrently and delivery is serialized behind every earlier segment.
   func enqueue(_ segment: StreamingDelivery.Segment) {
@@ -436,6 +454,7 @@ final class StreamingDeliveryQueue {
     let index = nextIndex
     nextIndex += 1
     enqueuedCount += 1
+    inFlightCount += 1
 
     let refine = self.refine
     refinements.append(Task { [weak self] in
@@ -464,6 +483,7 @@ final class StreamingDeliveryQueue {
     pumpTask?.cancel()
     pumpTask = nil
     queued = []
+    inFlightCount = 0
   }
 
   /// Wait until every submitted sentence has been refined and delivered.
@@ -478,6 +498,14 @@ final class StreamingDeliveryQueue {
   }
 
   // MARK: - Private
+
+  /// One accepted sentence has left the queue. A cancelled queue already
+  /// reset the count, and a delivery that outlived the cancel must not take it
+  /// below zero.
+  private func settleOne() {
+    guard !isCancelled else { return }
+    inFlightCount = max(0, inFlightCount - 1)
+  }
 
   private func complete(index: Int, text: String) {
     guard !isCancelled else { return }
@@ -497,9 +525,13 @@ final class StreamingDeliveryQueue {
       while !self.isCancelled, !self.queued.isEmpty {
         let text = self.queued.removeFirst()
         let delta = StreamingDelivery.appendDelta(previous: self.deliveredText, next: text)
-        guard !delta.isEmpty else { continue }
+        guard !delta.isEmpty else {
+          self.settleOne()
+          continue
+        }
         self.deliveredText += delta
         await self.deliver(delta)
+        self.settleOne()
       }
       self.pumpTask = nil
     }
