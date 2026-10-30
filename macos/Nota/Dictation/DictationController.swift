@@ -169,6 +169,13 @@ final class DictationController: ObservableObject {
   /// (`StreamingDeliveryQueue.inFlightCount`). The Cursor style's "working"
   /// wave. Moves once per sentence.
   @Published private(set) var sentencesInFlight = 0
+  /// After a streaming session's stop press: whether recognized-but-untyped
+  /// text is still on its way (a volatile tail, or a sentence the segmenter is
+  /// holding). Nil outside that window, and for batch delivery, where all the
+  /// text is still to come. The Cursor style leaves the moment this is false
+  /// and nothing is in flight (owner, 2026-10-30): the ~1.5 s the engine takes
+  /// to close after the last insert is not work the owner is waiting on.
+  @Published private(set) var streamingStopAwaitsText: Bool?
   /// Concurrent polish calls in flight; `isPolishInProgress` is this > 0.
   private var polishInFlight = 0
   /// Terms auto-learn may still store this session. Streaming polishes once
@@ -596,6 +603,12 @@ final class DictationController: ObservableObject {
     capture.stop()
     lastCaptureDiagnostics = capture.diagnostics
 
+    // Read before the draft is cleared below: it is the only record of a tail
+    // the recognizer has not finalized yet.
+    if isStreamingSession {
+      streamingStopAwaitsText = !roughDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        || !segmenter.pending.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
     state = .finalizing
     // The draft was a preview of text that is now being finalized; the pill
     // moves to its processing state and must not keep offering it.
@@ -744,6 +757,12 @@ final class DictationController: ObservableObject {
         segmenter: &segmenter
       ) {
         deliveryQueue.enqueue(segment)
+      }
+      // A turn that finalized after the stop press is the tail it was waiting
+      // for; only what the segmenter still holds is left (it is flushed last).
+      if streamingStopAwaitsText != nil {
+        streamingStopAwaitsText = !segmenter.pending
+          .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
       }
       return
     }
@@ -968,6 +987,8 @@ final class DictationController: ObservableObject {
         if let tail = self.segmenter.flush() {
           queue.enqueue(tail)
         }
+        // Everything recognized is now queued; `sentencesInFlight` covers it.
+        if self.streamingStopAwaitsText != nil { self.streamingStopAwaitsText = false }
         if queue.enqueuedCount > 0 {
           self.state = .injecting
         }
@@ -1070,6 +1091,7 @@ final class DictationController: ObservableObject {
     segmenter = SentenceSegmenter()
     segmentsAreUtterances = false
     sentencesInFlight = 0
+    streamingStopAwaitsText = nil
     finalizedDraft = ""
     roughDraft = ""
   }

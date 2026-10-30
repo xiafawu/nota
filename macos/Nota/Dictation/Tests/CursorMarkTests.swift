@@ -15,7 +15,8 @@ final class CursorMarkPhaseTests: XCTestCase {
     inFlight: Int = 0,
     polishing: Bool = false,
     warning: String? = nil,
-    notice: String? = nil
+    notice: String? = nil,
+    stopAwaits: Bool? = nil
   ) -> CursorMarkPhase {
     CursorMarkPhase.compute(
       controllerState: state,
@@ -25,7 +26,8 @@ final class CursorMarkPhaseTests: XCTestCase {
       sentencesInFlight: inFlight,
       isPolishInProgress: polishing,
       lastPolishWarning: warning,
-      lastSecureFieldNotice: notice
+      lastSecureFieldNotice: notice,
+      streamingStopAwaitsText: stopAwaits
     )
   }
 
@@ -60,6 +62,20 @@ final class CursorMarkPhaseTests: XCTestCase {
     XCTAssertEqual(phase(.finalizing), .working)
     XCTAssertEqual(phase(.injecting), .working)
     XCTAssertEqual(phase(.idle), .hidden, "a clean finish just fades — no Inserted card")
+  }
+
+  /// Insert While Speaking: once everything heard is typed, the mark leaves at
+  /// once, though the engine is still closing (owner, 2026-10-30).
+  func testAStreamingStopWithNothingLeftLeavesAtOnce() {
+    XCTAssertEqual(phase(.finalizing, stopAwaits: false), .hidden)
+    XCTAssertEqual(phase(.injecting, stopAwaits: false), .hidden)
+  }
+
+  /// …but not while text is still on its way to the caret.
+  func testAStreamingStopWaitsForTextStillComing() {
+    XCTAssertEqual(phase(.finalizing, stopAwaits: true), .working, "a tail not yet finalized")
+    XCTAssertEqual(phase(.finalizing, inFlight: 1, stopAwaits: false), .working, "a turn being typed")
+    XCTAssertEqual(phase(.injecting, polishing: true, stopAwaits: false), .working, "polish running")
   }
 
   func testProblemsTintTheMark() {

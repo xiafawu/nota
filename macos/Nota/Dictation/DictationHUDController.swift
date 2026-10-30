@@ -148,6 +148,7 @@ final class DictationHUDController {
           isPolishInProgress: controller.isPolishInProgress,
           lastPolishWarning: controller.lastPolishWarning,
           lastSecureFieldNotice: controller.lastSecureFieldNotice,
+          streamingStopAwaitsText: controller.streamingStopAwaitsText,
           position: controller.settings.cursorMarkPosition,
           glassOpacity: controller.settings.hudGlassOpacity,
           glassMaterial: controller.settings.hudGlassMaterial

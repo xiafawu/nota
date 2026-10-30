@@ -1134,8 +1134,9 @@ AssemblyAI user staring at a permanently blank prompter with no explanation.
 No preview at all. While a session runs, **one Liquid Glass capsule sits at the
 text caret**: a 20pt breathing dot while quiet, widening to a ~40pt five-bar
 waveform while the voice is heard, a wave rolling through the bars while a
-sentence is on its way to the target, and on release a last wave, then the dot
-follows the inserted text to the new caret and fades. A problem tints it amber
+sentence is on its way to the target, and on release a last wave only while
+text is still to be typed — it fades **the moment everything is typed** (owner,
+2026-10-30), not when the engine finishes closing. A problem tints it amber
 (warning) or red (error) with a one-line glass note beside it that fades after
 4 s (`CursorMarkLifecycle.problemDuration`; the pill's 3/6 s are untouched).
 Position: **Beside cursor** (default) or **Below cursor**
@@ -1173,7 +1174,15 @@ a browser imitation of the real thing.
   chain is the design, not an error path: caret → the focused element's
   bottom-right corner (inside it, right edge pinned) → the pill's usual spot
   (`HUDPanelLayout.pillOriginY` under the focused window). Many Chromium and
-  Electron fields answer the element and not the caret. Placement is pure
+  Electron fields answer the element and not the caret — and an Electron app
+  answers **nothing** until `AXManualAccessibility` is set on it (measured in
+  Claude 2026-10-30: `kAXErrorNoValue`, then an answer ~1.5 s after the set,
+  kept until the app quits). The poll sets it first, but only where
+  `CaretLocator.wakesAccessibilityTree` says so: bundles whose injector chain
+  has no AX step. A woken contenteditable is exactly what `tryAXInject` would
+  write an AXValue into (the Craft failure), so an Electron app earns the wake
+  by being pinned to paste in `TextInjector.defaultOverrideTable` — Claude
+  (`com.anthropic.claudefordesktop`) is, for this reason. Placement is pure
   (`CursorMarkPlacement`): beside holds its left edge so the waveform grows away
   from the text and flips to the caret's left at the screen edge; below is
   centred on the caret; everything is clamped 8pt inside the visible frame.
@@ -1192,7 +1201,14 @@ a browser imitation of the real thing.
   Working is `DictationController.sentencesInFlight` (the delivery queue's
   `inFlightCount`, moving once per sentence, so not the publisher-rate trap)
   or polish in flight while not talking, and `.finalizing`/`.injecting` after
-  release. Talking outranks working. Thresholds are set against
+  release — except in Insert While Speaking, where it is `.hidden` once
+  `DictationController.streamingStopAwaitsText` is false and nothing is in
+  flight. That flag is read at the stop press (a volatile tail, or a sentence
+  the segmenter holds), cleared by the turn that finalizes it, and nil outside
+  a streaming stop: AssemblyAI spends ~1.5 s closing its socket after the last
+  turn is already typed, and the owner read a wave over finished text as the
+  mark refusing to leave. There is no linger after the last insert either.
+  Talking outranks working. Thresholds are set against
   `MicCapture.meterLevel`'s mapping, not measured in a room.
 - `isAboutLiveText` is false (there is no text to sit empty), and the pane
   states the fallback and, under Review, that the card is the surface.

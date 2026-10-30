@@ -34,6 +34,29 @@ enum CaretLocator {
   /// between the owner and their feedback.
   static let messagingTimeout: Float = 0.25
 
+  /// Whether the mark may wake `bundleID`'s accessibility tree.
+  ///
+  /// Electron exposes no focused element at all until a client sets
+  /// `AXManualAccessibility` on the app (measured 2026-10-30 in Claude:
+  /// `kAXErrorNoValue` with it off, an answer ~1.5 s after turning it on), so
+  /// without the wake every Electron caret read falls through to the window
+  /// fallback. But a woken tree is also what the injector's AX strategy would
+  /// find and write an AXValue into, so the tree is woken only where the
+  /// injector never tries AX. A bundle earns the wake by being pinned to paste
+  /// or keystrokes in `TextInjector.defaultOverrideTable`, never by name here.
+  static func wakesAccessibilityTree(bundleID: String?) -> Bool {
+    guard let bundleID else { return false }
+    return !TextInjector().strategyChain(for: bundleID).contains(.accessibility)
+  }
+
+  /// Ask an Electron app to build its accessibility tree. A no-op error for
+  /// any app that is not Electron; it persists in the app until it quits.
+  static func wakeAccessibilityTree(pid: pid_t) {
+    let app = AXUIElementCreateApplication(pid)
+    AXUIElementSetMessagingTimeout(app, messagingTimeout)
+    AXUIElementSetAttributeValue(app, "AXManualAccessibility" as CFString, kCFBooleanTrue)
+  }
+
   static func read(pid: pid_t, primaryScreenMaxY: CGFloat, screens: [CGRect]) -> CaretReading {
     let app = AXUIElementCreateApplication(pid)
     AXUIElementSetMessagingTimeout(app, messagingTimeout)
@@ -354,6 +377,7 @@ final class DictationCursorMarkController {
     var isPolishInProgress: Bool
     var lastPolishWarning: String?
     var lastSecureFieldNotice: String?
+    var streamingStopAwaitsText: Bool? = nil
     var position: CursorMarkPosition
     var glassOpacity: Double
     var glassMaterial: GlassMaterial
@@ -409,7 +433,8 @@ final class DictationCursorMarkController {
       sentencesInFlight: input.sentencesInFlight,
       isPolishInProgress: input.isPolishInProgress,
       lastPolishWarning: input.lastPolishWarning,
-      lastSecureFieldNotice: input.lastSecureFieldNotice
+      lastSecureFieldNotice: input.lastSecureFieldNotice,
+      streamingStopAwaitsText: input.streamingStopAwaitsText
     )
     displayed = lifecycle.display(phase, now: now)
     scheduleExpiry()
@@ -423,54 +448,15 @@ final class DictationCursorMarkController {
     previousSentencesInFlight = input.sentencesInFlight
     previousState = input.state
 
+    // The session's last text went in: the mark fades from where it is, at
+    // once. It used to linger 0.3 s to follow the insert to the new caret; the
+    // owner asked for it to leave as soon as everything is typed (2026-10-30).
     guard displayed != .hidden else {
-      // The last text of the session just went in. The mark follows it to the
-      // new caret as a dot and fades from there — the prototype's ending —
-      // rather than fading from where the caret was before the insert.
-      if insertFinished, isMarkShowing {
-        beginLinger()
-        return
-      }
-      if lingerTask != nil {
-        // Still following the last insert: the dot stays what is displayed,
-        // so a landed read arriving now still moves it.
-        displayed = .quiet
-        return
-      }
       hideSurfaces()
       return
     }
-    cancelLinger()
     startTrackingIfNeeded()
     render()
-  }
-
-  // MARK: The ending
-
-  /// How long the dot stays at the new caret after the session's last insert
-  /// before it fades: long enough for one landed read to arrive and move it.
-  static let lingerAfterInsert: TimeInterval = 0.3
-
-  private var lingerTask: Task<Void, Never>?
-
-  private func beginLinger() {
-    guard lingerTask == nil else { return }
-    displayed = .quiet
-    render()
-    lingerTask = Task { [weak self] in
-      try? await Task.sleep(
-        nanoseconds: UInt64(Self.lingerAfterInsert * 1_000_000_000)
-      )
-      guard !Task.isCancelled, let self else { return }
-      self.lingerTask = nil
-      self.displayed = .hidden
-      self.hideSurfaces()
-    }
-  }
-
-  private func cancelLinger() {
-    lingerTask?.cancel()
-    lingerTask = nil
   }
 
   /// Take everything down: the owner switched style, or turned the HUD off.
@@ -479,7 +465,6 @@ final class DictationCursorMarkController {
     gate.reset()
     expiryTask?.cancel()
     expiryTask = nil
-    cancelLinger()
     hideSurfaces()
   }
 
@@ -595,6 +580,7 @@ final class DictationCursorMarkController {
   // MARK: Show / hide
 
   private func show() {
+    Self.logger.info("Cursor mark shown: phase=\(String(describing: self.displayed), privacy: .public)")
     isMarkShowing = true
     PanelMotion.fadeIn(markPanel, rise: 0, clickThrough: true) {
       markPanel.orderFrontRegardless()
@@ -646,6 +632,7 @@ final class DictationCursorMarkController {
   private func hideSurfaces() {
     stopTracking()
     if isMarkShowing {
+      Self.logger.info("Cursor mark hidden")
       isMarkShowing = false
       PanelMotion.fadeOut(markPanel)
     }
@@ -675,14 +662,19 @@ final class DictationCursorMarkController {
   private func startTrackingIfNeeded() {
     guard pollTask == nil else { return }
     let ownPID = ProcessInfo.processInfo.processIdentifier
-    let front = NSWorkspace.shared.frontmostApplication?.processIdentifier
+    let frontApp = NSWorkspace.shared.frontmostApplication
+    let front = frontApp?.processIdentifier
     // Nota's own windows have no caret the mark belongs to.
     let pid = front == ownPID ? nil : front
+    let wakes = CaretLocator.wakesAccessibilityTree(bundleID: frontApp?.bundleIdentifier)
     let primaryMaxY = NSScreen.screens.first?.frame.maxY ?? 0
     let screens = NSScreen.screens.map(\.frame)
     let interval = UInt64(CursorMarkMetrics.pollInterval * 1_000_000_000)
 
     pollTask = Task.detached(priority: .userInitiated) { [weak self] in
+      // The tree takes a second or two to come up the first time; the poll
+      // below moves the mark from the fallback to the caret once it does.
+      if wakes, let pid { CaretLocator.wakeAccessibilityTree(pid: pid) }
       while !Task.isCancelled {
         let started = ProcessInfo.processInfo.systemUptime
         let reading = pid.map {

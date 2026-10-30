@@ -102,7 +102,8 @@ enum CursorMarkPhase: Equatable, Sendable {
     sentencesInFlight: Int,
     isPolishInProgress: Bool,
     lastPolishWarning: String?,
-    lastSecureFieldNotice: String?
+    lastSecureFieldNotice: String?,
+    streamingStopAwaitsText: Bool? = nil
   ) -> CursorMarkPhase {
     if isReviewing { return .hidden }
 
@@ -127,6 +128,12 @@ enum CursorMarkPhase: Equatable, Sendable {
       return .quiet
 
     case .finalizing, .injecting:
+      // Insert While Speaking, after the stop press: once everything heard is
+      // typed, the mark leaves even though the engine is still closing
+      // (owner, 2026-10-30: "leave as soon as everything is typed").
+      if streamingStopAwaitsText == false, sentencesInFlight == 0, !isPolishInProgress {
+        return .hidden
+      }
       return .working
 
     case .failed(let message):

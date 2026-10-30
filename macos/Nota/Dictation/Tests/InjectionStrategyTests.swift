@@ -181,6 +181,28 @@ final class InjectionStrategyTests: XCTestCase {
     XCTAssertEqual(injector.strategyChain(for: "com.lukilabs.lukiapp"), [.paste])
   }
 
+  /// The cursor mark wakes Claude's AX tree, so Claude may never be written
+  /// through it.
+  func testClaudeIsPasteOnly() {
+    let injector = TextInjector()
+    XCTAssertEqual(injector.strategyChain(for: "com.anthropic.claudefordesktop"), [.paste])
+  }
+
+  /// The mark wakes an app's AX tree only where the injector never writes AX
+  /// values; an app on the default chain keeps a dormant tree.
+  func testTheMarkWakesAnAXTreeOnlyWhereAXIsNeverWritten() {
+    XCTAssertTrue(CaretLocator.wakesAccessibilityTree(bundleID: "com.anthropic.claudefordesktop"))
+    XCTAssertTrue(CaretLocator.wakesAccessibilityTree(bundleID: "com.slack.Slack"))
+    XCTAssertFalse(CaretLocator.wakesAccessibilityTree(bundleID: "com.example.unknown-editor"))
+    XCTAssertFalse(CaretLocator.wakesAccessibilityTree(bundleID: "com.apple.TextEdit"))
+    XCTAssertFalse(CaretLocator.wakesAccessibilityTree(bundleID: nil))
+    let injector = TextInjector()
+    for bundleID in TextInjector.defaultOverrideTable.keys
+    where CaretLocator.wakesAccessibilityTree(bundleID: bundleID) {
+      XCTAssertFalse(injector.strategyChain(for: bundleID).contains(.accessibility), bundleID)
+    }
+  }
+
   func testDefaultOverrideTablePasteBundleUsesPaste() {
     let table = TextInjector.defaultOverrideTable
     for (bundleID, override) in table {

@@ -312,6 +312,11 @@ extension TextInjector {
     "com.microsoft.VSCodeInsiders": PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 120),
     "com.github.copilot.Copilot":  PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 120),
     "com.spotify.client":          PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 120),
+    // Claude — Electron. Paste is what already landed here (no AX element was
+    // exposed); it is pinned now because the cursor mark wakes Electron's AX
+    // tree (`CaretLocator.wakesAccessibilityTree`), and an AXValue write on
+    // that tree's contenteditable is the Craft failure waiting to happen.
+    "com.anthropic.claudefordesktop": PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 150),
 
     // Craft — AX value set returns success and repaints the block, but Craft's
     // document never commits it (measured 2026-10-30: the text is on screen,
