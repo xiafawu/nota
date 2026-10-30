@@ -1222,7 +1222,7 @@ final class DictationController: ObservableObject {
     speechStream = nil
     lastLatency = latency
     // Nothing has reached the target app, so nothing may read as inserted —
-    // the HUD's success snippet comes from this field, and the last session's
+    // VoiceOver's "Dictation inserted" reads this field, and the last session's
     // text is still in it.
     lastProcessedText = nil
     endReviewContinuation()

@@ -866,8 +866,6 @@ struct DictationHUDContentView: View {
       ListeningView(level: level, roughDraft: roughDraft)
     case .processing(let step):
       ProcessingView(step: step)
-    case .success(let snippet):
-      SuccessView(snippet: snippet)
     case .warning(let message):
       WarningView(message: message)
     case .error(let message):
@@ -995,24 +993,6 @@ private struct ProcessingView: View {
         .frame(width: 14, height: 14)
       Text(step)
         .font(.subheadline)
-    }
-  }
-}
-
-private struct SuccessView: View {
-  let snippet: String
-
-  var body: some View {
-    HStack(spacing: 8) {
-      Image(systemName: "checkmark.circle.fill")
-        .foregroundStyle(.green)
-        .font(.system(size: 14, weight: .medium))
-
-      if !snippet.isEmpty {
-        Text("\"\(snippet.prefix(40))\(snippet.count > 40 ? "…" : "")\"")
-          .font(.subheadline)
-          .lineLimit(1)
-      }
     }
   }
 }

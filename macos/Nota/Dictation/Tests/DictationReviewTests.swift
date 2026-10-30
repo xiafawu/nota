@@ -322,14 +322,13 @@ final class ReviewEditLearningTests: XCTestCase {
 final class ReviewHUDTests: XCTestCase {
   func testThePillHidesWhileTheReviewPanelIsOpen() {
     // The panel is the feedback. Without this the pill would sit under it
-    // showing a success snippet for text that has not been inserted.
+    // showing a polish warning for text that has not been inserted.
     XCTAssertEqual(
       HUDState.compute(
         controllerState: .idle,
         isPolishInProgress: false,
         lastPolishWarning: "Polish failed: offline.",
         lastSecureFieldNotice: nil,
-        lastProcessedText: "Ship the genc2rust patch.",
         rmsLevel: 0,
         isReviewing: true
       ),
@@ -342,13 +341,12 @@ final class ReviewHUDTests: XCTestCase {
       HUDState.compute(
         controllerState: .idle,
         isPolishInProgress: false,
-        lastPolishWarning: nil,
+        lastPolishWarning: "Polish failed: offline.",
         lastSecureFieldNotice: nil,
-        lastProcessedText: "Ship it.",
         rmsLevel: 0,
         isReviewing: false
       ),
-      .success(snippet: "Ship it.")
+      .warning(message: "Polish failed: offline.")
     )
   }
 
@@ -363,7 +361,6 @@ final class ReviewHUDTests: XCTestCase {
         isPolishInProgress: false,
         lastPolishWarning: nil,
         lastSecureFieldNotice: nil,
-        lastProcessedText: nil,
         rmsLevel: 0.4,
         isReviewing: true
       ),
@@ -375,7 +372,6 @@ final class ReviewHUDTests: XCTestCase {
         isPolishInProgress: true,
         lastPolishWarning: nil,
         lastSecureFieldNotice: nil,
-        lastProcessedText: nil,
         rmsLevel: 0,
         isReviewing: true
       ),
@@ -383,16 +379,15 @@ final class ReviewHUDTests: XCTestCase {
     )
   }
 
-  /// The idle-derived states stay suppressed too: a success snippet speaks
-  /// for text that is still sitting in the card, uninserted.
-  func testTheSuccessSnippetStaysSuppressedDuringAContinuation() {
+  /// The idle-derived states stay suppressed too: a warning about polish
+  /// speaks for text that is still sitting in the card, uninserted.
+  func testTheIdleWarningStaysSuppressedDuringAContinuation() {
     XCTAssertEqual(
       HUDState.compute(
         controllerState: .idle,
         isPolishInProgress: false,
         lastPolishWarning: "Polish failed: offline.",
         lastSecureFieldNotice: nil,
-        lastProcessedText: "Ship the genc2rust patch.",
         rmsLevel: 0,
         isReviewing: true
       ),
@@ -411,7 +406,6 @@ final class ReviewHUDTests: XCTestCase {
         isPolishInProgress: false,
         lastPolishWarning: nil,
         lastSecureFieldNotice: nil,
-        lastProcessedText: nil,
         rmsLevel: 0,
         isReviewing: false
       ),
@@ -424,7 +418,6 @@ final class ReviewHUDTests: XCTestCase {
         isPolishInProgress: false,
         lastPolishWarning: nil,
         lastSecureFieldNotice: nil,
-        lastProcessedText: nil,
         rmsLevel: 0,
         isReviewing: true
       ),
@@ -453,7 +446,6 @@ final class ReviewHUDTests: XCTestCase {
           isPolishInProgress: true,
           lastPolishWarning: "Polish failed: offline.",
           lastSecureFieldNotice: "Secure field",
-          lastProcessedText: "Ship it.",
           rmsLevel: 0.9,
           isReviewing: true
         ),
@@ -1016,7 +1008,7 @@ final class DictationReviewBranchTests: XCTestCase {
     XCTAssertEqual(presenter.presented.count, 1)
     XCTAssertEqual(presenter.latest?.text, "Ship the genc2rust patch.")
     XCTAssertTrue(controller.isReviewing)
-    // The HUD's success snippet reads this field; nothing has been inserted.
+    // "Dictation inserted" is announced off this field; nothing has been inserted.
     XCTAssertNil(controller.lastProcessedText)
   }
 

@@ -12,7 +12,6 @@ final class HUDStateTests: XCTestCase {
         isPolishInProgress: false,
         lastPolishWarning: nil,
         lastSecureFieldNotice: nil,
-        lastProcessedText: nil,
         rmsLevel: 0
       ),
       .hidden
@@ -26,7 +25,6 @@ final class HUDStateTests: XCTestCase {
         isPolishInProgress: false,
         lastPolishWarning: nil,
         lastSecureFieldNotice: nil,
-        lastProcessedText: nil,
         rmsLevel: 0
       ),
       .hidden
@@ -40,7 +38,6 @@ final class HUDStateTests: XCTestCase {
         isPolishInProgress: false,
         lastPolishWarning: nil,
         lastSecureFieldNotice: nil,
-        lastProcessedText: "",
         rmsLevel: 0
       ),
       .hidden
@@ -56,7 +53,6 @@ final class HUDStateTests: XCTestCase {
         isPolishInProgress: false,
         lastPolishWarning: nil,
         lastSecureFieldNotice: nil,
-        lastProcessedText: nil,
         rmsLevel: 0.5
       ),
       .listening(level: 0.5)
@@ -70,7 +66,6 @@ final class HUDStateTests: XCTestCase {
         isPolishInProgress: false,
         lastPolishWarning: nil,
         lastSecureFieldNotice: nil,
-        lastProcessedText: nil,
         rmsLevel: 0
       ),
       .listening(level: 0)
@@ -86,7 +81,6 @@ final class HUDStateTests: XCTestCase {
         isPolishInProgress: false,
         lastPolishWarning: nil,
         lastSecureFieldNotice: nil,
-        lastProcessedText: nil,
         rmsLevel: 0
       ),
       .processing(step: "Transcribing…")
@@ -100,7 +94,6 @@ final class HUDStateTests: XCTestCase {
         isPolishInProgress: true,
         lastPolishWarning: nil,
         lastSecureFieldNotice: nil,
-        lastProcessedText: nil,
         rmsLevel: 0
       ),
       .processing(step: "Polishing…")
@@ -114,26 +107,62 @@ final class HUDStateTests: XCTestCase {
         isPolishInProgress: false,
         lastPolishWarning: nil,
         lastSecureFieldNotice: nil,
-        lastProcessedText: nil,
         rmsLevel: 0
       ),
       .processing(step: "Inserting…")
     )
   }
 
-  // MARK: - Success
+  // MARK: - No success card
 
-  func testSuccessWhenIdleWithProcessedText() {
+  /// The "Inserted" card is gone from every style (owner, 2026-10-30): it did
+  /// not match the glass, and it repeated what the text already in the app
+  /// shows. A clean finish is `.hidden` — the HUD simply fades — whatever the
+  /// session inserted. `compute` no longer even takes the inserted text, so
+  /// there is nothing a later edit could hang a snippet off.
+  func testACleanFinishIsHiddenNotASuccessCard() {
     XCTAssertEqual(
       HUDState.compute(
         controllerState: .idle,
         isPolishInProgress: false,
         lastPolishWarning: nil,
         lastSecureFieldNotice: nil,
-        lastProcessedText: "Hello world",
         rmsLevel: 0
       ),
-      .success(snippet: "Hello world")
+      .hidden
+    )
+  }
+
+  /// The VoiceOver half of the card survives: a sighted owner learns the
+  /// insert landed by seeing the text, a VoiceOver user by being told.
+  func testTheInsertIsStillAnnouncedWhenProcessingFadesOut() {
+    XCTAssertEqual(
+      HUDAnnouncement.between(
+        .processing(step: "Inserting…"), .hidden, insertedText: "Hello world"
+      ),
+      HUDAnnouncement(message: "Dictation inserted", isUrgent: false)
+    )
+    XCTAssertNil(
+      HUDAnnouncement.between(.processing(step: "Transcribing…"), .hidden, insertedText: ""),
+      "nothing was inserted, so nothing is announced"
+    )
+    XCTAssertNil(
+      HUDAnnouncement.between(.hidden, .hidden, insertedText: "Hello world"),
+      "an idle tick is not an insert"
+    )
+  }
+
+  func testListeningAndFailureAnnouncementsAreUnchanged() {
+    XCTAssertEqual(
+      HUDAnnouncement.between(.hidden, .listening(level: 0.2), insertedText: nil)?.message,
+      "Dictation listening"
+    )
+    XCTAssertNil(
+      HUDAnnouncement.between(.listening(level: 0.1), .listening(level: 0.4), insertedText: nil)
+    )
+    XCTAssertEqual(
+      HUDAnnouncement.between(.processing(step: "x"), .error(message: "boom"), insertedText: nil),
+      HUDAnnouncement(message: "Dictation failed. boom", isUrgent: true)
     )
   }
 
@@ -146,7 +175,6 @@ final class HUDStateTests: XCTestCase {
         isPolishInProgress: false,
         lastPolishWarning: "Polish failed. Using rules-only result.",
         lastSecureFieldNotice: "Refused secure field",
-        lastProcessedText: "Hello",
         rmsLevel: 0
       ),
       .warning(message: "Polish failed. Using rules-only result.")
@@ -160,7 +188,6 @@ final class HUDStateTests: XCTestCase {
         isPolishInProgress: false,
         lastPolishWarning: nil,
         lastSecureFieldNotice: "Refused secure field",
-        lastProcessedText: "Hello",
         rmsLevel: 0
       ),
       .warning(message: "Refused secure field")
@@ -176,7 +203,6 @@ final class HUDStateTests: XCTestCase {
         isPolishInProgress: false,
         lastPolishWarning: nil,
         lastSecureFieldNotice: nil,
-        lastProcessedText: nil,
         rmsLevel: 0
       ),
       .error(message: "Microphone unavailable")
@@ -189,7 +215,6 @@ final class HUDStateTests: XCTestCase {
       isPolishInProgress: false,
       lastPolishWarning: nil,
       lastSecureFieldNotice: nil,
-      lastProcessedText: nil,
       rmsLevel: 0
     )
     guard case .error(let msg) = state else {
@@ -199,10 +224,6 @@ final class HUDStateTests: XCTestCase {
   }
 
   // MARK: - Auto-hide policy
-
-  func testSuccessAutoHidesAfterTwoSeconds() {
-    XCTAssertEqual(HUDState.success(snippet: "Hello world").autoHideDelay, 2.0)
-  }
 
   func testWarningAutoHidesAfterThreeSeconds() {
     XCTAssertEqual(HUDState.warning(message: "Polish failed").autoHideDelay, 3.0)
@@ -242,22 +263,16 @@ final class HUDStateTests: XCTestCase {
     )
   }
 
-  func testSuccessSnippetEquality() {
-    XCTAssertEqual(
-      HUDState.success(snippet: "hi"),
-      HUDState.success(snippet: "hi")
-    )
-    XCTAssertNotEqual(
-      HUDState.success(snippet: "hi"),
-      HUDState.success(snippet: "bye")
-    )
+  func testWarningMessageEquality() {
+    XCTAssertEqual(HUDState.warning(message: "hi"), HUDState.warning(message: "hi"))
+    XCTAssertNotEqual(HUDState.warning(message: "hi"), HUDState.warning(message: "bye"))
   }
 
   /// Everything the pill shows while listening comes from the level and the
   /// rough draft — and the rough draft is handed to the panel BESIDE the state,
   /// never inside it, so that equality comparisons keep working. Which means a
   /// listening tick must depend on nothing but the level: the previous
-  /// session's warning and snippet are still set on the controller while the
+  /// session's warning and inserted text are still set on the controller while the
   /// next one runs, and a state that flickered between them and `.listening`
   /// would restart the panel's frame animation mid-sentence.
   func testListeningDependsOnNothingButTheLevel() {
@@ -266,7 +281,6 @@ final class HUDStateTests: XCTestCase {
       isPolishInProgress: false,
       lastPolishWarning: nil,
       lastSecureFieldNotice: nil,
-      lastProcessedText: nil,
       rmsLevel: 0.42
     )
     let withStaleNotices = HUDState.compute(
@@ -274,7 +288,6 @@ final class HUDStateTests: XCTestCase {
       isPolishInProgress: true,
       lastPolishWarning: "Polish failed. Using rules-only result.",
       lastSecureFieldNotice: "Refused secure field",
-      lastProcessedText: "text from the last session",
       rmsLevel: 0.42
     )
     XCTAssertEqual(clean, withStaleNotices)

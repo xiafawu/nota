@@ -262,7 +262,6 @@ final class DictationHUDController {
       isPolishInProgress: controller.isPolishInProgress,
       lastPolishWarning: controller.lastPolishWarning,
       lastSecureFieldNotice: controller.lastSecureFieldNotice,
-      lastProcessedText: controller.lastProcessedText,
       rmsLevel: controller.capture.rmsLevel,
       isReviewing: controller.isReviewing
     )
@@ -298,29 +297,19 @@ final class DictationHUDController {
   /// Post VoiceOver announcements on the meaningful transitions. The panel is
   /// never key (its only mouse handling is the drag), so announcements are the
   /// only feedback a VoiceOver user gets that dictation started, finished, or
-  /// failed.
+  /// failed. Which transitions speak is `HUDAnnouncement`'s table.
   private func announceTransition(from old: HUDState, to new: HUDState) {
-    let announcement: (message: String, priority: NSAccessibilityPriorityLevel)?
-    switch (old, new) {
-    case (.listening, .listening), (.success, .success), (.error, .error):
-      announcement = nil
-    case (_, .listening):
-      announcement = ("Dictation listening", .medium)
-    case (_, .success):
-      announcement = ("Dictation inserted", .medium)
-    case (_, .error(let message)):
-      announcement = ("Dictation failed. \(message)", .high)
-    default:
-      announcement = nil
-    }
-    guard let announcement else { return }
+    guard let announcement = HUDAnnouncement.between(
+      old, new, insertedText: controller?.lastProcessedText
+    ) else { return }
+    let priority: NSAccessibilityPriorityLevel = announcement.isUrgent ? .high : .medium
 
     NSAccessibility.post(
       element: panel,
       notification: .announcementRequested,
       userInfo: [
         .announcement: announcement.message,
-        .priority: announcement.priority.rawValue,
+        .priority: priority.rawValue,
       ]
     )
   }

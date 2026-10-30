@@ -346,7 +346,6 @@ final class HUDBarSizingTests: XCTestCase {
       .listening(level: 0),
       .listening(level: 1),
       .processing(step: "Polishing…"),
-      .success(snippet: "ship the genc2rust rewrite"),
       .warning(message: String(repeating: "polish failed. ", count: 12)),
       .error(message: "Microphone capture could not start: no input device"),
     ]

@@ -10,8 +10,11 @@ enum HUDState: Equatable {
   case listening(level: Float)
   /// Post-capture processing step.
   case processing(step: String)
-  /// Injection succeeded; show the injected snippet briefly.
-  case success(snippet: String)
+  // There is deliberately no `success` state (owner, 2026-10-30). The
+  // "Inserted" card it drew did not match the glass the rest of the HUD is
+  // made of, and it repeated what the text — already in the app — shows by
+  // itself. A successful insert now simply fades the HUD out; warnings and
+  // errors are unchanged.
   /// Non-fatal warning (polish failure, secure-field refusal).
   case warning(message: String)
   /// Fatal error message.
@@ -67,11 +70,9 @@ struct HUDDraft: Equatable, Sendable {
 
 extension HUDState {
   /// Seconds the HUD stays visible before auto-hiding, or nil to persist.
-  /// Success lingers long enough to read the snippet; fatal errors outlast
-  /// warnings so the user can act on them.
+  /// Fatal errors outlast warnings so the user can act on them.
   var autoHideDelay: TimeInterval? {
     switch self {
-    case .success: return 2.0
     case .warning: return 3.0
     case .error: return 6.0
     case .hidden, .listening, .processing: return nil
@@ -83,7 +84,11 @@ extension HUDState {
   /// Warning precedence:
   ///   1. `lastPolishWarning`
   ///   2. `lastSecureFieldNotice`
-  ///   3. `lastProcessedText` → success snippet
+  ///
+  /// A session that ended cleanly is `.hidden`: the text is in the app, and
+  /// the HUD fading out is the whole report (no success card, owner
+  /// 2026-10-30). `lastProcessedText` is deliberately not an input any more —
+  /// a parameter nothing reads is the one the next reader would "fix".
   ///
   /// The controller fields stay set while idle; `DictationHUDController`
   /// marks the shown state consumed when its auto-hide fires so a later
@@ -108,7 +113,6 @@ extension HUDState {
     isPolishInProgress: Bool,
     lastPolishWarning: String?,
     lastSecureFieldNotice: String?,
-    lastProcessedText: String?,
     rmsLevel: Float,
     isReviewing: Bool = false
   ) -> HUDState {
@@ -119,15 +123,13 @@ extension HUDState {
       return .hidden
 
     case .idle:
-      // Warning precedence: polish warning > secure-field notice > processed text snippet
+      // Warning precedence: polish warning > secure-field notice. A clean
+      // finish shows nothing — the HUD just fades.
       if let warning = lastPolishWarning, !warning.isEmpty {
         return .warning(message: warning)
       }
       if let notice = lastSecureFieldNotice, !notice.isEmpty {
         return .warning(message: notice)
-      }
-      if let snippet = lastProcessedText, !snippet.isEmpty {
-        return .success(snippet: snippet)
       }
       return .hidden
 
@@ -145,6 +147,46 @@ extension HUDState {
 
     case .failed(let message):
       return .error(message: message)
+    }
+  }
+}
+
+// MARK: - HUDAnnouncement
+
+/// What VoiceOver is told as the HUD changes state.
+///
+/// The HUD's announcements are the only feedback a VoiceOver user gets that
+/// dictation started, finished, or failed. "Dictation inserted" used to ride
+/// on the `.success` card; the card is gone (owner, 2026-10-30), but the
+/// announcement is not, because a sighted owner learns the insert happened by
+/// seeing the text and a VoiceOver user does not. It now rides on the moment
+/// the card used to appear: processing ending in a clean `.hidden` with text
+/// delivered.
+///
+/// Pure, so every style — the pill, the bar, the prompter and the cursor mark —
+/// announces the same three things from one table.
+struct HUDAnnouncement: Equatable {
+  let message: String
+  /// High priority interrupts whatever VoiceOver is saying; a failure earns it.
+  let isUrgent: Bool
+
+  static func between(
+    _ old: HUDState,
+    _ new: HUDState,
+    insertedText: String?
+  ) -> HUDAnnouncement? {
+    switch (old, new) {
+    case (.listening, .listening), (.error, .error):
+      return nil
+    case (_, .listening):
+      return HUDAnnouncement(message: "Dictation listening", isUrgent: false)
+    case (.processing, .hidden):
+      guard let insertedText, !insertedText.isEmpty else { return nil }
+      return HUDAnnouncement(message: "Dictation inserted", isUrgent: false)
+    case (_, .error(let message)):
+      return HUDAnnouncement(message: "Dictation failed. \(message)", isUrgent: true)
+    default:
+      return nil
     }
   }
 }

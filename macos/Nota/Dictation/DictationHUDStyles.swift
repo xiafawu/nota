@@ -197,8 +197,6 @@ struct DictationHUDBarView: View {
           .scaleEffect(0.5)
           .frame(width: 12, height: 12)
       }
-    case .success:
-      glyph("checkmark.circle.fill", .green)
     case .warning:
       glyph("exclamationmark.triangle.fill", .orange)
     case .error:
@@ -250,8 +248,6 @@ struct DictationHUDBarView: View {
       return draft.boundedTail ?? "Listening…"
     case .processing(let step):
       return step
-    case .success(let snippet):
-      return snippet.isEmpty ? "Inserted" : snippet
     case .warning(let message), .error(let message):
       return message
     }
@@ -475,7 +471,6 @@ struct DictationHUDPrompterView: View {
     switch state {
     case .hidden, .listening: return "Dictating"
     case .processing(let step): return step
-    case .success: return "Inserted"
     case .warning: return "Warning"
     case .error: return "Failed"
     }
@@ -541,8 +536,6 @@ struct DictationHUDPrompterView: View {
     case .processing:
       let text = StreamingDelivery.joined(window.finalized, window.volatileTail)
       return text.isEmpty ? "…" : text
-    case .success(let snippet):
-      return snippet
     case .warning(let message), .error(let message):
       return message
     }
