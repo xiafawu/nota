@@ -86,6 +86,32 @@ enum CaretLocator {
   /// else the character before it, else the one after it — asked lazily, so a
   /// server that answers the first question is asked nothing more.
   private static func caretRect(in element: AXUIElement) -> CGRect? {
+    rangeCaretRect(in: element) ?? markerCaretRect(in: element)
+  }
+
+  /// Chromium's own answer: the selection as a text-marker range, and its
+  /// bounds. Measured in Claude 2026-10-30: `AXBoundsForRange` answers a
+  /// degenerate rect for every range in its prompt box, while
+  /// `AXBoundsForTextMarkerRange` on `AXSelectedTextMarkerRange` answers the
+  /// real insertion point (zero width, one line tall). Tried only after the
+  /// index path has failed, so a Cocoa field never pays for it.
+  private static func markerCaretRect(in element: AXUIElement) -> CGRect? {
+    var markerRange: CFTypeRef?
+    guard AXUIElementCopyAttributeValue(
+      element, "AXSelectedTextMarkerRange" as CFString, &markerRange
+    ) == .success, let markerRange else { return nil }
+    var out: CFTypeRef?
+    guard AXUIElementCopyParameterizedAttributeValue(
+      element, "AXBoundsForTextMarkerRange" as CFString, markerRange, &out
+    ) == .success,
+      let out, CFGetTypeID(out) == AXValueGetTypeID()
+    else { return nil }
+    var rect = CGRect.zero
+    guard AXValueGetValue(out as! AXValue, .cgRect, &rect) else { return nil }
+    return CaretGeometry.caret(collapsed: rect, preceding: nil, following: nil)
+  }
+
+  private static func rangeCaretRect(in element: AXUIElement) -> CGRect? {
     var rangeRef: CFTypeRef?
     guard AXUIElementCopyAttributeValue(
       element, kAXSelectedTextRangeAttribute as CFString, &rangeRef

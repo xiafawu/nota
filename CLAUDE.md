@@ -1168,7 +1168,10 @@ a browser imitation of the real thing.
   timeout): focused element → `kAXSelectedTextRangeAttribute` →
   `kAXBoundsForRangeParameterizedAttribute`, and when the collapsed range
   answers with a zero rect (common) the character before it (its trailing
-  edge), then the one after. AX rects are top-left origin and are flipped onto
+  edge), then the one after, and last Chromium's own text-marker answer
+  (`AXBoundsForTextMarkerRange` on `AXSelectedTextMarkerRange`): Claude's
+  prompt box answers a degenerate rect for every index range and the real
+  caret for the marker range (measured 2026-10-30). AX rects are top-left origin and are flipped onto
   Cocoa (`CaretGeometry.cocoaRect`); an implausible line, a caret on no screen
   or far from its own element is refused rather than trusted. The fallback
   chain is the design, not an error path: caret → the focused element's
