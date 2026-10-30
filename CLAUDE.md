@@ -477,11 +477,33 @@ mic → DictationTranscriber → volatile tail ───────────
   tail — swapping those duplicates text into the user's document. Segments
   reach the controller as `Hypothesis(isSegment: true)`; every other producer
   keeps the original two-field contract, so `isSegment` defaults to false.
-- **Apple engine only.** AssemblyAI realtime reports whole formatted turns
-  rather than deltas, so it ignores the request and
-  `SpeechStream.deliversSegments` stays false. A session that falls back to
-  `SFSpeechRecognizer` also reverts to batch delivery — which is why
-  `deliversSegments` is only meaningful *after* `start()` returns.
+- **Both engines** (since 2026-10-30; it was Apple-only). AssemblyAI realtime
+  has no deltas, but every turn it closes on a pause is finalized text, so a
+  session asked to deliver while speaking (`makeDictationStream(...,
+  deliversWhileSpeaking:)`, which is `DictationSessionPlan.deliversMidSession`)
+  yields each finished turn as a segment through `AssemblyAITurnRouter`, and
+  the controller sends it down the **same** delivery queue — append-only,
+  spoken order and the key-down target are the queue's guarantees, not the
+  engine's. Two things are AssemblyAI's own:
+  - **A turn is delivered whole, not cut at terminators**
+    (`SpeechStream.segmentsAreUtterances` →
+    `StreamingDelivery.segments(finalizing:asUtterance:)`). The socket does not
+    ask for `format_turns`, so turns arrive unpunctuated, and
+    `SentenceSegmenter` would hold every one of them until the 240-char valve or
+    the end of the session. Delivered as one whole sentence it gets the capital,
+    the period and polish exactly as Apple's sentences do.
+  - **One segment per `turn_order`, ever.** With `format_turns=true` the v3
+    server finalizes each turn twice (raw, then `turn_is_formatted: true`);
+    append-only delivery would type the sentence twice. The first final wins,
+    for the transcript too. Pinned against the documented shape, not the live
+    server.
+
+  The live-draft flag (`streaming:`) and the delivery flag stay separate on
+  purpose: AssemblyAI runs a live draft in every mode, and tying turns-as-
+  segments to that flag would deliver mid-session under Insert on Release and
+  Review. A session that falls back to `SFSpeechRecognizer` reverts to batch
+  delivery, and AssemblyAI claims segments only once its socket is open — which
+  is why `deliversSegments` is only meaningful *after* `start()` returns.
 - **Sentences, not chunks.** `SentenceSegmenter` accumulates finalized deltas
   and releases only complete sentences (terminator + whitespace or end of
   finalized text; abbreviations and initials guarded). Whatever never reaches a
@@ -725,7 +747,7 @@ goes into a small floating card instead of the target app:
   instead of by the monitor. Return commits the composition; ⌘↩ then applies.
 - **The pill stands down** while the panel is open (`isReviewing` short-circuits
   `HUDState.compute`). Two pieces of feedback for one session is one too many,
-  and the pill's success snippet would claim an insertion that has not happened.
+  and the pill's warning would speak for text that has not been inserted.
 - **Learning waits for the owner.** The immediate path learns from the polish
   diff the moment it lands; review holds every diff until Apply, because until
   then the text is the model's and not the owner's. Applying learns two pairs
@@ -967,10 +989,22 @@ discard and a superseded review from a unit test.
 
 ## Dictation HUD Styles
 
-Three shapes for the same panel, chosen by the **Style** picker in the Dictation
-tab's HUD section (`DictationSettings.hudStyle`, default `.pill`). A new key with
-no migration: a payload written before it existed, or carrying a value this build
+Four styles, chosen by the **Style** picker in the Dictation tab's HUD section
+(`DictationSettings.hudStyle`, default `.pill`): three shapes for the pill's
+panel, and **Cursor**, which has a panel of its own (below). A new key with no
+migration: a payload written before it existed, or carrying a value this build
 does not know, decodes to `.pill` — which is what its owner was looking at.
+
+**No style draws a success card** (owner, 2026-10-30). `HUDState.success` — the
+green check and the "Inserted" snippet — is gone from every style, and
+`HUDState.compute` no longer takes the inserted text at all, so nothing can hang
+a snippet back off it. The owner's reason: it did not match the glass the rest
+of the HUD is made of, and it repeated what the text, already in the app,
+shows by itself. A successful insert just fades the HUD out; warnings and
+errors are unchanged. VoiceOver still hears **"Dictation inserted"** — a sighted
+owner learns the insert landed by seeing the text, a VoiceOver user by being
+told — now announced on processing → `.hidden` with text delivered
+(`HUDAnnouncement`, one table for every style).
 
 - **Pill (default).** The capsule, and since the growing draft landed the
   *tallest* of the three: a header row (mic + meter) on top, and under it up to
@@ -986,7 +1020,7 @@ does not know, decodes to `.pill` — which is what its owner was looking at.
   surface modifier (`HUDSurface`) and their own meter (`HUDCompactMeter`) rather
   than refactoring the pill's into something shared.
 
-**All three styles are Liquid Glass, and none of them draws it.** The material is
+**All four styles are Liquid Glass, and none of them draws it.** The material is
 an `NSGlassEffectView` (`GlassBackingView`, laid out at the card rect — the
 window frame inset by the 24pt shadow margin) with the SwiftUI hosting view above
 it. A SwiftUI `.glassEffect`/`.liquidGlass` inside a transparent panel was
@@ -1078,9 +1112,11 @@ existing card)"; it was written when the HUD carried a review session's first
 draft, and the owner has since asked for one component. It is now *stronger*
 rather than reversed: there is nothing to morph, because the card is on screen
 from the press and `HUDState.compute` returns `.hidden` for every controller
-state while `isReviewing`. The three styles are `.immediate` and `.streaming`
-only. Everything else in this section — the pill baseline, the bar's fixed
-frame, the prompter's cap and reserve — is untouched by that.
+state while `isReviewing`. The styles are `.immediate` and `.streaming` only —
+the Cursor mark included (`CursorMarkPhase.compute` answers `.hidden` while
+`isReviewing`, and the Settings pane says so under that style). Everything else
+in this section — the pill baseline, the bar's fixed frame, the prompter's cap
+and reserve — is untouched by that.
 
 The rest of the non-goals, still true: a style that is *about* text
 (`HUDStyle.isAboutLiveText`) shows none when the session runs the batch
@@ -1089,6 +1125,74 @@ realtime. The Dictation pane names whichever one applies via
 `HUDStyle.liveTextCaveat`, asked of `DictationSessionPlan` rather than of the
 delivery mode alone: a pane that knows only about `.immediate` leaves an
 AssemblyAI user staring at a permanently blank prompter with no explanation.
+
+### Cursor (2026-10-30)
+
+No preview at all. While a session runs, **one Liquid Glass capsule sits at the
+text caret**: a 20pt breathing dot while quiet, widening to a ~40pt five-bar
+waveform while the voice is heard, a wave rolling through the bars while a
+sentence is on its way to the target, and on release a last wave, then the dot
+follows the inserted text to the new caret and fades. A problem tints it amber
+(warning) or red (error) with a one-line glass note beside it that fades after
+4 s (`CursorMarkLifecycle.problemDuration`; the pill's 3/6 s are untouched).
+Position: **Beside cursor** (default) or **Below cursor**
+(`DictationSettings.cursorMarkPosition`, decoded field by field). The owner's
+look and motion are `.eval-loop/cursor-hud-style/prototype.html`; its glass is
+a browser imitation of the real thing.
+
+- **Its own panel, not a fourth pill shape.** `CursorMarkPanel` +
+  `DictationCursorMarkController` (`CursorMarkPanel.swift`), fed by
+  `DictationHUDController.update()`, which keeps the pill's panel hidden for the
+  whole of a Cursor session so exactly one surface is ever live. Every rule that
+  makes `DictationHUDPanel` right is wrong at a caret: `HUDDragView` claims every
+  point (a mark beside the caret would eat the click that moves the caret),
+  `reposition()` hangs under the window, growth pins a bottom edge. So the mark
+  is **click-through** (`ignoresMouseEvents`, kept through
+  `PanelMotion.fadeIn(clickThrough:)`, which otherwise hands clicks back) and
+  not draggable. It keeps every floating-panel rule: `GlassBackingView`
+  (`NSGlassEffectView`) on the shared Glass material and opacity settings,
+  `.darkAqua`, `level = .statusBar` after `isFloatingPanel`, `.nonactivatingPanel`
+  and never key, a verified `orderFrontRegardless` with one recreate
+  (`HUDVisibilityMonitor`), then a fault and one notification.
+- **One frame authority for two windows.** The mark and its note are separate
+  panels moved in one `NSAnimationContext` group, so the note never trails the
+  mark: 0.26 s when the width morphs, 0.16 s when following the caret, a cut
+  under Reduce Motion (only the fades remain — the prototype's rule). SwiftUI
+  animates nothing that can change a size: the dot/bars cross-fade and the
+  bars' meter spring, inside a frame the window decides.
+- **Where the caret is.** `CaretLocator` (off the main actor, 0.25 s messaging
+  timeout): focused element → `kAXSelectedTextRangeAttribute` →
+  `kAXBoundsForRangeParameterizedAttribute`, and when the collapsed range
+  answers with a zero rect (common) the character before it (its trailing
+  edge), then the one after. AX rects are top-left origin and are flipped onto
+  Cocoa (`CaretGeometry.cocoaRect`); an implausible line, a caret on no screen
+  or far from its own element is refused rather than trusted. The fallback
+  chain is the design, not an error path: caret → the focused element's
+  bottom-right corner (inside it, right edge pinned) → the pill's usual spot
+  (`HUDPanelLayout.pillOriginY` under the focused window). Many Chromium and
+  Electron fields answer the element and not the caret. Placement is pure
+  (`CursorMarkPlacement`): beside holds its left edge so the waveform grows away
+  from the text and flips to the caret's left at the screen edge; below is
+  centred on the caret; everything is clamped 8pt inside the visible frame.
+- **Read only while the mark is up.** The pid is the app frontmost at key-down;
+  a detached loop re-reads every 0.2 s, plus one read 60 ms after text lands
+  (a sentence leaving the queue, or the release-time insert), and a
+  0.3 s first-read timeout puts the mark at the fallback rather than nowhere
+  when an app sits on its AX timeout. Nothing polls between sessions. In Insert
+  on Release the mark shows the caret captured at key-down; the insertion path
+  is unchanged and still captures its own target at release.
+- **The phases are one pure decision** (`CursorMarkPhase.compute`). Up from the
+  press (`DictationController.isSessionPending`, published for this), before a
+  cloud engine's handshake has reached `.listening`. Talking needs
+  `CursorVoiceGate` — open at ~−35 dBFS, close below ~−40 dBFS held 0.45 s —
+  because a capsule changing width on every gap between words is a flicker.
+  Working is `DictationController.sentencesInFlight` (the delivery queue's
+  `inFlightCount`, moving once per sentence, so not the publisher-rate trap)
+  or polish in flight while not talking, and `.finalizing`/`.injecting` after
+  release. Talking outranks working. Thresholds are set against
+  `MicCapture.meterLevel`'s mapping, not measured in a room.
+- `isAboutLiveText` is false (there is no text to sit empty), and the pane
+  states the fallback and, under Review, that the card is the surface.
 
 ## Model Settings
 
@@ -3192,9 +3296,12 @@ site, not the machine.
   the results. "Show a live rough draft" and "put text in the user's document"
   are independent, and collapsing them into one `wantsStreaming` flag is what
   left review mode on the batch recognizer with a silent pill for a whole
-  session. Only the Apple analyzer can supply either; AssemblyAI realtime
-  reports whole formatted turns, so a review session on it runs the batch path
-  and still captures the target pid Apply needs.
+  session. The live draft is engine-shaped — Apple's analyzer has to be asked
+  for its streaming mode, AssemblyAI realtime previews in every mode — while
+  mid-session delivery and the key-down target follow the mode alone since
+  2026-10-30: AssemblyAI delivers each finished turn under Insert While
+  Speaking, and a review session on it still captures the target pid Apply
+  needs.
 - The dictation HUD pill has exactly **one animation authority**: the panel's
   window frame, animated by `NSAnimationContext` in `DictationHUDPanel.update`.
   SwiftUI used to animate the pill's own layout at the same time
@@ -3222,8 +3329,9 @@ site, not the machine.
   `HUDDragView.isDragging` makes `animatesFrameChange` false, and a resize
   mid-drag is a plain `setFrame` with no clamp, followed by
   `rebaseDragAnchor()` so the drag continues from the resized frame.
-- The HUD's three styles (`DictationSettings.hudStyle`) are three shapes for one
-  panel, not three HUDs. `.pill` is the default and the shape whose geometry is
+- The HUD's pill, bar and prompter styles (`DictationSettings.hudStyle`) are
+  three shapes for one panel, not three HUDs; the fourth, Cursor, is a separate
+  click-through panel at the caret (see Dictation HUD Styles → Cursor). `.pill` is the default and the shape whose geometry is
   pinned tightest — `HUDPillBaselineTests` asserts its exact height per draft
   line, its constant width, and that no draft outgrows the reserve. That is why
   the bar and prompter carry their own material and meter instead of a shared
