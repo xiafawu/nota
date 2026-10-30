@@ -26,6 +26,9 @@ final class DictationHUDController {
   /// Replaceable, not fixed: healing the zombie state means a NEW NSPanel, and
   /// therefore a new server-side window. Nothing can revive a dead one.
   private var panel: DictationHUDPanel
+  /// The Cursor style's surface. Its own panel and its own placement — see
+  /// `DictationCursorMarkController` for why it cannot be a pill shape.
+  private let cursorMark = DictationCursorMarkController()
   private var cancellables = Set<AnyCancellable>()
   private var hideTask: Task<Void, Never>?
   private var watchdogTask: Task<Void, Never>?
@@ -114,8 +117,45 @@ final class DictationHUDController {
       }
     }
 
-    announceTransition(from: lastShownState, to: hudState)
+    let style = controller.settings.hudStyle
+    announceTransition(
+      from: lastShownState,
+      to: hudState,
+      on: style == .cursor ? cursorMark.announcementElement : panel
+    )
     lastShownState = hudState
+
+    // The Cursor style is its own surface with its own panel; the pill's panel
+    // stays down for the whole of it, so exactly one dictation surface is ever
+    // live. Announcements above stay shared: VoiceOver hears the same three
+    // things whichever style is drawing.
+    if style == .cursor {
+      panel.hide()
+      hideTask?.cancel()
+      watchdogTask?.cancel()
+      visibility.reset()
+      guard controller.settings.showHUD else {
+        cursorMark.dismiss()
+        return
+      }
+      cursorMark.update(
+        DictationCursorMarkController.Input(
+          state: controller.state,
+          isStartingSession: controller.isSessionPending,
+          isReviewing: controller.isReviewing,
+          level: controller.capture.rmsLevel,
+          sentencesInFlight: controller.sentencesInFlight,
+          isPolishInProgress: controller.isPolishInProgress,
+          lastPolishWarning: controller.lastPolishWarning,
+          lastSecureFieldNotice: controller.lastSecureFieldNotice,
+          position: controller.settings.cursorMarkPosition,
+          glassOpacity: controller.settings.hudGlassOpacity,
+          glassMaterial: controller.settings.hudGlassMaterial
+        )
+      )
+      return
+    }
+    cursorMark.dismiss()
 
     // Kept out of `HUDState` on purpose: the auto-hide bookkeeping above
     // compares states for equality, and a field that changes on every syllable
@@ -130,7 +170,6 @@ final class DictationHUDController {
       finalized: controller.finalizedDraft,
       volatileTail: controller.roughDraft
     )
-    let style = controller.settings.hudStyle
     // Asked of the panel rather than of a second copy of the bookkeeping: it is
     // the panel's frame that needs repositioning, and a recreated panel starts
     // on `.pill` whatever the setting has been saying. `panel.update` below
@@ -298,14 +337,14 @@ final class DictationHUDController {
   /// never key (its only mouse handling is the drag), so announcements are the
   /// only feedback a VoiceOver user gets that dictation started, finished, or
   /// failed. Which transitions speak is `HUDAnnouncement`'s table.
-  private func announceTransition(from old: HUDState, to new: HUDState) {
+  private func announceTransition(from old: HUDState, to new: HUDState, on element: NSWindow) {
     guard let announcement = HUDAnnouncement.between(
       old, new, insertedText: controller?.lastProcessedText
     ) else { return }
     let priority: NSAccessibilityPriorityLevel = announcement.isUrgent ? .high : .medium
 
     NSAccessibility.post(
-      element: panel,
+      element: element,
       notification: .announcementRequested,
       userInfo: [
         .announcement: announcement.message,
