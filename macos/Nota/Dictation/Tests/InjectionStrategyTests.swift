@@ -175,6 +175,12 @@ final class InjectionStrategyTests: XCTestCase {
     XCTAssertNotNil(table["com.microsoft.VSCodeInsiders"])
   }
 
+  /// Craft paints an AX value write but never saves it, so it must skip AX.
+  func testCraftIsPasteOnly() {
+    let injector = TextInjector()
+    XCTAssertEqual(injector.strategyChain(for: "com.lukilabs.lukiapp"), [.paste])
+  }
+
   func testDefaultOverrideTablePasteBundleUsesPaste() {
     let table = TextInjector.defaultOverrideTable
     for (bundleID, override) in table {

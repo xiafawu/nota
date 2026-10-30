@@ -313,6 +313,13 @@ extension TextInjector {
     "com.github.copilot.Copilot":  PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 120),
     "com.spotify.client":          PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 120),
 
+    // Craft — AX value set returns success and repaints the block, but Craft's
+    // document never commits it (measured 2026-10-30: the text is on screen,
+    // the saved block is empty), and it replaces the block rather than
+    // inserting at the caret. AXSelectedText is not settable, so paste is the
+    // only path that inserts at the caret and is saved.
+    "com.lukilabs.lukiapp":        PerAppOverride(forceStrategy: .paste, pasteRestoreDelayMs: 150),
+
     // Terminals — CGEvent works better than AX.
     "com.apple.Terminal":          PerAppOverride(forceStrategy: .keyEvents, pasteRestoreDelayMs: nil),
     "com.googlecode.iterm2":       PerAppOverride(forceStrategy: .keyEvents, pasteRestoreDelayMs: nil),
