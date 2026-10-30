@@ -487,7 +487,7 @@ final class LiveMeetingSession: ObservableObject {
     case .speechStarted(let timestamp, let confidence):
       logger.info("SpeechStarted at \(timestamp)ms confidence=\(confidence)")
 
-    case .turn(let transcript, let endOfTurn):
+    case .turn(let transcript, let endOfTurn, _, _):
       if endOfTurn {
         // An **empty** end-of-turn is dropped rather than appended (XIA-447).
         // A pause streams zeroed frames for as long as it lasts, and silence is

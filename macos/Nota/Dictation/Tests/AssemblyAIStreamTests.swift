@@ -33,7 +33,7 @@ final class AssemblyAIStreamTests: XCTestCase {
     """
     XCTAssertEqual(
       AssemblyAIRealtimeStream.ParsedMessage.fromJSON(json),
-      .turn(transcript: "Hello world.", endOfTurn: true)
+      .turn(transcript: "Hello world.", endOfTurn: true, isFormatted: true)
     )
   }
 
@@ -200,8 +200,9 @@ final class DictationEngineFactoryTests: XCTestCase {
   func testAssemblyAIEngineCreatesAssemblyAIStream() {
     let stream = makeDictationStream(for: .assemblyAIRealtime)
     XCTAssertTrue(stream is AssemblyAIRealtimeStream)
-    // Turn events (partials included) feed the live HUD draft, but whole
-    // formatted turns are not sentence deltas — batch delivery only.
+    // Turn events (partials included) feed the live HUD draft in every mode;
+    // finished turns become deliverable segments only when asked for and only
+    // once started (see `AssemblyAITurnRouterTests`).
     XCTAssertTrue(stream.supportsLiveDraft)
     XCTAssertFalse(stream.deliversSegments)
   }

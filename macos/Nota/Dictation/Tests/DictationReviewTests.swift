@@ -623,21 +623,37 @@ final class DictationSessionPlanTests: XCTestCase {
     XCTAssertFalse(plan.capturesTarget, "batch delivery captures at injection time")
   }
 
-  func testAssemblyAIGetsALiveDraftButNoMidSessionDelivery() {
+  func testAssemblyAIGetsALiveDraftInEveryModeAndDeliversOnlyWhileStreaming() {
     // AssemblyAI streams partial Turns in every delivery mode, so the HUD
-    // rough draft is always available; nothing can be delivered
-    // sentence-by-sentence (no deltas), so mid-session delivery stays off.
+    // rough draft is always available. Since 2026-10-30 it also delivers each
+    // finished turn mid-session — but only under Insert While Speaking, the one
+    // mode that may type into the owner's document before they let go.
     for mode in DeliveryMode.allCases {
       let plan = DictationSessionPlan.make(mode: mode, engine: .assemblyAIRealtime)
       XCTAssertTrue(plan.wantsLiveDraft, "\(mode)")
-      XCTAssertFalse(plan.deliversMidSession, "\(mode)")
+      XCTAssertEqual(plan.deliversMidSession, mode == .streaming, "\(mode)")
     }
+    XCTAssertTrue(
+      DictationSessionPlan.make(mode: .streaming, engine: .assemblyAIRealtime).capturesTarget,
+      "streaming appends into the app that had focus at key-down, on either engine"
+    )
     XCTAssertTrue(
       DictationSessionPlan.make(mode: .review, engine: .assemblyAIRealtime).capturesTarget
     )
     XCTAssertFalse(
       DictationSessionPlan.make(mode: .immediate, engine: .assemblyAIRealtime).capturesTarget
     )
+  }
+
+  /// The plan is the same for both engines wherever delivery is concerned:
+  /// what differs is how a segment is cut, never whether it is delivered.
+  func testMidSessionDeliveryNoLongerDependsOnTheEngine() {
+    for mode in DeliveryMode.allCases {
+      let apple = DictationSessionPlan.make(mode: mode, engine: .apple)
+      let assembly = DictationSessionPlan.make(mode: mode, engine: .assemblyAIRealtime)
+      XCTAssertEqual(apple.deliversMidSession, assembly.deliversMidSession, "\(mode)")
+      XCTAssertEqual(apple.capturesTarget, assembly.capturesTarget, "\(mode)")
+    }
   }
 
   func testReviewStillCapturesTheTargetOnAnEngineWithNoLiveDraft() {

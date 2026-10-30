@@ -155,6 +155,33 @@ enum StreamingDelivery {
   ) async -> RefinedSentence {
     await refine(Segment(text: sentence), terms: terms, polish: polish)
   }
+
+  /// What one newly finalized segment releases for delivery.
+  ///
+  /// Apple's finalized results are arbitrary runs of text — half a sentence,
+  /// three at once — so they accumulate in `segmenter` and leave only at a
+  /// sentence end. An AssemblyAI turn (`asUtterance`) is different in kind: the
+  /// server closed it on a pause, and it arrives unpunctuated, so a cut at
+  /// terminators would hold it back until the overflow valve or the end of the
+  /// session. It is released whole, as one sentence — which is also what gives
+  /// it the capital and the terminal period `applyRules(to:)` adds to a
+  /// sentence, the same dressing the batch path gives the whole transcript.
+  ///
+  /// Anything a segmenter is somehow still holding is released first, so a
+  /// mixed history can never reorder or drop words. Nothing normally is: one
+  /// session runs one engine.
+  static func segments(
+    finalizing text: String,
+    asUtterance: Bool,
+    segmenter: inout SentenceSegmenter
+  ) -> [Segment] {
+    guard asUtterance else { return segmenter.append(text) }
+    var released: [Segment] = []
+    if let held = segmenter.flush() { released.append(held) }
+    let utterance = text.trimmingCharacters(in: .whitespacesAndNewlines)
+    if !utterance.isEmpty { released.append(Segment(text: utterance)) }
+    return released
+  }
 }
 
 // MARK: - SentenceSegmenter

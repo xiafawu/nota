@@ -9,9 +9,11 @@ struct Hypothesis: Equatable, Sendable {
   /// True when `text` is a newly finalized *delta* — one more piece of the
   /// session, to be appended — rather than the session's transcript so far.
   ///
-  /// Only streaming-mode Apple recognition sets this. Every other producer
-  /// keeps the original contract (`text` is the whole hypothesis), so the
-  /// default keeps existing call sites and their meaning unchanged.
+  /// Set by streaming-mode Apple recognition (a finalized delta) and by
+  /// AssemblyAI realtime asked to deliver while speaking (one finished turn).
+  /// Every other producer keeps the original contract (`text` is the whole
+  /// hypothesis), so the default keeps existing call sites and their meaning
+  /// unchanged.
   let isSegment: Bool
 
   init(text: String, isFinal: Bool, isSegment: Bool = false) {
@@ -41,6 +43,17 @@ protocol SpeechStream: AnyObject {
   /// the target document. The draft gate uses this; delivery uses
   /// `deliversSegments`.
   var supportsLiveDraft: Bool { get }
+  /// True when every segment this stream emits is a whole utterance — a turn
+  /// the engine itself closed on a pause — rather than an arbitrary run of
+  /// finalized text.
+  ///
+  /// It decides how a segment is cut for delivery. Apple's deltas are cut at
+  /// sentence terminators by `SentenceSegmenter`. AssemblyAI's turns arrive
+  /// unpunctuated (the socket does not ask for `format_turns`), so a
+  /// terminator-cutter would hold every one of them until the 240-character
+  /// valve or the end of the session — exactly the "nothing until I stop"
+  /// behavior streaming exists to replace. A turn is delivered as one unit.
+  var segmentsAreUtterances: Bool { get }
   func start() async throws
   func feed(_ pcm: AVAudioPCMBuffer) throws
   func finish() async throws -> String
@@ -51,4 +64,5 @@ extension SpeechStream {
   var deliversSegments: Bool { false }
   /// A stream that delivers segments necessarily previews as it goes.
   var supportsLiveDraft: Bool { deliversSegments }
+  var segmentsAreUtterances: Bool { false }
 }

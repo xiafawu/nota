@@ -777,11 +777,25 @@ final class StreamingDeliveryToggleTests: XCTestCase {
     XCTAssertFalse(makeDictationStream(for: .assemblyAIRealtime, streaming: true).deliversSegments)
   }
 
-  func testAssemblyAIIgnoresTheStreamingRequest() {
-    // Its "finals" are whole formatted turns, not deltas — asking for segments
-    // must not produce an Apple stream or a half-configured AssemblyAI one.
-    let stream = makeDictationStream(for: .assemblyAIRealtime, streaming: true)
-    XCTAssertTrue(stream is AssemblyAIRealtimeStream)
-    XCTAssertFalse(stream.deliversSegments)
+  func testAssemblyAIDeliversTurnsOnlyWhenAskedAndOnlyOnceStarted() {
+    // Asking for the live draft alone (`streaming`) must not turn its finished
+    // turns into deliverable segments: AssemblyAI runs a live draft in every
+    // mode, and only Insert While Speaking may deliver mid-session.
+    let draftOnly = makeDictationStream(for: .assemblyAIRealtime, streaming: true)
+    XCTAssertTrue(draftOnly is AssemblyAIRealtimeStream)
+    XCTAssertFalse(draftOnly.deliversSegments)
+
+    // Asked to deliver, it still claims nothing before `start()` has opened the
+    // socket — the caller decides batch vs streaming only after start returns.
+    let delivering = makeDictationStream(
+      for: .assemblyAIRealtime, streaming: true, deliversWhileSpeaking: true
+    )
+    XCTAssertTrue(delivering is AssemblyAIRealtimeStream)
+    XCTAssertFalse(delivering.deliversSegments)
+    XCTAssertTrue(delivering.segmentsAreUtterances, "a turn is delivered whole")
+    XCTAssertFalse(
+      makeDictationStream(for: .apple, streaming: true).segmentsAreUtterances,
+      "Apple's deltas are cut at sentence ends"
+    )
   }
 }

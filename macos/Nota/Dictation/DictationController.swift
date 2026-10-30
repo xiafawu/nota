@@ -26,9 +26,11 @@ struct DictationSessionPlan: Equatable {
     // Apple's analyzer only streams when asked (streaming/review); AssemblyAI
     // realtime streams partial Turns in every mode, so its live HUD draft is
     // available even for batch delivery — the pill previews what is being said
-    // while the text still lands once, at release. Mid-session delivery stays
-    // Apple-only: AssemblyAI has no sentence deltas, so its streaming sessions
-    // fall back to batch delivery.
+    // while the text still lands once, at release. Mid-session delivery is
+    // engine independent since 2026-10-30: Apple delivers its finalized deltas
+    // sentence by sentence, AssemblyAI each finished turn (`AssemblyAITurnRouter`),
+    // and both go down the one delivery queue that owns the append-only,
+    // in-order and fixed-target guarantees.
     let wantsDraft: Bool
     switch engine {
     case .apple:
@@ -41,12 +43,12 @@ struct DictationSessionPlan: Equatable {
       // Streaming appends into whatever had focus when the hotkey went down and
       // keeps appending there for the whole session. Review appends nothing at
       // all until the owner says so.
-      deliversMidSession: mode == .streaming && engine == .apple,
+      deliversMidSession: mode == .streaming,
       // Review captures the same target for the opposite reason streaming does:
       // nothing is delivered during the session, and by the time the owner
       // applies, the session that recognized the audio is long over. Engine
       // independent — the pid is needed however the audio was recognized.
-      capturesTarget: mode == .review || (mode == .streaming && engine == .apple)
+      capturesTarget: mode == .review || mode == .streaming
     )
   }
 }
@@ -145,6 +147,9 @@ final class DictationController: ObservableObject {
   /// capture at Apply time would read the panel's own editor as the target.
   private var sessionTarget: FocusedTarget?
   private var segmenter = SentenceSegmenter()
+  /// Whether this session's segments are whole utterances (AssemblyAI turns)
+  /// to deliver as they are, rather than deltas to cut at sentence ends.
+  private var segmentsAreUtterances = false
   private var deliveryQueue: StreamingDeliveryQueue?
   private var streamingHistoryID: UUID?
   private var hypothesisTask: Task<Void, Never>?
@@ -462,7 +467,8 @@ final class DictationController: ObservableObject {
       let stream = makeDictationStream(
         for: self.settings.engine,
         contextualHints: hints,
-        streaming: plan.wantsLiveDraft
+        streaming: plan.wantsLiveDraft,
+        deliversWhileSpeaking: plan.deliversMidSession
       )
       self.speechStream = stream
       self.logger.info("Using engine: \(self.settings.engine.label)")
@@ -532,6 +538,7 @@ final class DictationController: ObservableObject {
         )
       }
       self.isStreamingSession = self.deliveryQueue != nil && stream.deliversSegments
+      self.segmentsAreUtterances = stream.segmentsAreUtterances
       if plan.deliversMidSession, !self.isStreamingSession {
         self.logger.info("Streaming delivery unavailable this session — using batch delivery")
         self.resetStreamingSession()
@@ -722,7 +729,11 @@ final class DictationController: ObservableObject {
       roughDraft = ""
       publishReviewDraft()
       guard let deliveryQueue else { return }
-      for segment in segmenter.append(hypothesis.text) {
+      for segment in StreamingDelivery.segments(
+        finalizing: hypothesis.text,
+        asUtterance: segmentsAreUtterances,
+        segmenter: &segmenter
+      ) {
         deliveryQueue.enqueue(segment)
       }
       return
@@ -1043,6 +1054,7 @@ final class DictationController: ObservableObject {
     isStreamingSession = false
     isLiveDraftSession = false
     segmenter = SentenceSegmenter()
+    segmentsAreUtterances = false
     finalizedDraft = ""
     roughDraft = ""
   }
@@ -1888,6 +1900,11 @@ extension DictationController {
       deliveryQueue = makeDeliveryQueue(target: target, terms: [], snapshot: .empty)
     }
     isStreamingSession = deliveryQueue != nil && plan.wantsLiveDraft
+    // Asked of a real stream for the same reason the plan is run: the seam must
+    // cut segments the way the engine it stands in for would. Constructing a
+    // stream opens nothing — only `start()` does.
+    segmentsAreUtterances = makeDictationStream(for: engine ?? settings.engine)
+      .segmentsAreUtterances
   }
 
   /// Everything the recognizer has finalized this session.

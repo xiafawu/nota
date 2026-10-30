@@ -36,22 +36,93 @@ enum AssemblyAIError: LocalizedError, Equatable {
 /// The AssemblyAI realtime engine has no equivalent per-session hint channel, so
 /// it ignores them.
 ///
-/// `streaming` asks for finalized sentence segments mid-session. Only the Apple
-/// on-device engine can supply them: AssemblyAI realtime reports whole formatted
-/// turns, not deltas, so it ignores the request and the caller falls back to
-/// batch delivery (`SpeechStream.deliversSegments` stays false). AssemblyAI does
-/// still yield Turn hypotheses as speech is recognized, so it participates in
-/// the live HUD draft (`supportsLiveDraft`).
+/// `streaming` asks the Apple analyzer for its streaming mode — a volatile tail
+/// for the live draft plus finalized deltas. AssemblyAI realtime yields partial
+/// turns in every mode, so it needs no such request for the draft.
+///
+/// `deliversWhileSpeaking` asks for segments to *deliver* mid-session. Apple
+/// gets them from streaming mode already; AssemblyAI emits each finished turn
+/// as a segment only when this is set, because a segment is text bound for the
+/// owner's live document and only `.streaming` delivery may put it there. Kept
+/// apart from `streaming` on purpose: AssemblyAI runs with a live draft in
+/// every mode (`DictationSessionPlan.wantsLiveDraft`), and tying turns-as-
+/// segments to that flag would turn on mid-session delivery for Insert on
+/// Release and Review too.
 func makeDictationStream(
   for engine: EngineChoice,
   contextualHints: [String] = [],
-  streaming: Bool = false
+  streaming: Bool = false,
+  deliversWhileSpeaking: Bool = false
 ) -> any SpeechStream {
   switch engine {
   case .apple:
     return AppleSpeechStream(contextualHints: contextualHints, streaming: streaming)
   case .assemblyAIRealtime:
-    return AssemblyAIRealtimeStream()
+    return AssemblyAIRealtimeStream(deliversTurns: deliversWhileSpeaking)
+  }
+}
+
+// MARK: - AssemblyAITurnRouter
+
+/// What one AssemblyAI `Turn` message becomes, as a pure decision.
+///
+/// A partial (`end_of_turn: false`) is the live draft's volatile tail. A
+/// finished turn is text the session has finalized: always accumulated into
+/// the transcript `finish()` returns, and — when the stream was asked to
+/// deliver while speaking — also yielded as a *segment*, which the controller
+/// sends down the same append-only, in-order, fixed-target delivery queue
+/// Apple's deltas use. Nothing about those guarantees is AssemblyAI-specific;
+/// they belong to the queue.
+///
+/// **One segment per turn, ever.** With `format_turns=true` the v3 server sends
+/// two `end_of_turn: true` messages for the same `turn_order` — the raw text,
+/// then the same turn again with `turn_is_formatted: true`. The socket here
+/// does not ask for formatting, so today there is one; but delivery is
+/// append-only and a second final for the same turn would type the sentence
+/// into the owner's document twice. The first final for a turn wins and any
+/// later one is dropped, for the transcript as well as for delivery. Pinned by
+/// test against the documented shape, not against the live server.
+struct AssemblyAITurnRouter {
+  /// Whether finished turns are yielded as deliverable segments.
+  let deliversTurns: Bool
+  /// `turn_order` of the last turn that was finalized, to drop a repeat.
+  private var lastFinalTurnOrder: Int?
+
+  init(deliversTurns: Bool) {
+    self.deliversTurns = deliversTurns
+  }
+
+  struct Routed: Equatable {
+    /// Hypotheses to yield, in order.
+    var hypotheses: [Hypothesis] = []
+    /// A finished turn to fold into the session transcript, or nil.
+    var finalized: String?
+  }
+
+  mutating func route(
+    transcript: String,
+    endOfTurn: Bool,
+    turnOrder: Int? = nil
+  ) -> Routed {
+    guard endOfTurn else {
+      return Routed(hypotheses: [Hypothesis(text: transcript, isFinal: false)])
+    }
+    if let turnOrder, turnOrder == lastFinalTurnOrder {
+      // The formatted repeat of a turn already finalized (see the type doc).
+      return Routed()
+    }
+    let trimmed = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmed.isEmpty else {
+      // A pause can close a turn that heard nothing. There is no text to
+      // finalize, and an empty final would add a blank line to the draft; a
+      // cleared tail is all it means.
+      return Routed(hypotheses: [Hypothesis(text: "", isFinal: false)])
+    }
+    lastFinalTurnOrder = turnOrder
+    return Routed(
+      hypotheses: [Hypothesis(text: trimmed, isFinal: true, isSegment: deliversTurns)],
+      finalized: trimmed
+    )
   }
 }
 
@@ -61,8 +132,10 @@ func makeDictationStream(
 ///
 /// One WebSocket per dictation session. Audio is mono 16 kHz Int16 PCM sent
 /// as binary frames. Begin/Turn/Termination JSON events are mapped to
-/// `Hypothesis`. Text is delivered only after `finish()` receives the final
-/// Turn (end_of_turn=true) or the watchdog fires.
+/// `Hypothesis` through `AssemblyAITurnRouter`. The session transcript is
+/// sealed only when `finish()` receives Termination or the watchdog fires; with
+/// `deliversTurns` each finished turn is also yielded as a segment as it lands,
+/// so Insert While Speaking types it in while the owner is still talking.
 final class AssemblyAIRealtimeStream: NSObject, SpeechStream {
   // MARK: - Debug file log
 
@@ -78,7 +151,9 @@ final class AssemblyAIRealtimeStream: NSObject, SpeechStream {
   enum ParsedMessage: Equatable {
     case begin(id: String)
     case speechStarted(timestamp: Int, confidence: Double)
-    case turn(transcript: String, endOfTurn: Bool)
+    /// `turnOrder` and `isFormatted` default so a message that omits them (and
+    /// the tests that predate them) still reads as the turn it is.
+    case turn(transcript: String, endOfTurn: Bool, turnOrder: Int? = nil, isFormatted: Bool = false)
     case termination(audioDurationSeconds: Double?)
 
     /// Parse an AssemblyAI real-time JSON message string.
@@ -103,7 +178,12 @@ final class AssemblyAIRealtimeStream: NSObject, SpeechStream {
       case "Turn":
         let transcript = json["transcript"] as? String ?? ""
         let endOfTurn = json["end_of_turn"] as? Bool ?? false
-        return .turn(transcript: transcript, endOfTurn: endOfTurn)
+        return .turn(
+          transcript: transcript,
+          endOfTurn: endOfTurn,
+          turnOrder: json["turn_order"] as? Int,
+          isFormatted: json["turn_is_formatted"] as? Bool ?? false
+        )
 
       case "Termination":
         let duration = json["audio_duration_seconds"] as? Double
@@ -150,10 +230,27 @@ final class AssemblyAIRealtimeStream: NSObject, SpeechStream {
   var hypotheses: AsyncStream<Hypothesis> { stream }
 
   /// Turn events (including `end_of_turn: false` partials) stream in as speech
-  /// is recognized, so the HUD rough draft can grow live. The turns are whole
-  /// formatted utterances, not sentence deltas — `deliversSegments` stays false
-  /// and mid-session delivery stays batch.
+  /// is recognized, so the HUD rough draft can grow live in every mode.
   var supportsLiveDraft: Bool { true }
+
+  /// Whether this session was asked to deliver each finished turn mid-session.
+  private let deliversTurnsRequested: Bool
+  /// True once `start()` has opened the socket for a session that asked for
+  /// turns. Like Apple's, only meaningful after `start()` returns: before it,
+  /// the caller must not plan on segments that may never come.
+  private var turnsActive = false
+  var deliversSegments: Bool { turnsActive }
+  /// A turn is an utterance the server closed on a pause — delivered whole.
+  var segmentsAreUtterances: Bool { true }
+
+  /// Guarded by `stateLock`: messages are routed on the receive task.
+  private var router: AssemblyAITurnRouter
+
+  init(deliversTurns: Bool = false) {
+    self.deliversTurnsRequested = deliversTurns
+    self.router = AssemblyAITurnRouter(deliversTurns: deliversTurns)
+    super.init()
+  }
 
   // WebSocket
   private var urlSession: URLSession?
@@ -223,6 +320,10 @@ final class AssemblyAIRealtimeStream: NSObject, SpeechStream {
     }
 
     // 5. Start listening for messages
+    stateLock.withLock { _ in
+      router = AssemblyAITurnRouter(deliversTurns: deliversTurnsRequested)
+    }
+    turnsActive = deliversTurnsRequested
     listenForMessages()
   }
 
@@ -371,18 +472,26 @@ final class AssemblyAIRealtimeStream: NSObject, SpeechStream {
     case .speechStarted(let timestamp, let confidence):
       debug("SpeechStarted ts=\(timestamp) conf=\(confidence)")
 
-    case .turn(let transcript, let endOfTurn):
-      debug("Turn final=\(endOfTurn) chars=\(transcript.count) text=\"\(transcript)\"")
-      hypothesisContinuation.yield(Hypothesis(text: transcript, isFinal: endOfTurn))
+    case .turn(let transcript, let endOfTurn, let turnOrder, let isFormatted):
+      debug(
+        "Turn final=\(endOfTurn) order=\(turnOrder.map(String.init) ?? "nil") "
+          + "formatted=\(isFormatted) chars=\(transcript.count) text=\"\(transcript)\""
+      )
+      let routed = stateLock.withLock { _ in
+        router.route(transcript: transcript, endOfTurn: endOfTurn, turnOrder: turnOrder)
+      }
+      for hypothesis in routed.hypotheses {
+        hypothesisContinuation.yield(hypothesis)
+      }
 
-      if endOfTurn {
+      if let finished = routed.finalized {
         stateLock.withLock { _ in
           // Turns arrive per utterance — accumulate, never overwrite. A
           // multi-sentence hold used to return only the last turn.
           if let existing = finalText, !existing.isEmpty {
-            finalText = existing + "\n" + transcript
+            finalText = existing + "\n" + finished
           } else {
-            finalText = transcript
+            finalText = finished
           }
           finalTurnCount += 1
           let text = self.finalText!
@@ -496,6 +605,7 @@ final class AssemblyAIRealtimeStream: NSObject, SpeechStream {
     finalText = nil
     streamError = nil
     didSendTerminate = false
+    turnsActive = false
   }
 }
 
