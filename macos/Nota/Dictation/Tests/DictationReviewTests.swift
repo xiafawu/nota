@@ -976,6 +976,18 @@ final class DictationReviewBranchTests: XCTestCase {
     )
   }
 
+  /// Insert While Speaking on AssemblyAI builds the same queue Apple does
+  /// (2026-10-30) — it used to fall back to insert-on-release. Everything the
+  /// queue guarantees (append-only, spoken order, the key-down target) then
+  /// holds for its turns as it does for Apple's sentences.
+  func testAnAssemblyAIStreamingSessionBuildsAQueue() {
+    let controller = makeController(.streaming)
+    controller.beginSessionForTests(engine: .assemblyAIRealtime, target: target)
+    XCTAssertTrue(controller.deliversMidSessionForTests)
+    controller.endSessionForTests()
+    XCTAssertEqual(controller.sentencesInFlight, 0)
+  }
+
   /// The AssemblyAI live draft folds finalized turns into the session draft as
   /// their own lines, so the growing pill keeps everything the user has said —
   /// a tail-only feed would blank every earlier sentence on each new turn.

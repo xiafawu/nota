@@ -586,3 +586,39 @@ final class StreamingDeliveryInFlightTests: XCTestCase {
     XCTAssertEqual(queue.inFlightCount, 0)
   }
 }
+
+// MARK: - The panel
+
+/// The mark's panel owes every rule a floating surface owes, plus the one that
+/// makes it a different class from the pill's: it takes no clicks. A panel
+/// beside the caret that took clicks would swallow the click that moves it.
+@MainActor
+final class CursorMarkPanelTests: XCTestCase {
+  func testThePanelKeepsTheFloatingSurfaceRules() {
+    let panel = CursorMarkPanel(cornerRadius: CursorMarkMetrics.height / 2)
+    XCTAssertTrue(panel.ignoresMouseEvents)
+    XCTAssertTrue(panel.isFloatingPanel)
+    // Assigned after isFloatingPanel, which would otherwise have left it at
+    // .floating — below a fullscreen app.
+    XCTAssertEqual(panel.level, .statusBar)
+    XCTAssertEqual(panel.appearance?.name, .darkAqua)
+    XCTAssertTrue(panel.styleMask.contains(.nonactivatingPanel))
+    XCTAssertFalse(panel.canBecomeKey)
+    XCTAssertFalse(panel.canBecomeMain)
+    XCTAssertFalse(panel.hasShadow)
+    XCTAssertTrue(panel.contentView is GlassBackingView, "an AppKit glass plate, not SwiftUI glass")
+  }
+
+  /// `PanelMotion.fadeIn` gives a panel its clicks back by default (a panel
+  /// caught mid-dismissal had them taken away). The mark must not get them.
+  func testFadingInLeavesItClickThrough() {
+    let panel = CursorMarkPanel(cornerRadius: CursorMarkMetrics.height / 2)
+    PanelMotion.fadeIn(panel, rise: 0, clickThrough: true) { () }
+    XCTAssertTrue(panel.ignoresMouseEvents)
+    // The default is unchanged for every other floating panel.
+    let other = CursorMarkPanel(cornerRadius: 10)
+    other.ignoresMouseEvents = true
+    PanelMotion.fadeIn(other, rise: 0) { () }
+    XCTAssertFalse(other.ignoresMouseEvents)
+  }
+}

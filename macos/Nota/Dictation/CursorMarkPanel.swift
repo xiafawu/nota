@@ -408,19 +408,61 @@ final class DictationCursorMarkController {
 
     // Text just landed: a sentence left the queue, or the release-time insert
     // finished. Re-read the caret now rather than on the next poll.
-    if input.sentencesInFlight < previousSentencesInFlight
-      || (previousState == .injecting && input.state != .injecting) {
+    let insertFinished = previousState == .injecting && input.state != .injecting
+    if input.sentencesInFlight < previousSentencesInFlight || insertFinished {
       readSoon()
     }
     previousSentencesInFlight = input.sentencesInFlight
     previousState = input.state
 
     guard displayed != .hidden else {
+      // The last text of the session just went in. The mark follows it to the
+      // new caret as a dot and fades from there — the prototype's ending —
+      // rather than fading from where the caret was before the insert.
+      if insertFinished, isMarkShowing {
+        beginLinger()
+        return
+      }
+      if lingerTask != nil {
+        // Still following the last insert: the dot stays what is displayed,
+        // so a landed read arriving now still moves it.
+        displayed = .quiet
+        return
+      }
       hideSurfaces()
       return
     }
+    cancelLinger()
     startTrackingIfNeeded()
     render()
+  }
+
+  // MARK: The ending
+
+  /// How long the dot stays at the new caret after the session's last insert
+  /// before it fades: long enough for one landed read to arrive and move it.
+  static let lingerAfterInsert: TimeInterval = 0.3
+
+  private var lingerTask: Task<Void, Never>?
+
+  private func beginLinger() {
+    guard lingerTask == nil else { return }
+    displayed = .quiet
+    render()
+    lingerTask = Task { [weak self] in
+      try? await Task.sleep(
+        nanoseconds: UInt64(Self.lingerAfterInsert * 1_000_000_000)
+      )
+      guard !Task.isCancelled, let self else { return }
+      self.lingerTask = nil
+      self.displayed = .hidden
+      self.hideSurfaces()
+    }
+  }
+
+  private func cancelLinger() {
+    lingerTask?.cancel()
+    lingerTask = nil
   }
 
   /// Take everything down: the owner switched style, or turned the HUD off.
@@ -429,6 +471,7 @@ final class DictationCursorMarkController {
     gate.reset()
     expiryTask?.cancel()
     expiryTask = nil
+    cancelLinger()
     hideSurfaces()
   }
 
