@@ -1216,6 +1216,47 @@ a browser imitation of the real thing.
 - `isAboutLiveText` is false (there is no text to sit empty), and the pane
   states the fallback and, under Review, that the card is the surface.
 
+## Settings Pictures (2026-10-30)
+
+Every pick-one setting in the Settings window draws a small picture per
+option, the way System Settings → Appearance does: a 68×44 tile, a 2.5pt
+accent ring with a 1.5pt gap on the one that is on, the name under it, bold
+when chosen (`SettingsPictureMetrics`, measured off System Settings). The
+drawings were scored option by option on a kit before they were built, and
+`PicturePen` keeps the kit's SVG coordinates so a tile can be checked shape by
+shape. `macos/Nota/UI/SettingsPictures.swift`.
+
+- **Pickers only.** On/off switches keep their words (owner's call), and long
+  lists — the model menus — stay menus, as long lists do in Apple's Settings.
+- **Every row is built from its enum's `allCases`** (`SettingsPictureRows`),
+  and `SettingsPictureTests` asserts one distinct, named picture per case: a
+  new HUD style cannot ship with a blank tile.
+- **SettingsForm's label rule holds.** A picture row under a section header
+  that already names it (Activation, Trigger Key, Recognition Engine,
+  Delivery) has no row label and sits leading; rows that share a section
+  (Style, Position, Glass) or live in General keep a label on the left and
+  the tiles trailing.
+- **The pictures are still**, as Apple's are, and that is measured rather
+  than taste. The kit looped them; built that way Nota sat at ~40% CPU for
+  as long as the Settings window existed (another Space and behind other
+  apps included — pausing on `controlActiveState` did not stop it), and one
+  tile playing under the pointer still cost ~30%: a tile is a cell of the
+  form's table, so every frame re-lays out the whole form. Each picture
+  holds `SettingsPicture.restingPhase`, the one frame that says the most, and
+  the three delivery frames are pinned to differ
+  (`testEachDeliveryModeHoldsAFrameOfItsOwn`). The glass preview's meter is
+  still too.
+- **The glass row is Apple's Liquid Glass row**, not tiles: a Frosted | Clear
+  switch, one large preview of the pill over real text, and the opacity
+  slider, whose drag draft the preview reads so it follows the knob while the
+  save still waits for mouse-up. The preview's glass is SwiftUI
+  `.glassEffect`, not the HUD's `NSGlassEffectView`: the AppKit plate was
+  tried here first and, in the one check made (a capture of the window while
+  it was on another Space), never showed the text behind it, so Frosted and
+  Clear looked identical. SwiftUI glass, checked on screen, does. The text behind it is the point —
+  blur only shows over something sharp. Material and tint are the HUD's
+  (`GlassMaterial`, `GlassTint`).
+
 ## Model Settings
 
 Non-secret model preferences live in `~/.nota/settings.json` (schema exactly

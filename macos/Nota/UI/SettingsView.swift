@@ -8,7 +8,7 @@ private enum SettingsTab: Hashable {
 
   var idealHeight: CGFloat {
     switch self {
-    case .general: 350
+    case .general: 500
     case .dictation: 600
     case .dictionary: 560
     case .models: 400
@@ -104,22 +104,24 @@ struct SettingsView: View {
         // with unsaved edits — click-outside, Escape, Close, record switch,
         // and phase leave. "Save it" (default) commits the draft and closes;
         // "Ask me" confirms first (save / discard / keep editing).
-        Picker(selection: $summaryDismissalBehavior) {
-          ForEach(SummaryRailDismissalBehavior.allCases, id: \.self) { behavior in
-            Text(behavior.label).tag(behavior)
-          }
+        LabeledContent {
+          SettingsPicturePicker(
+            title: "Closing the summary with unsaved edits",
+            selection: $summaryDismissalBehavior,
+            options: SettingsPictureRows.closeSummary
+          )
         } label: {
           SettingsLabel("Closing the summary with unsaved edits", caption: "Save it commits the draft and closes; Ask me confirms first.")
         }
-        .pickerStyle(.segmented)
-        Picker(selection: $appearanceRaw) {
-          ForEach(AppearanceSetting.allCases) { setting in
-            Text(setting.label).tag(setting.rawValue)
-          }
+        LabeledContent {
+          SettingsPicturePicker(
+            title: "Appearance",
+            selection: appearanceBinding,
+            options: SettingsPictureRows.appearance
+          )
         } label: {
           SettingsLabel("Appearance", caption: "System follows macOS; Light and Dark pin every Nota window.")
         }
-        .pickerStyle(.segmented)
         .onChange(of: appearanceRaw) { _, newValue in
           (AppearanceSetting(rawValue: newValue) ?? .system).apply()
         }
@@ -137,6 +139,15 @@ struct SettingsView: View {
       }
     }
     .formStyle(.grouped)
+  }
+
+  /// The stored raw string as the setting it names. An unknown stored value
+  /// reads as System, the same rule `AppearanceSetting.current` follows.
+  private var appearanceBinding: Binding<AppearanceSetting> {
+    Binding(
+      get: { AppearanceSetting(rawValue: appearanceRaw) ?? .system },
+      set: { appearanceRaw = $0.rawValue }
+    )
   }
 }
 

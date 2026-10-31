@@ -37,12 +37,14 @@ struct DictationSettingsView: View {
 
   private var activationSection: some View {
     Section {
-      Picker("Activation", selection: $settings.activation) {
-        Text("Hold to dictate").tag(ActivationMode.hold)
-        Text("Press to toggle").tag(ActivationMode.toggle)
-      }
-      .pickerStyle(.radioGroup)
-      .labelsHidden()
+      // The header already names it, so the tiles stand alone (SettingsForm's
+      // label rule), leading like any other unlabeled row.
+      SettingsPicturePicker(
+        title: "Activation",
+        selection: $settings.activation,
+        options: SettingsPictureRows.activation
+      )
+      .frame(maxWidth: .infinity, alignment: .leading)
     } header: {
       Text("Activation")
     } footer: {
@@ -57,11 +59,12 @@ struct DictationSettingsView: View {
 
   private var triggerSection: some View {
     Section {
-      Picker("Trigger key", selection: $settings.trigger.kind) {
-        Text("Fn / Globe").tag(TriggerKey.Kind.fnGlobe)
-        Text("Custom key code").tag(TriggerKey.Kind.keyCode)
-      }
-      .labelsHidden()
+      SettingsPicturePicker(
+        title: "Trigger key",
+        selection: $settings.trigger.kind,
+        options: SettingsPictureRows.trigger
+      )
+      .frame(maxWidth: .infinity, alignment: .leading)
 
       if settings.trigger.kind == .keyCode {
         TextField("Key code", value: triggerKeyCodeBinding, format: .number)
@@ -87,12 +90,12 @@ struct DictationSettingsView: View {
 
   private var engineSection: some View {
     Section {
-      Picker("Engine", selection: $settings.engine) {
-        ForEach(EngineChoice.allCases, id: \.self) { choice in
-          Text(choice.label).tag(choice)
-        }
-      }
-      .labelsHidden()
+      SettingsPicturePicker(
+        title: "Recognition engine",
+        selection: $settings.engine,
+        options: SettingsPictureRows.engine
+      )
+      .frame(maxWidth: .infinity, alignment: .leading)
     } header: {
       Text("Recognition Engine")
     } footer: {
@@ -162,13 +165,12 @@ struct DictationSettingsView: View {
   /// speaking *and* held back for review.
   private var deliverySection: some View {
     Section {
-      Picker("Delivery", selection: $settings.deliveryMode) {
-        ForEach(DeliveryMode.allCases, id: \.self) { mode in
-          Text(mode.label).tag(mode)
-        }
-      }
-      .pickerStyle(.radioGroup)
-      .labelsHidden()
+      SettingsPicturePicker(
+        title: "Delivery",
+        selection: $settings.deliveryMode,
+        options: SettingsPictureRows.delivery
+      )
+      .frame(maxWidth: .infinity, alignment: .leading)
     } header: {
       Text("Delivery")
     } footer: {
@@ -217,57 +219,75 @@ struct DictationSettingsView: View {
       Toggle("Show dictation HUD", isOn: $settings.showHUD)
 
       if settings.showHUD {
-        Picker("Style", selection: $settings.hudStyle) {
-          ForEach(HUDStyle.allCases, id: \.self) { style in
-            Text(style.label).tag(style)
-          }
+        // Two picture rows share this section, so both keep their labels.
+        LabeledContent("Style") {
+          SettingsPicturePicker(
+            title: "Style",
+            selection: $settings.hudStyle,
+            options: SettingsPictureRows.hudStyle
+          )
         }
-        .pickerStyle(.radioGroup)
 
         // Only the Cursor style reads it, so only the Cursor style shows it.
         if settings.hudStyle == .cursor {
-          Picker("Position", selection: $settings.cursorMarkPosition) {
-            ForEach(CursorMarkPosition.allCases, id: \.self) { position in
-              Text(position.label).tag(position)
+          LabeledContent("Position") {
+            SettingsPicturePicker(
+              title: "Position",
+              selection: $settings.cursorMarkPosition,
+              options: SettingsPictureRows.cursorPosition
+            )
+          }
+        }
+      }
+
+      // Apple's Liquid Glass row: the material switch, one large live preview
+      // over real text, and the opacity slider under it (kit round 3, "C").
+      // Not gated on `showHUD`: the review card is glass too, and it is the one
+      // surface a review session has whether or not the HUD is on.
+      LabeledContent("Glass") {
+        VStack(alignment: .leading, spacing: 10) {
+          // A picker commits once per click, so unlike the slider it binds
+          // straight at `settings`.
+          Picker("Glass material", selection: $settings.hudGlassMaterial) {
+            ForEach(GlassMaterial.allCases, id: \.self) { material in
+              Text(material.label).tag(material)
             }
           }
-          .pickerStyle(.radioGroup)
+          .pickerStyle(.segmented)
+          .labelsHidden()
+          .fixedSize()
+
+          // Reads the drag draft, so the preview follows the knob while the
+          // save waits for the mouse-up.
+          SettingsGlassPreview(
+            material: settings.hudGlassMaterial,
+            tintAlpha: glassOpacityBinding.wrappedValue
+          )
+
+          // The drag is held in `glassOpacityDraft` and committed when the
+          // owner lets go, rather than binding straight at `settings`. This view
+          // saves and calls `reloadSettings()` on every change — which restarts
+          // the hotkey event tap — and doing that at slider-drag frame rate
+          // would cost the owner keystrokes. The preview above shows the drag
+          // live without it. Only a pointer drag is deferred; a write outside
+          // one (a keyboard or VoiceOver step, say) is saved as it happens.
+          Slider(
+            value: glassOpacityBinding,
+            in: GlassTint.range,
+            label: { Text("Glass opacity") },
+            minimumValueLabel: { Text("Clear").settingsCaptionFont() },
+            maximumValueLabel: { Text("Solid").settingsCaptionFont() },
+            onEditingChanged: { editing in
+              isDraggingGlassOpacity = editing
+              guard !editing, let value = glassOpacityDraft else { return }
+              glassOpacityDraft = nil
+              settings.hudGlassOpacity = value
+            }
+          )
+          .labelsHidden()
+          .frame(width: SettingsGlassPreview.size.width)
         }
       }
-
-      // Not gated on `showHUD` (nor is the slider below): the review card is
-      // glass too, and it is the one surface a review session has whether or
-      // not the HUD is on. A picker commits once per click, so unlike the
-      // slider it binds straight at `settings`.
-      Picker("Glass material", selection: $settings.hudGlassMaterial) {
-        ForEach(GlassMaterial.allCases, id: \.self) { material in
-          Text(material.label).tag(material)
-        }
-      }
-      .pickerStyle(.radioGroup)
-
-      //
-      // The drag is held in `glassOpacityDraft` and committed when the owner
-      // lets go, rather than binding straight at `settings`. Every other control
-      // here changes once per click, and this view saves and calls
-      // `reloadSettings()` on every change — which restarts the hotkey event tap.
-      // Doing that at slider-drag frame rate would cost the owner keystrokes for
-      // a preview they cannot see anyway: neither floating surface is on screen
-      // while Settings is. Only a pointer drag is deferred; a write outside one
-      // (a keyboard or VoiceOver step, say) is saved as it happens.
-      Slider(
-        value: glassOpacityBinding,
-        in: GlassTint.range,
-        label: { Text("Glass opacity") },
-        minimumValueLabel: { Text("Clear").settingsCaptionFont() },
-        maximumValueLabel: { Text("Solid").settingsCaptionFont() },
-        onEditingChanged: { editing in
-          isDraggingGlassOpacity = editing
-          guard !editing, let value = glassOpacityDraft else { return }
-          glassOpacityDraft = nil
-          settings.hudGlassOpacity = value
-        }
-      )
     } header: {
       Text("Heads-Up Display")
     } footer: {
